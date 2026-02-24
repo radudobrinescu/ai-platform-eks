@@ -17,7 +17,7 @@ spec:
       targetRevision: main
       ref: values
   destination:
-    name: in-cluster
+    name: local-cluster
     namespace: gpu-operator
   syncPolicy:
     automated:

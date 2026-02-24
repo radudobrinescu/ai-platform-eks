@@ -13,9 +13,10 @@ spec:
     path: platform
     directory:
       recurse: true
-      exclude: "apps/gpu-operator/*,apps/kuberay/*,apps/langfuse/*"
+      exclude: "apps/gpu-operator/*,apps/kuberay/*,apps/langfuse/*,argocd/*"
   destination:
-    name: in-cluster
+    name: local-cluster
+    namespace: argocd
   syncPolicy:
     automated:
       prune: true

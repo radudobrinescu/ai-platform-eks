@@ -3,21 +3,26 @@
 # Repository: https://langfuse.github.io/langfuse-k8s
 #
 # Simplified setup: bundled PostgreSQL, ClickHouse, Redis (no external RDS).
-# For production, migrate to ACK-managed RDS — see oss-ai-eks/ai-platform-gitops/apps/langfuse/
-#
-# SECRETS: Not stored in this file. Pass at deploy time:
-#   helm install langfuse langfuse/langfuse -n ai-platform \
-#     -f platform/apps/langfuse/helm-values.yaml \
-#     --set langfuse.salt.value=$(openssl rand -hex 16) \
-#     --set langfuse.nextauth.secret.value=$(openssl rand -hex 32) \
-#     --set langfuse.encryptionKey.value=$(openssl rand -hex 32) \
-#     --set postgresql.auth.password=$(openssl rand -hex 16) \
-#     --set clickhouse.auth.password=$(openssl rand -hex 16) \
-#     --set redis.auth.password=$(openssl rand -hex 16)
+# Secrets are created by Terraform (kubernetes_secret "langfuse_secrets") and
+# referenced here via secretKeyRef — no secrets stored in git.
 
 langfuse:
+  salt:
+    secretKeyRef:
+      name: langfuse-secrets
+      key: salt
+
   nextauth:
     url: "http://langfuse-web.ai-platform.svc.cluster.local:3000"
+    secret:
+      secretKeyRef:
+        name: langfuse-secrets
+        key: nextauth-secret
+
+  encryptionKey:
+    secretKeyRef:
+      name: langfuse-secrets
+      key: encryption-key
 
   additionalEnv: []
 
@@ -39,6 +44,10 @@ langfuse:
 # Bundled PostgreSQL (for dev/test — use ACK-managed RDS for production)
 postgresql:
   deploy: true
+  auth:
+    existingSecret: langfuse-secrets
+    secretKeys:
+      adminPasswordKey: pg-password
   primary:
     persistence:
       enabled: true
@@ -49,6 +58,9 @@ postgresql:
 clickhouse:
   deploy: true
   replicaCount: 1
+  auth:
+    existingSecret: langfuse-secrets
+    existingSecretKey: clickhouse-password
   persistence:
     enabled: true
     size: 50Gi
@@ -64,6 +76,9 @@ clickhouse:
 # Redis for caching and queue management
 redis:
   deploy: true
+  auth:
+    existingSecret: langfuse-secrets
+    existingSecretPasswordKey: redis-password
   primary:
     persistence:
       enabled: true

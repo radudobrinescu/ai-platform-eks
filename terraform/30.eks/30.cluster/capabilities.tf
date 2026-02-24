@@ -105,3 +105,76 @@ resource "aws_eks_access_policy_association" "kro_edit" {
 
   depends_on = [aws_eks_capability.simple]
 }
+
+################################################################################
+# ArgoCD — cluster-admin access for deploying applications locally
+# Ref: https://docs.aws.amazon.com/eks/latest/userguide/argocd-register-clusters.html
+################################################################################
+resource "aws_eks_access_policy_association" "argocd_admin" {
+  count = local.capabilities.gitops ? 1 : 0
+
+  cluster_name  = module.eks.cluster_name
+  principal_arn = aws_iam_role.capability["argocd"].arn
+  policy_arn    = "arn:aws:eks::aws:cluster-access-policy/AmazonEKSClusterAdminPolicy"
+
+  access_scope {
+    type = "cluster"
+  }
+
+  depends_on = [aws_eks_capability.argocd]
+}
+
+################################################################################
+# ArgoCD — register the local cluster as a deployment target
+# The managed ArgoCD capability does NOT auto-register the local cluster.
+# Uses the EKS cluster ARN as server (kubernetes.default.svc is not supported).
+################################################################################
+resource "kubernetes_secret" "argocd_cluster" {
+  count = local.capabilities.gitops ? 1 : 0
+
+  metadata {
+    name      = "local-cluster"
+    namespace = "argocd"
+    labels = {
+      "argocd.argoproj.io/secret-type" = "cluster"
+    }
+  }
+
+  data = {
+    name    = "local-cluster"
+    server = module.eks.cluster_arn
+    config = jsonencode({
+      tlsClientConfig = {
+        insecure = false
+      }
+    })
+  }
+
+  depends_on = [aws_eks_capability.argocd]
+}
+
+################################################################################
+# Langfuse — pre-create secrets so the Helm chart can reference them
+################################################################################
+resource "random_password" "langfuse" {
+  for_each = local.capabilities.gitops ? toset([
+    "salt", "nextauth-secret", "encryption-key",
+    "pg-password", "clickhouse-password", "redis-password"
+  ]) : toset([])
+
+  length  = 32
+  special = false
+}
+
+resource "kubernetes_secret" "langfuse_secrets" {
+  count = local.capabilities.gitops ? 1 : 0
+
+  metadata {
+    name      = "langfuse-secrets"
+    namespace = "ai-platform"
+  }
+
+  data = { for k, v in random_password.langfuse : k => v.result }
+
+  depends_on = [aws_eks_capability.argocd]
+}
