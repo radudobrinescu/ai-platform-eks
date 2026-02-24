@@ -159,7 +159,7 @@ resource "kubernetes_secret" "argocd_cluster" {
 resource "random_password" "langfuse" {
   for_each = local.capabilities.gitops ? toset([
     "salt", "nextauth-secret", "encryption-key",
-    "pg-password", "clickhouse-password", "redis-password"
+    "password", "clickhouse-password", "redis-password"
   ]) : toset([])
 
   length  = 32

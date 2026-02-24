@@ -47,7 +47,7 @@ postgresql:
   auth:
     existingSecret: langfuse-secrets
     secretKeys:
-      adminPasswordKey: pg-password
+      adminPasswordKey: password
   primary:
     persistence:
       enabled: true
