@@ -1,0 +1,25 @@
+# Platform manifests — syncs namespaces, KRO definitions, LiteLLM, OpenWebUI
+# Helm-based apps (gpu-operator, kuberay, langfuse) have their own ArgoCD Applications.
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: platform
+  namespace: argocd
+spec:
+  project: default
+  source:
+    repoURL: https://github.com/radudobrinescu/ai-platform-eks.git
+    targetRevision: main
+    path: platform
+    directory:
+      recurse: true
+      exclude: "apps/gpu-operator/*,apps/kuberay/*,apps/langfuse/*"
+  destination:
+    server: https://kubernetes.default.svc
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true
+    syncOptions:
+      - CreateNamespace=true
+      - ServerSideApply=true

@@ -1,0 +1,23 @@
+# Agentic Stack — Autonomous AI Agent
+# Status: PLACEHOLDER — not yet implemented
+#
+# Composes:
+#   - Inference model (RayService with vLLM)
+#   - Agent runtime (Strands SDK or LangGraph)
+#   - Tool definitions (web search, DB query, API calls)
+#   - Memory store (Redis or DynamoDB)
+#   - API service
+#
+# Example usage (future):
+#   apiVersion: kro.run/v1alpha1
+#   kind: AgenticStack
+#   metadata:
+#     name: my-agent
+#     namespace: inference
+#   spec:
+#     model: "meta-llama/Llama-3.1-8B-Instruct"
+#     framework: "strands"  # or "langgraph"
+#     tools:
+#       - webSearch
+#       - sqlQuery
+#       - s3Read

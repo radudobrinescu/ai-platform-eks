@@ -1,0 +1,183 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: litellm
+  namespace: ai-platform
+  labels:
+    app: litellm
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: litellm
+  template:
+    metadata:
+      labels:
+        app: litellm
+    spec:
+      containers:
+        - name: litellm
+          image: litellm/litellm:v1.81.9-stable.patch.1
+          args: ["--config", "/app/config.yaml"]
+          ports:
+            - containerPort: 4000
+          env:
+            - name: LITELLM_MASTER_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: litellm-secrets
+                  key: master-key
+            - name: DATABASE_URL
+              value: "postgres://litellm:litellm@litellm-db:5432/litellm"
+            - name: LANGFUSE_HOST
+              value: "http://langfuse-web.ai-platform.svc.cluster.local:3000"
+            - name: LANGFUSE_PUBLIC_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: langfuse-litellm-keys
+                  key: LANGFUSE_PUBLIC_KEY
+                  optional: true
+            - name: LANGFUSE_SECRET_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: langfuse-litellm-keys
+                  key: LANGFUSE_SECRET_KEY
+                  optional: true
+          volumeMounts:
+            - name: config
+              mountPath: /app/config.yaml
+              subPath: config.yaml
+          readinessProbe:
+            httpGet:
+              path: /health/liveliness
+              port: 4000
+            initialDelaySeconds: 10
+          livenessProbe:
+            httpGet:
+              path: /health/liveliness
+              port: 4000
+            initialDelaySeconds: 30
+            periodSeconds: 15
+          resources:
+            requests:
+              cpu: 500m
+              memory: 512Mi
+            limits:
+              cpu: "1"
+              memory: 1Gi
+      volumes:
+        - name: config
+          configMap:
+            name: litellm-config
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: litellm-config
+  namespace: ai-platform
+data:
+  config.yaml: |
+    # === Model Onboarding ===
+    # To add a new model after deploying an InferenceEndpoint:
+    # 1. Add an entry below with:
+    #      model_name: alias for clients
+    #      api_base: http://<endpoint-name>-serve-svc.<namespace>.svc.cluster.local:8000/v1
+    # 2. Apply: kubectl apply -f platform/apps/litellm/litellm.yaml
+    # 3. Restart: kubectl rollout restart deployment/litellm -n ai-platform
+    model_list:
+      - model_name: gemma-4b
+        litellm_params:
+          model: openai/google/gemma-3-4b-it
+          api_base: http://gemma-4b-serve-svc.inference.svc.cluster.local:8000/v1
+          api_key: "no-key"
+    litellm_settings:
+      success_callback: ["langfuse"]
+      failure_callback: ["langfuse"]
+    general_settings:
+      master_key: os.environ/LITELLM_MASTER_KEY
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: litellm
+  namespace: ai-platform
+spec:
+  type: ClusterIP
+  selector:
+    app: litellm
+  ports:
+    - port: 4000
+      targetPort: 4000
+      name: http
+---
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: litellm-db
+  namespace: ai-platform
+spec:
+  serviceName: litellm-db
+  replicas: 1
+  selector:
+    matchLabels:
+      app: litellm-db
+  template:
+    metadata:
+      labels:
+        app: litellm-db
+    spec:
+      containers:
+        - name: postgres
+          image: postgres:16-alpine
+          ports:
+            - containerPort: 5432
+          env:
+            - name: POSTGRES_USER
+              value: "litellm"
+            - name: POSTGRES_PASSWORD
+              value: "litellm"
+            - name: POSTGRES_DB
+              value: "litellm"
+            - name: PGDATA
+              value: "/var/lib/postgresql/data/pgdata"
+          volumeMounts:
+            - name: data
+              mountPath: /var/lib/postgresql/data
+          resources:
+            requests:
+              cpu: 100m
+              memory: 256Mi
+            limits:
+              cpu: 500m
+              memory: 512Mi
+  volumeClaimTemplates:
+    - metadata:
+        name: data
+      spec:
+        accessModes: ["ReadWriteOnce"]
+        resources:
+          requests:
+            storage: 5Gi
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: litellm-db
+  namespace: ai-platform
+spec:
+  selector:
+    app: litellm-db
+  ports:
+    - port: 5432
+      targetPort: 5432
+---
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: litellm
+  namespace: ai-platform
+spec:
+  maxUnavailable: 0
+  selector:
+    matchLabels:
+      app: litellm

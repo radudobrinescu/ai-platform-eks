@@ -1,0 +1,71 @@
+# Langfuse Helm Values — LLM Observability & Tracing
+# Chart: langfuse/langfuse
+# Repository: https://langfuse.github.io/langfuse-k8s
+#
+# Simplified setup: bundled PostgreSQL, ClickHouse, Redis (no external RDS).
+# For production, migrate to ACK-managed RDS — see oss-ai-eks/ai-platform-gitops/apps/langfuse/
+#
+# SECRETS: Not stored in this file. Pass at deploy time:
+#   helm install langfuse langfuse/langfuse -n ai-platform \
+#     -f platform/apps/langfuse/helm-values.yaml \
+#     --set langfuse.salt.value=$(openssl rand -hex 16) \
+#     --set langfuse.nextauth.secret.value=$(openssl rand -hex 32) \
+#     --set langfuse.encryptionKey.value=$(openssl rand -hex 32) \
+#     --set postgresql.auth.password=$(openssl rand -hex 16) \
+#     --set clickhouse.auth.password=$(openssl rand -hex 16) \
+#     --set redis.auth.password=$(openssl rand -hex 16)
+
+langfuse:
+  nextauth:
+    url: "http://langfuse-web.ai-platform.svc.cluster.local:3000"
+
+  additionalEnv: []
+
+  service:
+    type: ClusterIP
+    port: 3000
+
+  resources:
+    requests:
+      cpu: 500m
+      memory: 512Mi
+    limits:
+      cpu: "2"
+      memory: 2Gi
+
+  ingress:
+    enabled: false
+
+# Bundled PostgreSQL (for dev/test — use ACK-managed RDS for production)
+postgresql:
+  deploy: true
+  primary:
+    persistence:
+      enabled: true
+      size: 20Gi
+      storageClass: gp3
+
+# ClickHouse for analytics/event ingestion
+clickhouse:
+  deploy: true
+  replicaCount: 1
+  persistence:
+    enabled: true
+    size: 50Gi
+    storageClass: gp3
+  resources:
+    requests:
+      cpu: 500m
+      memory: 1Gi
+    limits:
+      cpu: "2"
+      memory: 4Gi
+
+# Redis for caching and queue management
+redis:
+  deploy: true
+  primary:
+    persistence:
+      enabled: true
+      size: 8Gi
+      storageClass: gp3

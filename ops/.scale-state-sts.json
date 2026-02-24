@@ -1,0 +1,22 @@
+[
+  {
+    "name": "langfuse-clickhouse-shard0",
+    "replicas": 1
+  },
+  {
+    "name": "langfuse-postgresql",
+    "replicas": 1
+  },
+  {
+    "name": "langfuse-redis-primary",
+    "replicas": 1
+  },
+  {
+    "name": "langfuse-zookeeper",
+    "replicas": 3
+  },
+  {
+    "name": "litellm-db",
+    "replicas": 1
+  }
+]

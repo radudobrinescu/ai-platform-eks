@@ -1,0 +1,21 @@
+# RAG Assistant — Retrieval-Augmented Generation
+# Status: PLACEHOLDER — not yet implemented
+#
+# Composes:
+#   - Inference model (RayService with vLLM)
+#   - Embeddings model (RayService with sentence-transformers)
+#   - Vector database (OpenSearch Serverless via ACK, or pgvector)
+#   - Document ingestion endpoint
+#   - API service
+#
+# Example usage (future):
+#   apiVersion: kro.run/v1alpha1
+#   kind: RAGAssistant
+#   metadata:
+#     name: my-rag
+#     namespace: inference
+#   spec:
+#     model: "meta-llama/Llama-3.1-8B-Instruct"
+#     embeddingsModel: "BAAI/bge-small-en-v1.5"
+#     vectorDB: "opensearch"  # or "pgvector"
+#     documentSource: "s3://my-bucket/documents/"

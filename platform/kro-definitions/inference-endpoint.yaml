@@ -1,0 +1,112 @@
+apiVersion: kro.run/v1alpha1
+kind: ResourceGraphDefinition
+metadata:
+  name: inference-endpoint
+spec:
+  schema:
+    apiVersion: v1alpha1
+    kind: InferenceEndpoint
+    spec:
+      model:            "string"                    # HuggingFace model ID (e.g. google/gemma-3-4b-it)
+      gpuCount:         "integer | default=1"       # GPUs per worker (tensor_parallel_size)
+      minReplicas:      "integer | default=1"       # Min Ray Serve replicas
+      maxReplicas:      "integer | default=4"       # Max Ray Serve replicas
+      workerMemory:     "string  | default=24Gi"    # Memory per GPU worker
+      workerCpu:        "string  | default=4"       # CPU per GPU worker
+      maxModelLen:      "integer | default=8192"    # Max sequence length
+      rayImage:         "string  | default=anyscale/ray-llm:2.53.0-py311-cu128"
+    status:
+      endpoint:         "${rayservice.metadata.name}-serve-svc.${rayservice.metadata.namespace}.svc.cluster.local:8000"
+
+  resources:
+    # --- RayService with vLLM backend ---
+    - id: rayservice
+      template:
+        apiVersion: ray.io/v1
+        kind: RayService
+        metadata:
+          name: ${schema.metadata.name}
+        spec:
+          serviceUnhealthySecondThreshold: 1800
+          deploymentUnhealthySecondThreshold: 1800
+          serveConfigV2: |
+            applications:
+              - name: llm
+                import_path: ray.serve.llm:build_openai_app
+                args:
+                  llm_configs:
+                    - model_loading_config:
+                        model_id: ${schema.spec.model}
+                      engine_kwargs:
+                        dtype: bfloat16
+                        max_model_len: ${string(schema.spec.maxModelLen)}
+                        gpu_memory_utilization: 0.9
+                        tensor_parallel_size: ${string(schema.spec.gpuCount)}
+                      deployment_config:
+                        autoscaling_config:
+                          min_replicas: ${string(schema.spec.minReplicas)}
+                          max_replicas: ${string(schema.spec.maxReplicas)}
+                          target_ongoing_requests: 10
+          rayClusterConfig:
+            rayVersion: "2.53.0"
+            enableInTreeAutoscaling: true
+            headGroupSpec:
+              rayStartParams:
+                dashboard-host: "0.0.0.0"
+                num-cpus: "0"
+              template:
+                spec:
+                  nodeSelector:
+                    kubernetes.io/arch: amd64
+                  containers:
+                    - name: ray-head
+                      image: ${schema.spec.rayImage}
+                      ports:
+                        - containerPort: 6379
+                          name: gcs
+                        - containerPort: 8265
+                          name: dashboard
+                        - containerPort: 10001
+                          name: client
+                        - containerPort: 8000
+                          name: serve
+                      resources:
+                        requests:
+                          cpu: "2"
+                          memory: "8Gi"
+                        limits:
+                          cpu: "4"
+                          memory: "16Gi"
+            workerGroupSpecs:
+              - groupName: gpu-workers
+                replicas: ${schema.spec.minReplicas}
+                minReplicas: ${schema.spec.minReplicas}
+                maxReplicas: ${schema.spec.maxReplicas}
+                rayStartParams: {}
+                template:
+                  spec:
+                    tolerations:
+                      - key: nvidia.com/gpu
+                        operator: Exists
+                        effect: NoSchedule
+                    nodeSelector:
+                      workload-type: gpu-inference
+                    containers:
+                      - name: ray-worker
+                        image: ${schema.spec.rayImage}
+                        env:
+                          - name: HF_TOKEN
+                            valueFrom:
+                              secretKeyRef:
+                                name: hf-token
+                                key: token
+                                optional: true
+                        resources:
+                          requests:
+                            cpu: ${schema.spec.workerCpu}
+                            memory: ${schema.spec.workerMemory}
+                            nvidia.com/gpu: ${schema.spec.gpuCount}
+                          limits:
+                            cpu: ${schema.spec.workerCpu}
+                            memory: ${schema.spec.workerMemory}
+                            nvidia.com/gpu: ${schema.spec.gpuCount}

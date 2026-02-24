@@ -1,0 +1,23 @@
+# NVIDIA GPU Operator Helm Values
+# Chart: nvidia/gpu-operator
+# Repository: https://helm.ngc.nvidia.com/nvidia
+#
+# EKS GPU AMIs have NVIDIA drivers pre-installed — driver install disabled.
+
+driver:
+  enabled: false
+
+toolkit:
+  enabled: true
+
+devicePlugin:
+  enabled: true
+
+dcgmExporter:
+  enabled: true
+
+nfd:
+  enabled: true
+
+operator:
+  defaultRuntime: containerd

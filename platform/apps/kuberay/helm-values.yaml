@@ -1,0 +1,15 @@
+# KubeRay Operator Helm Values
+# Chart: kuberay/kuberay-operator
+# Repository: https://ray-project.github.io/kuberay-helm/
+#
+# Manages RayCluster, RayJob, and RayService CRDs for model serving.
+
+resources:
+  requests:
+    cpu: 100m
+    memory: 128Mi
+  limits:
+    cpu: 500m
+    memory: 512Mi
+
+watchNamespace: []

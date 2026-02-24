@@ -1,0 +1,27 @@
+# Multi-Model GPU Sharing — Dynamic Resource Allocation
+# Status: PLACEHOLDER — requires DRA GA + NVIDIA DRA driver on EKS
+#
+# Composes:
+#   - Multiple small models on a single GPU node (MIG or time-slicing)
+#   - ResourceClaim per model specifying GPU memory/compute fraction
+#   - RayService per model, sharing the same physical GPU
+#   - Cost-optimized: 3-4 small models on one g6.12xlarge instead of 4 separate nodes
+#
+# Example usage (future):
+#   apiVersion: kro.run/v1alpha1
+#   kind: SharedGPUEndpoint
+#   metadata:
+#     name: small-models
+#     namespace: inference
+#   spec:
+#     models:
+#       - name: gemma-4b
+#         model: "google/gemma-3-4b-it"
+#         gpuMemory: "8Gi"
+#       - name: qwen-1.7b
+#         model: "Qwen/Qwen3-1.7B"
+#         gpuMemory: "4Gi"
+#       - name: smollm-3b
+#         model: "HuggingFaceTB/SmolLM3-3B"
+#         gpuMemory: "6Gi"
+#     instanceType: "g6.12xlarge"  # 4x L4 GPUs, shared across models

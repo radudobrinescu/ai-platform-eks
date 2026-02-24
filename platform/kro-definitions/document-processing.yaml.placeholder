@@ -1,0 +1,22 @@
+# Document Processing — Batch Inference Pipeline
+# Status: PLACEHOLDER — not yet implemented
+#
+# Composes:
+#   - Ray Job (run-to-completion, not always-on)
+#   - Input S3 bucket (source documents)
+#   - Output S3 bucket (processed results)
+#   - Vision/text model for extraction
+#   - GPU nodes provisioned only for job duration
+#
+# Example usage (future):
+#   apiVersion: kro.run/v1alpha1
+#   kind: DocumentProcessing
+#   metadata:
+#     name: contract-extraction
+#     namespace: inference
+#   spec:
+#     model: "google/gemma-3-4b-it"
+#     inputBucket: "s3://raw-documents/"
+#     outputBucket: "s3://processed-output/"
+#     taskType: "extraction"  # or "summarization", "classification"
+#     gpuCount: 1

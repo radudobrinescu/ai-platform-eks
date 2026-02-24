@@ -1,0 +1,22 @@
+[
+  {
+    "name": "langfuse-s3",
+    "replicas": 1
+  },
+  {
+    "name": "langfuse-web",
+    "replicas": 1
+  },
+  {
+    "name": "langfuse-worker",
+    "replicas": 1
+  },
+  {
+    "name": "litellm",
+    "replicas": 1
+  },
+  {
+    "name": "open-webui",
+    "replicas": 1
+  }
+]

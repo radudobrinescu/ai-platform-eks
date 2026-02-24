@@ -1,0 +1,28 @@
+# KubeRay Operator — Helm-based ArgoCD Application
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: kuberay-operator
+  namespace: argocd
+spec:
+  project: default
+  sources:
+    - repoURL: https://ray-project.github.io/kuberay-helm/
+      chart: kuberay-operator
+      targetRevision: 1.5.1
+      helm:
+        valueFiles:
+          - $values/platform/apps/kuberay/helm-values.yaml
+    - repoURL: https://github.com/radudobrinescu/ai-platform-eks.git
+      targetRevision: main
+      ref: values
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: kuberay
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true
+    syncOptions:
+      - CreateNamespace=true
+      - ServerSideApply=true

@@ -1,0 +1,35 @@
+# Langfuse — Helm-based ArgoCD Application
+# NOTE: Secrets must be set via the ArgoCD UI or CLI before first sync:
+#   argocd app set langfuse \
+#     -p langfuse.salt.value=$(openssl rand -hex 16) \
+#     -p langfuse.nextauth.secret.value=$(openssl rand -hex 32) \
+#     -p langfuse.encryptionKey.value=$(openssl rand -hex 32) \
+#     -p postgresql.auth.password=$(openssl rand -hex 16) \
+#     -p clickhouse.auth.password=$(openssl rand -hex 16) \
+#     -p redis.auth.password=$(openssl rand -hex 16)
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: langfuse
+  namespace: argocd
+spec:
+  project: default
+  sources:
+    - repoURL: https://langfuse.github.io/langfuse-k8s
+      chart: langfuse
+      helm:
+        valueFiles:
+          - $values/platform/apps/langfuse/helm-values.yaml
+    - repoURL: https://github.com/radudobrinescu/ai-platform-eks.git
+      targetRevision: main
+      ref: values
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: ai-platform
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true
+    syncOptions:
+      - CreateNamespace=true
+      - ServerSideApply=true
