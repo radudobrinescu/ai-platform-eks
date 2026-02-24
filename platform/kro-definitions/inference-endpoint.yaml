@@ -44,20 +44,20 @@ spec:
                       curl -sf -X POST http://litellm.ai-platform.svc.cluster.local:4000/model/new \
                         -H "Content-Type: application/json" \
                         -H "Authorization: Bearer $LITELLM_MASTER_KEY" \
-                        -d "{
-                          \"model_name\": \"${schema.metadata.name}\",
-                          \"litellm_params\": {
-                            \"model\": \"openai/${schema.spec.model}\",
-                            \"api_base\": \"http://${schema.metadata.name}-serve-svc.${schema.metadata.namespace}.svc.cluster.local:8000/v1\",
-                            \"api_key\": \"no-key\"
-                          }
-                        }" && echo " Model registered."
+                        -d "{\"model_name\":\"$MODEL_NAME\",\"litellm_params\":{\"model\":\"openai/$MODEL_ID\",\"api_base\":\"http://$MODEL_NAME-serve-svc.$NAMESPACE.svc.cluster.local:8000/v1\",\"api_key\":\"no-key\"}}" \
+                      && echo " Model registered."
                   env:
                     - name: LITELLM_MASTER_KEY
                       valueFrom:
                         secretKeyRef:
                           name: litellm-api-key
                           key: master-key
+                    - name: MODEL_NAME
+                      value: ${schema.metadata.name}
+                    - name: MODEL_ID
+                      value: ${schema.spec.model}
+                    - name: NAMESPACE
+                      value: ${schema.metadata.namespace}
 
     # --- RayService with vLLM backend ---
     - id: rayservice
