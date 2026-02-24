@@ -1,0 +1,35 @@
+[0m[1mdata.kubectl_path_documents.default_dashboards_manifest: Reading...[0m[0m
+[0m[1mdata.kubectl_path_documents.default_dashboards_manifest: Read complete after 0s [id=2fd563a2f776a252abe9ea736c4c94337b3205647b73065571aff93357765bd7][0m
+[0m[1mdata.aws_partition.current: Reading...[0m[0m
+[0m[1mdata.aws_caller_identity.current: Reading...[0m[0m
+[0m[1mdata.aws_region.current: Reading...[0m[0m
+[0m[1mdata.aws_region.current: Read complete after 0s [id=eu-central-1][0m
+[0m[1mdata.aws_partition.current: Read complete after 0s [id=aws][0m
+[0m[1mdata.aws_caller_identity.current: Read complete after 0s [id=802019299867][0m
+[0m[1mdata.terraform_remote_state.eks: Reading...[0m[0m
+[0m[1mdata.terraform_remote_state.vpc: Reading...[0m[0m
+[0m[1mdata.terraform_remote_state.eks_addons: Reading...[0m[0m
+[0m[1mdata.aws_ssoadmin_instances.current: Reading...[0m[0m
+[0m[1mdata.aws_ssoadmin_instances.current: Read complete after 1s [id=eu-central-1][0m
+[0m[1mdata.terraform_remote_state.vpc: Read complete after 1s[0m
+[0m[1mdata.terraform_remote_state.eks_addons: Read complete after 1s[0m
+[0m[1mdata.terraform_remote_state.eks: Read complete after 1s[0m
+[0m[1mdata.aws_eks_cluster.this: Reading...[0m[0m
+[0m[1mdata.aws_eks_cluster_auth.this: Reading...[0m[0m
+[0m[1mdata.aws_eks_cluster_auth.this: Read complete after 0s [id=ai-gitops-gitops-test][0m
+[0m[1mdata.aws_eks_cluster.this: Read complete after 0s [id=ai-gitops-gitops-test][0m
+
+[0m[1m[32mNo changes.[0m[1m Your infrastructure matches the configuration.[0m
+
+[0mTerraform has compared your real infrastructure against your configuration
+and found no differences, so no changes are needed.
+
+[1m[33mWarnings:[0m
+
+[0m- Value for undeclared variable
+- Value for undeclared variable
+
+To see the full warning notes, run Terraform without -compact-warnings.
+[0m[1m[32m
+Apply complete! Resources: 0 added, 0 changed, 0 destroyed.
+[0m

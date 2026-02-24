@@ -120,4 +120,6 @@ data "kubectl_path_documents" "karpenter_manifests_dummy" {
 resource "kubectl_manifest" "karpenter_manifests" {
   count     = (local.capabilities.autoscaling || local.eks_auto_mode) ? length(data.kubectl_path_documents.karpenter_manifests_dummy[0].documents) : 0
   yaml_body = element(data.kubectl_path_documents.karpenter_manifests[0].documents, count.index)
+  
+  depends_on = [helm_release.karpenter]
 }

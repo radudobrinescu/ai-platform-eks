@@ -17,6 +17,7 @@ spec:
   sources:
     - repoURL: https://langfuse.github.io/langfuse-k8s
       chart: langfuse
+      targetRevision: "*"  # Use latest version
       helm:
         valueFiles:
           - $values/platform/apps/langfuse/helm-values.yaml
@@ -24,7 +25,7 @@ spec:
       targetRevision: main
       ref: values
   destination:
-    server: https://kubernetes.default.svc
+    name: in-cluster
     namespace: ai-platform
   syncPolicy:
     automated:
