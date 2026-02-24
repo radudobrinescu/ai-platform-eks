@@ -29,6 +29,8 @@ spec:
                   key: master-key
             - name: DATABASE_URL
               value: "postgres://litellm:litellm@litellm-db:5432/litellm"
+            - name: STORE_MODEL_IN_DB
+              value: "True"
             - name: LANGFUSE_HOST
               value: "http://langfuse-web.ai-platform.svc.cluster.local:3000"
             - name: LANGFUSE_PUBLIC_KEY
