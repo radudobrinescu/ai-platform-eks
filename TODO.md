@@ -6,6 +6,8 @@
 
 - [ ] **EBS snapshot image cache** (`25.image-cache` Terraform module) — Pre-cache the Ray LLM image (~15GB) in an EBS snapshot using Bottlerocket. Switch GPU NodeClass to Bottlerocket + snapshot. Cuts model cold start from ~15 min to ~7 min. Re-run only when Ray image version changes.
 
+- [ ] **ECR pull-through cache + SOCI** — Mirror `anyscale/ray-llm` to ECR via pull-through cache, switch GPU NodeClass to Bottlerocket for native SOCI lazy loading. Terraform creates the cache rule + a `platform-config` ConfigMap with the ECR image URI. KRO definition uses `externalRef` to read the ConfigMap and `.orValue()` to fall back to Docker Hub. No hardcoded account/region in git. Replaces EBS snapshot approach — no snapshot rebuilds when image version changes.
+
 ## P1 — Required for production
 
 - [ ] **LiteLLM model cleanup CronJob** — Periodically reconcile LiteLLM model entries with live RayServices. Delete orphaned models via `DELETE /model/delete` when their InferenceEndpoint no longer exists. Prevents stale entries after workload deletion.
