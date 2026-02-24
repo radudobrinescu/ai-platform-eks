@@ -2,11 +2,13 @@
 
 ## P0 — Required for demo/adoption
 
+- [x] **Wire ArgoCD to Git repo** — Push gitops repo to GitHub, register in ArgoCD, apply Applications. Makes the entire platform truly GitOps-managed.
+
 - [ ] **EBS snapshot image cache** (`25.image-cache` Terraform module) — Pre-cache the Ray LLM image (~15GB) in an EBS snapshot using Bottlerocket. Switch GPU NodeClass to Bottlerocket + snapshot. Cuts model cold start from ~15 min to ~7 min. Re-run only when Ray image version changes.
 
-- [ ] **Wire ArgoCD to Git repo** — Push gitops repo to GitHub, register in ArgoCD, apply Applications. Makes the entire platform truly GitOps-managed. Lower priority while platform is still evolving — manual kubectl/helm flow is documented and works.
-
 ## P1 — Required for production
+
+- [ ] **LiteLLM model cleanup CronJob** — Periodically reconcile LiteLLM model entries with live RayServices. Delete orphaned models via `DELETE /model/delete` when their InferenceEndpoint no longer exists. Prevents stale entries after workload deletion.
 
 - [ ] **Authentication & multi-tenancy** — Enable OpenWebUI auth, scope LiteLLM API keys per team, add namespace-per-team with RBAC and resource quotas. Prevent unauthorized access and runaway GPU usage.
 
