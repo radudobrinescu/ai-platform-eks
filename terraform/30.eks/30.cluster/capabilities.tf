@@ -154,6 +154,30 @@ resource "kubernetes_secret" "argocd_cluster" {
 }
 
 ################################################################################
+# LiteLLM — pre-create master key secret
+################################################################################
+resource "random_password" "litellm_master_key" {
+  count   = local.capabilities.gitops ? 1 : 0
+  length  = 32
+  special = false
+}
+
+resource "kubernetes_secret" "litellm_secrets" {
+  count = local.capabilities.gitops ? 1 : 0
+
+  metadata {
+    name      = "litellm-secrets"
+    namespace = "ai-platform"
+  }
+
+  data = {
+    master-key = random_password.litellm_master_key[0].result
+  }
+
+  depends_on = [aws_eks_capability.argocd]
+}
+
+################################################################################
 # Langfuse — pre-create secrets so the Helm chart can reference them
 ################################################################################
 resource "random_password" "langfuse" {
