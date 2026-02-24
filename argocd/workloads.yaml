@@ -1,0 +1,27 @@
+# Workloads — syncs namespaces, KRO definitions, and KRO workload CRs
+# Individual apps (gpu-operator, kuberay, langfuse, litellm, open-webui)
+# each have their own ArgoCD Application.
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: workloads
+  namespace: argocd
+spec:
+  project: default
+  source:
+    repoURL: https://github.com/radudobrinescu/ai-platform-eks.git
+    targetRevision: main
+    path: platform
+    directory:
+      recurse: true
+      exclude: "{apps/**/*,argocd/**/*}"
+  destination:
+    name: local-cluster
+    namespace: argocd
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true
+    syncOptions:
+      - CreateNamespace=true
+      - ServerSideApply=true

@@ -1,0 +1,22 @@
+# Open WebUI — plain manifests ArgoCD Application
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: open-webui
+  namespace: argocd
+spec:
+  project: default
+  source:
+    repoURL: https://github.com/radudobrinescu/ai-platform-eks.git
+    targetRevision: main
+    path: platform/apps/open-webui
+  destination:
+    name: local-cluster
+    namespace: ai-platform
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true
+    syncOptions:
+      - CreateNamespace=true
+      - ServerSideApply=true

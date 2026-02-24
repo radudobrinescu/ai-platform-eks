@@ -1,22 +1,18 @@
-# Platform manifests — syncs namespaces, KRO definitions, LiteLLM, OpenWebUI
-# Helm-based apps (gpu-operator, kuberay, langfuse) have their own ArgoCD Applications.
+# LiteLLM — plain manifests ArgoCD Application
 apiVersion: argoproj.io/v1alpha1
 kind: Application
 metadata:
-  name: platform
+  name: litellm
   namespace: argocd
 spec:
   project: default
   source:
     repoURL: https://github.com/radudobrinescu/ai-platform-eks.git
     targetRevision: main
-    path: platform
-    directory:
-      recurse: true
-      exclude: "apps/gpu-operator/*,apps/kuberay/*,apps/langfuse/*,argocd/*"
+    path: platform/apps/litellm
   destination:
     name: local-cluster
-    namespace: argocd
+    namespace: ai-platform
   syncPolicy:
     automated:
       prune: true
