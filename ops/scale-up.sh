@@ -73,7 +73,17 @@ else
 fi
 
 # ============================================================
-# Step 2: Scale up infrastructure
+# Step 2: Re-enable ArgoCD auto-sync
+# ============================================================
+SYNC_POLICY='{"spec":{"syncPolicy":{"automated":{"prune":true,"selfHeal":true},"syncOptions":["CreateNamespace=true","ServerSideApply=true"]}}}'
+echo "Re-enabling ArgoCD auto-sync..."
+for app in litellm open-webui langfuse kuberay-operator workloads; do
+  kubectl patch application "$app" -n argocd --type merge -p "$SYNC_POLICY" 2>/dev/null && echo "  ✓ $app" || true
+done
+echo ""
+
+# ============================================================
+# Step 3: Scale up infrastructure
 # ============================================================
 echo "=== Scaling up AI Platform ==="
 echo ""

@@ -22,8 +22,16 @@ kubectl get statefulset -n ai-platform -o json | jq '[.items[] | select(.spec.re
 echo "✓ State saved"
 
 # Stop port-forwards
-pkill -f 'port-forward.*(litellm|langfuse|open-webui)' 2>/dev/null || true
+pkill -f 'port-forward.*(litellm|langfuse|open-webui|head-svc)' 2>/dev/null || true
 echo "✓ Port-forwards stopped"
+
+# Suspend ArgoCD auto-sync to prevent self-healing during scale-down
+echo "Suspending ArgoCD auto-sync..."
+for app in litellm open-webui langfuse kuberay-operator workloads; do
+  kubectl patch application "$app" -n argocd --type merge \
+    -p '{"spec":{"syncPolicy":null}}' 2>/dev/null && echo "  ✓ $app" || true
+done
+echo "✓ Auto-sync suspended"
 
 # Delete InferenceEndpoints (removes RayServices → GPU workers → Karpenter reclaims GPU nodes)
 echo "Removing InferenceEndpoints..."
