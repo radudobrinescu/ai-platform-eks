@@ -1,18 +1,26 @@
-# ArgoCD Cluster Configuration
-This directory contains the cluster secret needed for EKS managed ArgoCD to connect to the cluster.
+# ArgoCD Cluster Secret for EKS Managed ArgoCD
 
-## Manual Setup Required
-The `cluster-secret.yaml` needs to be updated with the actual EKS cluster endpoint:
+This directory contains the cluster secret configuration required for EKS managed ArgoCD to deploy applications to the local cluster.
 
-```bash
-# Get cluster endpoint
-CLUSTER_ENDPOINT=$(kubectl config view --minify -o jsonpath='{.clusters[0].cluster.server}')
+## Important Notes
 
-# Update the secret
-sed -i "s|https://kubernetes.default.svc|$CLUSTER_ENDPOINT|g" platform/argocd/cluster-secret.yaml
+**EKS Managed ArgoCD Requirements:**
+- The `server` field must contain the **EKS cluster ARN**, not the API endpoint or `kubernetes.default.svc`
+- Format: `arn:aws:eks:REGION:ACCOUNT:cluster/CLUSTER_NAME`
+- This is different from self-managed ArgoCD installations
 
-# Apply the secret
-kubectl apply -f platform/argocd/cluster-secret.yaml
-```
+**Current Configuration:**
+- Cluster: `ai-gitops-gitops-test`
+- Region: `eu-central-1`
+- Account: `802019299867`
 
-This should be automated in the Terraform deployment process.
+## Deployment
+
+This secret is automatically applied as part of the platform application sync. It enables ArgoCD to recognize the local cluster as a deployment target named `in-cluster`.
+
+## Troubleshooting
+
+If you see errors like "there are no clusters with this name: in-cluster", verify:
+1. The cluster secret exists: `kubectl get secret in-cluster -n argocd`
+2. The server field contains the correct EKS cluster ARN
+3. The secret has the correct label: `argocd.argoproj.io/secret-type=cluster`
