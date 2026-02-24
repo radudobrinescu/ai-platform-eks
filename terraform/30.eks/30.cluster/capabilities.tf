@@ -177,6 +177,22 @@ resource "kubernetes_secret" "litellm_secrets" {
   depends_on = [aws_eks_capability.argocd]
 }
 
+# LiteLLM API key in inference namespace — used by KRO registration Jobs
+resource "kubernetes_secret" "litellm_api_key" {
+  count = local.capabilities.gitops ? 1 : 0
+
+  metadata {
+    name      = "litellm-api-key"
+    namespace = "inference"
+  }
+
+  data = {
+    master-key = random_password.litellm_master_key[0].result
+  }
+
+  depends_on = [aws_eks_capability.argocd]
+}
+
 ################################################################################
 # Langfuse — pre-create secrets so the Helm chart can reference them
 ################################################################################

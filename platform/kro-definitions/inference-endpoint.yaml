@@ -56,7 +56,7 @@ spec:
                     - name: LITELLM_MASTER_KEY
                       valueFrom:
                         secretKeyRef:
-                          name: litellm-secrets
+                          name: litellm-api-key
                           key: master-key
 
     # --- RayService with vLLM backend ---
