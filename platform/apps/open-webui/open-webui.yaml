@@ -82,7 +82,7 @@ metadata:
   name: open-webui
   namespace: ai-platform
 spec:
-  maxUnavailable: 0
+  maxUnavailable: 1
   selector:
     matchLabels:
       app: open-webui
