@@ -19,6 +19,46 @@ spec:
       endpoint:         "${rayservice.metadata.name}-serve-svc.${rayservice.metadata.namespace}.svc.cluster.local:8000"
 
   resources:
+    # --- Register model with LiteLLM via API ---
+    - id: litellmregister
+      template:
+        apiVersion: batch/v1
+        kind: Job
+        metadata:
+          name: ${schema.metadata.name}-register
+        spec:
+          backoffLimit: 10
+          ttlSecondsAfterFinished: 300
+          template:
+            spec:
+              restartPolicy: OnFailure
+              containers:
+                - name: register
+                  image: curlimages/curl:8.12.1
+                  command: ["sh", "-c"]
+                  args:
+                    - |
+                      until curl -sf http://litellm.ai-platform.svc.cluster.local:4000/health/liveliness; do
+                        echo "Waiting for LiteLLM..."; sleep 5
+                      done
+                      curl -sf -X POST http://litellm.ai-platform.svc.cluster.local:4000/model/new \
+                        -H "Content-Type: application/json" \
+                        -H "Authorization: Bearer $LITELLM_MASTER_KEY" \
+                        -d "{
+                          \"model_name\": \"${schema.metadata.name}\",
+                          \"litellm_params\": {
+                            \"model\": \"openai/${schema.spec.model}\",
+                            \"api_base\": \"http://${schema.metadata.name}-serve-svc.${schema.metadata.namespace}.svc.cluster.local:8000/v1\",
+                            \"api_key\": \"no-key\"
+                          }
+                        }" && echo " Model registered."
+                  env:
+                    - name: LITELLM_MASTER_KEY
+                      valueFrom:
+                        secretKeyRef:
+                          name: litellm-secrets
+                          key: master-key
+
     # --- RayService with vLLM backend ---
     - id: rayservice
       template:

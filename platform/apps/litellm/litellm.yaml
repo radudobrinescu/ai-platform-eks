@@ -77,19 +77,10 @@ metadata:
   namespace: ai-platform
 data:
   config.yaml: |
-    # === Model Onboarding ===
-    # To add a new model after deploying an InferenceEndpoint:
-    # 1. Add an entry below with:
-    #      model_name: alias for clients
-    #      api_base: http://<endpoint-name>-serve-svc.<namespace>.svc.cluster.local:8000/v1
-    # 2. Apply: kubectl apply -f platform/apps/litellm/litellm.yaml
-    # 3. Restart: kubectl rollout restart deployment/litellm -n ai-platform
-    model_list:
-      - model_name: gemma-4b
-        litellm_params:
-          model: openai/google/gemma-3-4b-it
-          api_base: http://gemma-4b-serve-svc.inference.svc.cluster.local:8000/v1
-          api_key: "no-key"
+    # Models are registered dynamically via the LiteLLM API (POST /model/new).
+    # KRO InferenceEndpoint definitions include a registration Job that
+    # auto-registers models when deployed — no manual config needed.
+    model_list: []
     litellm_settings:
       success_callback: ["langfuse"]
       failure_callback: ["langfuse"]
