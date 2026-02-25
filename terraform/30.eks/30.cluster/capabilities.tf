@@ -112,23 +112,23 @@ resource "aws_eks_access_policy_association" "kro_edit" {
 # Without it, KRO falls back to pulling directly from Docker Hub.
 ################################################################################
 resource "aws_secretsmanager_secret" "docker_hub" {
-  count                   = var.docker_hub_credentials != null ? 1 : 0
+  count                   = var.docker_hub_username != "" ? 1 : 0
   name                    = "ecr-pullthroughcache/docker-hub"
   recovery_window_in_days = 0
   tags                    = local.tags
 }
 
 resource "aws_secretsmanager_secret_version" "docker_hub" {
-  count     = var.docker_hub_credentials != null ? 1 : 0
+  count     = var.docker_hub_username != "" ? 1 : 0
   secret_id = aws_secretsmanager_secret.docker_hub[0].id
   secret_string = jsonencode({
-    username    = var.docker_hub_credentials.username
-    accessToken = var.docker_hub_credentials.access_token
+    username    = var.docker_hub_username
+    accessToken = var.docker_hub_access_token
   })
 }
 
 resource "aws_ecr_pull_through_cache_rule" "docker_hub" {
-  count                 = var.docker_hub_credentials != null ? 1 : 0
+  count                 = var.docker_hub_username != "" ? 1 : 0
   ecr_repository_prefix = "docker-hub"
   upstream_registry_url = "registry-1.docker.io"
   credential_arn        = aws_secretsmanager_secret.docker_hub[0].arn
@@ -147,7 +147,7 @@ resource "kubernetes_config_map" "platform_config" {
     namespace = "inference"
   }
 
-  data = var.docker_hub_credentials != null ? {
+  data = var.docker_hub_username != "" ? {
     rayImage = "${data.aws_caller_identity.current.account_id}.dkr.ecr.${local.region}.amazonaws.com/docker-hub/anyscale/ray-llm:2.53.0-py311-cu128"
   } : {}
 

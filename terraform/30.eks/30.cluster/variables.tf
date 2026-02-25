@@ -29,11 +29,16 @@ variable "shared_config" {
   default     = {}
 }
 
-variable "docker_hub_credentials" {
-  description = "Docker Hub credentials for ECR pull-through cache. When set, images are mirrored to ECR for faster pulls via SOCI. When null, images pull directly from Docker Hub."
-  type = object({
-    username     = string
-    access_token = string
-  })
-  default = null
+variable "docker_hub_username" {
+  description = "Docker Hub username for ECR pull-through cache. Set via TF_VAR_docker_hub_username env var."
+  type        = string
+  default     = ""
+  sensitive   = true
+}
+
+variable "docker_hub_access_token" {
+  description = "Docker Hub access token for ECR pull-through cache. Set via TF_VAR_docker_hub_access_token env var."
+  type        = string
+  default     = ""
+  sensitive   = true
 }

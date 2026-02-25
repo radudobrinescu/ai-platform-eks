@@ -69,8 +69,7 @@ observability_configuration = {
 # When set, mirrors Docker Hub images to ECR for faster pulls via SOCI.
 # Without this, images pull directly from Docker Hub (works fine, just slower).
 # Get a free Docker Hub access token at: https://hub.docker.com/settings/security
+# Set via environment variables — do NOT put credentials in tfvars files:
 #
-# docker_hub_credentials = {
-#   username     = "your-dockerhub-username"
-#   access_token = "dckr_pat_XXXXXXXXXX"
-# }
+#   export TF_VAR_docker_hub_username="your-dockerhub-username"
+#   export TF_VAR_docker_hub_access_token="dckr_pat_XXXXXXXXXX"
