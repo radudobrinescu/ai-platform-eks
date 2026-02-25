@@ -147,9 +147,12 @@ resource "kubernetes_config_map" "platform_config" {
     namespace = "inference"
   }
 
-  data = var.docker_hub_username != "" ? {
-    rayImage = "${data.aws_caller_identity.current.account_id}.dkr.ecr.${local.region}.amazonaws.com/docker-hub/anyscale/ray-llm:2.53.0-py311-cu128"
-  } : {}
+  data = merge(
+    { cluster = module.eks.cluster_name },
+    var.docker_hub_username != "" ? {
+      rayImage = "${data.aws_caller_identity.current.account_id}.dkr.ecr.${local.region}.amazonaws.com/docker-hub/anyscale/ray-llm:2.53.0-py311-cu128"
+    } : {}
+  )
 
   depends_on = [aws_eks_capability.argocd]
 }
