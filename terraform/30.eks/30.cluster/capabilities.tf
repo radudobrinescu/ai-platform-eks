@@ -109,10 +109,30 @@ resource "aws_eks_access_policy_association" "kro_edit" {
 ################################################################################
 # ECR Pull-Through Cache — mirror Docker Hub images to private ECR
 # First pull caches the image; subsequent pulls served from ECR.
+# Docker Hub requires credentials stored in Secrets Manager.
 ################################################################################
+resource "aws_secretsmanager_secret" "docker_hub" {
+  name                    = "ecr-pullthroughcache/docker-hub"
+  recovery_window_in_days = 0
+  tags                    = local.tags
+}
+
+resource "aws_secretsmanager_secret_version" "docker_hub" {
+  secret_id = aws_secretsmanager_secret.docker_hub.id
+  secret_string = jsonencode({
+    username    = "AWS"
+    accessToken = "anonymous"
+  })
+
+  lifecycle {
+    ignore_changes = [secret_string]
+  }
+}
+
 resource "aws_ecr_pull_through_cache_rule" "docker_hub" {
   ecr_repository_prefix = "docker-hub"
   upstream_registry_url = "registry-1.docker.io"
+  credential_arn        = aws_secretsmanager_secret.docker_hub.arn
 }
 
 ################################################################################
