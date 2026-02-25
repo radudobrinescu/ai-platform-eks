@@ -5,7 +5,7 @@ metadata:
   name: gpu-inference
 spec:
   amiSelectorTerms:
-    - alias: al2023@latest
+    - alias: bottlerocket@latest
   role: ${role}
   subnetSelectorTerms:
     - tags:
@@ -17,7 +17,7 @@ spec:
         karpenter.sh/discovery: ${cluster_name}
         Environment: ${environment}
   blockDeviceMappings:
-    - deviceName: /dev/xvda
+    - deviceName: /dev/xvdb
       ebs:
         volumeSize: 200Gi
         volumeType: gp3
@@ -25,72 +25,15 @@ spec:
         throughput: 500
         iops: 6000
   userData: |
-    MIME-Version: 1.0
-    Content-Type: multipart/mixed; boundary="//"
-
-    --//
-    Content-Type: text/x-shellscript; charset="us-ascii"
-
-    #!/bin/bash
-    set -euo pipefail
-    ARCH=$(uname -m)
-    SOCI_VERSION="0.11.0"
-    if [ "$ARCH" = "x86_64" ]; then ARCH="amd64"; fi
-    curl -sSL -o /tmp/soci.tar.gz \
-      "https://github.com/awslabs/soci-snapshotter/releases/download/v$${SOCI_VERSION}/soci-snapshotter-$${SOCI_VERSION}-linux-$${ARCH}-static.tar.gz"
-    tar -xzf /tmp/soci.tar.gz -C /usr/local/bin soci-snapshotter-grpc
-    rm -f /tmp/soci.tar.gz
-
-    mkdir -p /etc/soci-snapshotter-grpc
-    cat > /etc/soci-snapshotter-grpc/config.toml <<'SOCIEOF'
-    [puller]
-    pull_mode = "parallel-pull-unpack"
-    max_concurrent_downloads_per_image = 10
-    concurrent_download_chunk_size = "16mb"
-    max_concurrent_unpacks_per_image = 10
-    discard_unpacked_layers = true
-    SOCIEOF
-
-    cat > /etc/systemd/system/soci-snapshotter.service <<'SVCEOF'
-    [Unit]
-    Description=SOCI Snapshotter
-    After=network.target
-    Before=containerd.service
-
-    [Service]
-    Type=simple
-    ExecStart=/usr/local/bin/soci-snapshotter-grpc --config /etc/soci-snapshotter-grpc/config.toml
-    Restart=always
-    RestartSec=5
-
-    [Install]
-    WantedBy=multi-user.target
-    SVCEOF
-
-    systemctl daemon-reload
-    systemctl enable --now soci-snapshotter
-
-    --//
-    Content-Type: application/node.eks.aws
-
-    apiVersion: node.eks.aws/v1alpha1
-    kind: NodeConfig
-    spec:
-      kubelet:
-        config:
-          imageServiceEndpoint: unix:///run/soci-snapshotter-grpc/soci-snapshotter-grpc.sock
-      containerd:
-        config: |
-          [proxy_plugins.soci]
-            type = "snapshot"
-            address = "/run/soci-snapshotter-grpc/soci-snapshotter-grpc.sock"
-            [proxy_plugins.soci.exports]
-              root = "/var/lib/containerd/io.containerd.snapshotter.v1.soci"
-          [plugins."io.containerd.grpc.v1.cri".containerd]
-            snapshotter = "soci"
-            disable_snapshot_annotations = false
-            discard_unpacked_layers = false
-    --//
+    [settings.container-runtime]
+    snapshotter = "soci"
+    [settings.container-runtime-plugins.soci-snapshotter]
+    pull-mode = "parallel-pull-unpack"
+    [settings.container-runtime-plugins.soci-snapshotter.parallel-pull-unpack]
+    max-concurrent-downloads-per-image = 10
+    concurrent-download-chunk-size = "16mb"
+    max-concurrent-unpacks-per-image = 10
+    discard-unpacked-layers = true
   tags:
     karpenter.sh/discovery: ${cluster_name}
     Environment: ${environment}
