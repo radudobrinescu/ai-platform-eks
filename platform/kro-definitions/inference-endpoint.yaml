@@ -50,11 +50,17 @@ spec:
                       until curl -sf http://litellm.ai-platform.svc.cluster.local:4000/health/liveliness; do
                         echo "Waiting for LiteLLM..."; sleep 5
                       done
-                      curl -sf -X POST http://litellm.ai-platform.svc.cluster.local:4000/model/new \
-                        -H "Content-Type: application/json" \
-                        -H "Authorization: Bearer $LITELLM_MASTER_KEY" \
-                        -d "{\"model_name\":\"$MODEL_NAME\",\"litellm_params\":{\"model\":\"openai/$MODEL_ID\",\"api_base\":\"http://$MODEL_NAME-serve-svc.$NAMESPACE.svc.cluster.local:8000/v1\",\"api_key\":\"no-key\"}}" \
-                      && echo " Model registered."
+                      EXISTS=$(curl -sf http://litellm.ai-platform.svc.cluster.local:4000/v1/models \
+                        -H "Authorization: Bearer $LITELLM_MASTER_KEY" | grep -c "\"$MODEL_NAME\"" || true)
+                      if [ "$EXISTS" -gt 0 ]; then
+                        echo "Model $MODEL_NAME already registered."
+                      else
+                        curl -sf -X POST http://litellm.ai-platform.svc.cluster.local:4000/model/new \
+                          -H "Content-Type: application/json" \
+                          -H "Authorization: Bearer $LITELLM_MASTER_KEY" \
+                          -d "{\"model_name\":\"$MODEL_NAME\",\"litellm_params\":{\"model\":\"openai/$MODEL_ID\",\"api_base\":\"http://$MODEL_NAME-serve-svc.$NAMESPACE.svc.cluster.local:8000/v1\",\"api_key\":\"no-key\"}}" \
+                        && echo " Model registered."
+                      fi
                   env:
                     - name: LITELLM_MASTER_KEY
                       valueFrom:
