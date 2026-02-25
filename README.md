@@ -6,9 +6,19 @@ A self-service AI inference platform on Amazon EKS. Teams deploy models with a s
 
 - **Single custom resource** — `InferenceEndpoint` abstracts RayService, GPU scheduling, networking, and LiteLLM registration
 - **GitOps workflow** — commit a YAML, ArgoCD deploys it, model is live
-- **OpenAI-compatible API** — LiteLLM proxies all models behind a unified `/v1/chat/completions` endpoint
+- **OpenAI-compatible API** — LiteLLM proxies all models behind `/v1/chat/completions`
 - **Chat UI** — Open WebUI for interactive testing
 - **LLM observability** — Langfuse traces every request
+- **Fast cold starts** — Bottlerocket + SOCI Parallel Pull, optional ECR pull-through cache
+
+## How It Works
+
+```
+git push → ArgoCD syncs → KRO creates RayService + registration Job
+         → Karpenter provisions GPU node (Bottlerocket + SOCI)
+         → vLLM loads model → LiteLLM registers endpoint
+         → model available in Open WebUI and API
+```
 
 ## Architecture
 
@@ -24,7 +34,7 @@ A self-service AI inference platform on Amazon EKS. Teams deploy models with a s
 │       ▼              ▼                              ▼           │
 │  ┌─────────┐  ┌──────────────┐              ┌─────────────┐   │
 │  │ ArgoCD  │  │InferenceEnd- │              │  GPU Nodes   │   │
-│  │  Apps   │  │point → Ray-  │              │ (g5/g6/g7)   │   │
+│  │  Apps   │  │point → Ray-  │              │(Bottlerocket)│   │
 │  │         │  │Service+Job   │              └─────────────┘   │
 │  └─────────┘  └──────────────┘                                 │
 │                                                                 │
@@ -39,10 +49,8 @@ A self-service AI inference platform on Amazon EKS. Teams deploy models with a s
 - **Terraform** >= 1.0
 - **kubectl**
 - **AWS Identity Center** configured (required for ArgoCD managed capability)
-  - Instance ARN: `aws sso-admin list-instances`
-  - User/group IDs for RBAC
 
-## Deployment — End to End
+## Deployment
 
 ### 1. Configure Environment
 
@@ -51,109 +59,44 @@ cd terraform/00.global/vars/
 cp example.tfvars your-env.tfvars
 ```
 
-Edit `your-env.tfvars` — the critical settings:
+Edit `your-env.tfvars` with your Identity Center config, VPC CIDR, and capabilities.
 
-```hcl
-# VPC
-vpc_cidr = "10.4.0.0/16"
+### 2. (Optional) Enable ECR Pull-Through Cache
 
-shared_config = {
-  resources_prefix = "ai-platform"
-}
+For ~60% faster image pulls. Requires a free Docker Hub account:
 
-cluster_config = {
-  kubernetes_version  = "1.35"
-  eks_auto_mode       = false
-  create_mng_system   = true
-
-  capabilities = {
-    kube_proxy    = true
-    networking    = true
-    coredns       = true
-    identity      = true
-    autoscaling   = true   # Karpenter
-    blockstorage  = true
-    loadbalancing = true
-    gitops        = true   # ArgoCD (managed)
-    kro           = true   # KRO (managed)
-    ack           = true   # ACK (managed)
-  }
-
-  # REQUIRED: Your Identity Center config
-  capabilities_config = {
-    argocd_idc_instance_arn = "arn:aws:sso:::instance/ssoins-XXXXXXXXXX"
-    argocd_idc_region       = "us-east-1"
-    argocd_rbac_mappings = [
-      {
-        role = "ADMIN"
-        identities = [
-          { id = "your-sso-user-id", type = "SSO_USER" }
-        ]
-      }
-    ]
-  }
-}
-
-# OPTIONAL: ECR pull-through cache for faster image pulls (~60% faster)
-# Requires a free Docker Hub account. Without this, images pull from Docker Hub directly.
-# export TF_VAR_docker_hub_username="your-dockerhub-username"
-# export TF_VAR_docker_hub_access_token="dckr_pat_XXXXXXXXXX"
+```bash
+export TF_VAR_docker_hub_username="your-dockerhub-username"
+export TF_VAR_docker_hub_access_token="dckr_pat_XXXXXXXXXX"
 ```
 
-### 2. Bootstrap Terraform Backend
+Without this, images pull directly from Docker Hub (works fine, just slower).
+
+### 3. Bootstrap and Deploy
 
 ```bash
 export AWS_REGION=eu-central-1
 cd terraform
 make bootstrap
-```
-
-### 3. Deploy Infrastructure
-
-```bash
 make ENVIRONMENT=your-env apply-all
 ```
 
-This deploys (in order):
-1. **Networking** — VPC, subnets, endpoints
-2. **IAM Roles** — EKS access roles (ClusterAdmin, Admin, Edit, View)
-3. **EKS Cluster** — with ArgoCD, KRO, ACK capabilities
-4. **EKS Addons** — LB controller, etc.
-5. **Observability** — CloudWatch / AMP+AMG (no-op unless configured in tfvars)
+Terraform creates: VPC, IAM roles, EKS cluster with capabilities, Karpenter NodePools, ArgoCD cluster registration, all secrets (LiteLLM, Langfuse), and platform-config ConfigMap.
 
-Terraform also creates automatically:
-- Namespaces (`ai-platform`, `inference`)
-- ArgoCD cluster registration (`local-cluster` secret with cluster ARN — required because the EKS managed ArgoCD capability does not auto-register the local cluster, and uses the cluster ARN as server, not `kubernetes.default.svc`)
-- ArgoCD access policy (ClusterAdminPolicy for deploying apps)
-- LiteLLM secrets (`litellm-secrets`, `litellm-db-credentials` in ai-platform, `litellm-api-key` in inference)
-- Langfuse secrets (`langfuse-secrets` in ai-platform)
-- Platform config (`platform-config` ConfigMap in inference — with ECR image URI when Docker Hub credentials are provided)
-- Karpenter NodePools (default + gpu-inference with Bottlerocket + SOCI Parallel Pull)
+### 4. Update ArgoCD Source URLs
 
-### 4. Update ArgoCD Application Source URLs
-
-The ArgoCD application definitions in `argocd/` contain a placeholder Git repository URL. Update the `repoURL` fields to point to **your** repository:
+Replace the placeholder Git URL in all ArgoCD app definitions:
 
 ```bash
-# Replace with your repo URL in all ArgoCD app definitions
 cd argocd/
-sed -i '' 's|https://github.com/YOUR-ORG/YOUR-REPO.git|https://github.com/your-actual-org/your-actual-repo.git|g' *.yaml
-```
-
-Verify the change:
-```bash
-grep repoURL *.yaml
+sed -i '' 's|https://github.com/YOUR-ORG/YOUR-REPO.git|https://github.com/your-org/your-repo.git|g' *.yaml
+grep repoURL *.yaml  # verify
 ```
 
 ### 5. Bootstrap ArgoCD Applications
 
-After Terraform completes, apply the ArgoCD applications:
-
 ```bash
-# Get cluster credentials (Terraform does this automatically, but just in case)
 aws eks update-kubeconfig --region $AWS_REGION --name your-cluster-name
-
-# Apply all ArgoCD applications
 kubectl apply -f argocd/
 ```
 
@@ -168,33 +111,20 @@ This creates 6 ArgoCD Applications:
 | `open-webui` | Open WebUI chat interface |
 | `workloads` | Namespaces, KRO definitions, inference workloads |
 
-Wait for all apps to sync:
+Wait for all apps to be Healthy:
 
 ```bash
 kubectl get applications -n argocd
-# All should show Healthy within a few minutes
 ```
 
-### 6. Create HuggingFace Token (for gated models)
+### 6. Create HuggingFace Token
 
-Required for models like Gemma, Llama, etc.:
+Required for gated models (Gemma, Llama, etc.):
 
 ```bash
 kubectl create secret generic hf-token -n inference \
   --from-literal=token=hf_YOUR_TOKEN_HERE
 ```
-
-### 6b. Enable Langfuse Tracing (optional)
-
-After Langfuse is running (check `kubectl get pods -n ai-platform -l app.kubernetes.io/name=langfuse`), create an API key pair in the Langfuse UI at `http://localhost:3000` (see step 8 for port-forward), then:
-
-```bash
-kubectl create secret generic langfuse-litellm-keys -n ai-platform \
-  --from-literal=LANGFUSE_PUBLIC_KEY=pk-lf-... \
-  --from-literal=LANGFUSE_SECRET_KEY=sk-lf-...
-```
-
-Restart LiteLLM to pick up the keys: `kubectl rollout restart deployment litellm -n ai-platform`
 
 ### 7. Deploy a Model
 
@@ -214,34 +144,20 @@ spec:
   maxReplicas: 2
 ```
 
-Push to git — ArgoCD syncs it, KRO creates the RayService, Karpenter provisions a GPU node, and the model auto-registers with LiteLLM.
-
 ```bash
 git add platform/workloads/gemma-4b.yaml
 git commit -m "feat: Deploy Gemma 3 4B"
 git push
 ```
 
-First deployment takes ~10-15 min (GPU node provisioning + ~15GB image pull + model loading).
+First deployment takes ~7 min with ECR cache, ~14 min without (GPU node + image pull + model loading).
 
 ### 8. Access Services
 
 ```bash
-# LiteLLM API
-kubectl port-forward svc/litellm 4000:4000 -n ai-platform
-# → http://localhost:4000
-
-# Open WebUI
-kubectl port-forward svc/open-webui 8080:8080 -n ai-platform
-# → http://localhost:8080
-
-# Langfuse
-kubectl port-forward svc/langfuse-web 3000:3000 -n ai-platform
-# → http://localhost:3000
-
-# Ray Dashboard (per model)
-kubectl port-forward svc/<model-name>-head-svc 8265:8265 -n inference
-# → http://localhost:8265
+kubectl port-forward svc/litellm 4000:4000 -n ai-platform       # http://localhost:4000
+kubectl port-forward svc/open-webui 8080:8080 -n ai-platform     # http://localhost:8080
+kubectl port-forward svc/langfuse-web 3000:3000 -n ai-platform   # http://localhost:3000
 ```
 
 Get the LiteLLM API key:
@@ -251,13 +167,24 @@ kubectl get secret litellm-secrets -n ai-platform \
   -o jsonpath='{.data.master-key}' | base64 -d
 ```
 
-Test the model:
+Test:
 
 ```bash
 curl http://localhost:4000/v1/chat/completions \
   -H "Content-Type: application/json" \
   -H "Authorization: Bearer YOUR_MASTER_KEY" \
   -d '{"model": "gemma-4b", "messages": [{"role": "user", "content": "Hello!"}]}'
+```
+
+### 9. Enable Langfuse Tracing (optional)
+
+After Langfuse is running, create an API key pair in the Langfuse UI (`http://localhost:3000`), then:
+
+```bash
+kubectl create secret generic langfuse-litellm-keys -n ai-platform \
+  --from-literal=LANGFUSE_PUBLIC_KEY=pk-lf-... \
+  --from-literal=LANGFUSE_SECRET_KEY=sk-lf-...
+kubectl rollout restart deployment litellm -n ai-platform
 ```
 
 ## InferenceEndpoint Reference
@@ -276,42 +203,36 @@ spec:
   workerMemory: "24Gi"            # Memory per GPU worker (default: 24Gi)
   workerCpu: "4"                  # CPU per GPU worker (default: 4)
   maxModelLen: 8192               # Max sequence length (default: 8192)
-  rayImage: "anyscale/ray-llm:2.53.0-py311-cu128"  # Ray image
+  rayImage: "anyscale/ray-llm:2.53.0-py311-cu128"  # Override if needed
 ```
 
-KRO generates: RayService, RayCluster, GPU workers, and a LiteLLM registration Job.
+KRO generates: RayService, GPU workers, and a LiteLLM registration Job.
 
 ## Repository Structure
 
 ```
 argocd/                          # ArgoCD Application definitions (bootstrap)
-  gpu-operator.yaml
-  kuberay-operator.yaml
-  langfuse.yaml
-  litellm.yaml
-  open-webui.yaml
-  workloads.yaml
-
 platform/
-  namespaces/                    # Kubernetes namespaces (synced by workloads app)
+  namespaces/                    # Kubernetes namespaces
   kro-definitions/               # KRO ResourceGraphDefinitions
-    inference-endpoint.yaml      # InferenceEndpoint → RayService + LiteLLM registration
   apps/                          # Platform application configs
-    gpu-operator/helm-values.yaml
-    kuberay/helm-values.yaml
-    langfuse/helm-values.yaml
-    litellm/litellm.yaml
-    open-webui/open-webui.yaml
-  workloads/                     # KRO workload instances (synced by workloads app)
-    gemma-4b.yaml
+    gpu-operator/                #   NVIDIA GPU Operator helm values
+    kuberay/                     #   KubeRay Operator helm values
+    langfuse/                    #   Langfuse helm values
+    litellm/                     #   LiteLLM deployment + DB + config
+    open-webui/                  #   Open WebUI deployment
+  workloads/                     # InferenceEndpoint instances (team-facing)
+ops/                             # Operational scripts (scale-up, scale-down)
+terraform/                       # Infrastructure (VPC, IAM, EKS, addons)
+```
 
-terraform/
-  00.global/vars/                # Environment configurations
-  10.networking/                 # VPC, subnets
-  20.iam-roles-for-eks/          # IAM roles
-  30.eks/30.cluster/             # EKS + capabilities + secrets
-  30.eks/35.addons/              # Additional addons
-  40.observability/              # Monitoring (optional)
+## Cost Management
+
+Scale down the platform during off-hours (stops all workloads, releases GPU nodes):
+
+```bash
+./ops/scale-down.sh    # Suspends ArgoCD auto-sync, scales to 0
+./ops/scale-up.sh      # Restores replicas, re-enables auto-sync
 ```
 
 ## Cleanup
@@ -320,7 +241,7 @@ terraform/
 # Remove workloads first (releases GPU nodes)
 kubectl delete inferenceendpoints --all -n inference
 
-# Wait for GPU nodes to terminate
+# Wait for GPU nodes to terminate (~5 min)
 kubectl get nodes -l workload-type=gpu-inference
 
 # Destroy all infrastructure
