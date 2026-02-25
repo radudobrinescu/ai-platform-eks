@@ -19,6 +19,15 @@ spec:
       endpoint:         "${rayservice.metadata.name}-serve-svc.${rayservice.metadata.namespace}.svc.cluster.local:8000"
 
   resources:
+    # --- Platform config (created by Terraform) ---
+    # Provides ECR image URI. Falls back to schema defaults if ConfigMap doesn't exist.
+    - id: platformConfig
+      externalRef:
+        apiVersion: v1
+        kind: ConfigMap
+        metadata:
+          name: platform-config
+
     # --- Register model with LiteLLM via API ---
     - id: litellmregister
       template:
@@ -100,7 +109,7 @@ spec:
                     kubernetes.io/arch: amd64
                   containers:
                     - name: ray-head
-                      image: ${schema.spec.rayImage}
+                      image: ${platformConfig.data.?rayImage.orValue(schema.spec.rayImage)}
                       ports:
                         - containerPort: 6379
                           name: gcs
@@ -133,7 +142,7 @@ spec:
                       workload-type: gpu-inference
                     containers:
                       - name: ray-worker
-                        image: ${schema.spec.rayImage}
+                        image: ${platformConfig.data.?rayImage.orValue(schema.spec.rayImage)}
                         env:
                           - name: HF_TOKEN
                             valueFrom:

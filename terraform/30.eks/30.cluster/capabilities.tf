@@ -107,6 +107,34 @@ resource "aws_eks_access_policy_association" "kro_edit" {
 }
 
 ################################################################################
+# ECR Pull-Through Cache — mirror Docker Hub images to private ECR
+# First pull caches the image; subsequent pulls served from ECR.
+################################################################################
+resource "aws_ecr_pull_through_cache_rule" "docker_hub" {
+  ecr_repository_prefix = "docker-hub"
+  upstream_registry_url = "registry-1.docker.io"
+}
+
+################################################################################
+# Platform Config — ECR image URIs for KRO externalRef
+# KRO definitions read this ConfigMap to resolve environment-specific image URIs.
+################################################################################
+resource "kubernetes_config_map" "platform_config" {
+  count = local.capabilities.gitops ? 1 : 0
+
+  metadata {
+    name      = "platform-config"
+    namespace = "inference"
+  }
+
+  data = {
+    rayImage = "${data.aws_caller_identity.current.account_id}.dkr.ecr.${local.region}.amazonaws.com/docker-hub/anyscale/ray-llm:2.53.0-py311-cu128"
+  }
+
+  depends_on = [aws_eks_capability.argocd]
+}
+
+################################################################################
 # ArgoCD — cluster-admin access for deploying applications locally
 # Ref: https://docs.aws.amazon.com/eks/latest/userguide/argocd-register-clusters.html
 ################################################################################
