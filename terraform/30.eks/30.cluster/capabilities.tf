@@ -194,11 +194,6 @@ resource "kubernetes_secret" "argocd_cluster" {
   data = {
     name    = "local-cluster"
     server = module.eks.cluster_arn
-    config = jsonencode({
-      tlsClientConfig = {
-        insecure = false
-      }
-    })
   }
 
   depends_on = [aws_eks_capability.argocd]

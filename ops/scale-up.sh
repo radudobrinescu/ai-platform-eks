@@ -20,7 +20,7 @@ get_replicas() {
 # ============================================================
 # Step 1: Interactive workload selection
 # ============================================================
-WORKLOAD_DIR="$GITOPS_DIR/workloads/examples"
+WORKLOAD_DIR="$GITOPS_DIR/platform/workloads"
 WORKLOAD_FILES=()
 SELECTED_FILES=()
 

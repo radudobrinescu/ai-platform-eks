@@ -123,11 +123,12 @@ This deploys (in order):
 
 Terraform also creates automatically:
 - Namespaces (`ai-platform`, `inference`)
-- ArgoCD cluster registration (`local-cluster` secret with cluster ARN)
+- ArgoCD cluster registration (`local-cluster` secret with cluster ARN — required because the EKS managed ArgoCD capability does not auto-register the local cluster, and uses the cluster ARN as server, not `kubernetes.default.svc`)
 - ArgoCD access policy (ClusterAdminPolicy for deploying apps)
 - LiteLLM secrets (`litellm-secrets`, `litellm-db-credentials` in ai-platform, `litellm-api-key` in inference)
 - Langfuse secrets (`langfuse-secrets` in ai-platform)
-- Karpenter NodePools (default + gpu-inference)
+- Platform config (`platform-config` ConfigMap in inference — with ECR image URI when Docker Hub credentials are provided)
+- Karpenter NodePools (default + gpu-inference with Bottlerocket + SOCI Parallel Pull)
 
 ### 4. Update ArgoCD Application Source URLs
 
