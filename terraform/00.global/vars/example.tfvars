@@ -64,3 +64,13 @@ observability_configuration = {
     enable_grafana_operator  = true
   }
 }
+
+# ECR Pull-Through Cache (optional)
+# When set, mirrors Docker Hub images to ECR for faster pulls via SOCI.
+# Without this, images pull directly from Docker Hub (works fine, just slower).
+# Get a free Docker Hub access token at: https://hub.docker.com/settings/security
+#
+# docker_hub_credentials = {
+#   username     = "your-dockerhub-username"
+#   access_token = "dckr_pat_XXXXXXXXXX"
+# }

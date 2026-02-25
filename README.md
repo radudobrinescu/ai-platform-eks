@@ -93,6 +93,13 @@ cluster_config = {
     ]
   }
 }
+
+# OPTIONAL: ECR pull-through cache for faster image pulls (~60% faster)
+# Requires a free Docker Hub account. Without this, images pull from Docker Hub directly.
+# docker_hub_credentials = {
+#   username     = "your-dockerhub-username"
+#   access_token = "dckr_pat_XXXXXXXXXX"
+# }
 ```
 
 ### 2. Bootstrap Terraform Backend

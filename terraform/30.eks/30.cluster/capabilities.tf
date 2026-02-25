@@ -107,37 +107,37 @@ resource "aws_eks_access_policy_association" "kro_edit" {
 }
 
 ################################################################################
-# ECR Pull-Through Cache — mirror Docker Hub images to private ECR
-# First pull caches the image; subsequent pulls served from ECR.
-# Docker Hub requires credentials stored in Secrets Manager.
+# ECR Pull-Through Cache (optional) — mirror Docker Hub images to private ECR
+# Only created when docker_hub_credentials is provided in tfvars.
+# Without it, KRO falls back to pulling directly from Docker Hub.
 ################################################################################
 resource "aws_secretsmanager_secret" "docker_hub" {
+  count                   = var.docker_hub_credentials != null ? 1 : 0
   name                    = "ecr-pullthroughcache/docker-hub"
   recovery_window_in_days = 0
   tags                    = local.tags
 }
 
 resource "aws_secretsmanager_secret_version" "docker_hub" {
-  secret_id = aws_secretsmanager_secret.docker_hub.id
+  count     = var.docker_hub_credentials != null ? 1 : 0
+  secret_id = aws_secretsmanager_secret.docker_hub[0].id
   secret_string = jsonencode({
-    username    = "AWS"
-    accessToken = "anonymous"
+    username    = var.docker_hub_credentials.username
+    accessToken = var.docker_hub_credentials.access_token
   })
-
-  lifecycle {
-    ignore_changes = [secret_string]
-  }
 }
 
 resource "aws_ecr_pull_through_cache_rule" "docker_hub" {
+  count                 = var.docker_hub_credentials != null ? 1 : 0
   ecr_repository_prefix = "docker-hub"
   upstream_registry_url = "registry-1.docker.io"
-  credential_arn        = aws_secretsmanager_secret.docker_hub.arn
+  credential_arn        = aws_secretsmanager_secret.docker_hub[0].arn
 }
 
 ################################################################################
-# Platform Config — ECR image URIs for KRO externalRef
-# KRO definitions read this ConfigMap to resolve environment-specific image URIs.
+# Platform Config — KRO externalRef reads this ConfigMap.
+# Always created. rayImage key only set when ECR cache is enabled.
+# Without rayImage, KRO orValue() falls back to Docker Hub.
 ################################################################################
 resource "kubernetes_config_map" "platform_config" {
   count = local.capabilities.gitops ? 1 : 0
@@ -147,9 +147,9 @@ resource "kubernetes_config_map" "platform_config" {
     namespace = "inference"
   }
 
-  data = {
+  data = var.docker_hub_credentials != null ? {
     rayImage = "${data.aws_caller_identity.current.account_id}.dkr.ecr.${local.region}.amazonaws.com/docker-hub/anyscale/ray-llm:2.53.0-py311-cu128"
-  }
+  } : {}
 
   depends_on = [aws_eks_capability.argocd]
 }

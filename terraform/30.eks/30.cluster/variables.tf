@@ -28,3 +28,12 @@ variable "shared_config" {
   type        = map(any)
   default     = {}
 }
+
+variable "docker_hub_credentials" {
+  description = "Docker Hub credentials for ECR pull-through cache. When set, images are mirrored to ECR for faster pulls via SOCI. When null, images pull directly from Docker Hub."
+  type = object({
+    username     = string
+    access_token = string
+  })
+  default = null
+}
