@@ -13,7 +13,7 @@ spec:
       helm:
         valueFiles:
           - $values/platform/apps/kuberay/helm-values.yaml
-    - repoURL: https://github.com/radudobrinescu/ai-platform-eks.git
+    - repoURL: https://github.com/YOUR-ORG/YOUR-REPO.git
       targetRevision: main
       ref: values
   destination:

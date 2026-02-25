@@ -17,4 +17,9 @@ variable "observability_configuration" {
     aws_native_tooling     = optional(bool, false) // CW
     aws_oss_tooling_config = optional(map(any), {})
   })
+  default = {
+    aws_oss_tooling    = false
+    aws_native_tooling = false
+    aws_oss_tooling_config = {}
+  }
 }

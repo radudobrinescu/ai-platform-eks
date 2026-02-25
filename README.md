@@ -58,7 +58,7 @@ Edit `your-env.tfvars` — the critical settings:
 vpc_cidr = "10.4.0.0/16"
 
 shared_config = {
-  resources_prefix = "ai-platform"  # Cluster name prefix
+  resources_prefix = "ai-platform"
 }
 
 cluster_config = {
@@ -119,15 +119,32 @@ This deploys (in order):
 2. **IAM Roles** — EKS access roles (ClusterAdmin, Admin, Edit, View)
 3. **EKS Cluster** — with ArgoCD, KRO, ACK capabilities
 4. **EKS Addons** — LB controller, etc.
+5. **Observability** — CloudWatch / AMP+AMG (no-op unless configured in tfvars)
 
 Terraform also creates automatically:
+- Namespaces (`ai-platform`, `inference`)
 - ArgoCD cluster registration (`local-cluster` secret with cluster ARN)
 - ArgoCD access policy (ClusterAdminPolicy for deploying apps)
-- LiteLLM secrets (`litellm-secrets` in ai-platform, `litellm-api-key` in inference)
+- LiteLLM secrets (`litellm-secrets`, `litellm-db-credentials` in ai-platform, `litellm-api-key` in inference)
 - Langfuse secrets (`langfuse-secrets` in ai-platform)
 - Karpenter NodePools (default + gpu-inference)
 
-### 4. Bootstrap ArgoCD Applications
+### 4. Update ArgoCD Application Source URLs
+
+The ArgoCD application definitions in `argocd/` contain a placeholder Git repository URL. Update the `repoURL` fields to point to **your** repository:
+
+```bash
+# Replace with your repo URL in all ArgoCD app definitions
+cd argocd/
+sed -i '' 's|https://github.com/YOUR-ORG/YOUR-REPO.git|https://github.com/your-actual-org/your-actual-repo.git|g' *.yaml
+```
+
+Verify the change:
+```bash
+grep repoURL *.yaml
+```
+
+### 5. Bootstrap ArgoCD Applications
 
 After Terraform completes, apply the ArgoCD applications:
 
@@ -157,7 +174,7 @@ kubectl get applications -n argocd
 # All should show Healthy within a few minutes
 ```
 
-### 5. Create HuggingFace Token (for gated models)
+### 6. Create HuggingFace Token (for gated models)
 
 Required for models like Gemma, Llama, etc.:
 
@@ -166,7 +183,19 @@ kubectl create secret generic hf-token -n inference \
   --from-literal=token=hf_YOUR_TOKEN_HERE
 ```
 
-### 6. Deploy a Model
+### 6b. Enable Langfuse Tracing (optional)
+
+After Langfuse is running (check `kubectl get pods -n ai-platform -l app.kubernetes.io/name=langfuse`), create an API key pair in the Langfuse UI at `http://localhost:3000` (see step 8 for port-forward), then:
+
+```bash
+kubectl create secret generic langfuse-litellm-keys -n ai-platform \
+  --from-literal=LANGFUSE_PUBLIC_KEY=pk-lf-... \
+  --from-literal=LANGFUSE_SECRET_KEY=sk-lf-...
+```
+
+Restart LiteLLM to pick up the keys: `kubectl rollout restart deployment litellm -n ai-platform`
+
+### 7. Deploy a Model
 
 Commit an `InferenceEndpoint` to `platform/workloads/`:
 
@@ -194,7 +223,7 @@ git push
 
 First deployment takes ~10-15 min (GPU node provisioning + ~15GB image pull + model loading).
 
-### 7. Access Services
+### 8. Access Services
 
 ```bash
 # LiteLLM API

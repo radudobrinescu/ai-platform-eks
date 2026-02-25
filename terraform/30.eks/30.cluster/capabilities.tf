@@ -154,7 +154,7 @@ resource "kubernetes_config_map" "platform_config" {
     } : {}
   )
 
-  depends_on = [aws_eks_capability.argocd]
+  depends_on = [kubernetes_namespace.inference]
 }
 
 ################################################################################
@@ -205,6 +205,34 @@ resource "kubernetes_secret" "argocd_cluster" {
 }
 
 ################################################################################
+# Namespaces — create before secrets so Terraform doesn't fail on fresh clusters
+################################################################################
+resource "kubernetes_namespace" "ai_platform" {
+  count = local.capabilities.gitops ? 1 : 0
+
+  metadata {
+    name = "ai-platform"
+    labels = { "app.kubernetes.io/part-of" = "ai-platform" }
+  }
+
+  depends_on = [aws_eks_capability.argocd]
+}
+
+resource "kubernetes_namespace" "inference" {
+  count = local.capabilities.gitops ? 1 : 0
+
+  metadata {
+    name = "inference"
+    labels = {
+      "app.kubernetes.io/part-of" = "ai-platform"
+      "purpose"                   = "inference-endpoints"
+    }
+  }
+
+  depends_on = [aws_eks_capability.argocd]
+}
+
+################################################################################
 # LiteLLM — pre-create master key secret
 ################################################################################
 resource "random_password" "litellm_master_key" {
@@ -225,7 +253,33 @@ resource "kubernetes_secret" "litellm_secrets" {
     master-key = random_password.litellm_master_key[0].result
   }
 
-  depends_on = [aws_eks_capability.argocd]
+  depends_on = [kubernetes_namespace.ai_platform]
+}
+
+################################################################################
+# LiteLLM — PostgreSQL credentials (referenced by litellm + litellm-db pods)
+################################################################################
+resource "random_password" "litellm_db_password" {
+  count   = local.capabilities.gitops ? 1 : 0
+  length  = 24
+  special = false
+}
+
+resource "kubernetes_secret" "litellm_db_credentials" {
+  count = local.capabilities.gitops ? 1 : 0
+
+  metadata {
+    name      = "litellm-db-credentials"
+    namespace = "ai-platform"
+  }
+
+  data = {
+    username     = "litellm"
+    password     = random_password.litellm_db_password[0].result
+    database-url = "postgres://litellm:${random_password.litellm_db_password[0].result}@litellm-db:5432/litellm"
+  }
+
+  depends_on = [kubernetes_namespace.ai_platform]
 }
 
 # LiteLLM API key in inference namespace — used by KRO registration Jobs
@@ -241,7 +295,7 @@ resource "kubernetes_secret" "litellm_api_key" {
     master-key = random_password.litellm_master_key[0].result
   }
 
-  depends_on = [aws_eks_capability.argocd]
+  depends_on = [kubernetes_namespace.inference]
 }
 
 ################################################################################
@@ -267,5 +321,5 @@ resource "kubernetes_secret" "langfuse_secrets" {
 
   data = { for k, v in random_password.langfuse : k => v.result }
 
-  depends_on = [aws_eks_capability.argocd]
+  depends_on = [kubernetes_namespace.ai_platform]
 }

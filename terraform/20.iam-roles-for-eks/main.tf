@@ -4,7 +4,9 @@
 
 data "aws_caller_identity" "current" {}
 
-
+locals {
+  trusted_principals = length(var.trusted_principal_arns) > 0 ? var.trusted_principal_arns : [data.aws_caller_identity.current.arn]
+}
 
 # Create IAM roles and attach policies
 resource "aws_iam_role" "iam_roles" {
@@ -18,7 +20,7 @@ resource "aws_iam_role" "iam_roles" {
         Action = "sts:AssumeRole",
         Effect = "Allow",
         Principal = {
-          AWS : "arn:aws:iam::${data.aws_caller_identity.current.account_id}:root", // TODO: consider specific trust policy for those users
+          AWS = local.trusted_principals
         },
       },
     ],

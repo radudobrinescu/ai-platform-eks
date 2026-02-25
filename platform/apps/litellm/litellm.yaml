@@ -15,9 +15,17 @@ spec:
       labels:
         app: litellm
     spec:
+      securityContext:
+        runAsNonRoot: true
+        seccompProfile:
+          type: RuntimeDefault
       containers:
         - name: litellm
           image: litellm/litellm:v1.81.9-stable.patch.1
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop: ["ALL"]
           args: ["--config", "/app/config.yaml"]
           ports:
             - containerPort: 4000
@@ -28,7 +36,10 @@ spec:
                   name: litellm-secrets
                   key: master-key
             - name: DATABASE_URL
-              value: "postgres://litellm:litellm@litellm-db:5432/litellm"
+              valueFrom:
+                secretKeyRef:
+                  name: litellm-db-credentials
+                  key: database-url
             - name: STORE_MODEL_IN_DB
               value: "True"
             - name: LANGFUSE_HOST
@@ -119,16 +130,30 @@ spec:
       labels:
         app: litellm-db
     spec:
+      securityContext:
+        runAsNonRoot: true
+        seccompProfile:
+          type: RuntimeDefault
       containers:
         - name: postgres
           image: postgres:16-alpine
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop: ["ALL"]
           ports:
             - containerPort: 5432
           env:
             - name: POSTGRES_USER
-              value: "litellm"
+              valueFrom:
+                secretKeyRef:
+                  name: litellm-db-credentials
+                  key: username
             - name: POSTGRES_PASSWORD
-              value: "litellm"
+              valueFrom:
+                secretKeyRef:
+                  name: litellm-db-credentials
+                  key: password
             - name: POSTGRES_DB
               value: "litellm"
             - name: PGDATA
@@ -163,6 +188,26 @@ spec:
   ports:
     - port: 5432
       targetPort: 5432
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: litellm-db
+  namespace: ai-platform
+spec:
+  podSelector:
+    matchLabels:
+      app: litellm-db
+  policyTypes:
+    - Ingress
+  ingress:
+    - from:
+        - podSelector:
+            matchLabels:
+              app: litellm
+      ports:
+        - protocol: TCP
+          port: 5432
 ---
 apiVersion: policy/v1
 kind: PodDisruptionBudget

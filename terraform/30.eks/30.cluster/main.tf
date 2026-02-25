@@ -12,7 +12,6 @@ data "aws_iam_session_context" "current" {
 ################################################################################
 # EKS Cluster
 ################################################################################
-#tfsec:ignore:aws-eks-enable-control-plane-logging
 module "eks" {
   source  = "terraform-aws-modules/eks/aws"
   version = "~> 21.0"

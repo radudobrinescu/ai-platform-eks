@@ -11,3 +11,9 @@ variable "shared_config" {
   type        = map(any)
   default     = {}
 }
+
+variable "trusted_principal_arns" {
+  description = "List of IAM principal ARNs allowed to assume the EKS roles. Defaults to the current caller."
+  type        = list(string)
+  default     = []
+}

@@ -6,7 +6,7 @@ tags = {
 }
 
 shared_config = {
-  resources_prefix = "wre" // WRE = Workload Ready EKS
+  resources_prefix = "ai-platform"
 }
 
 cluster_config = {

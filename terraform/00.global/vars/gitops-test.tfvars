@@ -7,7 +7,7 @@ tags = {
 }
 
 shared_config = {
-  resources_prefix = "ai-gitops"
+  resources_prefix = "ai-platform"
 }
 
 cluster_config = {
@@ -34,13 +34,13 @@ cluster_config = {
 
   # Identity Center config
   capabilities_config = {
-    argocd_idc_instance_arn = "arn:aws:sso:::instance/ssoins-7907801c96b8bc54"
+    argocd_idc_instance_arn = "arn:aws:sso:::instance/ssoins-XXXXXXXXXXXXXXXXX"
     argocd_idc_region       = "us-west-2"
     argocd_rbac_mappings = [
       {
         role = "ADMIN"
         identities = [
-          { id = "a821e380-f011-7015-52ed-7842df600c7d", type = "SSO_USER" }
+          { id = "REPLACE-WITH-YOUR-SSO-USER-ID", type = "SSO_USER" }
         ]
       }
     ]

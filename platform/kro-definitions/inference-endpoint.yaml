@@ -41,9 +41,18 @@ spec:
           template:
             spec:
               restartPolicy: OnFailure
+              securityContext:
+                runAsNonRoot: true
+                seccompProfile:
+                  type: RuntimeDefault
               containers:
                 - name: register
                   image: curlimages/curl:8.12.1
+                  securityContext:
+                    allowPrivilegeEscalation: false
+                    readOnlyRootFilesystem: true
+                    capabilities:
+                      drop: ["ALL"]
                   command: ["sh", "-c"]
                   args:
                     - |
@@ -112,9 +121,17 @@ spec:
                 spec:
                   nodeSelector:
                     kubernetes.io/arch: amd64
+                  securityContext:
+                    runAsNonRoot: true
+                    seccompProfile:
+                      type: RuntimeDefault
                   containers:
                     - name: ray-head
                       image: ${platformConfig.data.?rayImage.orValue(schema.spec.rayImage)}
+                      securityContext:
+                        allowPrivilegeEscalation: false
+                        capabilities:
+                          drop: ["ALL"]
                       ports:
                         - containerPort: 6379
                           name: gcs
@@ -145,9 +162,17 @@ spec:
                         effect: NoSchedule
                     nodeSelector:
                       workload-type: gpu-inference
+                    securityContext:
+                      runAsNonRoot: true
+                      seccompProfile:
+                        type: RuntimeDefault
                     containers:
                       - name: ray-worker
                         image: ${platformConfig.data.?rayImage.orValue(schema.spec.rayImage)}
+                        securityContext:
+                          allowPrivilegeEscalation: false
+                          capabilities:
+                            drop: ["ALL"]
                         env:
                           - name: HF_TOKEN
                             valueFrom:
