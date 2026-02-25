@@ -12,3 +12,4 @@ terraform.tfstate.backup
 !**/example.tfvars
 terraform/tf-logs/
 TODO.md
+ops/.scale-state-*.json
