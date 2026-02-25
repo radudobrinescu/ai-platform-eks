@@ -76,7 +76,7 @@ spec:
   limits:
     nvidia.com/gpu: "16"
   disruption:
-    consolidationPolicy: WhenEmpty
+    consolidationPolicy: WhenEmptyOrUnderutilized
     consolidateAfter: 300s
     budgets:
       - nodes: "1"
