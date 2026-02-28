@@ -9,7 +9,7 @@ terraform.tfstate.backup
 *.tfplan
 *.tfvars
 *.tfvars.backup
-!**/example.tfvars
+!**/example*.tfvars
 terraform/tf-logs/
 TODO.md
 ops/.scale-state-*.json
