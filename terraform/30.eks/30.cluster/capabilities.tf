@@ -42,7 +42,7 @@ resource "aws_eks_capability" "argocd" {
   capability_name           = "argocd"
   type                      = "ARGOCD"
   role_arn                  = aws_iam_role.capability["argocd"].arn
-  delete_propagation_policy = "DELETE"
+  delete_propagation_policy = "RETAIN"
   tags                      = local.tags
 
   configuration {
@@ -84,7 +84,7 @@ resource "aws_eks_capability" "simple" {
   capability_name           = each.key
   type                      = each.value.type
   role_arn                  = aws_iam_role.capability[each.key].arn
-  delete_propagation_policy = "DELETE"
+  delete_propagation_policy = "RETAIN"
   tags                      = local.tags
 
   depends_on = [module.eks]
