@@ -41,18 +41,9 @@ spec:
           template:
             spec:
               restartPolicy: OnFailure
-              securityContext:
-                runAsNonRoot: true
-                seccompProfile:
-                  type: RuntimeDefault
               containers:
                 - name: register
                   image: curlimages/curl:8.12.1
-                  securityContext:
-                    allowPrivilegeEscalation: false
-                    readOnlyRootFilesystem: true
-                    capabilities:
-                      drop: ["ALL"]
                   command: ["sh", "-c"]
                   args:
                     - |
@@ -162,17 +153,9 @@ spec:
                         effect: NoSchedule
                     nodeSelector:
                       workload-type: gpu-inference
-                    securityContext:
-                      runAsNonRoot: true
-                      seccompProfile:
-                        type: RuntimeDefault
                     containers:
                       - name: ray-worker
                         image: ${platformConfig.data.?rayImage.orValue(schema.spec.rayImage)}
-                        securityContext:
-                          allowPrivilegeEscalation: false
-                          capabilities:
-                            drop: ["ALL"]
                         env:
                           - name: HF_TOKEN
                             valueFrom:
