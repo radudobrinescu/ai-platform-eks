@@ -27,22 +27,24 @@ EKS Cluster
 │
 ├── Managed Capabilities (AWS-hosted)
 │   ├── ArgoCD       ──▶ syncs all apps and workloads from Git
-│   ├── KRO          ──▶ InferenceEndpoint → RayService + LiteLLM registration
-│   └── ACK
+│   ├── KRO          ──▶ turns custom resources into Kubernetes objects
+│   └── ACK          ──▶ manages AWS resources from Kubernetes
 │
 ├── Karpenter (self-managed)
 │   ├── default          ──▶ platform app nodes (AL2023)
 │   └── gpu-inference    ──▶ GPU nodes (Bottlerocket + SOCI)
 │
-├── Platform Apps (ArgoCD-managed)
+├── Platform Apps (ArgoCD-managed, platform team owns)
 │   ├── GPU Operator     (Helm)
 │   ├── KubeRay          (Helm)
 │   ├── LiteLLM          (manifests)  ──▶ OpenAI-compatible API proxy
 │   ├── Open WebUI       (manifests)  ──▶ Chat UI
 │   └── Langfuse         (Helm)       ──▶ LLM observability
 │
-└── Workloads (ArgoCD-managed, team-facing)
-    ├── KRO definitions  ──▶ InferenceEndpoint CRD
+├── KRO Definitions (ArgoCD-managed, platform team owns)
+│   └── InferenceEndpoint CRD    ──▶ defines the API teams use
+│
+└── Workloads (ArgoCD-managed, teams self-serve)
     └── InferenceEndpoints (e.g. gemma-4b, qwen3-4b)
 ```
 
