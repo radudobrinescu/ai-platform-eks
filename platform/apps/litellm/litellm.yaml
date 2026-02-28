@@ -15,17 +15,9 @@ spec:
       labels:
         app: litellm
     spec:
-      securityContext:
-        runAsNonRoot: true
-        seccompProfile:
-          type: RuntimeDefault
       containers:
         - name: litellm
           image: litellm/litellm:v1.81.9-stable.patch.1
-          securityContext:
-            allowPrivilegeEscalation: false
-            capabilities:
-              drop: ["ALL"]
           args: ["--config", "/app/config.yaml"]
           ports:
             - containerPort: 4000
@@ -130,17 +122,9 @@ spec:
       labels:
         app: litellm-db
     spec:
-      securityContext:
-        runAsNonRoot: true
-        seccompProfile:
-          type: RuntimeDefault
       containers:
         - name: postgres
           image: postgres:16-alpine
-          securityContext:
-            allowPrivilegeEscalation: false
-            capabilities:
-              drop: ["ALL"]
           ports:
             - containerPort: 5432
           env:
