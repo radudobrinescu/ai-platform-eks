@@ -24,7 +24,13 @@ langfuse:
       name: langfuse-secrets
       key: encryption-key
 
-  additionalEnv: []
+  additionalEnv:
+    - name: LANGFUSE_S3_EVENT_UPLOAD_ENABLED
+      value: "false"
+    - name: LANGFUSE_S3_BATCH_EXPORT_ENABLED
+      value: "false"
+    - name: LANGFUSE_S3_MEDIA_UPLOAD_ENABLED
+      value: "false"
 
   service:
     type: ClusterIP
