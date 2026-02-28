@@ -298,12 +298,27 @@ resource "kubernetes_secret" "litellm_api_key" {
 ################################################################################
 resource "random_password" "langfuse" {
   for_each = local.capabilities.gitops ? toset([
-    "salt", "nextauth-secret", "encryption-key",
     "password", "clickhouse-password", "redis-password"
   ]) : toset([])
 
   length  = 32
   special = false
+}
+
+# Langfuse requires hex-encoded keys for encryption
+resource "random_id" "langfuse_encryption_key" {
+  count       = local.capabilities.gitops ? 1 : 0
+  byte_length = 32
+}
+
+resource "random_id" "langfuse_nextauth_secret" {
+  count       = local.capabilities.gitops ? 1 : 0
+  byte_length = 32
+}
+
+resource "random_id" "langfuse_salt" {
+  count       = local.capabilities.gitops ? 1 : 0
+  byte_length = 16
 }
 
 resource "kubernetes_secret" "langfuse_secrets" {
@@ -314,7 +329,14 @@ resource "kubernetes_secret" "langfuse_secrets" {
     namespace = "ai-platform"
   }
 
-  data = { for k, v in random_password.langfuse : k => v.result }
+  data = merge(
+    { for k, v in random_password.langfuse : k => v.result },
+    {
+      "encryption-key"  = random_id.langfuse_encryption_key[0].hex
+      "nextauth-secret" = random_id.langfuse_nextauth_secret[0].hex
+      "salt"            = random_id.langfuse_salt[0].hex
+    }
+  )
 
   depends_on = [kubernetes_namespace.ai_platform]
 }
