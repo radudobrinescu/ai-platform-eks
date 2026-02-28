@@ -1,6 +1,15 @@
 # AI Platform on EKS — GitOps Ready
 
-A self-service AI inference platform on Amazon EKS. Teams deploy models with a single `InferenceEndpoint` custom resource — KRO, ArgoCD, and Ray handle everything else.
+A sample AI platform built on Amazon EKS that leverages EKS Capabilities (ArgoCD, KRO, ACK) and platform engineering practices to provide self-service AI infrastructure for teams.
+
+Each AI use case is expressed as a KRO definition — a custom Kubernetes API that abstracts the underlying complexity into a single resource. Teams consume isolated, pre-configured environments that implement best practices without needing to understand Ray, GPU scheduling, or networking.
+
+**Supported use cases:**
+- **Model Inference** — deploy HuggingFace models with a single `InferenceEndpoint` resource
+- **Chat Assistants with RAG** — model + vector DB + embeddings (planned)
+- **Batch Inference for Document Processing** — Ray Jobs for offline processing (planned)
+- **Agentic Workloads** — model + tools + orchestrator (planned)
+- **GPU Management with DRA** — dynamic resource allocation for multi-model GPU sharing (planned)
 
 ## What You Get
 
