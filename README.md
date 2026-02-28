@@ -23,24 +23,24 @@ git push → ArgoCD syncs → KRO creates RayService + registration Job
 ## Architecture
 
 ```
-┌──────────────────────────────────────────────────────────────────┐
-│  EKS Cluster                                                     │
-│                                                                  │
-│  ┌──────────┐  ┌──────────┐  ┌──────────┐  ┌────────────────┐  │
-│  │ ArgoCD   │  │   KRO    │  │   ACK    │  │   Karpenter    │  │
-│  │(managed) │  │(managed) │  │(managed) │  │ (self-managed) │  │
-│  └────┬─────┘  └────┬─────┘  └──────────┘  └───────┬────────┘  │
-│       │              │                              │            │
-│       ▼              ▼                              ▼            │
-│  ┌─────────┐  ┌──────────────┐              ┌──────────────┐    │
-│  │ ArgoCD  │  │InferenceEnd- │              │  GPU Nodes   │    │
-│  │  Apps   │  │point → Ray-  │              │(Bottlerocket)│    │
-│  │         │  │Service+Job   │              └──────────────┘    │
-│  └─────────┘  └──────────────┘                                  │
-│                                                                  │
-│  Platform Apps:  GPU Operator │ KubeRay │ LiteLLM │ Open WebUI  │
-│                  Langfuse                                        │
-└──────────────────────────────────────────────────────────────────┘
+┌────────────────────────────────────────────────────────────────┐
+│  EKS Cluster                                                   │
+│                                                                │
+│  ┌──────────┐ ┌──────────┐ ┌──────────┐ ┌────────────────┐   │
+│  │ ArgoCD   │ │   KRO    │ │   ACK    │ │   Karpenter    │   │
+│  │(managed) │ │(managed) │ │(managed) │ │ (self-managed) │   │
+│  └────┬─────┘ └────┬─────┘ └──────────┘ └───────┬────────┘   │
+│       │             │                            │             │
+│       ▼             ▼                            ▼             │
+│  ┌─────────┐ ┌──────────────┐            ┌──────────────┐     │
+│  │ ArgoCD  │ │InferenceEnd- │            │  GPU Nodes   │     │
+│  │  Apps   │ │point → Ray-  │            │(Bottlerocket)│     │
+│  │         │ │Service+Job   │            └──────────────┘     │
+│  └─────────┘ └──────────────┘                                 │
+│                                                                │
+│  Platform Apps: GPU Operator │ KubeRay │ LiteLLM │ Open WebUI │
+│                 Langfuse                                       │
+└────────────────────────────────────────────────────────────────┘
 ```
 
 ## Prerequisites
