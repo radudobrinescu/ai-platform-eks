@@ -23,24 +23,18 @@ git push → ArgoCD syncs → KRO creates RayService + registration Job
 ## Architecture
 
 ```
-+--------------------------------------------------------------------+
-|  EKS Cluster                                                       |
-|                                                                    |
-|  +----------+ +----------+ +----------+ +----------------+        |
-|  | ArgoCD   | |   KRO    | |   ACK    | |   Karpenter    |        |
-|  |(managed) | |(managed) | |(managed) | | (self-managed) |        |
-|  +----+-----+ +----+-----+ +----------+ +-------+--------+        |
-|       |             |                            |                  |
-|       v             v                            v                  |
-|  +---------+ +--------------+            +--------------+          |
-|  | ArgoCD  | |InferenceEnd- |            |  GPU Nodes   |          |
-|  |  Apps   | |point -> Ray- |            |(Bottlerocket)|          |
-|  |         | |Service+Job   |            +--------------+          |
-|  +---------+ +--------------+                                      |
-|                                                                    |
-|  Platform Apps: GPU Operator | KubeRay | LiteLLM | Open WebUI     |
-|                 Langfuse                                           |
-+--------------------------------------------------------------------+
+EKS Cluster
+├── ArgoCD (managed)        ──▶  ArgoCD Apps (6 applications)
+├── KRO (managed)           ──▶  InferenceEndpoint → RayService + LiteLLM Job
+├── ACK (managed)
+├── Karpenter (self-managed) ──▶  GPU Nodes (Bottlerocket + SOCI)
+│
+└── Platform Apps
+    ├── GPU Operator    (Helm)
+    ├── KubeRay         (Helm)
+    ├── LiteLLM         (manifests)
+    ├── Open WebUI      (manifests)
+    └── Langfuse        (Helm)
 ```
 
 ## Prerequisites
