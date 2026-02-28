@@ -13,3 +13,4 @@ terraform.tfstate.backup
 terraform/tf-logs/
 TODO.md
 ops/.scale-state-*.json
+errored.tfstate

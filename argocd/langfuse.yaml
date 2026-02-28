@@ -14,7 +14,7 @@ spec:
       helm:
         valueFiles:
           - $values/platform/apps/langfuse/helm-values.yaml
-    - repoURL: https://github.com/YOUR-ORG/YOUR-REPO.git
+    - repoURL: https://github.com/radudobrinescu/ai-platform-eks.git
       targetRevision: main
       ref: values
   destination:
