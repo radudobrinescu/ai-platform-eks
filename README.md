@@ -24,17 +24,26 @@ git push → ArgoCD syncs → KRO creates RayService + registration Job
 
 ```
 EKS Cluster
-├── ArgoCD (managed)        ──▶  ArgoCD Apps (6 applications)
-├── KRO (managed)           ──▶  InferenceEndpoint → RayService + LiteLLM Job
-├── ACK (managed)
-├── Karpenter (self-managed) ──▶  GPU Nodes (Bottlerocket + SOCI)
 │
-└── Platform Apps
-    ├── GPU Operator    (Helm)
-    ├── KubeRay         (Helm)
-    ├── LiteLLM         (manifests)
-    ├── Open WebUI      (manifests)
-    └── Langfuse        (Helm)
+├── Managed Capabilities (AWS-hosted)
+│   ├── ArgoCD       ──▶ syncs all apps and workloads from Git
+│   ├── KRO          ──▶ InferenceEndpoint → RayService + LiteLLM registration
+│   └── ACK
+│
+├── Karpenter (self-managed)
+│   ├── default          ──▶ platform app nodes (AL2023)
+│   └── gpu-inference    ──▶ GPU nodes (Bottlerocket + SOCI)
+│
+├── Platform Apps (ArgoCD-managed)
+│   ├── GPU Operator     (Helm)
+│   ├── KubeRay          (Helm)
+│   ├── LiteLLM          (manifests)  ──▶ OpenAI-compatible API proxy
+│   ├── Open WebUI       (manifests)  ──▶ Chat UI
+│   └── Langfuse         (Helm)       ──▶ LLM observability
+│
+└── Workloads (ArgoCD-managed, team-facing)
+    ├── KRO definitions  ──▶ InferenceEndpoint CRD
+    └── InferenceEndpoints (e.g. gemma-4b, qwen3-4b)
 ```
 
 ## Prerequisites
