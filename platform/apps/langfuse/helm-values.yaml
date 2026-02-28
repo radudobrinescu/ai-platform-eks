@@ -44,6 +44,8 @@ langfuse:
 # Bundled PostgreSQL (for dev/test — use ACK-managed RDS for production)
 postgresql:
   deploy: true
+  image:
+    tag: latest
   auth:
     existingSecret: langfuse-secrets
     secretKeys:
@@ -58,6 +60,8 @@ postgresql:
 clickhouse:
   deploy: true
   replicaCount: 1
+  image:
+    tag: latest
   auth:
     existingSecret: langfuse-secrets
     existingSecretKey: clickhouse-password
@@ -76,6 +80,8 @@ clickhouse:
 # Redis for caching and queue management
 redis:
   deploy: true
+  image:
+    tag: latest
   auth:
     existingSecret: langfuse-secrets
     existingSecretPasswordKey: redis-password
