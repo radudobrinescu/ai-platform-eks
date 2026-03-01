@@ -72,7 +72,7 @@ spec:
           values: ["g5", "g5e", "g6", "g6e", "g7", "g7e"]
         - key: karpenter.k8s.aws/instance-size
           operator: In
-          values: ["xlarge", "2xlarge", "4xlarge", "8xlarge", "12xlarge", "16xlarge", "24xlarge", "48xlarge"]
+          values: ["xlarge", "2xlarge", "4xlarge"]
   limits:
     nvidia.com/gpu: "16"
   disruption:
