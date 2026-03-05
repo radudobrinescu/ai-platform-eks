@@ -9,7 +9,6 @@ driver:
 
 toolkit:
   enabled: true
-  installDir: /run/nvidia/driver
 
 devicePlugin:
   enabled: true
