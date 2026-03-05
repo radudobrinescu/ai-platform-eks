@@ -14,7 +14,7 @@ spec:
       workerMemory:     "string  | default=24Gi"    # Memory per GPU worker
       workerCpu:        "string  | default=4"       # CPU per GPU worker
       maxModelLen:      "integer | default=8192"    # Max sequence length
-      rayImage:         "string  | default=anyscale/ray-llm:2.53.0-py311-cu128"
+      rayImage:         "string  | default=anyscale/ray-llm:2.54.0-py311-cu128"
     status:
       endpoint:         "${rayservice.metadata.name}-serve-svc.${rayservice.metadata.namespace}.svc.cluster.local:8000"
 

@@ -217,7 +217,7 @@ spec:
   workerMemory: "24Gi"            # Memory per GPU worker (default: 24Gi)
   workerCpu: "4"                  # CPU per GPU worker (default: 4)
   maxModelLen: 8192               # Max sequence length (default: 8192)
-  rayImage: "anyscale/ray-llm:2.53.0-py311-cu128"  # Override if needed
+  rayImage: "anyscale/ray-llm:2.54.0-py311-cu128"  # Override if needed
 ```
 
 KRO generates: RayService, GPU workers, and a LiteLLM registration Job.
