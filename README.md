@@ -240,6 +240,10 @@ ops/                             # Operational scripts (scale-up, scale-down)
 terraform/                       # Infrastructure (VPC, IAM, EKS, addons)
 ```
 
+## Acknowledgments
+
+The Terraform infrastructure in this project is based on the [Automated Provisioning of Application-Ready Amazon EKS Clusters](https://aws-solutions-library-samples.github.io/compute/automated-provisioning-of-application-ready-amazon-eks-clusters.html) guidance from the AWS Solutions Library. The original modular Terraform structure (VPC, IAM, EKS cluster, addons, observability) has been extended with EKS Managed Capabilities (ArgoCD, KRO, ACK), GPU-optimized Karpenter NodePools, and the AI platform layer.
+
 ## Cost Management
 
 Scale down the platform during off-hours (stops all workloads, releases GPU nodes):
