@@ -2,16 +2,18 @@
 # Chart: nvidia/gpu-operator
 # Repository: https://helm.ngc.nvidia.com/nvidia
 #
-# EKS GPU AMIs have NVIDIA drivers pre-installed — driver install disabled.
+# EKS Bottlerocket NVIDIA AMIs pre-include the driver, toolkit, and device plugin.
+# All three must be disabled per AWS docs:
+# https://docs.aws.amazon.com/eks/latest/userguide/ml-eks-optimized-ami.html
 
 driver:
   enabled: false
 
 toolkit:
-  enabled: true
+  enabled: false
 
 devicePlugin:
-  enabled: true
+  enabled: false
 
 dcgmExporter:
   enabled: true
