@@ -9,6 +9,9 @@ driver:
 
 toolkit:
   enabled: true
+  env:
+    - name: ROOT
+      value: /run/nvidia/toolkit
 
 devicePlugin:
   enabled: true
