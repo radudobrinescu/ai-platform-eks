@@ -1,0 +1,15 @@
+# Team: Customer Support
+# Restricted to a single model, lower budget, tighter rate limits.
+apiVersion: kro.run/v1alpha1
+kind: AITeam
+metadata:
+  name: team-support
+  namespace: ai-platform
+spec:
+  teamName: customer-support
+  models:
+    - "gemma-4b"
+  maxBudget: 25.0
+  budgetDuration: "30d"
+  rpmLimit: 30
+  tpmLimit: 25000

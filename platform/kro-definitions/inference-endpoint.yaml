@@ -16,6 +16,8 @@ spec:
       maxModelLen:      "integer | default=8192"    # Max sequence length
       rayImage:         "string  | default=anyscale/ray-llm:2.54.0-py311-cu128"
     status:
+      ready:            "${rayservice.status.?activeServiceStatus.?applicationStatuses.?llm.?status.orValue('') == 'RUNNING' ? 'True' : 'False'}"
+      modelStatus:      "${rayservice.status.?activeServiceStatus.?applicationStatuses.?llm.?status.orValue('Pending')}"
       endpoint:         "${rayservice.metadata.name}-serve-svc.${rayservice.metadata.namespace}.svc.cluster.local:8000"
 
   resources:

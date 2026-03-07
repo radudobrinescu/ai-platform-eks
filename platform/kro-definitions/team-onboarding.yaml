@@ -1,0 +1,267 @@
+apiVersion: kro.run/v1alpha1
+kind: ResourceGraphDefinition
+metadata:
+  name: team-onboarding
+spec:
+  schema:
+    apiVersion: v1alpha1
+    kind: AITeam
+    spec:
+      teamName:       "string"                          # Human-readable team name (e.g. "search-ranking")
+      models:         "[]string | default=[\"*\"]"      # Allowed model names (* = all models)
+      maxBudget:      "float | default=100.0"           # Monthly budget in USD
+      budgetDuration: "string | default=30d"            # Budget reset period (1d, 7d, 30d)
+      rpmLimit:       "integer | default=100"           # Requests per minute
+      tpmLimit:       "integer | default=100000"        # Tokens per minute
+      cpuQuota:       "string | default=4"              # CPU quota for team namespace
+      memoryQuota:    "string | default=8Gi"            # Memory quota for team namespace
+      gpuQuota:       "integer | default=0"             # GPU quota for team namespace (0 = API-only team)
+    status:
+      namespace:      "${namespace.metadata.name}"
+      teamId:         "Provisioned by onboarding Job"
+      apiKeySecret:   "${schema.spec.teamName}-api-key"
+
+  resources:
+
+    # --- Namespace ---
+    - id: namespace
+      template:
+        apiVersion: v1
+        kind: Namespace
+        metadata:
+          name: team-${schema.spec.teamName}
+          labels:
+            app.kubernetes.io/part-of: ai-platform
+            ai-platform/team: ${schema.spec.teamName}
+            ai-platform/managed-by: kro
+
+    # --- Resource Quota ---
+    - id: resourcequota
+      template:
+        apiVersion: v1
+        kind: ResourceQuota
+        metadata:
+          name: team-quota
+          namespace: team-${schema.spec.teamName}
+        spec:
+          hard:
+            requests.cpu: ${schema.spec.cpuQuota}
+            requests.memory: ${schema.spec.memoryQuota}
+            limits.cpu: ${schema.spec.cpuQuota}
+            limits.memory: ${schema.spec.memoryQuota}
+            nvidia.com/gpu: ${string(schema.spec.gpuQuota)}
+            pods: "20"
+            services: "10"
+            persistentvolumeclaims: "5"
+
+    # --- Network Policy: default-deny ingress, allow intra-ns + platform ---
+    - id: networkpolicy
+      template:
+        apiVersion: networking.k8s.io/v1
+        kind: NetworkPolicy
+        metadata:
+          name: team-default
+          namespace: team-${schema.spec.teamName}
+        spec:
+          podSelector: {}
+          policyTypes:
+            - Ingress
+          ingress:
+            - from:
+                - namespaceSelector:
+                    matchLabels:
+                      ai-platform/team: ${schema.spec.teamName}
+            - from:
+                - namespaceSelector:
+                    matchLabels:
+                      app.kubernetes.io/part-of: ai-platform
+
+    # --- RBAC ---
+    - id: serviceaccount
+      template:
+        apiVersion: v1
+        kind: ServiceAccount
+        metadata:
+          name: team-${schema.spec.teamName}
+          namespace: team-${schema.spec.teamName}
+          labels:
+            ai-platform/team: ${schema.spec.teamName}
+
+    - id: rolebinding
+      template:
+        apiVersion: rbac.authorization.k8s.io/v1
+        kind: RoleBinding
+        metadata:
+          name: team-developer
+          namespace: team-${schema.spec.teamName}
+        subjects:
+          - kind: ServiceAccount
+            name: team-${schema.spec.teamName}
+            namespace: team-${schema.spec.teamName}
+        roleRef:
+          kind: ClusterRole
+          name: team-developer
+          apiGroup: rbac.authorization.k8s.io
+
+    # --- LiteLLM master key: read from ai-platform, copy to team ns ---
+    - id: litellmMasterKey
+      externalRef:
+        apiVersion: v1
+        kind: Secret
+        metadata:
+          name: litellm-secrets
+          namespace: ai-platform
+
+    - id: litellmMasterKeyCopy
+      template:
+        apiVersion: v1
+        kind: Secret
+        metadata:
+          name: litellm-admin-key
+          namespace: team-${schema.spec.teamName}
+          labels:
+            ai-platform/managed-by: kro
+        type: Opaque
+        data:
+          master-key: ${litellmMasterKey.data.master-key}
+
+    # --- Onboarding Job ---
+    # Calls LiteLLM API to create Team + scoped API key, stores result
+    # in a Secret. Uses bitnami/kubectl for jq (clean JSON parsing)
+    # and kubectl (native Secret creation instead of raw K8s API calls).
+    # Idempotent: finds existing team by alias, updates settings on re-sync.
+    - id: onboardingjob
+      template:
+        apiVersion: batch/v1
+        kind: Job
+        metadata:
+          name: ${schema.metadata.name}-onboard
+          namespace: team-${schema.spec.teamName}
+        spec:
+          backoffLimit: 10
+          ttlSecondsAfterFinished: 600
+          template:
+            metadata:
+              labels:
+                ai-platform/team: ${schema.spec.teamName}
+                ai-platform/job: onboarding
+            spec:
+              restartPolicy: OnFailure
+              serviceAccountName: team-${schema.spec.teamName}
+              containers:
+                - name: onboard
+                  image: bitnami/kubectl:1.33
+                  command: ["bash", "-c"]
+                  args:
+                    - |
+                      set -euo pipefail
+                      LITELLM="http://litellm.ai-platform.svc.cluster.local:4000"
+
+                      # --- Wait for LiteLLM ---
+                      echo "Waiting for LiteLLM..."
+                      until curl -sf "$LITELLM/health/liveliness" > /dev/null 2>&1; do sleep 5; done
+
+                      # --- Create or update Team ---
+                      TEAM_ID=$(curl -sf "$LITELLM/team/list" \
+                        -H "Authorization: Bearer $LITELLM_MASTER_KEY" \
+                        | jq -r ".[] | select(.team_alias==\"$TEAM_NAME\") | .team_id // empty" \
+                        | head -1)
+
+                      if [ -n "$TEAM_ID" ]; then
+                        echo "Team exists ($TEAM_ID), updating settings..."
+                        curl -sf -X POST "$LITELLM/team/update" \
+                          -H "Authorization: Bearer $LITELLM_MASTER_KEY" \
+                          -H "Content-Type: application/json" \
+                          -d "$(jq -n \
+                            --arg id "$TEAM_ID" \
+                            --argjson models "$MODELS_JSON" \
+                            --argjson budget "$MAX_BUDGET" \
+                            --arg duration "$BUDGET_DURATION" \
+                            --argjson tpm "$TPM_LIMIT" \
+                            --argjson rpm "$RPM_LIMIT" \
+                            '{team_id:$id, models:$models, max_budget:$budget,
+                              budget_duration:$duration, tpm_limit:$tpm, rpm_limit:$rpm}')" \
+                          > /dev/null
+                      else
+                        echo "Creating team..."
+                        TEAM_ID=$(curl -sf -X POST "$LITELLM/team/new" \
+                          -H "Authorization: Bearer $LITELLM_MASTER_KEY" \
+                          -H "Content-Type: application/json" \
+                          -d "$(jq -n \
+                            --arg alias "$TEAM_NAME" \
+                            --argjson models "$MODELS_JSON" \
+                            --argjson budget "$MAX_BUDGET" \
+                            --arg duration "$BUDGET_DURATION" \
+                            --argjson tpm "$TPM_LIMIT" \
+                            --argjson rpm "$RPM_LIMIT" \
+                            --arg ns "team-$TEAM_NAME" \
+                            '{team_alias:$alias, models:$models, max_budget:$budget,
+                              budget_duration:$duration, tpm_limit:$tpm, rpm_limit:$rpm,
+                              metadata:{managed_by:"kro", namespace:$ns}}')" \
+                          | jq -r '.team_id')
+
+                        [ -n "$TEAM_ID" ] && [ "$TEAM_ID" != "null" ] || { echo "ERROR: team creation failed"; exit 1; }
+                        echo "Team created: $TEAM_ID"
+                      fi
+
+                      # --- Generate scoped API key ---
+                      API_KEY=$(curl -sf -X POST "$LITELLM/key/generate" \
+                        -H "Authorization: Bearer $LITELLM_MASTER_KEY" \
+                        -H "Content-Type: application/json" \
+                        -d "$(jq -n \
+                          --arg id "$TEAM_ID" \
+                          --arg alias "$TEAM_NAME-kro-managed" \
+                          --argjson models "$MODELS_JSON" \
+                          --arg team "$TEAM_NAME" \
+                          '{team_id:$id, key_alias:$alias, models:$models,
+                            metadata:{managed_by:"kro", team_alias:$team}}')" \
+                        | jq -r '.key')
+
+                      [ -n "$API_KEY" ] && [ "$API_KEY" != "null" ] || { echo "ERROR: key generation failed"; exit 1; }
+
+                      # --- Store credentials as a Secret ---
+                      kubectl create secret generic "$TEAM_NAME-api-key" \
+                        --namespace="$NAMESPACE" \
+                        --from-literal=api-key="$API_KEY" \
+                        --from-literal=team-id="$TEAM_ID" \
+                        --from-literal=litellm-endpoint="$LITELLM" \
+                        --dry-run=client -o yaml \
+                        | kubectl label --local -f - \
+                            ai-platform/team="$TEAM_NAME" \
+                            ai-platform/managed-by=kro \
+                            -o yaml --dry-run=client \
+                        | kubectl apply -f -
+
+                      echo ""
+                      echo "=== Team '$TEAM_NAME' onboarded ==="
+                      echo "  Namespace:  $NAMESPACE"
+                      echo "  Secret:     $TEAM_NAME-api-key"
+                      echo "  Budget:     \$$MAX_BUDGET / $BUDGET_DURATION"
+                      echo "  Rate limit: $RPM_LIMIT rpm, $TPM_LIMIT tpm"
+                  env:
+                    - name: LITELLM_MASTER_KEY
+                      valueFrom:
+                        secretKeyRef:
+                          name: litellm-admin-key
+                          key: master-key
+                    - name: TEAM_NAME
+                      value: ${schema.spec.teamName}
+                    - name: NAMESPACE
+                      value: team-${schema.spec.teamName}
+                    - name: MODELS_JSON
+                      value: ${toJSON(schema.spec.models)}
+                    - name: MAX_BUDGET
+                      value: ${string(schema.spec.maxBudget)}
+                    - name: BUDGET_DURATION
+                      value: ${schema.spec.budgetDuration}
+                    - name: TPM_LIMIT
+                      value: ${string(schema.spec.tpmLimit)}
+                    - name: RPM_LIMIT
+                      value: ${string(schema.spec.rpmLimit)}
+                  resources:
+                    requests:
+                      cpu: 50m
+                      memory: 32Mi
+                    limits:
+                      cpu: 100m
+                      memory: 64Mi
