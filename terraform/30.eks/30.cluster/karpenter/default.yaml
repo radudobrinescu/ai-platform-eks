@@ -41,10 +41,9 @@ metadata:
   name: default
 spec:
   amiSelectorTerms:
-    - alias: al2023@latest
-  instanceStorePolicy: RAID0
+    - alias: bottlerocket@latest
   blockDeviceMappings:
-    - deviceName: /dev/xvda
+    - deviceName: /dev/xvdb
       ebs:
         volumeSize: 100Gi
         volumeType: gp3
@@ -60,6 +59,16 @@ spec:
     - tags:
         karpenter.sh/discovery: ${cluster_name}
         Environment: ${environment}
+  userData: |
+    [settings.container-runtime]
+    snapshotter = "soci"
+    [settings.container-runtime-plugins.soci-snapshotter]
+    pull-mode = "parallel-pull-unpack"
+    [settings.container-runtime-plugins.soci-snapshotter.parallel-pull-unpack]
+    max-concurrent-downloads-per-image = 10
+    concurrent-download-chunk-size = "16mb"
+    max-concurrent-unpacks-per-image = 10
+    discard-unpacked-layers = true
   tags:
     karpenter.sh/discovery: ${cluster_name}
     Environment: ${environment}
