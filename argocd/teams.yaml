@@ -1,0 +1,27 @@
+# Teams — syncs AITeam instances for team onboarding
+# Self-service: teams add YAMLs here to get a namespace, API key, and budget.
+# Requires the team-onboarding KRO definition to be active.
+# NOTE: Disabled until team-onboarding.yaml.wip is ready. To enable:
+#   1. Fix and rename platform/config/kro/team-onboarding.yaml.wip → .yaml
+#   2. kubectl apply -f argocd/teams.yaml
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: teams
+  namespace: argocd
+spec:
+  project: default
+  source:
+    repoURL: https://github.com/radudobrinescu/ai-platform-eks.git
+    targetRevision: main
+    path: workloads/teams
+  destination:
+    name: local-cluster
+    namespace: argocd
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true
+    syncOptions:
+      - CreateNamespace=true
+      - ServerSideApply=true

@@ -1,6 +1,6 @@
-# Workloads — syncs namespaces, KRO definitions, and model workloads
-# Teams are managed by a separate ArgoCD Application (teams.yaml)
-# once the AITeam KRO definition is ready.
+# Workloads — syncs InferenceEndpoint instances
+# Self-service: teams add model YAMLs here to deploy inference endpoints.
+# Team onboarding is managed by a separate ArgoCD Application (teams.yaml).
 apiVersion: argoproj.io/v1alpha1
 kind: Application
 metadata:
@@ -11,10 +11,7 @@ spec:
   source:
     repoURL: https://github.com/radudobrinescu/ai-platform-eks.git
     targetRevision: main
-    path: platform
-    directory:
-      recurse: true
-      exclude: "{apps/**/*,workloads/teams/**/*}"
+    path: workloads/models
   destination:
     name: local-cluster
     namespace: argocd
