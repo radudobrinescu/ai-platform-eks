@@ -1,18 +1,21 @@
-# LiteLLM — plain manifests ArgoCD Application
+# Platform Config — syncs namespaces, KRO definitions, RBAC, and ingress
+# Owned by the platform team. Changes here affect the platform APIs and routing.
 apiVersion: argoproj.io/v1alpha1
 kind: Application
 metadata:
-  name: litellm
+  name: platform-config
   namespace: argocd
 spec:
   project: default
   source:
     repoURL: https://github.com/radudobrinescu/ai-platform-eks.git
     targetRevision: main
-    path: platform/services/litellm
+    path: platform/config
+    directory:
+      recurse: true
   destination:
     name: local-cluster
-    namespace: ai-platform
+    namespace: argocd
   syncPolicy:
     automated:
       prune: true

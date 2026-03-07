@@ -1,15 +1,8 @@
-# AI Platform on EKS — GitOps Ready
+# AI Platform on EKS
 
-A sample AI platform built on Amazon EKS that leverages EKS Capabilities (ArgoCD, KRO, ACK) and platform engineering practices to provide self-service AI infrastructure for teams.
+Self-service AI inference platform on Amazon EKS. Teams deploy models by committing a short YAML file — the platform handles GPU provisioning, model serving, API routing, and observability.
 
-Each AI use case is expressed as a KRO definition — a custom Kubernetes API that abstracts the underlying complexity into a single resource. Teams consume isolated, pre-configured environments that implement best practices without needing to understand Ray, GPU scheduling, or networking.
-
-**Supported use cases:**
-- **Model Inference** — deploy HuggingFace models with a single `InferenceEndpoint` resource
-- **Chat Assistants with RAG** — model + vector DB + embeddings (planned)
-- **Batch Inference for Document Processing** — Ray Jobs for offline processing (planned)
-- **Agentic Workloads** — model + tools + orchestrator (planned)
-- **GPU Management with DRA** — dynamic resource allocation for multi-model GPU sharing (planned)
+Built on EKS Managed Capabilities (ArgoCD, KRO, ACK), Karpenter, Ray Serve, and vLLM.
 
 ## What You Get
 
@@ -18,7 +11,8 @@ Each AI use case is expressed as a KRO definition — a custom Kubernetes API th
 - **OpenAI-compatible API** — LiteLLM proxies all models behind `/v1/chat/completions`
 - **Chat UI** — Open WebUI for interactive testing
 - **LLM observability** — Langfuse traces every request
-- **Fast cold starts** — Bottlerocket + SOCI Parallel Pull, optional ECR pull-through cache
+- **Fast cold starts** — Bottlerocket + SOCI parallel pull, optional ECR pull-through cache
+- **Team onboarding** — `AITeam` resource creates namespace, RBAC, quotas, and scoped API key
 
 ## How It Works
 
@@ -26,7 +20,7 @@ Each AI use case is expressed as a KRO definition — a custom Kubernetes API th
 git push → ArgoCD syncs → KRO creates RayService + registration Job
          → Karpenter provisions GPU node (Bottlerocket + SOCI)
          → vLLM loads model → LiteLLM registers endpoint
-         → model available in Open WebUI and API
+         → model available via API and Open WebUI
 ```
 
 ## Architecture
@@ -35,58 +29,50 @@ git push → ArgoCD syncs → KRO creates RayService + registration Job
 EKS Cluster
 │
 ├── Managed Capabilities (AWS-hosted)
-│   ├── ArgoCD       ──▶ syncs all apps and workloads from Git
-│   ├── KRO          ──▶ turns custom resources into Kubernetes objects
-│   └── ACK          ──▶ manages AWS resources from Kubernetes
+│   ├── ArgoCD       ──▶  syncs platform and workloads from Git
+│   ├── KRO          ──▶  expands custom resources into K8s objects
+│   └── ACK          ──▶  manages AWS resources from Kubernetes
 │
-├── Karpenter (self-managed)
-│   ├── default          ──▶ platform app nodes (AL2023)
-│   └── gpu-inference    ──▶ GPU nodes (Bottlerocket + SOCI)
+├── Karpenter
+│   ├── default          ──▶  platform nodes (AL2023, Graviton)
+│   └── gpu-inference    ──▶  GPU nodes (Bottlerocket + SOCI)
 │
-├── Platform Apps (ArgoCD-managed, platform team owns)
-│   ├── GPU Operator     (Helm)
-│   ├── KubeRay          (Helm)
-│   ├── LiteLLM          (manifests)  ──▶ OpenAI-compatible API proxy
-│   ├── Open WebUI       (manifests)  ──▶ Chat UI
-│   └── Langfuse         (Helm)       ──▶ LLM observability
+├── Platform Services (ArgoCD-managed)
+│   ├── GPU Operator     ──▶  NVIDIA device plugin + DCGM metrics
+│   ├── KubeRay          ──▶  Ray cluster lifecycle
+│   ├── LiteLLM          ──▶  OpenAI-compatible API gateway
+│   ├── Open WebUI       ──▶  chat interface
+│   └── Langfuse         ──▶  LLM tracing and analytics
 │
-├── KRO Definitions (ArgoCD-managed, platform team owns)
-│   └── InferenceEndpoint CRD    ──▶ defines the API teams use
+├── Platform Config (ArgoCD-managed)
+│   ├── KRO definitions  ──▶  InferenceEndpoint, AITeam APIs
+│   ├── Namespaces        ──▶  ai-platform, inference
+│   ├── RBAC             ──▶  team-developer ClusterRole
+│   └── Ingress          ──▶  ALB routing to all services
 │
 └── Workloads (ArgoCD-managed, teams self-serve)
-    └── InferenceEndpoints (e.g. gemma-4b, qwen3-4b)
+    └── InferenceEndpoints (e.g. gemma-4b, smolLM3)
 ```
 
 ## Prerequisites
 
-- **AWS CLI** configured with appropriate permissions
-- **Terraform** >= 1.0
-- **kubectl**
-- **AWS Identity Center** configured (required for ArgoCD managed capability)
+- AWS CLI configured with appropriate permissions
+- Terraform >= 1.0
+- kubectl
+- AWS Identity Center configured (required for ArgoCD managed capability)
 
 ## Deployment
 
-### 1. Configure Environment
+### 1. Configure
 
 ```bash
 cd terraform/00.global/vars/
 cp example.tfvars your-env.tfvars
 ```
 
-Edit `your-env.tfvars` with your Identity Center config, VPC CIDR, and capabilities.
+Edit `your-env.tfvars` — set your Identity Center ARN, VPC CIDR, and capabilities.
 
-### 2. (Optional) Enable ECR Pull-Through Cache
-
-For ~60% faster image pulls. Requires a free Docker Hub account:
-
-```bash
-export TF_VAR_docker_hub_username="your-dockerhub-username"
-export TF_VAR_docker_hub_access_token="dckr_pat_XXXXXXXXXX"
-```
-
-Without this, images pull directly from Docker Hub (works fine, just slower).
-
-### 3. Bootstrap and Deploy
+### 2. Deploy Infrastructure
 
 ```bash
 export AWS_REGION=eu-central-1
@@ -95,43 +81,54 @@ make bootstrap
 make ENVIRONMENT=your-env apply-all
 ```
 
-Terraform creates: VPC, IAM roles, EKS cluster with capabilities, Karpenter NodePools, ArgoCD cluster registration, all secrets (LiteLLM, Langfuse), and platform-config ConfigMap.
+This creates the VPC, IAM roles, EKS cluster with managed capabilities, Karpenter NodePools, and all platform secrets (LiteLLM, Langfuse).
 
-### 4. Update ArgoCD Source URLs
+### 3. (Optional) Enable ECR Pull-Through Cache
 
-Replace the placeholder Git URL in all ArgoCD app definitions:
+Mirrors Docker Hub images to ECR for ~60% faster GPU node image pulls:
+
+```bash
+export TF_VAR_docker_hub_username="your-dockerhub-username"
+export TF_VAR_docker_hub_access_token="dckr_pat_XXXXXXXXXX"
+```
+
+Without this, images pull directly from Docker Hub (works fine, just slower).
+
+### 4. Bootstrap ArgoCD
+
+Update the Git repo URL in all ArgoCD application definitions:
 
 ```bash
 cd argocd/
-sed -i '' 's|https://github.com/YOUR-ORG/YOUR-REPO.git|https://github.com/your-org/your-repo.git|g' *.yaml
-grep repoURL *.yaml  # verify
+sed -i '' 's|https://github.com/radudobrinescu/ai-platform-eks.git|https://github.com/YOUR-ORG/YOUR-REPO.git|g' *.yaml
 ```
 
-### 5. Bootstrap ArgoCD Applications
+Apply them to the cluster:
 
 ```bash
 aws eks update-kubeconfig --region $AWS_REGION --name your-cluster-name
 kubectl apply -f argocd/
 ```
 
-This creates 6 ArgoCD Applications:
+This creates 7 ArgoCD Applications:
 
-| App | What it deploys |
-|-----|-----------------|
+| App | What it syncs |
+|-----|---------------|
+| `platform-config` | Namespaces, KRO definitions, RBAC, Ingress |
 | `gpu-operator` | NVIDIA GPU Operator (Helm) |
 | `kuberay-operator` | KubeRay Operator (Helm) |
-| `langfuse` | Langfuse LLM observability (Helm) |
 | `litellm` | LiteLLM proxy + PostgreSQL |
 | `open-webui` | Open WebUI chat interface |
-| `workloads` | Namespaces, KRO definitions, inference workloads |
+| `langfuse` | Langfuse LLM observability (Helm) |
+| `workloads` | InferenceEndpoint instances (self-service) |
 
-Wait for all apps to be Healthy:
+Wait for all apps to sync:
 
 ```bash
 kubectl get applications -n argocd
 ```
 
-### 6. Create HuggingFace Token
+### 5. Create HuggingFace Token
 
 Required for gated models (Gemma, Llama, etc.):
 
@@ -140,12 +137,12 @@ kubectl create secret generic hf-token -n inference \
   --from-literal=token=hf_YOUR_TOKEN_HERE
 ```
 
-### 7. Deploy a Model
+### 6. Deploy a Model
 
-Commit an `InferenceEndpoint` to `platform/workloads/`:
+Add an `InferenceEndpoint` to `workloads/models/`:
 
 ```yaml
-# platform/workloads/gemma-4b.yaml
+# workloads/models/gemma-4b.yaml
 apiVersion: kro.run/v1alpha1
 kind: InferenceEndpoint
 metadata:
@@ -159,40 +156,36 @@ spec:
 ```
 
 ```bash
-git add platform/workloads/gemma-4b.yaml
+git add workloads/models/gemma-4b.yaml
 git commit -m "feat: Deploy Gemma 3 4B"
 git push
 ```
 
-First deployment takes ~7 min with ECR cache, ~14 min without (GPU node + image pull + model loading).
+First deployment takes ~7 min with ECR cache, ~14 min without (GPU node provisioning + image pull + model loading).
 
-### 8. Access Services
+### 7. Access Services
 
 ```bash
-kubectl port-forward svc/litellm 4000:4000 -n ai-platform       # http://localhost:4000
-kubectl port-forward svc/open-webui 8080:8080 -n ai-platform     # http://localhost:8080
-kubectl port-forward svc/langfuse-web 3000:3000 -n ai-platform   # http://localhost:3000
+kubectl port-forward svc/litellm 4000:4000 -n ai-platform       # API
+kubectl port-forward svc/open-webui 8080:8080 -n ai-platform     # Chat UI
+kubectl port-forward svc/langfuse-web 3000:3000 -n ai-platform   # Observability
 ```
 
-Get the LiteLLM API key:
+Get the API key and test:
 
 ```bash
-kubectl get secret litellm-secrets -n ai-platform \
-  -o jsonpath='{.data.master-key}' | base64 -d
-```
+export LITELLM_KEY=$(kubectl get secret litellm-secrets -n ai-platform \
+  -o jsonpath='{.data.master-key}' | base64 -d)
 
-Test:
-
-```bash
 curl http://localhost:4000/v1/chat/completions \
   -H "Content-Type: application/json" \
-  -H "Authorization: Bearer YOUR_MASTER_KEY" \
+  -H "Authorization: Bearer $LITELLM_KEY" \
   -d '{"model": "gemma-4b", "messages": [{"role": "user", "content": "Hello!"}]}'
 ```
 
-### 9. Enable Langfuse Tracing (optional)
+### 8. Enable Langfuse Tracing (optional)
 
-After Langfuse is running, create an API key pair in the Langfuse UI (`http://localhost:3000`), then:
+Create an API key pair in the Langfuse UI at `http://localhost:3000`, then:
 
 ```bash
 kubectl create secret generic langfuse-litellm-keys -n ai-platform \
@@ -220,49 +213,56 @@ spec:
   rayImage: "anyscale/ray-llm:2.54.0-py311-cu128"  # Override if needed
 ```
 
-KRO generates: RayService, GPU workers, and a LiteLLM registration Job.
+KRO expands this into a RayService (with vLLM backend), GPU worker pods, and a LiteLLM registration Job.
+
+Status fields:
+
+```bash
+kubectl get inferenceendpoints -n inference
+# NAME       READY   MODELSTATUS   ENDPOINT
+# gemma-4b   True    RUNNING       gemma-4b-serve-svc.inference.svc.cluster.local:8000
+```
 
 ## Repository Structure
 
 ```
-argocd/                          # ArgoCD Application definitions (bootstrap)
-platform/
-  namespaces/                    # Kubernetes namespaces
-  kro-definitions/               # KRO ResourceGraphDefinitions
-  apps/                          # Platform application configs
-    gpu-operator/                #   NVIDIA GPU Operator helm values
-    kuberay/                     #   KubeRay Operator helm values
-    langfuse/                    #   Langfuse helm values
-    litellm/                     #   LiteLLM deployment + DB + config
-    open-webui/                  #   Open WebUI deployment
-  workloads/                     # InferenceEndpoint instances (team-facing)
-ops/                             # Operational scripts (scale-up, scale-down)
+argocd/                          # ArgoCD Application definitions (one-time bootstrap)
+platform/                        # Platform team owns everything here
+  config/                        #   Namespaces, KRO APIs, RBAC, Ingress
+    kro/                         #     InferenceEndpoint + AITeam definitions
+    rbac/                        #     team-developer ClusterRole
+  services/                      #   Platform service configurations
+    gpu-operator/                #     NVIDIA GPU Operator (Helm values)
+    kuberay/                     #     KubeRay Operator (Helm values)
+    langfuse/                    #     Langfuse (Helm values)
+    litellm/                     #     LiteLLM proxy + DB (manifests)
+    open-webui/                  #     Open WebUI (manifests)
+workloads/                       # Self-service — teams add YAMLs here
+  models/                        #   InferenceEndpoint instances
+  teams/                         #   AITeam instances (managed separately)
+ops/                             # Operational scripts
 terraform/                       # Infrastructure (VPC, IAM, EKS, addons)
 ```
 
-## Acknowledgments
-
-The Terraform infrastructure in this project is based on the [Automated Provisioning of Application-Ready Amazon EKS Clusters](https://aws-solutions-library-samples.github.io/compute/automated-provisioning-of-application-ready-amazon-eks-clusters.html) guidance from the AWS Solutions Library. The original modular Terraform structure (VPC, IAM, EKS cluster, addons, observability) has been extended with EKS Managed Capabilities (ArgoCD, KRO, ACK), GPU-optimized Karpenter NodePools, and the AI platform layer.
-
 ## Cost Management
 
-Scale down the platform during off-hours (stops all workloads, releases GPU nodes):
+Scale down during off-hours to release GPU nodes:
 
 ```bash
-./ops/scale-down.sh    # Suspends ArgoCD auto-sync, scales to 0
-./ops/scale-up.sh      # Restores replicas, re-enables auto-sync
+./ops/scale-down.sh    # Suspends ArgoCD, scales to 0, reclaims GPU nodes
+./ops/scale-up.sh      # Restores replicas, re-enables ArgoCD auto-sync
 ```
 
 ## Cleanup
 
 ```bash
-# Remove workloads first (releases GPU nodes)
-kubectl delete inferenceendpoints --all -n inference
+kubectl delete inferenceendpoints --all -n inference   # Release GPU nodes
+kubectl get nodes -l workload-type=gpu-inference       # Wait for termination (~5 min)
 
-# Wait for GPU nodes to terminate (~5 min)
-kubectl get nodes -l workload-type=gpu-inference
-
-# Destroy all infrastructure
 cd terraform
 make ENVIRONMENT=your-env destroy-all
 ```
+
+## Acknowledgments
+
+The Terraform infrastructure is based on the [Automated Provisioning of Application-Ready Amazon EKS Clusters](https://aws-solutions-library-samples.github.io/compute/automated-provisioning-of-application-ready-amazon-eks-clusters.html) guidance from the AWS Solutions Library, extended with EKS Managed Capabilities (ArgoCD, KRO, ACK), GPU-optimized Karpenter NodePools, and the AI platform layer.
