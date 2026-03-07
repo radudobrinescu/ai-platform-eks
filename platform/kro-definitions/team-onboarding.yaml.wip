@@ -17,14 +17,14 @@ spec:
       memoryQuota:    "string | default=8Gi"            # Memory quota for team namespace
       gpuQuota:       "integer | default=0"             # GPU quota for team namespace (0 = API-only team)
     status:
-      namespace:      "${namespace.metadata.name}"
+      namespace:      "${teamNamespace.metadata.name}"
       teamId:         "Provisioned by onboarding Job"
-      apiKeySecret:   "${schema.spec.teamName}-api-key"
+      apiKeySecret:   "${serviceaccount.metadata.name}-api-key"
 
   resources:
 
     # --- Namespace ---
-    - id: namespace
+    - id: teamNamespace
       template:
         apiVersion: v1
         kind: Namespace
