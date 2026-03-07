@@ -1,7 +1,7 @@
 apiVersion: kro.run/v1alpha1
 kind: InferenceEndpoint
 metadata:
-  name: SmolLM3-3B
+  name: smollm3-3b
   namespace: inference
 spec:
   model: "HuggingFaceTB/SmolLM3-3B"
