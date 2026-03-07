@@ -9,7 +9,7 @@ spec:
     spec:
       teamName:       "string"                          # Human-readable team name (e.g. "search-ranking")
       models:         "[]string | default=[\"*\"]"      # Allowed model names (* = all models)
-      maxBudget:      "float | default=100.0"           # Monthly budget in USD
+      maxBudget:      "string | default=100.0"           # Monthly budget in USD
       budgetDuration: "string | default=30d"            # Budget reset period (1d, 7d, 30d)
       rpmLimit:       "integer | default=100"           # Requests per minute
       tpmLimit:       "integer | default=100000"        # Tokens per minute
@@ -123,7 +123,7 @@ spec:
             ai-platform/managed-by: kro
         type: Opaque
         data:
-          master-key: ${litellmMasterKey.data.master-key}
+          master-key: "${litellmMasterKey.data['master-key']}"
 
     # --- Onboarding Job ---
     # Calls LiteLLM API to create Team + scoped API key, stores result
@@ -156,6 +156,7 @@ spec:
                     - |
                       set -euo pipefail
                       LITELLM="http://litellm.ai-platform.svc.cluster.local:4000"
+                      MODELS_JSON=$(echo "$MODELS_CSV" | jq -R 'split(",")')
 
                       # --- Wait for LiteLLM ---
                       echo "Waiting for LiteLLM..."
@@ -248,10 +249,10 @@ spec:
                       value: ${schema.spec.teamName}
                     - name: NAMESPACE
                       value: team-${schema.spec.teamName}
-                    - name: MODELS_JSON
-                      value: ${toJSON(schema.spec.models)}
+                    - name: MODELS_CSV
+                      value: ${schema.spec.models.join(",")}
                     - name: MAX_BUDGET
-                      value: ${string(schema.spec.maxBudget)}
+                      value: ${schema.spec.maxBudget}
                     - name: BUDGET_DURATION
                       value: ${schema.spec.budgetDuration}
                     - name: TPM_LIMIT
