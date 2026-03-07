@@ -46,7 +46,12 @@ if [ ${#WORKLOAD_FILES[@]} -gt 0 ]; then
   echo ""
   echo "  [0] Skip — scale up infrastructure only"
   echo ""
-  read -p "Select workloads (comma-separated, e.g. 1,2 or 'all'): " SELECTION
+  if [ -t 0 ]; then
+    read -p "Select workloads (comma-separated, e.g. 1,2 or 'all'): " SELECTION
+  else
+    echo "Non-interactive mode — deploying all workloads."
+    SELECTION="all"
+  fi
 
   if [ "$SELECTION" = "all" ]; then
     SELECTED_FILES=("${WORKLOAD_FILES[@]}")
