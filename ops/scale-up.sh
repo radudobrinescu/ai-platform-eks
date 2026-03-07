@@ -22,7 +22,7 @@ echo ""
 # Re-enable ArgoCD auto-sync
 SYNC_POLICY='{"spec":{"syncPolicy":{"automated":{"prune":true,"selfHeal":true},"syncOptions":["CreateNamespace=true","ServerSideApply=true"]}}}'
 echo "Re-enabling ArgoCD auto-sync..."
-for app in platform-config litellm open-webui langfuse kuberay-operator workloads; do
+for app in platform-config litellm open-webui langfuse kuberay-operator models; do
   kubectl patch application "$app" -n argocd --type merge -p "$SYNC_POLICY" 2>/dev/null && echo "  ✓ $app" || true
 done
 echo ""

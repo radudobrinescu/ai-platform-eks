@@ -27,7 +27,7 @@ echo "✓ Port-forwards stopped"
 
 # Suspend ArgoCD auto-sync to prevent self-healing during scale-down
 echo "Suspending ArgoCD auto-sync..."
-for app in platform-config litellm open-webui langfuse kuberay-operator workloads; do
+for app in platform-config litellm open-webui langfuse kuberay-operator models; do
   kubectl patch application "$app" -n argocd --type merge \
     -p '{"spec":{"syncPolicy":null}}' 2>/dev/null && echo "  ✓ $app" || true
 done
