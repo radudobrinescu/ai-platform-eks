@@ -1,10 +1,10 @@
 apiVersion: kro.run/v1alpha1
 kind: InferenceEndpoint
 metadata:
-  name: qwen3-4b
+  name: SmolLM3-3B
   namespace: inference
 spec:
-  model: "Qwen/Qwen3-4B"
+  model: "HuggingFaceTB/SmolLM3-3B"
   gpuCount: 1
   minReplicas: 1
   maxReplicas: 2
