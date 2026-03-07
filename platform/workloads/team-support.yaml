@@ -5,6 +5,8 @@ kind: AITeam
 metadata:
   name: team-support
   namespace: ai-platform
+  annotations:
+    argocd.argoproj.io/sync-wave: "1"
 spec:
   teamName: customer-support
   models:
