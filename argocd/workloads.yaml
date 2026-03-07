@@ -14,7 +14,7 @@ spec:
     path: platform
     directory:
       recurse: true
-      exclude: "{apps/**/*,argocd/**/*}"
+      exclude: "{apps/**/*,argocd/**/*,workloads-staging/**/*}"
   destination:
     name: local-cluster
     namespace: argocd
