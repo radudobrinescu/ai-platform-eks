@@ -1,6 +1,6 @@
-# Workloads — syncs namespaces, KRO definitions, and KRO workload CRs
-# Individual apps (gpu-operator, kuberay, langfuse, litellm, open-webui)
-# each have their own ArgoCD Application.
+# Workloads — syncs namespaces, KRO definitions, and model workloads
+# Teams are managed by a separate ArgoCD Application (teams.yaml)
+# once the AITeam KRO definition is ready.
 apiVersion: argoproj.io/v1alpha1
 kind: Application
 metadata:
@@ -14,7 +14,7 @@ spec:
     path: platform
     directory:
       recurse: true
-      exclude: "{apps/**/*,argocd/**/*,workloads-staging/**/*}"
+      exclude: "{apps/**/*,workloads/teams/**/*}"
   destination:
     name: local-cluster
     namespace: argocd
