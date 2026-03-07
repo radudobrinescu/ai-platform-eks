@@ -38,13 +38,13 @@ if [ ${#WORKLOAD_FILES[@]} -gt 0 ]; then
   for i in "${!WORKLOAD_FILES[@]}"; do
     f="${WORKLOAD_FILES[$i]}"
     name=$(basename "$f" .yaml)
-    kind=$(grep "^kind:" "$f" | head -1 | awk '{print $2}')
-    model=$(grep "model:" "$f" | head -1 | sed 's/.*model: *"\{0,1\}\([^"]*\)"\{0,1\}/\1/')
-    gpu=$(grep "gpuCount:" "$f" | head -1 | awk '{print $2}')
+    kind=$(grep "^kind:" "$f" | head -1 | awk '{print $2}' || true)
+    model=$(grep "model:" "$f" | head -1 | sed 's/.*model: *"\{0,1\}\([^"]*\)"\{0,1\}/\1/' || true)
+    gpu=$(grep "gpuCount:" "$f" | head -1 | awk '{print $2}' || true)
     printf "  [%d] %-20s %-25s (model: %s, gpus: %s)\n" $((i+1)) "$name" "$kind" "$model" "${gpu:-1}"
   done
   echo ""
-  echo "  [0] Skip — scale up infrastructure only"
+  echo "  [0] Skip - scale up infrastructure only"
   echo ""
   if [ -t 0 ]; then
     read -p "Select workloads (comma-separated, e.g. 1,2 or 'all'): " SELECTION
