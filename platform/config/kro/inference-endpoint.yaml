@@ -104,7 +104,7 @@ spec:
                           max_replicas: ${string(schema.spec.maxReplicas)}
                           target_ongoing_requests: 10
           rayClusterConfig:
-            rayVersion: "2.53.0"
+            rayVersion: "2.54.0"
             enableInTreeAutoscaling: true
             headGroupSpec:
               rayStartParams:
