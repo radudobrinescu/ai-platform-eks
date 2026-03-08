@@ -94,6 +94,13 @@ redis:
       size: 8Gi
       storageClass: gp3
 
-# S3/MinIO disabled — not needed when blob storage is off
+# S3/MinIO — blob storage disabled, events stored in ClickHouse.
+# Minimal config required by chart template validation.
 s3:
   deploy: false
+  eventUpload:
+    bucket: "langfuse"
+  batchExport:
+    bucket: "langfuse"
+  mediaUpload:
+    bucket: "langfuse"
