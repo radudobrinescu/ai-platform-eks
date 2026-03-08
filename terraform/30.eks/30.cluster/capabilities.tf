@@ -296,7 +296,7 @@ resource "kubernetes_secret" "litellm_api_key" {
 ################################################################################
 resource "random_password" "langfuse" {
   for_each = local.capabilities.gitops ? toset([
-    "password", "clickhouse-password", "redis-password"
+    "password", "clickhouse-password", "redis-password", "s3-secret-key"
   ]) : toset([])
 
   length  = 32
