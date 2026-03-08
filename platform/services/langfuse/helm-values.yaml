@@ -90,3 +90,11 @@ redis:
       enabled: true
       size: 8Gi
       storageClass: gp3
+
+# MinIO (bundled S3-compatible blob storage for traces/events)
+s3:
+  deploy: true
+  credentials:
+    existingSecret: langfuse-secrets
+    existingSecretAccessKeyIdKey: s3-access-key
+    existingSecretSecretAccessKeyKey: s3-secret-key
