@@ -5,24 +5,16 @@ metadata:
   namespace: ai-platform
   annotations:
     alb.ingress.kubernetes.io/group.name: ai-platform
-    alb.ingress.kubernetes.io/group.order: "10"
     alb.ingress.kubernetes.io/scheme: internal
     alb.ingress.kubernetes.io/target-type: ip
-    alb.ingress.kubernetes.io/listen-ports: '[{"HTTP": 80}]'
+    alb.ingress.kubernetes.io/listen-ports: '[{"HTTP": 4000}]'
     alb.ingress.kubernetes.io/healthcheck-path: /health/liveliness
 spec:
   ingressClassName: alb
   rules:
     - http:
         paths:
-          - path: /v1
-            pathType: Prefix
-            backend:
-              service:
-                name: litellm
-                port:
-                  number: 4000
-          - path: /model
+          - path: /
             pathType: Prefix
             backend:
               service:
@@ -37,23 +29,15 @@ metadata:
   namespace: ai-platform
   annotations:
     alb.ingress.kubernetes.io/group.name: ai-platform
-    alb.ingress.kubernetes.io/group.order: "20"
     alb.ingress.kubernetes.io/scheme: internal
     alb.ingress.kubernetes.io/target-type: ip
-    alb.ingress.kubernetes.io/listen-ports: '[{"HTTP": 80}]'
+    alb.ingress.kubernetes.io/listen-ports: '[{"HTTP": 8080}]'
     alb.ingress.kubernetes.io/healthcheck-path: /health/liveliness
 spec:
   ingressClassName: alb
   rules:
     - http:
         paths:
-          - path: /chat
-            pathType: Prefix
-            backend:
-              service:
-                name: open-webui
-                port:
-                  number: 8080
           - path: /
             pathType: Prefix
             backend:
@@ -69,17 +53,16 @@ metadata:
   namespace: ai-platform
   annotations:
     alb.ingress.kubernetes.io/group.name: ai-platform
-    alb.ingress.kubernetes.io/group.order: "1"
     alb.ingress.kubernetes.io/scheme: internal
     alb.ingress.kubernetes.io/target-type: ip
-    alb.ingress.kubernetes.io/listen-ports: '[{"HTTP": 80}]'
+    alb.ingress.kubernetes.io/listen-ports: '[{"HTTP": 3000}]'
     alb.ingress.kubernetes.io/healthcheck-path: /api/public/health
 spec:
   ingressClassName: alb
   rules:
     - http:
         paths:
-          - path: /observe
+          - path: /
             pathType: Prefix
             backend:
               service:

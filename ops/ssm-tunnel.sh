@@ -1,9 +1,8 @@
 #!/usr/bin/env bash
 # Tunnel to the internal ALB via SSM through an EKS node.
-# Usage: ./ops/ssm-tunnel.sh [local_port]
+# Creates 3 port forwards: Open WebUI (8080), LiteLLM (4000), Langfuse (3000)
 set -euo pipefail
 
-LOCAL_PORT="${1:-8080}"
 NAMESPACE="ai-platform"
 INGRESS_NAME="ai-platform-litellm"
 
@@ -23,13 +22,26 @@ INSTANCE_ID=$(aws ec2 describe-instances \
 [ -z "$INSTANCE_ID" ] || [ "$INSTANCE_ID" = "None" ] && { echo "ERROR: No running EKS node found."; exit 1; }
 echo "  Instance: $INSTANCE_ID"
 
-echo "→ Starting SSM tunnel on localhost:$LOCAL_PORT → $ALB_HOST:80"
-echo "  Open WebUI:  http://localhost:$LOCAL_PORT/"
-echo "  LiteLLM API: http://localhost:$LOCAL_PORT/v1/chat/completions"
-echo "  Langfuse:    http://localhost:$LOCAL_PORT/observe"
+echo ""
+echo "→ Starting SSM tunnels..."
+echo "  Open WebUI:  http://localhost:8080"
+echo "  LiteLLM:     http://localhost:4000"
+echo "  Langfuse:    http://localhost:3000"
 echo ""
 
-aws ssm start-session \
-  --target "$INSTANCE_ID" \
+# Start first two tunnels in background
+aws ssm start-session --target "$INSTANCE_ID" \
   --document-name AWS-StartPortForwardingSessionToRemoteHost \
-  --parameters "{\"host\":[\"$ALB_HOST\"],\"portNumber\":[\"80\"],\"localPortNumber\":[\"$LOCAL_PORT\"]}"
+  --parameters "{\"host\":[\"$ALB_HOST\"],\"portNumber\":[\"8080\"],\"localPortNumber\":[\"8080\"]}" &
+
+aws ssm start-session --target "$INSTANCE_ID" \
+  --document-name AWS-StartPortForwardingSessionToRemoteHost \
+  --parameters "{\"host\":[\"$ALB_HOST\"],\"portNumber\":[\"4000\"],\"localPortNumber\":[\"4000\"]}" &
+
+aws ssm start-session --target "$INSTANCE_ID" \
+  --document-name AWS-StartPortForwardingSessionToRemoteHost \
+  --parameters "{\"host\":[\"$ALB_HOST\"],\"portNumber\":[\"3000\"],\"localPortNumber\":[\"3000\"]}" &
+
+# Wait for all background tunnels; clean up on Ctrl+C
+trap 'kill $(jobs -p) 2>/dev/null; exit' INT TERM
+wait
