@@ -2,7 +2,8 @@
 # Chart: langfuse/langfuse
 # Repository: https://langfuse.github.io/langfuse-k8s
 #
-# Simplified setup: bundled PostgreSQL, ClickHouse, Redis (no external RDS).
+# Simplified setup: bundled PostgreSQL, ClickHouse, Redis.
+# Blob storage disabled — events stored directly in ClickHouse.
 # Secrets are created by Terraform (kubernetes_secret "langfuse_secrets") and
 # referenced here via secretKeyRef — no secrets stored in git.
 
@@ -25,21 +26,8 @@ langfuse:
       key: encryption-key
 
   additionalEnv:
-    - name: LANGFUSE_S3_EVENT_UPLOAD_SECRET_ACCESS_KEY
-      valueFrom:
-        secretKeyRef:
-          name: langfuse-secrets
-          key: s3-secret-key
-    - name: LANGFUSE_S3_BATCH_EXPORT_SECRET_ACCESS_KEY
-      valueFrom:
-        secretKeyRef:
-          name: langfuse-secrets
-          key: s3-secret-key
-    - name: LANGFUSE_S3_MEDIA_UPLOAD_SECRET_ACCESS_KEY
-      valueFrom:
-        secretKeyRef:
-          name: langfuse-secrets
-          key: s3-secret-key
+    - name: LANGFUSE_ENABLE_BLOB_STORAGE
+      value: "false"
 
   service:
     type: ClusterIP
@@ -71,7 +59,7 @@ postgresql:
       size: 20Gi
       storageClass: gp3
 
-# ClickHouse for analytics/event ingestion
+# ClickHouse for analytics/event ingestion (also stores trace events)
 clickhouse:
   deploy: true
   replicaCount: 1
@@ -106,6 +94,6 @@ redis:
       size: 8Gi
       storageClass: gp3
 
-# MinIO (bundled S3-compatible blob storage for traces/events)
+# S3/MinIO disabled — not needed when blob storage is off
 s3:
-  deploy: true
+  deploy: false
