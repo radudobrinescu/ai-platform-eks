@@ -333,6 +333,7 @@ resource "kubernetes_secret" "langfuse_secrets" {
       "encryption-key"  = random_id.langfuse_encryption_key[0].hex
       "nextauth-secret" = random_id.langfuse_nextauth_secret[0].hex
       "salt"            = random_id.langfuse_salt[0].hex
+      "root-user"       = "minio"
     }
   )
 
