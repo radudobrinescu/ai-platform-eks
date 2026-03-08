@@ -24,7 +24,22 @@ langfuse:
       name: langfuse-secrets
       key: encryption-key
 
-  additionalEnv: []
+  additionalEnv:
+    - name: LANGFUSE_S3_EVENT_UPLOAD_SECRET_ACCESS_KEY
+      valueFrom:
+        secretKeyRef:
+          name: langfuse-secrets
+          key: s3-secret-key
+    - name: LANGFUSE_S3_BATCH_EXPORT_SECRET_ACCESS_KEY
+      valueFrom:
+        secretKeyRef:
+          name: langfuse-secrets
+          key: s3-secret-key
+    - name: LANGFUSE_S3_MEDIA_UPLOAD_SECRET_ACCESS_KEY
+      valueFrom:
+        secretKeyRef:
+          name: langfuse-secrets
+          key: s3-secret-key
 
   service:
     type: ClusterIP
@@ -94,7 +109,3 @@ redis:
 # MinIO (bundled S3-compatible blob storage for traces/events)
 s3:
   deploy: true
-  credentials:
-    existingSecret: langfuse-secrets
-    existingSecretAccessKeyIdKey: s3-access-key
-    existingSecretSecretAccessKeyKey: s3-secret-key
