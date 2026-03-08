@@ -12,7 +12,7 @@ spec:
   models:
     - "gemma-4b"
     - "qwen3-4b"
-  maxBudget: 50.0
+  maxBudget: "50.0"
   budgetDuration: "30d"
   rpmLimit: 60
   tpmLimit: 50000

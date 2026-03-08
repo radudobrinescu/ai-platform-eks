@@ -11,7 +11,7 @@ spec:
   teamName: customer-support
   models:
     - "gemma-4b"
-  maxBudget: 25.0
+  maxBudget: "25.0"
   budgetDuration: "30d"
   rpmLimit: 30
   tpmLimit: 25000
