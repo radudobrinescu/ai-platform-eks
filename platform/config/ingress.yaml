@@ -1,9 +1,11 @@
 apiVersion: networking.k8s.io/v1
 kind: Ingress
 metadata:
-  name: ai-platform
+  name: ai-platform-litellm
   namespace: ai-platform
   annotations:
+    alb.ingress.kubernetes.io/group.name: ai-platform
+    alb.ingress.kubernetes.io/group.order: "10"
     alb.ingress.kubernetes.io/scheme: internal
     alb.ingress.kubernetes.io/target-type: ip
     alb.ingress.kubernetes.io/listen-ports: '[{"HTTP": 80}]'
@@ -34,6 +36,24 @@ spec:
                 name: litellm
                 port:
                   number: 4000
+---
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: ai-platform-openwebui
+  namespace: ai-platform
+  annotations:
+    alb.ingress.kubernetes.io/group.name: ai-platform
+    alb.ingress.kubernetes.io/group.order: "20"
+    alb.ingress.kubernetes.io/scheme: internal
+    alb.ingress.kubernetes.io/target-type: ip
+    alb.ingress.kubernetes.io/listen-ports: '[{"HTTP": 80}]'
+    alb.ingress.kubernetes.io/healthcheck-path: /health/liveliness
+spec:
+  ingressClassName: alb
+  rules:
+    - http:
+        paths:
           - path: /chat
             pathType: Prefix
             backend:
@@ -41,13 +61,6 @@ spec:
                 name: open-webui
                 port:
                   number: 8080
-          - path: /observe
-            pathType: Prefix
-            backend:
-              service:
-                name: langfuse-web
-                port:
-                  number: 3000
           - path: /
             pathType: Prefix
             backend:
@@ -55,3 +68,28 @@ spec:
                 name: open-webui
                 port:
                   number: 8080
+---
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: ai-platform-langfuse
+  namespace: ai-platform
+  annotations:
+    alb.ingress.kubernetes.io/group.name: ai-platform
+    alb.ingress.kubernetes.io/group.order: "1"
+    alb.ingress.kubernetes.io/scheme: internal
+    alb.ingress.kubernetes.io/target-type: ip
+    alb.ingress.kubernetes.io/listen-ports: '[{"HTTP": 80}]'
+    alb.ingress.kubernetes.io/healthcheck-path: /api/public/health
+spec:
+  ingressClassName: alb
+  rules:
+    - http:
+        paths:
+          - path: /observe
+            pathType: Prefix
+            backend:
+              service:
+                name: langfuse-web
+                port:
+                  number: 3000
