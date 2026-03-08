@@ -102,8 +102,8 @@ s3:
     secretKeyRef:
       name: langfuse-secrets
       key: s3-secret-key
-  minio:
-    auth:
-      rootUser: "minio"
-      existingSecret: langfuse-secrets
-      rootPasswordSecretKey: s3-secret-key
+  auth:
+    rootUser: "minio"
+    existingSecret: langfuse-secrets
+    rootPasswordSecretKey: s3-secret-key
+    rootUserSecretKey: ""
