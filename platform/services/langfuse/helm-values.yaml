@@ -93,9 +93,17 @@ redis:
       storageClass: gp3
 
 # MinIO (bundled S3-compatible blob storage for traces/events)
+# Uses langfuse-secrets for both MinIO root password and Langfuse S3 client credentials.
 s3:
   deploy: true
+  accessKeyId:
+    value: "minio"
   secretAccessKey:
     secretKeyRef:
       name: langfuse-secrets
       key: s3-secret-key
+  minio:
+    auth:
+      rootUser: "minio"
+      existingSecret: langfuse-secrets
+      rootPasswordSecretKey: s3-secret-key
