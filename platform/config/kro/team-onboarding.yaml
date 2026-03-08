@@ -150,7 +150,7 @@ spec:
               serviceAccountName: team-${schema.spec.teamName}
               containers:
                 - name: onboard
-                  image: bitnami/kubectl:1.33
+                  image: bitnami/kubectl:latest
                   command: ["bash", "-c"]
                   args:
                     - |
