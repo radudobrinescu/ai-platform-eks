@@ -5,6 +5,11 @@ locals {
   cluster_version = var.cluster_config.kubernetes_version
   eks_auto_mode   = try(var.cluster_config.eks_auto_mode, false)
 
+  # Single source of truth for the Ray LLM image version.
+  # Referenced by the platform-config ConfigMap; KRO reads it via externalRef.
+  ray_image_tag = "2.54.0-py311-cu128"
+  ray_image     = "anyscale/ray-llm:${local.ray_image_tag}"
+
   private_subnet_ids       = data.terraform_remote_state.vpc.outputs.private_subnet_ids
   control_plane_subnet_ids = try(var.cluster_config.use_intra_subnets, true) ? data.terraform_remote_state.vpc.outputs.intra_subnet_ids : local.private_subnet_ids
 

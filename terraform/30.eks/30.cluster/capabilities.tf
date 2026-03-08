@@ -136,8 +136,8 @@ resource "aws_ecr_pull_through_cache_rule" "docker_hub" {
 
 ################################################################################
 # Platform Config — KRO externalRef reads this ConfigMap.
-# Always created. rayImage key only set when ECR cache is enabled.
-# Without rayImage, KRO orValue() falls back to Docker Hub.
+# rayImage always set: ECR mirror when pull-through cache is enabled, Docker Hub otherwise.
+# Version is defined once in locals.tf (ray_image_tag).
 ################################################################################
 resource "kubernetes_config_map" "platform_config" {
   count = local.capabilities.gitops ? 1 : 0
@@ -147,12 +147,10 @@ resource "kubernetes_config_map" "platform_config" {
     namespace = "inference"
   }
 
-  data = merge(
-    { cluster = module.eks.cluster_name },
-    var.docker_hub_username != "" ? {
-      rayImage = "${data.aws_caller_identity.current.account_id}.dkr.ecr.${local.region}.amazonaws.com/docker-hub/anyscale/ray-llm:2.54.0-py311-cu128"
-    } : {}
-  )
+  data = {
+    cluster  = module.eks.cluster_name
+    rayImage = var.docker_hub_username != "" ? "${data.aws_caller_identity.current.account_id}.dkr.ecr.${local.region}.amazonaws.com/docker-hub/${local.ray_image}" : local.ray_image
+  }
 
   depends_on = [kubernetes_namespace.inference]
 }
