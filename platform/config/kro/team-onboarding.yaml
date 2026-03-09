@@ -207,20 +207,29 @@ spec:
                         echo "Team created: $TEAM_ID"
                       fi
 
-                      # --- Generate scoped API key ---
-                      API_KEY=$(curl -sf -X POST "$LITELLM/key/generate" \
-                        -H "Authorization: Bearer $LITELLM_MASTER_KEY" \
-                        -H "Content-Type: application/json" \
-                        -d "$(jq -n \
-                          --arg id "$TEAM_ID" \
-                          --arg alias "$TEAM_NAME-kro-managed" \
-                          --argjson models "$MODELS_JSON" \
-                          --arg team "$TEAM_NAME" \
-                          '{team_id:$id, key_alias:$alias, models:$models,
-                            metadata:{managed_by:"kro", team_alias:$team}}')" \
-                        | jq -r '.key')
+                      # --- Generate scoped API key (skip if already exists) ---
+                      EXISTING_KEY=$(kubectl get secret "$TEAM_NAME-api-key" \
+                        --namespace="$NAMESPACE" \
+                        -o jsonpath='{.data.api-key}' 2>/dev/null | base64 -d || true)
 
-                      [ -n "$API_KEY" ] && [ "$API_KEY" != "null" ] || { echo "ERROR: key generation failed"; exit 1; }
+                      if [ -n "$EXISTING_KEY" ]; then
+                        echo "API key secret already exists. Skipping key generation."
+                        API_KEY="$EXISTING_KEY"
+                      else
+                        API_KEY=$(curl -sf -X POST "$LITELLM/key/generate" \
+                          -H "Authorization: Bearer $LITELLM_MASTER_KEY" \
+                          -H "Content-Type: application/json" \
+                          -d "$(jq -n \
+                            --arg id "$TEAM_ID" \
+                            --arg alias "$TEAM_NAME-kro-managed" \
+                            --argjson models "$MODELS_JSON" \
+                            --arg team "$TEAM_NAME" \
+                            '{team_id:$id, key_alias:$alias, models:$models,
+                              metadata:{managed_by:"kro", team_alias:$team}}')" \
+                          | jq -r '.key')
+
+                        [ -n "$API_KEY" ] && [ "$API_KEY" != "null" ] || { echo "ERROR: key generation failed"; exit 1; }
+                      fi
 
                       # --- Store credentials as a Secret ---
                       kubectl create secret generic "$TEAM_NAME-api-key" \
