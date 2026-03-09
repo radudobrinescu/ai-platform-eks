@@ -27,7 +27,7 @@ INSTANCE_ID=$(aws ec2 run-instances --region "$REGION" \
   --subnet-id "$SUBNET" \
   --security-group-ids "$SG" \
   --iam-instance-profile Name="$INSTANCE_PROFILE" \
-  --block-device-mappings '[{"DeviceName":"/dev/xvda","Ebs":{"VolumeSize":100,"VolumeType":"gp3","Encrypted":true}}]' \
+  --block-device-mappings '[{"DeviceName":"/dev/xvda","Ebs":{"VolumeSize":200,"VolumeType":"gp3","Encrypted":true}}]' \
   --tag-specifications "ResourceType=instance,Tags=[{Key=Name,Value=soci-index-builder},{Key=Purpose,Value=temporary}]" \
   --query "Instances[0].InstanceId" --output text)
 echo "  Instance: $INSTANCE_ID"
@@ -48,9 +48,11 @@ CMD_ID=$(aws ssm send-command --instance-ids "$INSTANCE_ID" --region "$REGION" \
   --timeout-seconds 1800 \
   --parameters "commands=[
     \"set -ex\",
-    \"yum install -y nerdctl soci-snapshotter\",
+    \"yum install -y containerd nerdctl soci-snapshotter\",
+    \"systemctl start containerd\",
     \"aws ecr get-login-password --region $REGION | nerdctl login --username AWS --password-stdin $ACCOUNT.dkr.ecr.$REGION.amazonaws.com\",
     \"nerdctl pull --platform linux/amd64 $IMAGE\",
+    \"export TMPDIR=/var/tmp\",
     \"soci create $IMAGE\",
     \"soci push $IMAGE\",
     \"echo SOCI_INDEX_COMPLETE\"
