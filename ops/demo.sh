@@ -140,6 +140,16 @@ curl -s http://localhost:4000/team/list \
 #   - Token counts, latency, cost per request
 #   - Filter by team to show per-team spend tracking
 
+# → Open LiteLLM UI (localhost:4000/ui) → Usage tab
+# Show per-team budget and spend:
+echo "=== Team spend vs budget ==="
+curl -s http://localhost:4000/team/list \
+  -H "Authorization: Bearer $LITELLM_KEY" \
+  | jq '.[] | select(.team_alias | test("search|customer")) | {team: .team_alias, spend: .spend, budget: .max_budget, rpm_limit, tpm_limit}'
+
+# "LiteLLM enforces budgets — when a team hits their limit, requests are blocked"
+# "Langfuse gives you the full trace — every request, tokens, latency, cost"
+
 # ─────────────────────────────────────────────────────────────────────────────
 # ACT 5: Cost Management (2 min)
 # ─────────────────────────────────────────────────────────────────────────────
