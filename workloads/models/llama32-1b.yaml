@@ -1,0 +1,10 @@
+apiVersion: kro.run/v1alpha1
+kind: InferenceEndpoint
+metadata:
+  name: llama32-1b
+  namespace: inference
+spec:
+  model: "meta-llama/Llama-3.2-1B"
+  gpuCount: 1
+  minReplicas: 1
+  maxReplicas: 2
