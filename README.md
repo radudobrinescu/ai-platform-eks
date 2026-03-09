@@ -94,6 +94,20 @@ export TF_VAR_docker_hub_access_token="dckr_pat_XXXXXXXXXX"
 
 Without this, images pull directly from Docker Hub (works fine, just slower).
 
+### 3b. (Optional) Create SOCI Indices for Faster Cold Starts
+
+GPU nodes use Bottlerocket with the SOCI snapshotter in `parallel-pull-unpack` mode. Without SOCI indices, images are pulled in parallel but fully downloaded before containers start. With SOCI indices, containers start via lazy-loading — only fetching layers on demand (~30-70% faster cold starts).
+
+Create a SOCI index for the Ray LLM image (or any large ECR image):
+
+```bash
+./ops/create-soci-index.sh 802019299867.dkr.ecr.eu-central-1.amazonaws.com/docker-hub/anyscale/ray-llm:2.54.0-py311-cu128
+```
+
+This runs on a criticaladdons node via SSM (requires the 100GB EBS volume from the MNG config). Re-run whenever you update the Ray image tag.
+
+> **Note:** The AWS SOCI Index Builder (Lambda-based) has a 6 GB compressed image limit. The Ray LLM image is ~13 GB, so indices must be created via this script instead.
+
 ### 4. Bootstrap ArgoCD
 
 Update the Git repo URL in all ArgoCD application definitions:
@@ -164,6 +178,21 @@ git push
 First deployment takes ~7 min with ECR cache, ~14 min without (GPU node provisioning + image pull + model loading).
 
 ### 7. Access Services
+
+The platform uses an internal ALB with per-service listener ports. Use the SSM tunnel script to access all services from your laptop:
+
+```bash
+./ops/ssm-tunnel.sh
+```
+
+This creates three SSM port forwards through a criticaladdons node:
+- `http://localhost:8080` — Open WebUI
+- `http://localhost:4000` — LiteLLM API
+- `http://localhost:3000` — Langfuse
+
+Requires the [Session Manager plugin](https://docs.aws.amazon.com/systems-manager/latest/userguide/session-manager-working-with-install-plugin.html) (`brew install --cask session-manager-plugin`).
+
+Alternatively, use `kubectl port-forward` directly:
 
 ```bash
 kubectl port-forward svc/litellm 4000:4000 -n ai-platform       # API
