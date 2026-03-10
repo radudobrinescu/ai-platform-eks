@@ -166,3 +166,17 @@ spec:
                             cpu: ${schema.spec.workerCpu}
                             memory: ${schema.spec.workerMemory}
                             nvidia.com/gpu: ${schema.spec.gpuCount}
+
+    # --- CloudWatch Log Group (via ACK) ---
+    - id: loggroup
+      template:
+        apiVersion: cloudwatchlogs.services.k8s.aws/v1alpha1
+        kind: LogGroup
+        metadata:
+          name: ${schema.metadata.name}-logs
+        spec:
+          name: /ai-platform/models/${schema.metadata.name}
+          retentionDays: 30
+          tags:
+            ai-platform/model: ${schema.metadata.name}
+            ai-platform/managed-by: kro
