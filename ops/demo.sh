@@ -99,10 +99,10 @@ git push origin main
 
 # Watch the deployment progress (Ctrl+C when all pods are Running)
 kubectl get pods -n inference -l ray.io/cluster=qwen3-4b -w
+kubectl get pods -n inference -l ray.io/cluster=llama32-1b -w
 
 # Check model status
-kubectl get inferenceendpoints -n inference \
-  -o custom-columns=NAME:.metadata.name,READY:.status.ready,STATUS:.status.modelStatus
+kubectl get inferenceendpoints -n inference -o custom-columns=NAME:.metadata.name,READY:.status.ready,STATUS:.status.modelStatus
 
 # Verify the CloudWatch log group was created by ACK
 # "KRO told ACK to create this AWS resource — no CloudFormation, no Terraform."
