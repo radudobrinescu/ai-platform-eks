@@ -105,9 +105,22 @@ kubectl get inferenceendpoints -n inference \
   -o custom-columns=NAME:.metadata.name,READY:.status.ready,STATUS:.status.modelStatus
 
 # Verify the CloudWatch log group was created by ACK
-aws cloudwatch-logs describe-log-groups \
+# "KRO told ACK to create this AWS resource — no CloudFormation, no Terraform."
+kubectl get loggroups -n inference
+aws logs describe-log-groups \
   --log-group-name-prefix /ai-platform/models/qwen3-4b --region eu-central-1 \
   --query 'logGroups[].logGroupName'
+
+# Show ACK capabilities — AWS services manageable from Kubernetes
+echo ""
+echo "=== ACK controllers available ==="
+kubectl api-resources 2>/dev/null | grep "services.k8s.aws" \
+  | awk -F'/' '{print $1}' | awk '{print $NF}' | sort -u
+echo ""
+echo "$(kubectl api-resources 2>/dev/null | grep 'services.k8s.aws' | awk -F'/' '{print $1}' | awk '{print $NF}' | sort -u | wc -l | tr -d ' ') AWS service controllers ready to use"
+
+# "Any of these AWS services can be composed into a KRO ResourceGraphDefinition.
+#  S3 buckets, DynamoDB tables, SQS queues — all managed from Kubernetes."
 
 # → Open WebUI: refresh the model list — qwen3-4b appears automatically
 # → Chat with it live
