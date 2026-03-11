@@ -22,7 +22,8 @@
 # → Show ArgoCD UI: platform-config, models, teams, services
 
 # Show running models
-kubectl get inferenceendpoints -n inference
+kubectl get inferenceendpoints -n inference \
+  -o custom-columns=NAME:.metadata.name,READY:.status.ready,MODEL_STATUS:.status.modelStatus,ENDPOINT:.status.endpoint
 
 # Show GPU nodes (Bottlerocket + SOCI)
 kubectl get nodes -l workload-type=gpu-inference \
