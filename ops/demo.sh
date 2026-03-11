@@ -73,9 +73,26 @@ spec:
   maxReplicas: 2
 EOF
 
+cat > workloads/models/llama32-1b.yaml << 'EOF'
+apiVersion: kro.run/v1alpha1
+kind: InferenceEndpoint
+metadata:
+  name: llama32-1b
+  namespace: inference
+spec:
+  model: "meta-llama/Llama-3.2-1B-Instruct"
+  gpuCount: 1
+  minReplicas: 1
+  maxReplicas: 2
+EOF
+
 # Commit and push
 git add workloads/models/qwen3-4b.yaml
-git commit -m "feat: Deploy Qwen3 4B"
+git commit -m "Deploy Qwen3 4B"
+git push origin main
+
+git add workloads/models/llama32-1b.yaml
+git commit -m "Deploy Llama32 1B"
 git push origin main
 
 # → ArgoCD UI: watch the "models" app sync
@@ -88,7 +105,7 @@ kubectl get inferenceendpoints -n inference \
   -o custom-columns=NAME:.metadata.name,READY:.status.ready,STATUS:.status.modelStatus
 
 # Verify the CloudWatch log group was created by ACK
-aws logs describe-log-groups \
+aws cloudwatch-logs describe-log-groups \
   --log-group-name-prefix /ai-platform/models/qwen3-4b --region eu-central-1 \
   --query 'logGroups[].logGroupName'
 
