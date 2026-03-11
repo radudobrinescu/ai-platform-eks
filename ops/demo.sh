@@ -88,7 +88,7 @@ kubectl get inferenceendpoints -n inference \
   -o custom-columns=NAME:.metadata.name,READY:.status.ready,STATUS:.status.modelStatus
 
 # Verify the CloudWatch log group was created by ACK
-aws cloudwatch-logs describe-log-groups \
+aws logs describe-log-groups \
   --log-group-name-prefix /ai-platform/models/qwen3-4b --region eu-central-1 \
   --query 'logGroups[].logGroupName'
 
