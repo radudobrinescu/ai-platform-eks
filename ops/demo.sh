@@ -2,43 +2,64 @@
 # =============================================================================
 # AI Platform on EKS — Demo Script
 # =============================================================================
-# Run commands manually, section by section. This is a reference script.
+# Copy-paste commands section by section. NOT meant to run end-to-end.
 #
 # Prerequisites:
-#   - Cluster running with gemma-4b and smollm3-3b deployed
+#   - Cluster running with gemma-4b, smollm3-3b, llama32-1b deployed
+#   - Teams onboarded (search-ranking, customer-support)
 #   - Port-forwards active:
 #       kubectl port-forward svc/litellm 4000:4000 -n ai-platform &
 #       kubectl port-forward svc/open-webui 8080:8080 -n ai-platform &
 #       kubectl port-forward svc/langfuse-web 3000:3000 -n ai-platform &
-#   - Browser tabs: Open WebUI (localhost:8080), Langfuse (localhost:3000),
-#     ArgoCD UI (see terraform output for URL)
+#   - Browser tabs ready:
+#       Open WebUI  → http://localhost:8080
+#       Langfuse    → http://localhost:3000
+#       ArgoCD      → (see terraform output for URL)
+#       LiteLLM UI  → http://localhost:4000/ui
+#
+# Tip: To avoid the ~5 min GPU provisioning wait during the live demo,
+# pre-deploy qwen3-4b before the demo and delete it right before starting.
+# The GPU node stays warm, so re-deploy takes ~2 min instead of ~7 min.
 # =============================================================================
+
 
 # ─────────────────────────────────────────────────────────────────────────────
 # ACT 1: Platform Overview (5 min)
+# "Every team wants to run LLMs. The platform makes it self-service."
 # ─────────────────────────────────────────────────────────────────────────────
 
-# "Everything is GitOps-managed — the entire platform is defined in git"
-# → Show ArgoCD UI: platform-config, models, teams, services
+# → Show ArgoCD UI: walk through the apps
+#   platform-config, models, teams, gpu-operator, kuberay, litellm, langfuse, open-webui
 
-# Show running models
+# Show the KRO ResourceGraphDefinitions — the platform APIs
+kubectl get resourcegraphdefinitions
+# NAME                 APIVERSION   KIND                STATE    AGE
+# inference-endpoint   v1alpha1     InferenceEndpoint   Active   ...
+# team-onboarding      v1alpha1     AITeam              Active   ...
+
+# Show running models and their status
 kubectl get inferenceendpoints -n inference \
-  -o custom-columns=NAME:.metadata.name,READY:.status.ready,MODEL_STATUS:.status.modelStatus,ENDPOINT:.status.endpoint
+  -o custom-columns=NAME:.metadata.name,READY:.status.ready,STATUS:.status.modelStatus,ENDPOINT:.status.endpoint
 
-# Show GPU nodes (Bottlerocket + SOCI)
+# Show GPU nodes — Bottlerocket with SOCI for fast image pulls
 kubectl get nodes -l workload-type=gpu-inference \
   -o custom-columns=NAME:.metadata.name,OS:.status.nodeInfo.osImage,GPU:.status.allocatable.nvidia\\.com/gpu
 
 # Show what a model definition looks like — "this is ALL a team writes"
 cat workloads/models/gemma-4b.yaml
 
-# → Open WebUI: chat with gemma-4b to show it works
+# "6 lines of YAML. KRO expands this into a RayService, GPU workers,
+#  LiteLLM registration, and a CloudWatch log group."
+
+# → Open WebUI (localhost:8080): chat with gemma-4b to show it works
+
 
 # ─────────────────────────────────────────────────────────────────────────────
-# ACT 2: Deploy a New Model — Live (5 min)
+# ACT 2: Deploy a New Model — Live (5-7 min)
+# "Commit a YAML, model is live. That's the workflow."
 # ─────────────────────────────────────────────────────────────────────────────
 
-# Create a new model file
+# Create a new model file — do this live
 cat > workloads/models/qwen3-4b.yaml << 'EOF'
 apiVersion: kro.run/v1alpha1
 kind: InferenceEndpoint
@@ -52,122 +73,138 @@ spec:
   maxReplicas: 2
 EOF
 
-# Commit and push — ArgoCD takes it from here
+# Commit and push
 git add workloads/models/qwen3-4b.yaml
 git commit -m "feat: Deploy Qwen3 4B"
 git push origin main
 
-# → ArgoCD UI: watch the models app sync in real-time
-# → Terminal: watch pods appear
-kubectl get pods -n inference -w
+# → ArgoCD UI: watch the "models" app sync
 
-# "Karpenter provisions a GPU node with Bottlerocket + SOCI"
-# "The 12GB Ray image pulls in ~90 seconds thanks to SOCI parallel loading"
+# Watch the deployment progress (Ctrl+C when all pods are Running)
+kubectl get pods -n inference -l ray.io/cluster=qwen3-4b -w
 
-# Once running:
-# → Open WebUI: refresh models — qwen3-4b appears automatically
+# Check model status
+kubectl get inferenceendpoints -n inference \
+  -o custom-columns=NAME:.metadata.name,READY:.status.ready,STATUS:.status.modelStatus
+
+# Verify the CloudWatch log group was created by ACK
+aws cloudwatch-logs describe-log-groups \
+  --log-group-name-prefix /ai-platform/models/qwen3-4b --region eu-central-1 \
+  --query 'logGroups[].logGroupName'
+
+# → Open WebUI: refresh the model list — qwen3-4b appears automatically
 # → Chat with it live
 
+
 # ─────────────────────────────────────────────────────────────────────────────
-# ACT 3: Team Isolation (5 min)
+# ACT 3: Multi-Tenant Team Isolation (5 min)
+# "Teams get scoped access. Budget, rate limits, model access — all enforced."
 # ─────────────────────────────────────────────────────────────────────────────
 
 # Show what a team definition looks like
 cat workloads/teams/search-ranking.yaml
 
-# Show what KRO created for each team
-echo "=== Team Namespaces ==="
+# "One YAML creates: namespace, RBAC, resource quotas, network policy,
+#  a scoped LiteLLM API key, and optionally a Langfuse project."
+
+# Show what KRO created
 kubectl get ns | grep team
-
-echo "=== Resource Quotas (search-ranking) ==="
 kubectl get resourcequota -n team-search-ranking
+kubectl get networkpolicy -n team-search-ranking
 
-echo "=== Scoped API Keys ==="
-kubectl get secret search-ranking-api-key -n team-search-ranking
-kubectl get secret customer-support-api-key -n team-customer-support
-
-# Get team API keys
+# Get the team API keys
 SEARCH_KEY=$(kubectl get secret search-ranking-api-key -n team-search-ranking \
   -o jsonpath='{.data.api-key}' | base64 -d)
 SUPPORT_KEY=$(kubectl get secret customer-support-api-key -n team-customer-support \
   -o jsonpath='{.data.api-key}' | base64 -d)
 
-# --- Search team: access to gemma-4b and qwen3-4b ---
-echo "=== Search team calls gemma-4b (allowed) ==="
+# --- Search team: has access to gemma-4b and qwen3-4b ---
+echo ""
+echo ">>> Search team calls gemma-4b (ALLOWED)"
 curl -s http://localhost:4000/v1/chat/completions \
   -H "Content-Type: application/json" \
   -H "Authorization: Bearer $SEARCH_KEY" \
-  -d '{"model": "gemma-4b", "messages": [{"role": "user", "content": "Hello from the search team!"}]}' \
+  -d '{"model": "gemma-4b", "messages": [{"role": "user", "content": "Summarize what EKS is in one sentence."}]}' \
   | jq -r '.choices[0].message.content'
 
-# --- Support team: access to gemma-4b only ---
-echo "=== Support team calls gemma-4b (allowed) ==="
+# --- Support team: has access to gemma-4b only ---
+echo ""
+echo ">>> Support team calls gemma-4b (ALLOWED)"
 curl -s http://localhost:4000/v1/chat/completions \
   -H "Content-Type: application/json" \
   -H "Authorization: Bearer $SUPPORT_KEY" \
-  -d '{"model": "gemma-4b", "messages": [{"role": "user", "content": "Hello from the support team!"}]}' \
+  -d '{"model": "gemma-4b", "messages": [{"role": "user", "content": "What is Kubernetes?"}]}' \
   | jq -r '.choices[0].message.content'
 
-# --- Support team tries qwen3-4b (NOT allowed) ---
-echo "=== Support team calls qwen3-4b (BLOCKED) ==="
+# --- Support team tries a model they don't have access to ---
+echo ""
+echo ">>> Support team calls qwen3-4b (BLOCKED)"
 curl -s http://localhost:4000/v1/chat/completions \
   -H "Content-Type: application/json" \
   -H "Authorization: Bearer $SUPPORT_KEY" \
-  -d '{"model": "qwen3-4b", "messages": [{"role": "user", "content": "Can I use this model?"}]}' \
-  | jq '.error'
+  -d '{"model": "qwen3-4b", "messages": [{"role": "user", "content": "Hello"}]}' \
+  | jq -r '.error.message'
 
-# Show team info: budget and rate limits
-LITELLM_KEY=$(kubectl get secret litellm-secrets -n ai-platform \
-  -o jsonpath='{.data.master-key}' | base64 -d)
-
-echo "=== Search team: budget $50, 60 rpm ==="
-curl -s http://localhost:4000/team/list \
-  -H "Authorization: Bearer $LITELLM_KEY" \
-  | jq '.[] | select(.team_alias=="search-ranking") | {team_alias, max_budget, rpm_limit, tpm_limit, models}'
-
-echo "=== Support team: budget $25, 30 rpm ==="
-curl -s http://localhost:4000/team/list \
-  -H "Authorization: Bearer $LITELLM_KEY" \
-  | jq '.[] | select(.team_alias=="customer-support") | {team_alias, max_budget, rpm_limit, tpm_limit, models}'
 
 # ─────────────────────────────────────────────────────────────────────────────
-# ACT 4: Observability in Langfuse (3 min)
+# ACT 4: Observability & Spend Tracking (3 min)
+# "Every request is traced. Every dollar is tracked."
 # ─────────────────────────────────────────────────────────────────────────────
 
 # → Open Langfuse UI (localhost:3000)
-# Show:
-#   - Traces from the API calls above (search team + support team)
-#   - Each trace tagged with team metadata
-#   - Token counts, latency, cost per request
-#   - Filter by team to show per-team spend tracking
+#   - Show traces from the API calls above
+#   - Each trace shows: model, tokens (input/output), latency, cost
+#   - Filter by user/metadata to show per-team traces
 
-# → Open LiteLLM UI (localhost:4000/ui) → Usage tab
-# Show per-team budget and spend:
-echo "=== Team spend vs budget ==="
+# Show per-team budget and spend via LiteLLM API
+LITELLM_KEY=$(kubectl get secret litellm-secrets -n ai-platform \
+  -o jsonpath='{.data.master-key}' | base64 -d)
+
+echo ""
+echo "=== Team Spend vs Budget ==="
 curl -s http://localhost:4000/team/list \
   -H "Authorization: Bearer $LITELLM_KEY" \
-  | jq '.[] | select(.team_alias | test("search|customer")) | {team: .team_alias, spend: .spend, budget: .max_budget, rpm_limit, tpm_limit}'
+  | jq '[.[] | {team: .team_alias, spend: .spend, budget: .max_budget, models, rpm_limit, tpm_limit}]'
 
-# "LiteLLM enforces budgets — when a team hits their limit, requests are blocked"
-# "Langfuse gives you the full trace — every request, tokens, latency, cost"
+# → Open LiteLLM UI (localhost:4000/ui) → Usage tab
+#   - Show per-team spend breakdown
+#   - "When a team hits their budget, requests are automatically blocked"
+
 
 # ─────────────────────────────────────────────────────────────────────────────
 # ACT 5: Cost Management (2 min)
+# "GPU nodes cost ~$1/hr each. We scale to zero when not in use."
 # ─────────────────────────────────────────────────────────────────────────────
 
-echo "GPU nodes running (each ~\$1/hr):"
-kubectl get nodes -l workload-type=gpu-inference --no-headers | wc -l
+echo ""
+echo "GPU nodes running:"
+kubectl get nodes -l workload-type=gpu-inference \
+  -o custom-columns=NAME:.metadata.name,INSTANCE:.metadata.labels.node\\.kubernetes\\.io/instance-type,GPU:.status.allocatable.nvidia\\.com/gpu
 
-# "Scale down with one command — Karpenter reclaims GPU nodes"
+# "One command scales everything down. Karpenter reclaims GPU nodes in ~5 min."
 # ./ops/scale-down.sh
-# "Scale back up — ArgoCD restores everything automatically"
+
+# "One command brings it back. ArgoCD restores all workloads automatically."
 # ./ops/scale-up.sh
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# CLOSING
+# ─────────────────────────────────────────────────────────────────────────────
+
+# Key takeaways:
+#   - 6-line YAML to deploy any open-source LLM
+#   - Full GitOps — commit to git, model is live
+#   - Multi-tenant — per-team budgets, rate limits, model access
+#   - Built on EKS managed capabilities: ArgoCD, KRO, ACK
+#   - GPU cold start ~2 min with Bottlerocket + SOCI + ECR cache
+#   - Full observability via Langfuse — every request traced
+
 
 # ─────────────────────────────────────────────────────────────────────────────
 # CLEANUP (after demo)
 # ─────────────────────────────────────────────────────────────────────────────
 
-# Remove the model deployed during the demo
 # git rm workloads/models/qwen3-4b.yaml
 # git commit -m "chore: Remove demo model"
 # git push origin main
