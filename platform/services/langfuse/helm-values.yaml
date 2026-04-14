@@ -2,10 +2,9 @@
 # Chart: langfuse/langfuse
 # Repository: https://langfuse.github.io/langfuse-k8s
 #
-# Simplified setup: bundled PostgreSQL, ClickHouse, Redis.
-# Blob storage disabled — events stored directly in ClickHouse.
-# Secrets are created by Terraform (kubernetes_secret "langfuse_secrets") and
-# referenced here via secretKeyRef — no secrets stored in git.
+# Uses shared platform-db PostgreSQL, bundled ClickHouse and Redis.
+# Secrets are created by Terraform (langfuse-secrets, platform-db-credentials)
+# and referenced here via secretKeyRef — no secrets stored in git.
 
 langfuse:
   salt:
@@ -42,20 +41,18 @@ langfuse:
   ingress:
     enabled: false
 
-# Bundled PostgreSQL (for dev/test — use ACK-managed RDS for production)
+# Uses shared platform-db PostgreSQL (managed in platform/services/litellm/).
+# Langfuse database is created by platform-db init script.
 postgresql:
-  deploy: true
-  image:
-    tag: latest
-  auth:
-    existingSecret: langfuse-secrets
-    secretKeys:
-      adminPasswordKey: password
-  primary:
-    persistence:
-      enabled: true
-      size: 20Gi
-      storageClass: gp3
+  deploy: false
+
+database:
+  host: platform-db.ai-platform.svc.cluster.local
+  port: 5432
+  name: langfuse
+  existingSecret: platform-db-credentials
+  existingSecretUsernameKey: username
+  existingSecretPasswordKey: password
 
 # ClickHouse for analytics/event ingestion (also stores trace events)
 clickhouse:

@@ -1,7 +1,11 @@
 #!/usr/bin/env bash
 # Tunnel to the internal ALB via SSM through an EKS node.
-# Creates 3 port forwards: Open WebUI (8080), LiteLLM (4000), Langfuse (3000)
+# Creates port forwards for platform services.
+# Add --langfuse to include Langfuse (port 3000) if enabled.
 set -euo pipefail
+
+INCLUDE_LANGFUSE=false
+[[ "${1:-}" == "--langfuse" ]] && INCLUDE_LANGFUSE=true
 
 NAMESPACE="ai-platform"
 INGRESS_NAME="ai-platform-litellm"
@@ -26,10 +30,9 @@ echo ""
 echo "→ Starting SSM tunnels..."
 echo "  Open WebUI:  http://localhost:8080"
 echo "  LiteLLM:     http://localhost:4000"
-echo "  Langfuse:    http://localhost:3000"
+$INCLUDE_LANGFUSE && echo "  Langfuse:    http://localhost:3000"
 echo ""
 
-# Start first two tunnels in background
 aws ssm start-session --target "$INSTANCE_ID" \
   --document-name AWS-StartPortForwardingSessionToRemoteHost \
   --parameters "{\"host\":[\"$ALB_HOST\"],\"portNumber\":[\"8080\"],\"localPortNumber\":[\"8080\"]}" &
@@ -38,10 +41,11 @@ aws ssm start-session --target "$INSTANCE_ID" \
   --document-name AWS-StartPortForwardingSessionToRemoteHost \
   --parameters "{\"host\":[\"$ALB_HOST\"],\"portNumber\":[\"4000\"],\"localPortNumber\":[\"4000\"]}" &
 
-aws ssm start-session --target "$INSTANCE_ID" \
-  --document-name AWS-StartPortForwardingSessionToRemoteHost \
-  --parameters "{\"host\":[\"$ALB_HOST\"],\"portNumber\":[\"3000\"],\"localPortNumber\":[\"3000\"]}" &
+if $INCLUDE_LANGFUSE; then
+  aws ssm start-session --target "$INSTANCE_ID" \
+    --document-name AWS-StartPortForwardingSessionToRemoteHost \
+    --parameters "{\"host\":[\"$ALB_HOST\"],\"portNumber\":[\"3000\"],\"localPortNumber\":[\"3000\"]}" &
+fi
 
-# Wait for all background tunnels; clean up on Ctrl+C
 trap 'kill $(jobs -p) 2>/dev/null; exit' INT TERM
 wait

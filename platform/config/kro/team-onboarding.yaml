@@ -296,3 +296,48 @@ spec:
                     limits:
                       cpu: 100m
                       memory: 64Mi
+
+    # --- Welcome ConfigMap with usage instructions ---
+    - id: welcome
+      template:
+        apiVersion: v1
+        kind: ConfigMap
+        metadata:
+          name: welcome
+          namespace: team-${schema.spec.teamName}
+          labels:
+            ai-platform/team: ${schema.spec.teamName}
+            ai-platform/managed-by: kro
+        data:
+          README.md: |
+            # Team: ${schema.spec.teamName}
+
+            ## Quick Start
+
+            Get your API key:
+              kubectl get secret ${schema.spec.teamName}-api-key -n team-${schema.spec.teamName} \
+                -o jsonpath='{.data.api-key}' | base64 -d
+
+            Test a model:
+              export API_KEY=$(kubectl get secret ${schema.spec.teamName}-api-key -n team-${schema.spec.teamName} -o jsonpath='{.data.api-key}' | base64 -d)
+              curl http://litellm.ai-platform.svc.cluster.local:4000/v1/chat/completions \
+                -H "Authorization: Bearer $API_KEY" \
+                -H "Content-Type: application/json" \
+                -d '{"model": "${schema.spec.models[0]}", "messages": [{"role": "user", "content": "Hello!"}]}'
+
+            ## Your Configuration
+
+            - Namespace:  team-${schema.spec.teamName}
+            - Models:     ${schema.spec.models.join(", ")}
+            - Budget:     $${schema.spec.maxBudget} / ${schema.spec.budgetDuration}
+            - Rate limit: ${string(schema.spec.rpmLimit)} rpm, ${string(schema.spec.tpmLimit)} tpm
+
+            ## Access
+
+            - API endpoint: http://litellm.ai-platform.svc.cluster.local:4000
+            - API key secret: ${schema.spec.teamName}-api-key (in this namespace)
+            - Open WebUI: available via ops/ssm-tunnel.sh (port 8080)
+
+            ## View this file
+
+              kubectl get configmap welcome -n team-${schema.spec.teamName} -o jsonpath='{.data.README\.md}'

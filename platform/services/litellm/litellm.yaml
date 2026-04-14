@@ -30,12 +30,12 @@ spec:
             - name: DATABASE_URL
               valueFrom:
                 secretKeyRef:
-                  name: litellm-db-credentials
-                  key: database-url
+                  name: platform-db-credentials
+                  key: litellm-url
             - name: STORE_MODEL_IN_DB
               value: "True"
-            - name: LITELLM_CALLBACKS
-              value: "langfuse"
+            # Langfuse tracing (opt-in): create langfuse-litellm-keys secret to enable.
+            # See README "Enable Langfuse Tracing" section.
             - name: LANGFUSE_HOST
               value: "http://langfuse-web.ai-platform.svc.cluster.local:3000"
             - name: LANGFUSE_PUBLIC_KEY
@@ -88,9 +88,6 @@ data:
     # KRO InferenceEndpoint definitions include a registration Job that
     # auto-registers models when deployed — no manual config needed.
     model_list: []
-    litellm_settings:
-      success_callback: ["langfuse"]
-      failure_callback: ["langfuse"]
     general_settings:
       master_key: os.environ/LITELLM_MASTER_KEY
 ---
@@ -108,21 +105,34 @@ spec:
       targetPort: 4000
       name: http
 ---
+# Init script: creates additional databases on first PostgreSQL boot.
+# Runs via docker-entrypoint-initdb.d (only on empty data directory).
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: platform-db-init
+  namespace: ai-platform
+data:
+  create-databases.sql: |
+    CREATE DATABASE langfuse;
+---
+# Shared PostgreSQL for all platform services (LiteLLM, Langfuse).
+# Credentials managed by Terraform (platform-db-credentials secret).
 apiVersion: apps/v1
 kind: StatefulSet
 metadata:
-  name: litellm-db
+  name: platform-db
   namespace: ai-platform
 spec:
-  serviceName: litellm-db
+  serviceName: platform-db
   replicas: 1
   selector:
     matchLabels:
-      app: litellm-db
+      app: platform-db
   template:
     metadata:
       labels:
-        app: litellm-db
+        app: platform-db
     spec:
       containers:
         - name: postgres
@@ -133,12 +143,12 @@ spec:
             - name: POSTGRES_USER
               valueFrom:
                 secretKeyRef:
-                  name: litellm-db-credentials
+                  name: platform-db-credentials
                   key: username
             - name: POSTGRES_PASSWORD
               valueFrom:
                 secretKeyRef:
-                  name: litellm-db-credentials
+                  name: platform-db-credentials
                   key: password
             - name: POSTGRES_DB
               value: "litellm"
@@ -147,13 +157,19 @@ spec:
           volumeMounts:
             - name: data
               mountPath: /var/lib/postgresql/data
+            - name: init-scripts
+              mountPath: /docker-entrypoint-initdb.d
           resources:
             requests:
-              cpu: 100m
-              memory: 256Mi
-            limits:
-              cpu: 500m
+              cpu: 200m
               memory: 512Mi
+            limits:
+              cpu: "1"
+              memory: 1Gi
+      volumes:
+        - name: init-scripts
+          configMap:
+            name: platform-db-init
   volumeClaimTemplates:
     - metadata:
         name: data
@@ -161,16 +177,16 @@ spec:
         accessModes: ["ReadWriteOnce"]
         resources:
           requests:
-            storage: 5Gi
+            storage: 10Gi
 ---
 apiVersion: v1
 kind: Service
 metadata:
-  name: litellm-db
+  name: platform-db
   namespace: ai-platform
 spec:
   selector:
-    app: litellm-db
+    app: platform-db
   ports:
     - port: 5432
       targetPort: 5432
@@ -178,19 +194,19 @@ spec:
 apiVersion: networking.k8s.io/v1
 kind: NetworkPolicy
 metadata:
-  name: litellm-db
+  name: platform-db
   namespace: ai-platform
 spec:
   podSelector:
     matchLabels:
-      app: litellm-db
+      app: platform-db
   policyTypes:
     - Ingress
   ingress:
     - from:
-        - podSelector:
+        - namespaceSelector:
             matchLabels:
-              app: litellm
+              app.kubernetes.io/part-of: ai-platform
       ports:
         - protocol: TCP
           port: 5432

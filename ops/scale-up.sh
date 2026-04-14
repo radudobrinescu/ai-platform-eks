@@ -1,81 +1,38 @@
 #!/bin/bash
-# Scale up AI platform — restores from saved state
-# ArgoCD handles workload deployment via auto-sync.
+# Scale up AI platform — re-enables ArgoCD auto-sync.
+# ArgoCD reconciles all resources to their desired state automatically.
 
 set -euo pipefail
-SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
-STATE_FILE="$SCRIPT_DIR/.scale-state-deploy.json"
-STS_STATE_FILE="$SCRIPT_DIR/.scale-state-sts.json"
 
-get_replicas() {
-  local name=$1 file=$2 fallback=${3:-1}
-  local r=""
-  [ -f "$file" ] && r=$(jq -r --arg n "$name" '.[] | select(.name==$n) | .replicas' "$file" 2>/dev/null)
-  r=${r:-$fallback}
-  [ "$r" -eq 0 ] && r=$fallback
-  echo "$r"
-}
+SYNC_POLICY='{"spec":{"syncPolicy":{"automated":{"prune":true,"selfHeal":true},"syncOptions":["CreateNamespace=true","ServerSideApply=true"]}}}'
+ARGOCD_APPS=(platform models)
 
 echo "=== Scaling up AI Platform ==="
 echo ""
 
-# Re-enable ArgoCD auto-sync
-SYNC_POLICY='{"spec":{"syncPolicy":{"automated":{"prune":true,"selfHeal":true},"syncOptions":["CreateNamespace=true","ServerSideApply=true"]}}}'
+# Re-enable ArgoCD auto-sync — this triggers full reconciliation
 echo "Re-enabling ArgoCD auto-sync..."
-for app in platform-config litellm open-webui langfuse kuberay-operator models; do
+for app in "${ARGOCD_APPS[@]}"; do
   kubectl patch application "$app" -n argocd --type merge -p "$SYNC_POLICY" 2>/dev/null && echo "  ✓ $app" || true
 done
+# Re-enable child apps
+for app in $(kubectl get applications -n argocd -o jsonpath='{.items[*].metadata.name}' 2>/dev/null); do
+  [[ "$app" == "platform" || "$app" == "models" || "$app" == "teams" ]] && continue
+  kubectl patch application "$app" -n argocd --type merge -p "$SYNC_POLICY" 2>/dev/null || true
+done
 echo ""
 
-# Operators
-echo "Scaling up KubeRay Operator..."
-kubectl scale deploy -n kuberay --all --replicas=1
-echo -n "  Waiting: "
-kubectl wait --for=condition=available deploy -n kuberay -l app.kubernetes.io/name=kuberay-operator --timeout=120s 2>/dev/null && echo "✓ Ready" || echo "⏳ Still starting"
-
-# Databases first
-echo "Scaling up databases..."
-for sts in litellm-db langfuse-postgresql langfuse-redis-primary langfuse-zookeeper langfuse-clickhouse-shard0; do
-  r=$(get_replicas "$sts" "$STS_STATE_FILE")
-  kubectl scale statefulset "$sts" -n ai-platform --replicas="$r" 2>/dev/null || true
-done
-echo -n "  Waiting for PostgreSQL: "
-kubectl wait --for=jsonpath='{.status.readyReplicas}'=1 statefulset/langfuse-postgresql -n ai-platform --timeout=120s 2>/dev/null && echo "✓" || echo "⏳"
-echo -n "  Waiting for LiteLLM DB: "
-kubectl wait --for=jsonpath='{.status.readyReplicas}'=1 statefulset/litellm-db -n ai-platform --timeout=120s 2>/dev/null && echo "✓" || echo "⏳"
-
-# Platform apps
-echo "Scaling up platform apps..."
-for deploy in langfuse-web langfuse-worker langfuse-s3 litellm open-webui; do
-  r=$(get_replicas "$deploy" "$STATE_FILE")
-  kubectl scale deploy "$deploy" -n ai-platform --replicas="$r" 2>/dev/null || true
-done
-echo "✓ Platform apps scaling up"
-
-# Wait for readiness
-echo ""
-echo "Waiting for services..."
+# Wait for key services to come up
+echo "Waiting for ArgoCD to reconcile..."
+echo -n "  platform-db: "
+kubectl wait --for=jsonpath='{.status.readyReplicas}'=1 statefulset/platform-db -n ai-platform --timeout=180s 2>/dev/null && echo "✓" || echo "⏳"
 echo -n "  LiteLLM: "
-kubectl wait --for=condition=available deploy/litellm -n ai-platform --timeout=120s 2>/dev/null && echo "✓" || echo "⏳"
-echo -n "  Langfuse: "
-kubectl wait --for=condition=available deploy/langfuse-web -n ai-platform --timeout=120s 2>/dev/null && echo "✓" || echo "⏳"
-echo -n "  OpenWebUI: "
-kubectl wait --for=condition=available deploy/open-webui -n ai-platform --timeout=120s 2>/dev/null && echo "✓" || echo "⏳"
-
-# Port-forwards
-echo ""
-echo "Starting port-forwards..."
-pkill -f 'port-forward.*(litellm|langfuse|open-webui)' 2>/dev/null || true
-sleep 1
-kubectl port-forward -n ai-platform svc/litellm 4000:4000 &>/dev/null &
-kubectl port-forward -n ai-platform svc/open-webui 8080:8080 &>/dev/null &
-kubectl port-forward -n ai-platform svc/langfuse-web 3000:3000 &>/dev/null &
+kubectl wait --for=condition=available deploy/litellm -n ai-platform --timeout=180s 2>/dev/null && echo "✓" || echo "⏳"
+echo -n "  Open WebUI: "
+kubectl wait --for=condition=available deploy/open-webui -n ai-platform --timeout=180s 2>/dev/null && echo "✓" || echo "⏳"
 
 echo ""
 echo "=== Scale up complete ==="
 echo ""
-echo "  LiteLLM:   http://localhost:4000"
-echo "  OpenWebUI: http://localhost:8080"
-echo "  Langfuse:  http://localhost:3000"
-echo ""
+echo "  Access services:  ./ops/ssm-tunnel.sh"
 echo "  ArgoCD will sync models automatically — GPU nodes provision in ~5-10 min."

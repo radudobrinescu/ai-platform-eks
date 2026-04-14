@@ -1,54 +1,46 @@
 #!/bin/bash
-# Scale down AI platform workloads for off-hours / cost savings
-# Preserves replica counts for scale-up restoration
-# Core components (Karpenter, CoreDNS, CNI) remain running.
+# Scale down AI platform for off-hours / cost savings.
+# Suspends ArgoCD auto-sync, deletes workloads, scales platform to zero.
 # GPU nodes are reclaimed by Karpenter after workloads are removed.
+# Core components (Karpenter, CoreDNS, CNI) remain running.
 
 set -euo pipefail
-SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
-STATE_FILE="$SCRIPT_DIR/.scale-state-deploy.json"
-STS_STATE_FILE="$SCRIPT_DIR/.scale-state-sts.json"
+
+ARGOCD_APPS=(platform models)
 
 echo "=== Scaling down AI Platform ==="
 echo ""
 
-# Save current replica counts
-echo "Saving current state..."
-kubectl get deploy -n ai-platform -o json | jq '[.items[] | select(.spec.replicas > 0) | {name: .metadata.name, replicas: .spec.replicas}]' > "${STATE_FILE}.new"
-[ "$(jq 'length' "${STATE_FILE}.new")" -gt 0 ] && mv "${STATE_FILE}.new" "$STATE_FILE" || rm -f "${STATE_FILE}.new"
-
-kubectl get statefulset -n ai-platform -o json | jq '[.items[] | select(.spec.replicas > 0) | {name: .metadata.name, replicas: .spec.replicas}]' > "${STS_STATE_FILE}.new"
-[ "$(jq 'length' "${STS_STATE_FILE}.new")" -gt 0 ] && mv "${STS_STATE_FILE}.new" "$STS_STATE_FILE" || rm -f "${STS_STATE_FILE}.new"
-echo "✓ State saved"
-
 # Stop port-forwards
 pkill -f 'port-forward.*(litellm|langfuse|open-webui|head-svc)' 2>/dev/null || true
+pkill -f 'ssm.*StartPortForwardingSession' 2>/dev/null || true
 echo "✓ Port-forwards stopped"
 
-# Suspend ArgoCD auto-sync to prevent self-healing during scale-down
+# Suspend ArgoCD auto-sync on all managed apps
 echo "Suspending ArgoCD auto-sync..."
-for app in platform-config litellm open-webui langfuse kuberay-operator models; do
+for app in "${ARGOCD_APPS[@]}"; do
   kubectl patch application "$app" -n argocd --type merge \
     -p '{"spec":{"syncPolicy":null}}' 2>/dev/null && echo "  ✓ $app" || true
 done
+# Also suspend child apps managed by the platform App-of-Apps
+for app in $(kubectl get applications -n argocd -o jsonpath='{.items[*].metadata.name}' 2>/dev/null); do
+  [[ "$app" == "teams" ]] && continue  # skip teams if not in ARGOCD_APPS
+  kubectl patch application "$app" -n argocd --type merge \
+    -p '{"spec":{"syncPolicy":null}}' 2>/dev/null || true
+done
 echo "✓ Auto-sync suspended"
 
-# Delete InferenceEndpoints (removes RayServices → GPU workers → Karpenter reclaims GPU nodes)
+# Delete InferenceEndpoints (removes RayServices → GPU workers → Karpenter reclaims nodes)
 echo "Removing InferenceEndpoints..."
 kubectl delete inferenceendpoints --all -n inference --ignore-not-found
 echo "✓ InferenceEndpoints removed (GPU nodes will be reclaimed)"
 
-# Scale down platform apps
-echo "Scaling down platform apps..."
-kubectl scale deploy -n ai-platform --all --replicas=0
-kubectl scale statefulset -n ai-platform --all --replicas=0
-echo "✓ Platform apps scaled to 0"
-
-# Scale down operators
-echo "Scaling down operators..."
-kubectl scale deploy -n kuberay --all --replicas=0
-# GPU operator stays running (DaemonSets, can't scale to 0 meaningfully)
-echo "✓ Operators scaled down"
+# Scale down everything in ai-platform namespace
+echo "Scaling down platform..."
+kubectl scale deploy -n ai-platform --all --replicas=0 2>/dev/null || true
+kubectl scale statefulset -n ai-platform --all --replicas=0 2>/dev/null || true
+kubectl scale deploy -n kuberay --all --replicas=0 2>/dev/null || true
+echo "✓ Platform scaled to 0"
 
 echo ""
 echo "=== Scale down complete ==="

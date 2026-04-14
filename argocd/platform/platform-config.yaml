@@ -1,4 +1,5 @@
-# Platform Config — syncs namespaces, KRO definitions, RBAC, and ingress
+# Platform Config — syncs KRO definitions, RBAC, and ingress.
+# Namespaces are managed by Terraform (not in this directory).
 # Owned by the platform team. Changes here affect the platform APIs and routing.
 apiVersion: argoproj.io/v1alpha1
 kind: Application

@@ -250,26 +250,27 @@ resource "kubernetes_secret" "litellm_secrets" {
 }
 
 ################################################################################
-# LiteLLM — PostgreSQL credentials (referenced by litellm + litellm-db pods)
+# Platform DB — shared PostgreSQL credentials (used by LiteLLM and Langfuse)
 ################################################################################
-resource "random_password" "litellm_db_password" {
+resource "random_password" "platform_db_password" {
   count   = local.capabilities.gitops ? 1 : 0
   length  = 24
   special = false
 }
 
-resource "kubernetes_secret" "litellm_db_credentials" {
+resource "kubernetes_secret" "platform_db_credentials" {
   count = local.capabilities.gitops ? 1 : 0
 
   metadata {
-    name      = "litellm-db-credentials"
+    name      = "platform-db-credentials"
     namespace = "ai-platform"
   }
 
   data = {
-    username     = "litellm"
-    password     = random_password.litellm_db_password[0].result
-    database-url = "postgres://litellm:${random_password.litellm_db_password[0].result}@litellm-db:5432/litellm"
+    username     = "platform"
+    password     = random_password.platform_db_password[0].result
+    litellm-url  = "postgres://platform:${random_password.platform_db_password[0].result}@platform-db:5432/litellm"
+    langfuse-url = "postgres://platform:${random_password.platform_db_password[0].result}@platform-db:5432/langfuse"
   }
 
   depends_on = [kubernetes_namespace.ai_platform]

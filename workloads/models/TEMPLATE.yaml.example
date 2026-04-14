@@ -1,0 +1,22 @@
+# InferenceEndpoint Template
+# Copy this file, rename it to your model name (e.g. gemma-4b.yaml), and fill in spec.model.
+# Only 'model' is required — everything else has sensible defaults.
+#
+# After committing, ArgoCD syncs automatically. Track progress with:
+#   kubectl get inferenceendpoints -n inference -w
+#
+# First deployment takes ~7 min (ECR cache) or ~14 min (Docker Hub).
+apiVersion: kro.run/v1alpha1
+kind: InferenceEndpoint
+metadata:
+  name: my-model              # Also becomes the LiteLLM model name for API calls
+  namespace: inference
+spec:
+  model: "org/model-id"       # REQUIRED — HuggingFace model ID (e.g. google/gemma-3-4b-it)
+  # gpuCount: 1               # GPUs per worker. Must be 1, 2, 4, or 8 (tensor parallelism).
+  # minReplicas: 1            # Min Ray Serve replicas (scales down to this)
+  # maxReplicas: 4            # Max Ray Serve replicas (scales up under load)
+  # workerMemory: "24Gi"      # Memory per GPU worker. Increase for larger models.
+  # workerCpu: "4"            # CPU per GPU worker
+  # maxModelLen: 8192         # Max sequence length. Lower = less GPU memory, faster.
+  # rayImage: "anyscale/ray-llm:2.54.0-py311-cu128"  # Override only if needed

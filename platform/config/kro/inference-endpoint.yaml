@@ -19,6 +19,7 @@ spec:
       ready:            "${rayservice.status.?activeServiceStatus.?applicationStatuses.?llm.?status.orValue('') == 'RUNNING' ? 'True' : 'False'}"
       modelStatus:      "${rayservice.status.?activeServiceStatus.?applicationStatuses.?llm.?status.orValue('Pending')}"
       endpoint:         "${rayservice.metadata.name}-serve-svc.${rayservice.metadata.namespace}.svc.cluster.local:8000"
+      message:          "${rayservice.status.?activeServiceStatus.?applicationStatuses.?llm.?status.orValue('') == 'RUNNING' ? 'Model is live and serving requests' : (rayservice.status.?activeServiceStatus.?applicationStatuses.?llm.?status.orValue('') == 'DEPLOYING' ? 'Model is loading onto GPU workers' : 'Waiting for GPU node provisioning and image pull')}"
 
   resources:
     # --- Platform config (created by Terraform) ---
@@ -30,7 +31,7 @@ spec:
         metadata:
           name: platform-config
 
-    # --- Register model with LiteLLM via API ---
+    # --- Validate and register model with LiteLLM via API ---
     - id: litellmregister
       template:
         apiVersion: batch/v1
@@ -49,6 +50,25 @@ spec:
                   command: ["sh", "-c"]
                   args:
                     - |
+                      # --- Validate gpuCount is a power of 2 (vLLM tensor parallelism requirement) ---
+                      case "$GPU_COUNT" in
+                        1|2|4|8) ;;
+                        *) echo "ERROR: gpuCount=$GPU_COUNT is invalid. Must be 1, 2, 4, or 8."; exit 1 ;;
+                      esac
+
+                      # --- Validate model exists on HuggingFace ---
+                      echo "Checking model $MODEL_ID on HuggingFace..."
+                      HTTP_CODE=$(curl -s -o /dev/null -w '%{http_code}' "https://huggingface.co/api/models/$MODEL_ID")
+                      if [ "$HTTP_CODE" = "404" ]; then
+                        echo "ERROR: Model '$MODEL_ID' not found on HuggingFace. Check the model ID."
+                        exit 1
+                      elif [ "$HTTP_CODE" != "200" ]; then
+                        echo "WARNING: Could not verify model on HuggingFace (HTTP $HTTP_CODE). Proceeding anyway."
+                      else
+                        echo "✓ Model verified on HuggingFace"
+                      fi
+
+                      # --- Wait for LiteLLM and register ---
                       until curl -sf http://litellm.ai-platform.svc.cluster.local:4000/health/liveliness; do
                         echo "Waiting for LiteLLM..."; sleep 5
                       done
@@ -60,7 +80,7 @@ spec:
                           -H "Content-Type: application/json" \
                           -H "Authorization: Bearer $LITELLM_MASTER_KEY" \
                           -d "{\"model_name\":\"$MODEL_NAME\",\"litellm_params\":{\"model\":\"openai/$MODEL_ID\",\"api_base\":\"http://$MODEL_NAME-serve-svc.$NAMESPACE.svc.cluster.local:8000/v1\",\"api_key\":\"no-key\"}}" \
-                        && echo " Model registered."
+                        && echo "✓ Model registered with LiteLLM"
                       fi
                   env:
                     - name: LITELLM_MASTER_KEY
@@ -74,6 +94,8 @@ spec:
                       value: ${schema.spec.model}
                     - name: NAMESPACE
                       value: ${schema.metadata.namespace}
+                    - name: GPU_COUNT
+                      value: ${string(schema.spec.gpuCount)}
 
     # --- RayService with vLLM backend ---
     - id: rayservice

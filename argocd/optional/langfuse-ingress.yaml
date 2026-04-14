@@ -1,0 +1,25 @@
+# Langfuse Ingress — apply only when Langfuse is enabled.
+# See argocd/optional/langfuse.yaml for the ArgoCD Application.
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: ai-platform-langfuse
+  namespace: ai-platform
+  annotations:
+    alb.ingress.kubernetes.io/group.name: ai-platform
+    alb.ingress.kubernetes.io/scheme: internal
+    alb.ingress.kubernetes.io/target-type: ip
+    alb.ingress.kubernetes.io/listen-ports: '[{"HTTP": 3000}]'
+    alb.ingress.kubernetes.io/healthcheck-path: /api/public/health
+spec:
+  ingressClassName: alb
+  rules:
+    - http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: langfuse-web
+                port:
+                  number: 3000

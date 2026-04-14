@@ -1,17 +1,17 @@
-# Teams — syncs AITeam instances for team onboarding.
-# Self-service: teams add YAMLs here to get a namespace, API key, and budget.
-# Requires the team-onboarding KRO definition (synced by platform-config).
+# Platform — App-of-Apps that manages all platform components.
+# Child apps: platform-config, gpu-operator, kuberay-operator, litellm, open-webui.
+# Owned by the platform team. Teams interact via models.yaml and teams.yaml only.
 apiVersion: argoproj.io/v1alpha1
 kind: Application
 metadata:
-  name: teams
+  name: platform
   namespace: argocd
 spec:
   project: default
   source:
     repoURL: https://github.com/radudobrinescu/ai-platform-eks.git
     targetRevision: main
-    path: workloads/teams
+    path: argocd/platform
   destination:
     name: local-cluster
     namespace: argocd
