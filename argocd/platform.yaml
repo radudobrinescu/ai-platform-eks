@@ -1,5 +1,5 @@
 # Platform — App-of-Apps that manages all platform components.
-# Child apps: platform-config, gpu-operator, kuberay-operator, litellm, open-webui.
+# Child apps: platform-config, gpu-operator, kuberay-operator, litellm, open-webui, langfuse.
 # Owned by the platform team. Teams interact via models.yaml and teams.yaml only.
 apiVersion: argoproj.io/v1alpha1
 kind: Application

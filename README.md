@@ -12,7 +12,7 @@ Built on EKS Managed Capabilities (ArgoCD, KRO, ACK), Karpenter, Ray Serve, and 
 - **Chat UI** — Open WebUI for interactive testing
 - **Fast cold starts** — Bottlerocket + SOCI parallel pull, optional ECR pull-through cache
 - **Team onboarding** — `AITeam` resource creates namespace, RBAC, quotas, and scoped API key
-- **LLM observability** — Langfuse tracing (opt-in)
+- **LLM observability** — Langfuse tracing
 
 ## How It Works
 
@@ -129,7 +129,7 @@ This creates 3 ArgoCD Applications:
 
 | App | What it syncs |
 |-----|---------------|
-| `platform` | App-of-Apps: platform-config, gpu-operator, kuberay-operator, litellm, open-webui |
+| `platform` | App-of-Apps: platform-config, gpu-operator, kuberay-operator, litellm, open-webui, langfuse |
 | `models` | InferenceEndpoint instances (self-service) |
 | `teams` | AITeam instances (self-service) |
 
@@ -142,6 +142,7 @@ The `platform` app manages 5 child applications:
 | `kuberay-operator` | KubeRay Operator (Helm) |
 | `litellm` | LiteLLM proxy + shared PostgreSQL |
 | `open-webui` | Open WebUI chat interface |
+| `langfuse` | Langfuse LLM observability |
 
 Wait for all apps to sync:
 
@@ -211,6 +212,7 @@ The platform uses an internal ALB with per-service listener ports. Use the SSM t
 This creates SSM port forwards through a criticaladdons node:
 - `http://localhost:8080` — Open WebUI
 - `http://localhost:4000` — LiteLLM API
+- `http://localhost:3000` — Langfuse
 
 Requires the [Session Manager plugin](https://docs.aws.amazon.com/systems-manager/latest/userguide/session-manager-working-with-install-plugin.html) (`brew install --cask session-manager-plugin`).
 
@@ -241,19 +243,9 @@ curl http://localhost:4000/v1/chat/completions \
   -d '{"model": "gemma-4b", "messages": [{"role": "user", "content": "Hello!"}]}'
 ```
 
-### 9. Enable Langfuse Tracing (optional)
+### 9. Enable Langfuse Tracing
 
-Langfuse is not deployed by default. To enable it:
-
-```bash
-# Deploy Langfuse
-kubectl apply -f argocd/optional/langfuse.yaml
-
-# Deploy Langfuse ingress (for SSM tunnel access on port 3000)
-kubectl apply -f argocd/optional/langfuse-ingress.yaml
-```
-
-Wait for Langfuse to sync, then create an API key pair in the Langfuse UI at `http://localhost:3000` (use `./ops/ssm-tunnel.sh --langfuse` to access it):
+Langfuse is deployed automatically as part of the platform. To connect it to LiteLLM, create an API key pair in the Langfuse UI at `http://localhost:3000` (use `./ops/ssm-tunnel.sh` to access it):
 
 ```bash
 kubectl create secret generic langfuse-litellm-keys -n ai-platform \
@@ -262,7 +254,7 @@ kubectl create secret generic langfuse-litellm-keys -n ai-platform \
 kubectl rollout restart deployment litellm -n ai-platform
 ```
 
-LiteLLM auto-detects the Langfuse keys and enables tracing — no config changes needed.
+LiteLLM auto-detects the Langfuse keys and starts sending traces.
 
 ## InferenceEndpoint Reference
 
@@ -335,9 +327,7 @@ argocd/                          # ArgoCD Application definitions
     kuberay-operator.yaml        #     KubeRay Operator
     litellm.yaml                 #     LiteLLM + shared PostgreSQL
     open-webui.yaml              #     Open WebUI
-  optional/                      #   Opt-in components
     langfuse.yaml                #     Langfuse LLM observability
-    langfuse-ingress.yaml        #     Langfuse ALB ingress
 platform/                        # Platform team owns everything here
   config/                        #   KRO APIs, RBAC, Ingress
     kro/                         #     InferenceEndpoint + AITeam definitions
@@ -353,7 +343,7 @@ workloads/                       # Self-service — teams add YAMLs here
     TEMPLATE.yaml.example        #   Copy this to create a new model
   teams/                         #   AITeam instances
 ops/                             # Operational scripts
-  ssm-tunnel.sh                  #   SSM port forwarding (--langfuse for Langfuse)
+  ssm-tunnel.sh                  #   SSM port forwarding to platform services
   test-model.sh                  #   One-shot model testing
   scale-down.sh                  #   Cost savings: suspend platform
   scale-up.sh                    #   Restore platform via ArgoCD sync
