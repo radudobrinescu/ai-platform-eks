@@ -20,7 +20,6 @@ spec:
       langfuseSecretKey:  "string | default="           # Langfuse project secret key (optional, created in Langfuse UI)
     status:
       namespace:      "${teamNamespace.metadata.name}"
-      teamId:         "Provisioned by onboarding Job"
       apiKeySecret:   "${serviceaccount.metadata.name}-api-key"
 
   resources:
