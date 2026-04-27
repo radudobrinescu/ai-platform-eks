@@ -24,7 +24,21 @@ langfuse:
       name: langfuse-secrets
       key: encryption-key
 
-  additionalEnv: []
+  additionalEnv:
+    - name: DATABASE_HOST
+      value: "platform-db.ai-platform.svc.cluster.local"
+    - name: DATABASE_NAME
+      value: "langfuse"
+    - name: DATABASE_USERNAME
+      valueFrom:
+        secretKeyRef:
+          name: platform-db-credentials
+          key: username
+    - name: DATABASE_PASSWORD
+      valueFrom:
+        secretKeyRef:
+          name: platform-db-credentials
+          key: password
 
   service:
     type: ClusterIP
