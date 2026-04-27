@@ -43,8 +43,11 @@ langfuse:
 
 # Uses shared platform-db PostgreSQL (managed in platform/services/litellm/).
 # Langfuse database is created by platform-db init script.
+# postgresql.auth.password is required by the chart template even when deploy=false.
 postgresql:
   deploy: false
+  auth:
+    password: "unused-external-db"
 
 database:
   host: platform-db.ai-platform.svc.cluster.local
