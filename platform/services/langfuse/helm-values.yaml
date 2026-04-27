@@ -58,8 +58,11 @@ langfuse:
 # Uses shared platform-db PostgreSQL (managed in platform/services/litellm/).
 # Database connection configured via additionalEnv above (chart v1.5.20 requires
 # choosing between additionalEnv or the database section, not both).
+# postgresql.auth.password is still required by the worker template validation.
 postgresql:
   deploy: false
+  auth:
+    password: "unused-external-db"
 
 # ClickHouse for analytics/event ingestion (also stores trace events)
 clickhouse:
