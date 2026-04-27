@@ -56,20 +56,10 @@ langfuse:
     enabled: false
 
 # Uses shared platform-db PostgreSQL (managed in platform/services/litellm/).
-# Langfuse database is created by platform-db init script.
-# postgresql.auth.password is required by the chart template even when deploy=false.
+# Database connection configured via additionalEnv above (chart v1.5.20 requires
+# choosing between additionalEnv or the database section, not both).
 postgresql:
   deploy: false
-  auth:
-    password: "unused-external-db"
-
-database:
-  host: platform-db.ai-platform.svc.cluster.local
-  port: 5432
-  name: langfuse
-  existingSecret: platform-db-credentials
-  existingSecretUsernameKey: username
-  existingSecretPasswordKey: password
 
 # ClickHouse for analytics/event ingestion (also stores trace events)
 clickhouse:
