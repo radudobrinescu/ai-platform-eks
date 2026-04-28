@@ -4,7 +4,7 @@ metadata:
   name: gemma-4b
   namespace: inference
 spec:
-  model: "google/gemma-3-4b-it"
+  model: google/gemma-3-4b-it
   gpuCount: 1
   minReplicas: 1
   maxReplicas: 2
