@@ -40,9 +40,11 @@ langfuse:
     enabled: false
 
 # External PostgreSQL — shared platform-db (managed in platform/services/litellm/).
-# Chart v1.5.20 uses the database section for external DB config.
+# postgresql.auth.password is required by the worker template even with deploy=false.
 postgresql:
   deploy: false
+  auth:
+    password: "unused-external-db"
 
 database:
   host: platform-db.ai-platform.svc.cluster.local
