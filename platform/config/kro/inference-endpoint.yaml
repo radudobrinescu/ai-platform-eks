@@ -9,6 +9,7 @@ spec:
     spec:
       model:            "string"                    # HuggingFace model ID (e.g. google/gemma-3-4b-it)
       gpuCount:         "integer | default=1"       # GPUs per worker (tensor_parallel_size)
+      shared:           "boolean | default=false"   # Use GPU time-slicing (shared GPU node pool)
       minReplicas:      "integer | default=1"       # Min Ray Serve replicas
       maxReplicas:      "integer | default=4"       # Max Ray Serve replicas
       workerMemory:     "string  | default=24Gi"    # Memory per GPU worker
@@ -168,7 +169,7 @@ spec:
                         operator: Exists
                         effect: NoSchedule
                     nodeSelector:
-                      workload-type: gpu-inference
+                      workload-type: ${schema.spec.shared ? 'gpu-shared' : 'gpu-inference'}
                     containers:
                       - name: ray-worker
                         image: ${platformConfig.data.?rayImage.orValue(schema.spec.rayImage)}

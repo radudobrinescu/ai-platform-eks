@@ -16,15 +16,12 @@ resource "aws_ec2_tag" "cluster_primary_security_group" {
 ################################################################################
 module "karpenter" {
   source  = "terraform-aws-modules/eks/aws//modules/karpenter"
-  version = "~> 20.36.0"
+  version = "~> 21.2"
 
   create = local.capabilities.autoscaling
 
   cluster_name = module.eks.cluster_name
 
-  enable_v1_permissions = true
-
-  enable_pod_identity             = true
   create_pod_identity_association = true
 
   # Used to attach additional IAM policies to the Karpenter node IAM role
@@ -57,7 +54,7 @@ resource "helm_release" "karpenter" {
   repository_username = data.aws_ecrpublic_authorization_token.token.user_name
   repository_password = data.aws_ecrpublic_authorization_token.token.password
   chart               = "karpenter"
-  version             = "1.5.0"
+  version             = "1.10.0"
   wait                = false
 
   values = [
@@ -68,6 +65,9 @@ resource "helm_release" "karpenter" {
         clusterName : module.eks.cluster_name
         clusterEndpoint : module.eks.cluster_endpoint
         interruptionQueue : module.karpenter.queue_name
+        featureGates = {
+          nodeOverlay = true
+        }
       },
       controller = {
         resources = {
