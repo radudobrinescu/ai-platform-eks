@@ -73,6 +73,14 @@ clickhouse:
     limits:
       cpu: "2"
       memory: 4Gi
+  zookeeper:
+    resources:
+      requests:
+        cpu: 250m
+        memory: 512Mi
+      limits:
+        cpu: 500m
+        memory: 1Gi
 
 # Redis for caching and queue management
 redis:
