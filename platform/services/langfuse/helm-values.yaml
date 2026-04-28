@@ -1,5 +1,5 @@
 # Langfuse Helm Values — LLM Observability & Tracing
-# Chart: langfuse/langfuse
+# Chart: langfuse/langfuse v1.5.20
 # Repository: https://langfuse.github.io/langfuse-k8s
 #
 # Uses shared platform-db PostgreSQL, bundled ClickHouse and Redis.
@@ -24,22 +24,6 @@ langfuse:
       name: langfuse-secrets
       key: encryption-key
 
-  additionalEnv:
-    - name: DATABASE_HOST
-      value: "platform-db.ai-platform.svc.cluster.local"
-    - name: DATABASE_NAME
-      value: "langfuse"
-    - name: DATABASE_USERNAME
-      valueFrom:
-        secretKeyRef:
-          name: platform-db-credentials
-          key: username
-    - name: DATABASE_PASSWORD
-      valueFrom:
-        secretKeyRef:
-          name: platform-db-credentials
-          key: password
-
   service:
     type: ClusterIP
     port: 3000
@@ -55,14 +39,23 @@ langfuse:
   ingress:
     enabled: false
 
-# Uses shared platform-db PostgreSQL (managed in platform/services/litellm/).
-# Database connection configured via additionalEnv above (chart v1.5.20 requires
-# choosing between additionalEnv or the database section, not both).
-# postgresql.auth.password is still required by the worker template validation.
+# External PostgreSQL — shared platform-db (managed in platform/services/litellm/).
+# Chart v1.5.20 uses the database section for external DB config.
 postgresql:
   deploy: false
-  auth:
-    password: "unused-external-db"
+
+database:
+  host: platform-db.ai-platform.svc.cluster.local
+  port: 5432
+  name: langfuse
+  username:
+    secretKeyRef:
+      name: platform-db-credentials
+      key: username
+  password:
+    secretKeyRef:
+      name: platform-db-credentials
+      key: password
 
 # ClickHouse for analytics/event ingestion (also stores trace events)
 clickhouse:
@@ -100,7 +93,6 @@ redis:
       storageClass: gp3
 
 # MinIO (bundled S3-compatible blob storage for traces/events)
-# Uses langfuse-secrets for both MinIO root password and Langfuse S3 client credentials.
 s3:
   deploy: true
   accessKeyId:
