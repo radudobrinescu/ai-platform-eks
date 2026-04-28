@@ -47,7 +47,7 @@ postgresql:
   host: platform-db.ai-platform.svc.cluster.local
   port: 5432
   auth:
-    username: postgres
+    username: platform
     database: langfuse
     existingSecret: platform-db-credentials
     secretKeys:
