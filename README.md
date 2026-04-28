@@ -35,7 +35,8 @@ EKS Cluster
 │
 ├── Karpenter
 │   ├── default          ──▶  platform nodes (AL2023, Graviton)
-│   └── gpu-inference    ──▶  GPU nodes (Bottlerocket + SOCI)
+│   ├── gpu-inference    ──▶  GPU nodes (Bottlerocket + SOCI)
+│   └── gpu-shared       ──▶  GPU time-sliced nodes (4 models per GPU)
 │
 ├── Platform Services (ArgoCD-managed)
 │   ├── GPU Operator     ──▶  NVIDIA device plugin + DCGM metrics
@@ -267,6 +268,7 @@ metadata:
 spec:
   model: "org/model-id"           # REQUIRED — HuggingFace model ID
   gpuCount: 1                     # GPUs per worker — must be 1, 2, 4, or 8
+  shared: false                   # GPU time-slicing — share GPU with other models (default: false)
   minReplicas: 1                  # Min Ray Serve replicas (default: 1)
   maxReplicas: 4                  # Max Ray Serve replicas (default: 4)
   workerMemory: "24Gi"            # Memory per GPU worker (default: 24Gi)
@@ -287,6 +289,46 @@ Status fields:
 kubectl get inferenceendpoints -n inference
 # NAME       READY   MODELSTATUS   MESSAGE                                          ENDPOINT
 # gemma-4b   True    RUNNING       Model is live and serving requests               gemma-4b-serve-svc.inference.svc.cluster.local:8000
+```
+
+## GPU Time-Slicing
+
+By default, each model gets a dedicated GPU node. For smaller models that don't need a full GPU, enable time-slicing to share a single GPU across up to 4 models — reducing GPU node costs by up to 75%.
+
+### How it works
+
+The platform uses two Karpenter NodePools:
+
+| Pool | Mode | Use case |
+|------|------|----------|
+| `gpu-inference` | Dedicated GPU | Large models that need full GPU memory (>8GB VRAM) |
+| `gpu-shared` | Time-sliced (4 slices per GPU) | Small models that fit in ~6GB VRAM |
+
+When `shared: true`, the GPU worker schedules onto a time-sliced node where NVIDIA's device plugin advertises 1 physical GPU as 4 `nvidia.com/gpu` resources. A [NodeOverlay](https://karpenter.sh/docs/concepts/nodeoverlays/) tells Karpenter about this capacity so it provisions 1 node for 4 models instead of 4 separate nodes.
+
+### Will my model fit?
+
+Use the [VRAM Calculator](https://apxml.com/tools/vram-calculator) to estimate your model's memory requirements. As a rule of thumb for a g6.2xlarge (24GB VRAM, 4 slices = ~6GB each):
+
+| Model size | Quantization | Shared? |
+|-----------|-------------|---------|
+| ≤ 1B params | FP16 | ✅ Yes |
+| 1-3B params | FP16 | ✅ Yes |
+| 3-4B params | FP16 | ⚠️ Tight — reduce `maxModelLen` |
+| ≥ 7B params | FP16 | ❌ No — use dedicated GPU |
+
+### Deploy a shared model
+
+```yaml
+apiVersion: kro.run/v1alpha1
+kind: InferenceEndpoint
+metadata:
+  name: smollm3-3b
+  namespace: inference
+spec:
+  model: "HuggingFaceTB/SmolLM3-3B"
+  shared: true          # ← shares GPU with other models
+  maxModelLen: 4096     # ← reduce context length to fit in ~6GB VRAM
 ```
 
 ## AITeam Reference
