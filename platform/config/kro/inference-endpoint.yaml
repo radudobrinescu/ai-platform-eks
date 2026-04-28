@@ -169,7 +169,7 @@ spec:
                         operator: Exists
                         effect: NoSchedule
                     nodeSelector:
-                      workload-type: ${schema.spec.shared ? 'gpu-shared' : 'gpu-inference'}
+                      workload-type: "${schema.spec.shared ? 'gpu-shared' : 'gpu-inference'}"
                     containers:
                       - name: ray-worker
                         image: ${platformConfig.data.?rayImage.orValue(schema.spec.rayImage)}
