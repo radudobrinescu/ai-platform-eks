@@ -40,24 +40,18 @@ langfuse:
     enabled: false
 
 # External PostgreSQL — shared platform-db (managed in platform/services/litellm/).
-# postgresql.auth.password is required by the worker template even with deploy=false.
+# Chart uses postgresql.* for DB config, not a separate database section.
+# postgresql.auth.existingSecret + secretKeys for password from K8s secret.
 postgresql:
   deploy: false
-  auth:
-    password: "unused-external-db"
-
-database:
   host: platform-db.ai-platform.svc.cluster.local
   port: 5432
-  name: langfuse
-  username:
-    secretKeyRef:
-      name: platform-db-credentials
-      key: username
-  password:
-    secretKeyRef:
-      name: platform-db-credentials
-      key: password
+  auth:
+    username: postgres
+    database: langfuse
+    existingSecret: platform-db-credentials
+    secretKeys:
+      userPasswordKey: password
 
 # ClickHouse for analytics/event ingestion (also stores trace events)
 clickhouse:
