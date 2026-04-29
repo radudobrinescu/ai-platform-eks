@@ -79,11 +79,13 @@ Edit `your-env.tfvars` — set your Identity Center ARN, VPC CIDR, and capabilit
 ```bash
 export AWS_REGION=eu-central-1
 cd terraform
-make bootstrap
+make bootstrap ENVIRONMENT=your-env
 make ENVIRONMENT=your-env apply-all
 ```
 
 This creates the VPC, IAM roles, EKS cluster with managed capabilities, Karpenter NodePools, shared PostgreSQL credentials, and all platform secrets (LiteLLM, Langfuse).
+
+The cluster name follows the pattern `{resources_prefix}-{ENVIRONMENT}` (e.g., `ai-platform-your-env`).
 
 ### 3. (Optional) Enable ECR Pull-Through Cache
 
@@ -97,6 +99,8 @@ export TF_VAR_docker_hub_access_token="dckr_pat_XXXXXXXXXX"
 Without this, images pull directly from Docker Hub (works fine, just slower).
 
 ### 3b. (Optional) Create SOCI Indices for Faster Cold Starts
+
+> **Requires Step 3** — SOCI indices are created for ECR images, so the pull-through cache must be configured first.
 
 GPU nodes use Bottlerocket with the SOCI snapshotter in `parallel-pull-unpack` mode. Without SOCI indices, images are pulled in parallel but fully downloaded before containers start. With SOCI indices, containers start via lazy-loading — only fetching layers on demand (~30-70% faster cold starts).
 
@@ -122,7 +126,7 @@ find . -name '*.yaml' -exec sed -i '' 's|https://github.com/radudobrinescu/ai-pl
 Apply the three top-level applications to the cluster:
 
 ```bash
-aws eks update-kubeconfig --region $AWS_REGION --name your-cluster-name
+aws eks update-kubeconfig --region $AWS_REGION --name ai-platform-your-env
 kubectl apply -f argocd/platform.yaml -f argocd/models.yaml -f argocd/teams.yaml
 ```
 
@@ -134,7 +138,7 @@ This creates 3 ArgoCD Applications:
 | `models` | InferenceEndpoint instances (self-service) |
 | `teams` | AITeam instances (self-service) |
 
-The `platform` app manages 5 child applications:
+The `platform` app manages 6 child applications:
 
 | Child App | What it syncs |
 |-----------|---------------|
@@ -153,12 +157,14 @@ kubectl get applications -n argocd
 
 ### 5. Create HuggingFace Token
 
-Required for gated models (Gemma, Llama, etc.):
+Required for gated models (Gemma, Llama, etc.). Create this **before** deploying gated models — without it, GPU workers can't download model weights:
 
 ```bash
 kubectl create secret generic hf-token -n inference \
   --from-literal=token=hf_YOUR_TOKEN_HERE
 ```
+
+> **Note:** The sample models in `workloads/models/` include Gemma and Llama which are gated. ArgoCD will deploy them automatically on bootstrap, but they won't become ready until this secret exists. Non-gated models (like SmolLM3) work without it.
 
 ### 6. Deploy a Model
 
@@ -407,6 +413,7 @@ Scale down during off-hours to release GPU nodes:
 ```bash
 kubectl delete inferenceendpoints --all -n inference   # Release GPU nodes
 kubectl get nodes -l workload-type=gpu-inference       # Wait for termination (~5 min)
+kubectl get nodes -l workload-type=gpu-shared          # Wait for shared nodes too
 
 cd terraform
 make ENVIRONMENT=your-env destroy-all
