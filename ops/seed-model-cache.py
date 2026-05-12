@@ -153,11 +153,18 @@ def cmd_seed(args: argparse.Namespace) -> int:
 
         print(f"\n{C.BOLD}1/2  Downloading from HuggingFace...{C.RESET}")
         t0 = time.time()
+        env = {}
+        try:
+            import hf_transfer  # noqa: F401
+            env["HF_HUB_ENABLE_HF_TRANSFER"] = "1"
+        except ImportError:
+            warn("hf_transfer not installed — using plain HF download "
+                 "(pip install hf_transfer for ~5x faster downloads)")
         try:
             run([
                 "huggingface-cli", "download", model,
                 "--local-dir", str(local_dir),
-            ], env={"HF_HUB_ENABLE_HF_TRANSFER": "1"})
+            ], env=env)
         except SystemExit:
             raise
         t_hf = time.time() - t0
@@ -245,6 +252,18 @@ def cmd_purge(args: argparse.Namespace) -> int:
 # --------------------------------------------------------------------------- #
 
 def main(argv: list[str] | None = None) -> int:
+    # Allow "seed" to be implicit: `./seed-model-cache.py org/model` → seed.
+    # We do this BEFORE argparse so subparsers don't reject the positional.
+    raw = argv if argv is not None else sys.argv[1:]
+    known_subs = {"seed", "list", "purge"}
+    # Find first non-flag argument.
+    first_positional_idx = next(
+        (i for i, a in enumerate(raw) if not a.startswith("-")), None
+    )
+    if first_positional_idx is not None and raw[first_positional_idx] not in known_subs:
+        # Insert "seed" before the first positional.
+        raw = raw[:first_positional_idx] + ["seed"] + raw[first_positional_idx:]
+
     p = argparse.ArgumentParser(
         description=__doc__.split("\n\n", 1)[0],
         formatter_class=argparse.RawDescriptionHelpFormatter,
@@ -253,7 +272,7 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--bucket", help="S3 bucket name (default: read from platform-config)")
     p.add_argument("--region", help="AWS region (default: $AWS_REGION or local aws config)")
 
-    sub = p.add_subparsers(dest="cmd")
+    sub = p.add_subparsers(dest="cmd", required=True)
 
     sp = sub.add_parser("seed", help="Download a model from HF and upload it to S3 (default)")
     sp.add_argument("model", help="HuggingFace model ID (e.g. google/gemma-3-4b-it)")
@@ -268,20 +287,7 @@ def main(argv: list[str] | None = None) -> int:
     sp.add_argument("-y", "--yes", action="store_true", help="Do not prompt for confirmation")
     sp.set_defaults(func=cmd_purge)
 
-    # Default subcommand: seed, so `./seed-model-cache.py org/model` just works.
-    # Re-parse treating first positional as model ID.
-    args = p.parse_args(argv)
-    if args.cmd is None:
-        # If first positional looks like a model ID, treat as seed.
-        raw = argv if argv is not None else sys.argv[1:]
-        if raw and "/" in raw[-1] and not raw[-1].startswith("-"):
-            return cmd_seed(argparse.Namespace(
-                bucket=args.bucket, region=args.region,
-                model=raw[-1], force=False,
-            ))
-        p.print_help()
-        return 1
-
+    args = p.parse_args(raw)
     return args.func(args)
 
 
