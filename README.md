@@ -294,18 +294,41 @@ By default, each model gets a dedicated GPU node. For smaller models that don't 
 
 ### How it works
 
-The platform uses two Karpenter NodePools:
+The platform uses two Karpenter NodePools, both open to any NVIDIA-backed AWS GPU instance (G and P families):
 
-| Pool | Mode | Use case |
-|------|------|----------|
-| `gpu-inference` | Dedicated GPU | Large models that need full GPU memory (>8GB VRAM) |
-| `gpu-shared` | Time-sliced (4 slices per GPU) | Small models that fit in ~6GB VRAM |
+| Pool | Eligible instances | Use case |
+|------|--------------------|----------|
+| `gpu-inference` | Any NVIDIA G or P (g4dn, g5, g6, g6e, g7, p4d, p4de, p5, p5e, p5en, …) | Dedicated GPU for a single model |
+| `gpu-shared` | Single-GPU NVIDIA G only (g4dn/g5/g6/g6e/g7 · xlarge–16xlarge) | Time-sliced (4 slices per GPU) for small models |
+
+Both pools use semantic Karpenter requirements (`instance-category In [g, p]` + `instance-gpu-manufacturer In [nvidia]`) rather than enumerating families, so new G/P generations become eligible automatically. Cost blast-radius is bounded by each NodePool's `limits.nvidia.com/gpu` (16 for dedicated, 32 for shared) — adjust these in `terraform/30.eks/30.cluster/karpenter/gpu-*.yaml` if you want to allow more simultaneous P5 nodes or keep a tighter cap.
 
 When `shared: true`, the GPU worker schedules onto a time-sliced node where NVIDIA's device plugin advertises 1 physical GPU as 4 `nvidia.com/gpu` resources. A [NodeOverlay](https://karpenter.sh/docs/concepts/nodeoverlays/) tells Karpenter about this capacity so it provisions 1 node for 4 models instead of 4 separate nodes.
 
+> **Neuron/Trainium:** the platform runs vLLM via `anyscale/ray-llm` (CUDA build), and HuggingFace weights aren't pre-compiled with `neuronx-cc`, so inf2/trn1 instances are intentionally excluded. If you want Neuron support that requires a separate Ray image and ahead-of-time model compilation — out of scope today.
+
 ### Will my model fit?
 
-Use the [VRAM Calculator](https://apxml.com/tools/vram-calculator) to estimate your model's memory requirements. As a rule of thumb for a g6.2xlarge (24GB VRAM, 4 slices = ~6GB each):
+**Option 1 — use the built-in recommender.** Outputs a ranked list of EC2 instances for your region, flags anything above your price ceiling, and emits a drop-in `InferenceEndpoint` snippet:
+
+```bash
+./ops/recommend-instance.py google/gemma-3-4b-it --seq 8192 --users 4
+./ops/recommend-instance.py Qwen/Qwen2.5-32B-Instruct --quant int4 --seq 16384 --users 8
+HF_TOKEN=hf_... ./ops/recommend-instance.py meta-llama/Llama-3.1-70B-Instruct --quant bf16
+```
+
+It reads the model's HuggingFace `config.json` (including GQA KV-head counts, MoE expert counts, etc.), estimates VRAM for weights + KV cache + activations, and matches against the full NVIDIA GPU instance catalog (G5/G6/G6e/P4/P5/P5e). Pricing is fetched live from the AWS Pricing API for your region (default from `$AWS_REGION`) and cached locally for 30 days.
+
+Useful flags:
+- `--region eu-central-1` — override the detected region
+- `--max-price 15` — flag anything above $15/hr as over-budget (default: $20/hr)
+- `--refresh-prices` — bust the pricing cache
+- `--in-cluster-only` — suppress instances your Karpenter NodePools can't schedule
+- `--json` — machine-readable output for scripting
+
+Boto3 is a soft dependency: if it's not installed or credentials are missing, the tool falls back to the bundled us-east-1 catalog and says so in its output.
+
+**Option 2 — web calculator.** The [APXML VRAM Calculator](https://apxml.com/tools/vram-calculator) is handy for interactive experimentation. As a rule of thumb for a g6.2xlarge (24GB VRAM, 4 slices = ~6GB each):
 
 | Model size | Quantization | Shared? |
 |-----------|-------------|---------|
@@ -375,6 +398,7 @@ workloads/                       # Self-service — teams add YAMLs here
     TEMPLATE.yaml.example        #   Copy this to create a new model
   teams/                         #   AITeam instances
 ops/                             # Operational scripts
+  recommend-instance.py          #   Recommend EC2 GPU instances for a given model
   ssm-tunnel.sh                  #   SSM port forwarding to platform services
   test-model.sh                  #   One-shot model testing
   scale-down.sh                  #   Cost savings: suspend platform
