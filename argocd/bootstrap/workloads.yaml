@@ -1,0 +1,44 @@
+# Workloads — ArgoCD ApplicationSet for self-service workloads.
+#
+# - models: syncs workloads/models/ → creates InferenceEndpoint CRs.
+#           Teams add a YAML here to deploy a model.
+# - teams:  syncs workloads/teams/ → creates AITeam CRs.
+#           Platform team adds a YAML here to onboard a new team.
+#
+# Forking = change the literal URL below + the two URLs in
+# argocd/bootstrap/platform.yaml, and set var.gitops_repo_url in Terraform.
+---
+apiVersion: argoproj.io/v1alpha1
+kind: ApplicationSet
+metadata:
+  name: workloads
+  namespace: argocd
+spec:
+  goTemplate: true
+  generators:
+    - list:
+        elements:
+          - name: models
+            path: workloads/models
+          - name: teams
+            path: workloads/teams
+  template:
+    metadata:
+      name: '{{.name}}'
+      namespace: argocd
+    spec:
+      project: default
+      source:
+        repoURL: https://github.com/radudobrinescu/ai-platform-eks.git
+        targetRevision: main
+        path: '{{.path}}'
+      destination:
+        name: local-cluster
+        namespace: argocd
+      syncPolicy:
+        automated:
+          prune: true
+          selfHeal: true
+        syncOptions:
+          - CreateNamespace=true
+          - ServerSideApply=true

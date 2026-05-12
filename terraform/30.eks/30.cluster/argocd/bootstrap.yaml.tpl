@@ -1,18 +1,20 @@
-# LiteLLM — plain manifests ArgoCD Application
 apiVersion: argoproj.io/v1alpha1
 kind: Application
 metadata:
-  name: litellm
+  name: bootstrap
   namespace: argocd
+  labels:
+    app.kubernetes.io/part-of: ai-platform
+    ai-platform/managed-by: terraform
 spec:
   project: default
   source:
-    repoURL: https://github.com/radudobrinescu/ai-platform-eks.git
-    targetRevision: main
-    path: platform/services/litellm
+    repoURL: ${repo_url}
+    targetRevision: ${revision}
+    path: argocd/bootstrap
   destination:
     name: local-cluster
-    namespace: ai-platform
+    namespace: argocd
   syncPolicy:
     automated:
       prune: true

@@ -42,3 +42,15 @@ variable "docker_hub_access_token" {
   default     = ""
   sensitive   = true
 }
+
+variable "gitops_repo_url" {
+  description = "Git repository URL for ArgoCD to sync the AI platform from. Required when cluster_config.capabilities.gitops is true. Example: https://github.com/my-org/ai-platform.git"
+  type        = string
+  default     = ""
+}
+
+variable "gitops_revision" {
+  description = "Git revision (branch, tag, or commit) for ArgoCD to track."
+  type        = string
+  default     = "main"
+}

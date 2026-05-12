@@ -55,7 +55,11 @@ spec:
             services: "10"
             persistentvolumeclaims: "5"
 
-    # --- Network Policy: default-deny ingress, allow intra-ns + platform ---
+    # --- Network Policy ---
+    # Ingress: allow traffic only from same-team pods and from ai-platform.
+    # Egress: allow DNS and traffic to ai-platform services (LiteLLM, Langfuse).
+    #         All other egress is denied — teams cannot reach the public
+    #         internet or other teams' namespaces.
     - id: networkpolicy
       template:
         apiVersion: networking.k8s.io/v1
@@ -67,12 +71,29 @@ spec:
           podSelector: {}
           policyTypes:
             - Ingress
+            - Egress
           ingress:
             - from:
                 - namespaceSelector:
                     matchLabels:
                       ai-platform/team: ${schema.spec.teamName}
             - from:
+                - namespaceSelector:
+                    matchLabels:
+                      app.kubernetes.io/part-of: ai-platform
+          egress:
+            # DNS (kube-dns in kube-system)
+            - to:
+                - namespaceSelector:
+                    matchLabels:
+                      kubernetes.io/metadata.name: kube-system
+              ports:
+                - protocol: UDP
+                  port: 53
+                - protocol: TCP
+                  port: 53
+            # Platform services (LiteLLM, Langfuse, etc.)
+            - to:
                 - namespaceSelector:
                     matchLabels:
                       app.kubernetes.io/part-of: ai-platform
@@ -104,40 +125,38 @@ spec:
           name: team-developer
           apiGroup: rbac.authorization.k8s.io
 
-    # --- LiteLLM master key: read from ai-platform, copy to team ns ---
-    - id: litellmMasterKey
-      externalRef:
-        apiVersion: v1
-        kind: Secret
-        metadata:
-          name: litellm-secrets
-          namespace: ai-platform
-
-    - id: litellmMasterKeyCopy
+    # --- RoleBinding for cross-namespace onboarding SA ---
+    # Grants the team-onboarding ServiceAccount (in ai-platform) permission to
+    # write the team's scoped API key Secret into the team namespace. The
+    # master key never enters the team namespace.
+    - id: onboardingRolebinding
       template:
-        apiVersion: v1
-        kind: Secret
+        apiVersion: rbac.authorization.k8s.io/v1
+        kind: RoleBinding
         metadata:
-          name: litellm-admin-key
+          name: team-onboarding
           namespace: team-${schema.spec.teamName}
-          labels:
-            ai-platform/managed-by: kro
-        type: Opaque
-        data:
-          master-key: "${litellmMasterKey.data['master-key']}"
+        subjects:
+          - kind: ServiceAccount
+            name: team-onboarding
+            namespace: ai-platform
+        roleRef:
+          kind: ClusterRole
+          name: team-onboarding-secret-writer
+          apiGroup: rbac.authorization.k8s.io
 
     # --- Onboarding Job ---
-    # Calls LiteLLM API to create Team + scoped API key, stores result
-    # in a Secret. Uses bitnami/kubectl for jq (clean JSON parsing)
-    # and kubectl (native Secret creation instead of raw K8s API calls).
-    # Idempotent: finds existing team by alias, updates settings on re-sync.
+    # Runs in the ai-platform namespace with a platform-owned ServiceAccount.
+    # Calls LiteLLM API to create the team + scoped API key, writes the
+    # resulting key as a Secret into the team namespace. Idempotent: finds
+    # existing team by alias, updates settings on re-sync.
     - id: onboardingjob
       template:
         apiVersion: batch/v1
         kind: Job
         metadata:
-          name: ${schema.metadata.name}-onboard
-          namespace: team-${schema.spec.teamName}
+          name: onboard-${schema.spec.teamName}
+          namespace: ai-platform
         spec:
           backoffLimit: 10
           ttlSecondsAfterFinished: 600
@@ -148,10 +167,10 @@ spec:
                 ai-platform/job: onboarding
             spec:
               restartPolicy: OnFailure
-              serviceAccountName: team-${schema.spec.teamName}
+              serviceAccountName: team-onboarding
               containers:
                 - name: onboard
-                  image: bitnami/kubectl:latest
+                  image: alpine/k8s:1.35.4
                   command: ["bash", "-c"]
                   args:
                     - |
@@ -268,7 +287,7 @@ spec:
                     - name: LITELLM_MASTER_KEY
                       valueFrom:
                         secretKeyRef:
-                          name: litellm-admin-key
+                          name: litellm-secrets
                           key: master-key
                     - name: TEAM_NAME
                       value: ${schema.spec.teamName}

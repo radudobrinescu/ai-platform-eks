@@ -1,0 +1,97 @@
+# Platform — ArgoCD ApplicationSet defining all platform services.
+#
+# Six applications in two shapes:
+#   - Plain-directory sources (platform-config, litellm, open-webui):
+#       manifests live in this repo and are applied as-is.
+#   - Helm multi-source (gpu-operator, kuberay-operator, langfuse):
+#       chart pulled from upstream, values file pulled from this repo.
+#
+# The repo URL appears twice below — once for plain-directory apps,
+# once for the $values source in Helm-based apps. Forking the platform
+# = change the two literal URLs here, update argocd/bootstrap/workloads.yaml,
+# and set var.gitops_repo_url in Terraform. That's it.
+---
+apiVersion: argoproj.io/v1alpha1
+kind: ApplicationSet
+metadata:
+  name: platform
+  namespace: argocd
+spec:
+  goTemplate: true
+  generators:
+    - list:
+        elements:
+          - name: platform-config
+            namespace: argocd
+            type: directory
+            path: platform/config
+            recurse: "true"
+          - name: litellm
+            namespace: ai-platform
+            type: directory
+            path: platform/services/litellm
+          - name: open-webui
+            namespace: ai-platform
+            type: directory
+            path: platform/services/open-webui
+          - name: gpu-operator
+            namespace: gpu-operator
+            type: helm
+            chart: gpu-operator
+            chartRepo: https://helm.ngc.nvidia.com/nvidia
+            chartVersion: v25.10.1
+            valuesPath: platform/services/gpu-operator/helm-values.yaml
+          - name: kuberay-operator
+            namespace: kuberay
+            type: helm
+            chart: kuberay-operator
+            chartRepo: https://ray-project.github.io/kuberay-helm/
+            chartVersion: "1.5.1"
+            valuesPath: platform/services/kuberay/helm-values.yaml
+          - name: langfuse
+            namespace: ai-platform
+            type: helm
+            chart: langfuse
+            chartRepo: https://langfuse.github.io/langfuse-k8s
+            chartVersion: "1.5.20"
+            valuesPath: platform/services/langfuse/helm-values.yaml
+  template:
+    metadata:
+      name: '{{.name}}'
+      namespace: argocd
+    spec:
+      project: default
+      destination:
+        name: local-cluster
+        namespace: '{{.namespace}}'
+      syncPolicy:
+        automated:
+          prune: true
+          selfHeal: true
+        syncOptions:
+          - CreateNamespace=true
+          - ServerSideApply=true
+  templatePatch: |
+    spec:
+      {{- if eq .type "directory" }}
+      source:
+        repoURL: https://github.com/radudobrinescu/ai-platform-eks.git
+        targetRevision: main
+        path: {{ .path }}
+        {{- if eq .recurse "true" }}
+        directory:
+          recurse: true
+        {{- end }}
+      {{- end }}
+      {{- if eq .type "helm" }}
+      sources:
+        - repoURL: {{ .chartRepo }}
+          chart: {{ .chart }}
+          targetRevision: {{ .chartVersion }}
+          helm:
+            valueFiles:
+              - $values/{{ .valuesPath }}
+        - repoURL: https://github.com/radudobrinescu/ai-platform-eks.git
+          targetRevision: main
+          ref: values
+      {{- end }}

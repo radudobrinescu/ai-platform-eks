@@ -5,20 +5,16 @@
 set -euo pipefail
 
 SYNC_POLICY='{"spec":{"syncPolicy":{"automated":{"prune":true,"selfHeal":true},"syncOptions":["CreateNamespace=true","ServerSideApply=true"]}}}'
-ARGOCD_APPS=(platform models)
 
 echo "=== Scaling up AI Platform ==="
 echo ""
 
-# Re-enable ArgoCD auto-sync — this triggers full reconciliation
+# Re-enable auto-sync on all generated Applications.
+# Skip 'bootstrap' (managed by Terraform, has its own syncPolicy).
 echo "Re-enabling ArgoCD auto-sync..."
-for app in "${ARGOCD_APPS[@]}"; do
-  kubectl patch application "$app" -n argocd --type merge -p "$SYNC_POLICY" 2>/dev/null && echo "  ✓ $app" || true
-done
-# Re-enable child apps
 for app in $(kubectl get applications -n argocd -o jsonpath='{.items[*].metadata.name}' 2>/dev/null); do
-  [[ "$app" == "platform" || "$app" == "models" || "$app" == "teams" ]] && continue
-  kubectl patch application "$app" -n argocd --type merge -p "$SYNC_POLICY" 2>/dev/null || true
+  [[ "$app" == "bootstrap" ]] && continue
+  kubectl patch application "$app" -n argocd --type merge -p "$SYNC_POLICY" 2>/dev/null && echo "  ✓ $app" || true
 done
 echo ""
 

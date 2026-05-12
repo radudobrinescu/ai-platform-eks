@@ -44,7 +44,7 @@ EKS Cluster
 │   ├── LiteLLM          ──▶  OpenAI-compatible API gateway
 │   ├── Open WebUI       ──▶  chat interface
 │   ├── Platform DB      ──▶  shared PostgreSQL (LiteLLM + Langfuse)
-│   └── Langfuse         ──▶  LLM tracing and analytics (opt-in)
+│   └── Langfuse         ──▶  LLM tracing and analytics
 │
 ├── Platform Config (ArgoCD-managed)
 │   ├── KRO definitions  ──▶  InferenceEndpoint, AITeam APIs
@@ -72,7 +72,7 @@ cd terraform/00.global/vars/
 cp example.tfvars your-env.tfvars
 ```
 
-Edit `your-env.tfvars` — set your Identity Center ARN, VPC CIDR, and capabilities.
+Edit `your-env.tfvars` — set your Identity Center ARN, VPC CIDR, GitOps repo URL (`gitops_repo_url`), and capabilities.
 
 ### 2. Deploy Infrastructure
 
@@ -116,31 +116,28 @@ This runs on a criticaladdons node via SSM (requires the 100GB EBS volume from t
 
 ### 4. Bootstrap ArgoCD
 
-Update the Git repo URL in all ArgoCD application definitions:
+ArgoCD is already running (deployed as a managed capability by Terraform). Terraform also created a single bootstrap `Application` that points at `argocd/bootstrap/` in your Git repo — there's no `sed` step. Set `gitops_repo_url` in your tfvars file to your fork's URL; Terraform renders the bootstrap Application with that value.
 
-```bash
-cd argocd/
-find . -name '*.yaml' -exec sed -i '' 's|https://github.com/radudobrinescu/ai-platform-eks.git|https://github.com/YOUR-ORG/YOUR-REPO.git|g' {} +
-```
+The bootstrap Application syncs two ApplicationSets:
 
-Apply the three top-level applications to the cluster:
+| ApplicationSet | Creates |
+|-----|---------|
+| `platform` | `platform-config`, `gpu-operator`, `kuberay-operator`, `litellm`, `open-webui`, `langfuse` |
+| `workloads` | `models` (InferenceEndpoint instances), `teams` (AITeam instances) |
+
+Verify everything syncs:
 
 ```bash
 aws eks update-kubeconfig --region $AWS_REGION --name ai-platform-your-env
-kubectl apply -f argocd/platform.yaml -f argocd/models.yaml -f argocd/teams.yaml
+kubectl get applicationsets -n argocd
+kubectl get applications -n argocd
 ```
 
-This creates 3 ArgoCD Applications:
+If you forked this repo, you only need to change:
+- `gitops_repo_url` in your tfvars file
+- The two literal URLs inside `argocd/bootstrap/platform.yaml` and the one in `argocd/bootstrap/workloads.yaml`
 
-| App | What it syncs |
-|-----|---------------|
-| `platform` | App-of-Apps: platform-config, gpu-operator, kuberay-operator, litellm, open-webui, langfuse |
-| `models` | InferenceEndpoint instances (self-service) |
-| `teams` | AITeam instances (self-service) |
-
-The `platform` app manages 6 child applications:
-
-| Child App | What it syncs |
+| Application | What it syncs |
 |-----------|---------------|
 | `platform-config` | KRO definitions, RBAC, Ingress |
 | `gpu-operator` | NVIDIA GPU Operator (Helm) |
@@ -148,12 +145,6 @@ The `platform` app manages 6 child applications:
 | `litellm` | LiteLLM proxy + shared PostgreSQL |
 | `open-webui` | Open WebUI chat interface |
 | `langfuse` | Langfuse LLM observability |
-
-Wait for all apps to sync:
-
-```bash
-kubectl get applications -n argocd
-```
 
 ### 5. Create HuggingFace Token
 
@@ -347,7 +338,7 @@ metadata:
   namespace: ai-platform
 spec:
   teamName: search-ranking        # Creates namespace team-search-ranking
-  models: ["gemma-4b", "llama32-1b"]  # Allowed models (* = all)
+  models: ["gemma-4b", "qwen3-4b"]  # Allowed models (* = all)
   maxBudget: "50.0"               # USD budget
   budgetDuration: "30d"           # Reset period
   rpmLimit: 60                    # Requests per minute
@@ -365,21 +356,14 @@ kubectl get configmap welcome -n team-search-ranking -o jsonpath='{.data.README\
 ## Repository Structure
 
 ```
-argocd/                          # ArgoCD Application definitions
-  platform.yaml                  #   App-of-Apps (bootstrap this)
-  models.yaml                    #   InferenceEndpoint sync (bootstrap this)
-  teams.yaml                     #   AITeam sync (bootstrap this)
-  platform/                      #   Child apps managed by platform.yaml
-    platform-config.yaml         #     KRO definitions, RBAC, Ingress
-    gpu-operator.yaml            #     NVIDIA GPU Operator
-    kuberay-operator.yaml        #     KubeRay Operator
-    litellm.yaml                 #     LiteLLM + shared PostgreSQL
-    open-webui.yaml              #     Open WebUI
-    langfuse.yaml                #     Langfuse LLM observability
+argocd/                          # ArgoCD bootstrap — the only ArgoCD content in git
+  bootstrap/                     # Synced by the root Application (rendered by Terraform)
+    platform.yaml                #   ApplicationSet: platform-config, gpu-operator, kuberay, litellm, open-webui, langfuse
+    workloads.yaml               #   ApplicationSet: models + teams
 platform/                        # Platform team owns everything here
   config/                        #   KRO APIs, RBAC, Ingress
     kro/                         #     InferenceEndpoint + AITeam definitions
-    rbac/                        #     team-developer ClusterRole
+    rbac/                        #     team-developer ClusterRole + team-onboarding SA/ClusterRole
   services/                      #   Platform service configurations
     gpu-operator/                #     NVIDIA GPU Operator (Helm values)
     kuberay/                     #     KubeRay Operator (Helm values)

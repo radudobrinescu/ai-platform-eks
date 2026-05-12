@@ -52,3 +52,10 @@ observability_configuration = {
 # Set via environment variables, not in this file:
 #   export TF_VAR_docker_hub_username="your-dockerhub-username"
 #   export TF_VAR_docker_hub_access_token="dckr_pat_XXXXXXXXXX"
+
+# GitOps repository — ArgoCD syncs the platform from this repo.
+# Required when cluster_config.capabilities.gitops = true.
+# No sed-over-the-tree needed — Terraform renders the bootstrap Application
+# with this URL and everything else flows from argocd/bootstrap/.
+gitops_repo_url = "https://github.com/YOUR-ORG/YOUR-REPO.git"
+gitops_revision = "main"

@@ -2,7 +2,7 @@
 # Chart: langfuse/langfuse v1.5.20
 # Repository: https://langfuse.github.io/langfuse-k8s
 #
-# Uses shared platform-db PostgreSQL, bundled ClickHouse and Redis.
+# Uses shared platform-db PostgreSQL, bundled ClickHouse, Redis, and MinIO.
 # Secrets are created by Terraform (langfuse-secrets, platform-db-credentials)
 # and referenced here via secretKeyRef — no secrets stored in git.
 
@@ -57,8 +57,6 @@ postgresql:
 clickhouse:
   deploy: true
   replicaCount: 1
-  image:
-    tag: latest
   auth:
     existingSecret: langfuse-secrets
     existingSecretKey: clickhouse-password
@@ -85,8 +83,6 @@ clickhouse:
 # Redis for caching and queue management
 redis:
   deploy: true
-  image:
-    tag: latest
   auth:
     existingSecret: langfuse-secrets
     existingSecretPasswordKey: redis-password

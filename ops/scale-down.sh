@@ -6,8 +6,6 @@
 
 set -euo pipefail
 
-ARGOCD_APPS=(platform models)
-
 echo "=== Scaling down AI Platform ==="
 echo ""
 
@@ -16,17 +14,13 @@ pkill -f 'port-forward.*(litellm|langfuse|open-webui|head-svc)' 2>/dev/null || t
 pkill -f 'ssm.*StartPortForwardingSession' 2>/dev/null || true
 echo "✓ Port-forwards stopped"
 
-# Suspend ArgoCD auto-sync on all managed apps
+# Suspend ArgoCD auto-sync on all generated Applications.
+# Skip 'teams' (keep team configs live) and 'bootstrap' (managed by Terraform).
 echo "Suspending ArgoCD auto-sync..."
-for app in "${ARGOCD_APPS[@]}"; do
+for app in $(kubectl get applications -n argocd -o jsonpath='{.items[*].metadata.name}' 2>/dev/null); do
+  [[ "$app" == "teams" || "$app" == "bootstrap" ]] && continue
   kubectl patch application "$app" -n argocd --type merge \
     -p '{"spec":{"syncPolicy":null}}' 2>/dev/null && echo "  ✓ $app" || true
-done
-# Also suspend child apps managed by the platform App-of-Apps
-for app in $(kubectl get applications -n argocd -o jsonpath='{.items[*].metadata.name}' 2>/dev/null); do
-  [[ "$app" == "teams" ]] && continue  # skip teams if not in ARGOCD_APPS
-  kubectl patch application "$app" -n argocd --type merge \
-    -p '{"spec":{"syncPolicy":null}}' 2>/dev/null || true
 done
 echo "✓ Auto-sync suspended"
 

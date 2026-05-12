@@ -28,7 +28,10 @@ rules:
   - apiGroups: [""]
     resources: ["events"]
     verbs: ["get", "list", "watch"]
-  # KRO InferenceEndpoints (teams can deploy models in their namespace)
+  # KRO InferenceEndpoints — read-only.
+  # Model deployment is done by the platform team via git (workloads/models/)
+  # synced by ArgoCD. Teams can see model status in the inference namespace
+  # but do not create/modify InferenceEndpoints directly.
   - apiGroups: ["kro.run"]
     resources: ["inferenceendpoints"]
-    verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+    verbs: ["get", "list", "watch"]

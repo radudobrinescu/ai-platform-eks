@@ -190,11 +190,39 @@ resource "kubernetes_secret" "argocd_cluster" {
   }
 
   data = {
-    name    = "local-cluster"
+    name   = "local-cluster"
     server = module.eks.cluster_arn
   }
 
   depends_on = [aws_eks_capability.argocd]
+}
+
+################################################################################
+# ArgoCD — bootstrap Application.
+# Points at argocd/bootstrap/ in the git repo, which contains ApplicationSets
+# that define all platform services and workloads. This is the only ArgoCD
+# Application rendered by Terraform — everything else is in git, managed by
+# ArgoCD. Forking the platform = set var.gitops_repo_url; no sed required.
+################################################################################
+resource "kubectl_manifest" "argocd_bootstrap" {
+  count = local.capabilities.gitops ? 1 : 0
+
+  yaml_body = templatefile("${path.module}/argocd/bootstrap.yaml.tpl", {
+    repo_url = var.gitops_repo_url
+    revision = var.gitops_revision
+  })
+
+  lifecycle {
+    precondition {
+      condition     = var.gitops_repo_url != ""
+      error_message = "var.gitops_repo_url must be set when cluster_config.capabilities.gitops is enabled."
+    }
+  }
+
+  depends_on = [
+    aws_eks_capability.argocd,
+    kubernetes_secret.argocd_cluster,
+  ]
 }
 
 ################################################################################
@@ -204,7 +232,7 @@ resource "kubernetes_namespace" "ai_platform" {
   count = local.capabilities.gitops ? 1 : 0
 
   metadata {
-    name = "ai-platform"
+    name   = "ai-platform"
     labels = { "app.kubernetes.io/part-of" = "ai-platform" }
   }
 

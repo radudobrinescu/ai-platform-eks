@@ -1,0 +1,32 @@
+# Team onboarding identity
+#
+# The team onboarding Job (created by the AITeam KRO definition) runs in the
+# ai-platform namespace with this ServiceAccount. It needs:
+#   - Read the LiteLLM master key from ai-platform/litellm-secrets
+#     (via env var; handled by kubelet, no explicit RBAC needed).
+#   - Write the team's scoped API key into team-<name>/<team>-api-key.
+#
+# Secret writes are granted per-team via a RoleBinding (created by the AITeam
+# KRO resource graph) that references the ClusterRole below. The SA itself
+# lives in ai-platform; the master key never leaves ai-platform.
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: team-onboarding
+  namespace: ai-platform
+  labels:
+    app.kubernetes.io/part-of: ai-platform
+    ai-platform/managed-by: platform-team
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: team-onboarding-secret-writer
+  labels:
+    app.kubernetes.io/part-of: ai-platform
+    ai-platform/managed-by: platform-team
+rules:
+  - apiGroups: [""]
+    resources: ["secrets"]
+    verbs: ["get", "create", "update", "patch"]
