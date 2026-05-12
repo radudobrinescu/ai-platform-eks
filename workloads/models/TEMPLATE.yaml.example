@@ -21,6 +21,9 @@ spec:
   # workerMemory: "24Gi"      # Memory per GPU worker. Increase for larger models.
   # workerCpu: "4"            # CPU per GPU worker
   # maxModelLen: 8192         # Max sequence length. Lower = less GPU memory, faster.
+  # minVramPerGpuGiB: 0       # Min per-GPU VRAM in GiB (Karpenter hint). 0 = no floor.
+  #                           # Set this to exclude T4 (16 GB) if you need L4/A10G (24+) —
+  #                           # recommend-instance.py emits the right value automatically.
   # rayImage: "anyscale/ray-llm:2.54.0-py311-cu128"  # Override only if needed
 #
 # Unsure what size GPU / how many GPUs your model needs?
