@@ -20,15 +20,14 @@ output "next_steps" {
     1. Configure kubectl:
        aws eks --region ${local.region} update-kubeconfig --name ${module.eks.cluster_name}
 
-    2. Update ArgoCD app source URLs and apply:
-       cd argocd/
-       sed -i '' 's|https://github.com/YOUR-ORG/YOUR-REPO.git|https://github.com/YOUR-ORG/YOUR-REPO.git|g' *.yaml
-       kubectl apply -f argocd/
+    2. Verify ArgoCD synced the platform (Terraform already bootstrapped it):
+       kubectl get applicationsets -n argocd
+       kubectl get applications -n argocd
 
     3. Create HuggingFace token (for gated models):
        kubectl create secret generic hf-token -n inference --from-literal=token=hf_YOUR_TOKEN
 
-    4. Get LiteLLM API key:
+    4. Get LiteLLM master key:
        kubectl get secret litellm-secrets -n ai-platform -o jsonpath='{.data.master-key}' | base64 -d
   EOT
 }

@@ -14,7 +14,7 @@ data "aws_iam_session_context" "current" {
 ################################################################################
 module "eks" {
   source  = "terraform-aws-modules/eks/aws"
-  version = "~> 21.0"
+  version = "= 21.1.5"
 
   name                   = local.cluster_name
   kubernetes_version                = local.cluster_version

@@ -16,7 +16,7 @@ resource "aws_ec2_tag" "cluster_primary_security_group" {
 ################################################################################
 module "karpenter" {
   source  = "terraform-aws-modules/eks/aws//modules/karpenter"
-  version = "~> 21.2"
+  version = "= 21.1.5"
 
   create = local.capabilities.autoscaling
 
