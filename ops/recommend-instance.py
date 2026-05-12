@@ -53,6 +53,56 @@ _SSL_CONTEXT = _build_ssl_context()
 
 
 # --------------------------------------------------------------------------- #
+# Terminal UX helpers: colour, bars, formatting                               #
+# --------------------------------------------------------------------------- #
+
+class _AnsiPalette:
+    RESET  = "\033[0m"
+    BOLD   = "\033[1m"
+    DIM    = "\033[2m"
+    GREEN  = "\033[32m"
+    YELLOW = "\033[33m"
+    RED    = "\033[31m"
+    CYAN   = "\033[36m"
+
+
+class _NoPalette:
+    RESET = BOLD = DIM = GREEN = YELLOW = RED = CYAN = ""
+
+
+def _palette(emit_colour: bool) -> type:
+    """Return the active colour palette class."""
+    return _AnsiPalette if emit_colour else _NoPalette
+
+
+def _should_use_colour(args: argparse.Namespace) -> bool:
+    """Honour --json, NO_COLOR, and TTY detection."""
+    if args.json:
+        return False
+    if os.environ.get("NO_COLOR"):
+        return False
+    return sys.stdout.isatty()
+
+
+def _bar(used: float, total: float, width: int = 24) -> str:
+    """Render a Unicode horizontal bar. `used` and `total` are arbitrary floats."""
+    if total <= 0:
+        return "░" * width
+    frac  = max(0.0, min(used / total, 1.0))
+    fill  = int(round(frac * width))
+    return "█" * fill + "░" * (width - fill)
+
+
+def _fmt_monthly(price_hour: float) -> str:
+    """Format approximate monthly cost (730 h/month) with thousand separators."""
+    return f"${price_hour * 730:,.0f}"
+
+
+def _ruler(width: int, palette: type) -> str:
+    return f"{palette.DIM}{'═' * width}{palette.RESET}"
+
+
+# --------------------------------------------------------------------------- #
 # Constants                                                                   #
 # --------------------------------------------------------------------------- #
 
@@ -630,82 +680,145 @@ def print_human(
     args:        argparse.Namespace,
     price_src:   str,
 ) -> None:
-    print(f"\nModel: {model.model_id}")
-    print(f"  Architecture:  {model.architecture or '?'}")
-    print(f"  Parameters:    {_fmt_params(model.params)} ({model.params:,})")
-    print(f"  Layers:        {model.num_layers}")
-    print(f"  Hidden / heads: {model.hidden_size} / {model.num_heads} (KV heads: {model.num_kv_heads})")
-    print(f"  Max position:  {model.max_position}")
-    if model.is_moe:
-        print(f"  MoE:           {model.num_experts} experts ({model.active_experts} active/token) — all experts held in VRAM")
-    for w in model.warnings:
-        print(f"  ! {w}")
+    C      = _palette(_should_use_colour(args))
+    ruler  = _ruler(71, C)
 
-    print(f"\nRequest:")
-    print(f"  Weights quant:  {args.quant}")
-    print(f"  KV cache quant: {args.kv_quant}")
-    print(f"  Seq length:     {args.seq:,}")
-    print(f"  Batch size:     {args.batch}")
-    print(f"  Concurrent:     {args.users}")
-    print(f"  Region:         {args.region}  (prices: {price_src})")
-    print(f"  Price ceiling:  ${args.max_price:.2f}/hr  (options above are flagged)")
-
-    print(f"\nVRAM estimate (TP=1, before sharding):")
-    print(f"  Weights:      {vram.weights_gb:7.2f} GB")
-    print(f"  KV cache:     {vram.kv_cache_gb:7.2f} GB")
-    print(f"  Activations:  {vram.activations_gb:7.2f} GB")
-    print(f"  Overhead:     {vram.overhead_gb:7.2f} GB   (+15%)")
-    print(f"  Total:        {vram.total_gb:7.2f} GB")
-
-    if not opts:
-        print("\nNo instance in the catalog can host this configuration.")
-        print("Try: --quant int4, a shorter --seq, fewer --users, or lower --batch.")
+    # -------- 1. Recommendation banner ----------------------------------- #
+    if best is None:
+        print(f"\n{C.RED}✗ No catalog instance can host this configuration.{C.RESET}")
+        print(f"  Try: {C.CYAN}--quant int4{C.RESET}, a shorter {C.CYAN}--seq{C.RESET}, "
+              f"fewer {C.CYAN}--users{C.RESET}, or lower {C.CYAN}--batch{C.RESET}.\n")
         return
 
+    util_pct  = 100.0 * best.per_gpu_need_gb / best.instance.vram_gb
+    marker    = f"{C.YELLOW}⚠{C.RESET}" if best.over_price_ceiling else f"{C.GREEN}✓{C.RESET}"
+    verdict   = f"{C.YELLOW}FITS, BUT OVER BUDGET{C.RESET}" if best.over_price_ceiling \
+                else f"{C.GREEN}RECOMMENDED{C.RESET}"
+    shared_on = best.shared_eligible and best.tp_degree == 1 \
+                and best.headroom_gb >= (best.instance.vram_gb * 0.70)
+    mode_lbl  = "shared mode (up to 4 models per GPU)" if shared_on else (
+                f"tensor-parallel across {best.tp_degree} GPUs" if best.tp_degree > 1 else
+                "dedicated GPU")
+
+    print()
+    print(ruler)
+    print(f"  {marker} {C.BOLD}{verdict}: {best.instance.name}{C.RESET} — "
+          f"{best.tp_degree}× NVIDIA {best.instance.gpu}, "
+          f"{best.instance.vram_gb} GB VRAM per GPU · {mode_lbl}")
+    monthly = _fmt_monthly(best.price_usd_h)
+    line    = f"    {C.BOLD}${best.price_usd_h:.2f}/hr{C.RESET}  ·  ~{monthly}/month"
+    if shared_on:
+        eff   = _fmt_monthly(best.price_usd_h / 4.0)
+        line += f"  ·  ~{eff}/month per model when 4 share the GPU"
+    print(line)
+    headroom_tone = C.GREEN if util_pct < 60 else (C.YELLOW if util_pct < 85 else C.RED)
+    print(f"    Utilisation: {headroom_tone}{best.per_gpu_need_gb:.1f} / "
+          f"{best.instance.vram_gb} GB ({util_pct:.0f}%){C.RESET}  "
+          f"— {best.headroom_gb:.1f} GB headroom")
+    if best.over_price_ceiling:
+        print(f"    {C.YELLOW}Note: exceeds --max-price ${args.max_price:.2f}/hr. "
+              f"No cheaper option fits.{C.RESET}")
+    print(ruler)
+
+    # -------- 2. MoE callout (if applicable) ----------------------------- #
+    if model.is_moe and model.num_experts:
+        active = model.active_experts or 0
+        act_ratio = active / model.num_experts if model.num_experts else 0
+        dense_eq  = int(model.params * act_ratio) if active else model.params
+        print()
+        print(f"  {C.YELLOW}⚠ MIXTURE-OF-EXPERTS MODEL{C.RESET}")
+        print(f"    {model.num_experts} experts total, {active} active per token — "
+              f"but ALL experts stay resident in VRAM.")
+        print(f"    Memory cost = dense ~{_fmt_params(model.params)} model, NOT the "
+              f"~{_fmt_params(dense_eq)} 'active-size' figure sometimes quoted.")
+
+    # -------- 3. Model + request summary (compact) ----------------------- #
+    gqa = f"GQA {model.num_kv_heads}KV/{model.num_heads}Q" \
+          if model.num_kv_heads and model.num_kv_heads != model.num_heads else \
+          f"MHA {model.num_heads} heads"
+    print(f"\n{C.BOLD}Model:{C.RESET}   {model.model_id}  "
+          f"({C.DIM}{_fmt_params(model.params)} params, {model.num_layers} layers, "
+          f"{gqa}{C.RESET})")
+    print(f"{C.BOLD}Request:{C.RESET} {args.seq:,}-token context · batch {args.batch} · "
+          f"{args.users} concurrent · weights {args.quant} · kv {args.kv_quant}")
+    print(f"{C.BOLD}Region:{C.RESET}  {args.region}  "
+          f"{C.DIM}(prices: {price_src}){C.RESET}")
+    for w in model.warnings:
+        print(f"  {C.YELLOW}⚠{C.RESET} {w}")
+
+    # -------- 4. VRAM breakdown ------------------------------------------ #
+    print(f"\n{C.BOLD}VRAM usage{C.RESET} (TP=1, per-GPU before sharding)")
+    total = vram.total_gb or 1e-9
+    rows  = [
+        ("weights",     vram.weights_gb),
+        ("kv-cache",    vram.kv_cache_gb),
+        ("activations", vram.activations_gb),
+        ("overhead",    vram.overhead_gb),
+    ]
+    for label, gb in rows:
+        pct = 100.0 * gb / total
+        print(f"  {label:<12}{_bar(gb, total, 24)}  "
+              f"{gb:>6.2f} GB  ({pct:>4.1f}%)")
+    print(f"  {C.BOLD}{'total':<12}{_bar(total, total, 24)}  "
+          f"{total:>6.2f} GB{C.RESET}")
+
+    # -------- 5. Alternatives table -------------------------------------- #
     within_budget = [o for o in opts if not o.over_price_ceiling]
     over_budget   = [o for o in opts if o.over_price_ceiling]
 
-    print(f"\nViable instances (sorted: within budget, in-cluster, then cheapest):\n")
-    print(f"  {'INSTANCE':<18} {'GPU':<13} {'TP':>3} {'VRAM/GPU':>9} "
-          f"{'PER-GPU NEED':>12} {'HEADROOM':>9} {'$/HR':>7} {'NODEPOOL':<14}")
-    print(f"  {'-'*18} {'-'*13} {'-'*3} {'-'*9} {'-'*12} {'-'*9} {'-'*7} {'-'*14}")
+    print(f"\n{C.BOLD}Alternatives{C.RESET} "
+          f"(sorted: within budget, in-cluster, lowest effective cost)\n")
+    header = (f"  {'INSTANCE':<15} {'GPU':<9} {'TP':>2}  {'USAGE':<12} "
+              f"{'FIT':<15}  {'$/HR':>6}  {'MONTHLY':>9}  FLAGS")
+    print(f"{C.DIM}{header}{C.RESET}")
+    print(f"{C.DIM}  {'-'*15} {'-'*9} {'-'*2}  {'-'*12} {'-'*15}  "
+          f"{'-'*6}  {'-'*9}  {'-'*13}{C.RESET}")
 
     for o in within_budget[: args.limit]:
-        _print_row(o)
-
+        _print_table_row(o, C, over=False)
     if over_budget and len(within_budget) < args.limit:
-        print(f"  {'-'*18} above --max-price ceiling {'-'*39}")
-        for o in over_budget[: args.limit - len(within_budget)]:
-            _print_row(o, over_budget=True)
+        remaining = args.limit - len(within_budget)
+        print(f"{C.DIM}  {'·'*75} above --max-price ${args.max_price:.2f}/hr{C.RESET}")
+        for o in over_budget[:remaining]:
+            _print_table_row(o, C, over=True)
 
-    if best:
-        tag = " ⚠ OVER BUDGET" if best.over_price_ceiling else ""
-        print(f"\nRecommended: {best.instance.name} ({best.instance.gpu}, "
-              f"TP={best.tp_degree}, ${best.price_usd_h:.2f}/hr {args.region}){tag}")
-        for n in best.notes:
-            print(f"  • {n}")
+    # -------- 6. YAML artifact + next steps ------------------------------ #
+    _print_yaml_snippet(model, best, args, C)
 
-        _print_yaml_snippet(model, best, args)
-
-    print("\nNotes:")
-    print("  • NODEPOOL = gpu-inference | gpu-shared | out-of-cluster (per Karpenter)")
-    print("  • gpu-shared requires a single-GPU NVIDIA G instance with time-slicing.")
-    print("  • Prices from: " + price_src +
-          ". Use --refresh-prices to invalidate the cache.")
-    print("  • Estimates are first-order. Validate with the actual deployment.")
+    # -------- 7. Footnotes ----------------------------------------------- #
+    print(f"\n{C.DIM}Notes:")
+    print("  • FLAGS: ✓ in-cluster · shared = eligible for 4-way time-slicing")
+    print(f"  • Monthly = hourly × 730 h/month. Prices from: {price_src}")
+    print("  • Use --refresh-prices to invalidate the local cache")
+    print(f"  • Estimates are first-order (±10%). Validate with a real deployment.{C.RESET}")
 
 
-def _print_row(o: Option, over_budget: bool = False) -> None:
-    marker = "⚠" if over_budget else ("✓" if o.in_cluster else " ")
-    pool = o.nodepool if o.nodepool != "out-of-cluster" else "—"
-    if o.shared_eligible and o.nodepool == "gpu-inference":
-        pool = "gpu-inference*"  # asterisk = also eligible for gpu-shared
-    print(f"  {o.instance.name:<18} {o.instance.gpu:<13} {o.tp_degree:>3} "
-          f"{o.instance.vram_gb:>7} GB {o.per_gpu_need_gb:>10.1f} GB "
-          f"{o.headroom_gb:>7.1f} GB {o.price_usd_h:>7.2f}  {marker} {pool:<12}")
+def _print_table_row(o: Option, C: type, over: bool) -> None:
+    util_pct = 100.0 * o.per_gpu_need_gb / o.instance.vram_gb
+    bar      = _bar(o.per_gpu_need_gb, o.instance.vram_gb, 8)
+    tone     = C.YELLOW if over else (
+               C.RED if util_pct >= 85 else
+               C.YELLOW if util_pct >= 60 else
+               C.GREEN)
+    flag_ic  = f"{C.GREEN}✓{C.RESET}" if o.in_cluster else f"{C.DIM}·{C.RESET}"
+    flag_sh  = "shared"     if o.shared_eligible else "dedicated"
+    flags    = f"{flag_ic} {flag_sh}"
+    if over:
+        flags = f"{C.YELLOW}⚠ over budget{C.RESET}"
+
+    usage  = f"{o.per_gpu_need_gb:.1f}/{o.instance.vram_gb} GB"
+    fit    = f"[{tone}{bar}{C.RESET}] {util_pct:>3.0f}%"
+    price  = f"${o.price_usd_h:.2f}"
+    month  = _fmt_monthly(o.price_usd_h)
+    # NOTE: `fit` contains ANSI escapes that don't count toward visible width,
+    # so we pad it by hand against the visible length.
+    fit_pad = 15 - len(f"[{bar}] {util_pct:>3.0f}%")
+    print(f"  {o.instance.name:<15} {o.instance.gpu:<9} {o.tp_degree:>2}  "
+          f"{usage:<12} {fit}{' ' * max(fit_pad, 0)}  {price:>6}  {month:>9}  {flags}")
 
 
-def _print_yaml_snippet(model: ModelSpec, best: Option, args: argparse.Namespace) -> None:
+def _print_yaml_snippet(model: ModelSpec, best: Option,
+                        args: argparse.Namespace, C: type) -> None:
     name = model.model_id.split("/")[-1].lower().replace(".", "-").replace("_", "-")
     max_len = args.seq
     # Suggest shared: true only when the instance is actually shared-eligible AND
@@ -715,21 +828,35 @@ def _print_yaml_snippet(model: ModelSpec, best: Option, args: argparse.Namespace
         and best.shared_eligible
         and best.headroom_gb >= (best.instance.vram_gb * 0.70)
     )
-    print(f"\nDrop-in InferenceEndpoint for workloads/models/{name}.yaml:")
-    print("---")
+    yaml_path = f"workloads/models/{name}.yaml"
+    print(f"\n{C.BOLD}Deployment manifest{C.RESET} — save as "
+          f"{C.CYAN}{yaml_path}{C.RESET}:")
+    print(f"{C.DIM}---{C.RESET}")
     print("apiVersion: kro.run/v1alpha1")
     print("kind: InferenceEndpoint")
     print("metadata:")
     print(f"  name: {name}")
     print("  namespace: inference")
     print("spec:")
-    print(f"  model: \"{model.model_id}\"")
+    print(f'  model: "{model.model_id}"')
     print(f"  gpuCount: {best.tp_degree}")
     if shared:
-        print("  shared: true          # fits with headroom — share GPU with up to 3 other models")
+        print(f"  shared: true          "
+              f"{C.DIM}# fits with headroom — up to 4 models share the GPU{C.RESET}")
     print(f"  maxModelLen: {max_len}")
     print("  minReplicas: 1")
     print("  maxReplicas: 2")
+    print(f"{C.DIM}---{C.RESET}")
+
+    commit_msg = f"feat: deploy {name}"
+    print(f"\n{C.BOLD}Next steps{C.RESET}")
+    print(f"  {C.GREEN}1.{C.RESET} Save the YAML above to {C.CYAN}{yaml_path}{C.RESET}")
+    print(f"  {C.GREEN}2.{C.RESET} {C.CYAN}git add {yaml_path}{C.RESET}")
+    print(f"  {C.GREEN}3.{C.RESET} {C.CYAN}git commit -m \"{commit_msg}\"{C.RESET}")
+    print(f"  {C.GREEN}4.{C.RESET} {C.CYAN}git push{C.RESET}                      "
+          f"{C.DIM}# ArgoCD syncs within ~30s{C.RESET}")
+    print(f"  {C.GREEN}5.{C.RESET} {C.CYAN}kubectl get inferenceendpoints "
+          f"-n inference -w{C.RESET}  {C.DIM}# wait for READY=True{C.RESET}")
 
 
 def print_json(
@@ -781,6 +908,7 @@ def print_json(
                 "per_gpu_need_gb":    round(o.per_gpu_need_gb, 3),
                 "headroom_gb":        round(o.headroom_gb, 3),
                 "price_usd_h":        round(o.price_usd_h, 4),
+                "monthly_usd":        round(o.price_usd_h * 730, 2),
                 "nodepool":           o.nodepool,
                 "shared_eligible":    o.shared_eligible,
                 "over_price_ceiling": o.over_price_ceiling,
@@ -794,6 +922,7 @@ def print_json(
             "nodepool":           best.nodepool,
             "shared_eligible":    best.shared_eligible,
             "price_usd_h":        round(best.price_usd_h, 4),
+            "monthly_usd":        round(best.price_usd_h * 730, 2),
             "over_price_ceiling": best.over_price_ceiling,
         },
     }
