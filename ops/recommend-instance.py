@@ -828,35 +828,46 @@ def _print_yaml_snippet(model: ModelSpec, best: Option,
         and best.shared_eligible
         and best.headroom_gb >= (best.instance.vram_gb * 0.70)
     )
-    yaml_path = f"workloads/models/{name}.yaml"
-    print(f"\n{C.BOLD}Deployment manifest{C.RESET} — save as "
-          f"{C.CYAN}{yaml_path}{C.RESET}:")
-    print(f"{C.DIM}---{C.RESET}")
-    print("apiVersion: kro.run/v1alpha1")
-    print("kind: InferenceEndpoint")
-    print("metadata:")
-    print(f"  name: {name}")
-    print("  namespace: inference")
-    print("spec:")
-    print(f'  model: "{model.model_id}"')
-    print(f"  gpuCount: {best.tp_degree}")
-    if shared:
-        print(f"  shared: true          "
-              f"{C.DIM}# fits with headroom — up to 4 models share the GPU{C.RESET}")
-    print(f"  maxModelLen: {max_len}")
-    print("  minReplicas: 1")
-    print("  maxReplicas: 2")
-    print(f"{C.DIM}---{C.RESET}")
-
+    yaml_path  = f"workloads/models/{name}.yaml"
     commit_msg = f"feat: deploy {name}"
-    print(f"\n{C.BOLD}Next steps{C.RESET}")
-    print(f"  {C.GREEN}1.{C.RESET} Save the YAML above to {C.CYAN}{yaml_path}{C.RESET}")
-    print(f"  {C.GREEN}2.{C.RESET} {C.CYAN}git add {yaml_path}{C.RESET}")
-    print(f"  {C.GREEN}3.{C.RESET} {C.CYAN}git commit -m \"{commit_msg}\"{C.RESET}")
-    print(f"  {C.GREEN}4.{C.RESET} {C.CYAN}git push{C.RESET}                      "
-          f"{C.DIM}# ArgoCD syncs within ~30s{C.RESET}")
-    print(f"  {C.GREEN}5.{C.RESET} {C.CYAN}kubectl get inferenceendpoints "
-          f"-n inference -w{C.RESET}  {C.DIM}# wait for READY=True{C.RESET}")
+
+    # Build the YAML body. Intentionally flush-left so copy-paste into a shell
+    # heredoc produces a clean file (no stray indentation).
+    lines: list[str] = [
+        "apiVersion: kro.run/v1alpha1",
+        "kind: InferenceEndpoint",
+        "metadata:",
+        f"  name: {name}",
+        "  namespace: inference",
+        "spec:",
+        f'  model: "{model.model_id}"',
+        f"  gpuCount: {best.tp_degree}",
+    ]
+    if shared:
+        lines.append("  shared: true          "
+                     "# fits with headroom — up to 4 models share the GPU")
+    lines.extend([
+        f"  maxModelLen: {max_len}",
+        "  minReplicas: 1",
+        "  maxReplicas: 2",
+    ])
+    yaml_body = "\n".join(lines)
+
+    # The heredoc uses a quoted 'EOF' so the YAML content is not subject to
+    # shell expansion (model IDs sometimes contain '$' in other ecosystems).
+    print(f"\n{C.BOLD}Deploy this model{C.RESET} — "
+          f"{C.DIM}copy-paste the block below into your shell:{C.RESET}\n")
+    print(f"cat > {yaml_path} <<'EOF'")
+    print(yaml_body)
+    print("EOF")
+
+    print(f"\n{C.DIM}Then commit and push (ArgoCD picks it up within ~30s):{C.RESET}\n")
+    print(f"git add {yaml_path}")
+    print(f'git commit -m "{commit_msg}"')
+    print("git push")
+    print()
+    print(f"{C.DIM}# Watch the deployment come up:{C.RESET}")
+    print("kubectl get inferenceendpoints -n inference -w")
 
 
 def print_json(
