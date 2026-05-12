@@ -54,6 +54,22 @@ spec:
           effect: NoSchedule
       nodeSelector:
         workload-type: gpu-shared
+      # Match the VRAM floor emitted by recommend-instance.py (minVramPerGpuGiB=21).
+      # Without this, Karpenter picks the cheapest eligible instance (T4 16 GiB);
+      # real InferenceEndpoint pods with VRAM guards then can't preempt the
+      # placeholder, and Karpenter ends up provisioning a second L4 node anyway —
+      # the warm-pool saves nothing. Pinning to L4-class (Gt 21503 MiB) costs
+      # ~\$200/month more but actually delivers the "skip Karpenter provisioning"
+      # win for demo-shaped workloads.
+      affinity:
+        nodeAffinity:
+          requiredDuringSchedulingIgnoredDuringExecution:
+            nodeSelectorTerms:
+              - matchExpressions:
+                  - key: karpenter.k8s.aws/instance-gpu-memory
+                    operator: Gt
+                    values:
+                      - "21503"   # (21 GiB * 1024) - 1 — excludes T4, allows L4/A10G/L40S/+
       containers:
         - name: pause
           image: registry.k8s.io/pause:3.10
