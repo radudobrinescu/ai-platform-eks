@@ -17,7 +17,7 @@ module "eks" {
   version = "= 21.1.5"
 
   name                   = local.cluster_name
-  kubernetes_version                = local.cluster_version
+  kubernetes_version     = local.cluster_version
   endpoint_public_access = try(!var.cluster_config.private_eks_cluster, false)
 
   create_iam_role          = try(var.cluster_config.create_iam_role, true)
@@ -159,8 +159,8 @@ module "eks" {
   }
 
   # Fargate profiles use the cluster primary security group so these are not utilized
-  create_security_group         = false
-  create_node_security_group    = false
+  create_security_group      = false
+  create_node_security_group = false
 
   # managed node group for base EKS addons such as Karpenter
   eks_managed_node_groups = {
