@@ -57,6 +57,10 @@ spec:
       taints:
         - key: nvidia.com/gpu
           effect: NoSchedule
+      # All NVIDIA-backed AWS GPU instance categories (G and P families).
+      # Karpenter's scheduler already bin-packs to cheapest-fit, so we don't
+      # enumerate families — new ones (g7, p6, ...) become eligible automatically.
+      # Cost blast-radius is bounded by `limits.nvidia.com/gpu` below.
       requirements:
         - key: kubernetes.io/arch
           operator: In
@@ -67,12 +71,14 @@ spec:
         - key: karpenter.sh/capacity-type
           operator: In
           values: ["on-demand"]
-        - key: karpenter.k8s.aws/instance-family
+        - key: karpenter.k8s.aws/instance-category
           operator: In
-          values: ["g5", "g5e", "g6", "g6e", "g7", "g7e"]
-        - key: karpenter.k8s.aws/instance-size
+          values: ["g", "p"]
+        - key: karpenter.k8s.aws/instance-gpu-manufacturer
           operator: In
-          values: ["xlarge", "2xlarge", "4xlarge"]
+          values: ["nvidia"]
+  # Cost cap: max 16 NVIDIA GPUs provisioned by this NodePool at any time.
+  # With P5 at 8 GPUs/node this caps worst-case hourly spend; raise/lower to taste.
   limits:
     nvidia.com/gpu: "16"
   disruption:
