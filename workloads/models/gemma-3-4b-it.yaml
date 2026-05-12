@@ -1,0 +1,13 @@
+apiVersion: kro.run/v1alpha1
+kind: InferenceEndpoint
+metadata:
+  name: gemma-3-4b-it
+  namespace: inference
+spec:
+  model: "google/gemma-3-4b-it"
+  gpuCount: 1
+  shared: true          # ~8 GB on a 24 GB L4 — shares with up to 3 other models
+  maxModelLen: 8192
+  minVramPerGpuGiB: 21   # pins Karpenter to L4-class or better
+  minReplicas: 1
+  maxReplicas: 2

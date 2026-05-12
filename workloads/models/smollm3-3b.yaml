@@ -1,0 +1,13 @@
+apiVersion: kro.run/v1alpha1
+kind: InferenceEndpoint
+metadata:
+  name: smollm3-3b
+  namespace: inference
+spec:
+  model: "HuggingFaceTB/SmolLM3-3B"
+  gpuCount: 1
+  shared: true          # fits with headroom — up to 4 models share the GPU
+  maxModelLen: 4096
+  minVramPerGpuGiB: 21   # pins Karpenter to L4-class or better
+  minReplicas: 1
+  maxReplicas: 2
