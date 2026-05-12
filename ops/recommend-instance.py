@@ -831,6 +831,13 @@ def _print_yaml_snippet(model: ModelSpec, best: Option,
     yaml_path  = f"workloads/models/{name}.yaml"
     commit_msg = f"feat: deploy {name}"
 
+    # Compute a conservative VRAM hint in GiB that Karpenter's
+    # `instance-gpu-memory` label (reported in MiB) will compare against with `Gt`.
+    # Karpenter reports *schedulable* VRAM, which is ~5-10% below the marketing
+    # size (e.g. L4: reports 22888 MiB, marketed 24 GB). Using 90% of marketing
+    # cleanly keeps the target GPU eligible while excluding the next tier down.
+    min_vram_gib = max(1, int(best.instance.vram_gb * 0.9))
+
     # Build the YAML body. Intentionally flush-left so copy-paste into a shell
     # heredoc produces a clean file (no stray indentation).
     lines: list[str] = [
@@ -848,6 +855,8 @@ def _print_yaml_snippet(model: ModelSpec, best: Option,
                      "# fits with headroom — up to 4 models share the GPU")
     lines.extend([
         f"  maxModelLen: {max_len}",
+        f"  minVramPerGpuGiB: {min_vram_gib}   "
+        f"# pins Karpenter to {best.instance.gpu}-class or better",
         "  minReplicas: 1",
         "  maxReplicas: 2",
     ])

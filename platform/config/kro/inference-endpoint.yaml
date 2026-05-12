@@ -15,6 +15,7 @@ spec:
       workerMemory:     "string  | default=24Gi"    # Memory per GPU worker
       workerCpu:        "string  | default=4"       # CPU per GPU worker
       maxModelLen:      "integer | default=8192"    # Max sequence length
+      minVramPerGpuGiB: "integer | default=0"       # Min per-GPU VRAM in GiB (Karpenter hint; 0 = no constraint)
       rayImage:         "string  | default=anyscale/ray-llm:2.54.0-py311-cu128"
     status:
       ready:            "${rayservice.status.?activeServiceStatus.?applicationStatuses.?llm.?status.orValue('') == 'RUNNING' ? 'True' : 'False'}"
@@ -170,6 +171,20 @@ spec:
                         effect: NoSchedule
                     nodeSelector:
                       workload-type: "${schema.spec.shared ? 'gpu-shared' : 'gpu-inference'}"
+                    # Force Karpenter to pick a GPU node that actually has enough per-GPU VRAM.
+                    # Without this, Karpenter optimises for cheapest-fit and may land on a T4
+                    # (16 GiB) when the model needs L4 (24) or L40S (48). The Karpenter label
+                    # reports *schedulable* VRAM after ECC/driver reservation, so the recommender
+                    # emits a conservative minVramPerGpuGiB that compares safely with `Gt`.
+                    affinity:
+                      nodeAffinity:
+                        requiredDuringSchedulingIgnoredDuringExecution:
+                          nodeSelectorTerms:
+                            - matchExpressions:
+                                - key: karpenter.k8s.aws/instance-gpu-memory
+                                  operator: Gt
+                                  values:
+                                    - "${string((schema.spec.minVramPerGpuGiB * 1024) - 1)}"
                     containers:
                       - name: ray-worker
                         image: ${platformConfig.data.?rayImage.orValue(schema.spec.rayImage)}

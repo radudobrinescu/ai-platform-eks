@@ -271,8 +271,11 @@ spec:
   workerMemory: "24Gi"            # Memory per GPU worker (default: 24Gi)
   workerCpu: "4"                  # CPU per GPU worker (default: 4)
   maxModelLen: 8192               # Max sequence length (default: 8192)
+  minVramPerGpuGiB: 0             # Min per-GPU VRAM in GiB (Karpenter hint, default: 0 = unconstrained)
   rayImage: "anyscale/ray-llm:2.54.0-py311-cu128"  # Override if needed
 ```
+
+`minVramPerGpuGiB` adds a `nodeAffinity` rule (`karpenter.k8s.aws/instance-gpu-memory > n`) to the Ray worker pod template, so Karpenter is forced to pick a GPU that actually fits the model. Without it, Karpenter optimises purely for `$/hr` and can land on a T4 (16 GB) when the model needs an L4 (24 GB) or larger — which silently OOMs at model-load time. Leave it at `0` for small models that can run on any GPU; `recommend-instance.py` emits a correct conservative value automatically.
 
 KRO expands this into a RayService (with vLLM backend), GPU worker pods, a LiteLLM registration Job (with validation), and a CloudWatch Log Group (via ACK).
 
