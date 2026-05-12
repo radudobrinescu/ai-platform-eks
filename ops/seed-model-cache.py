@@ -148,12 +148,18 @@ def cmd_seed(args: argparse.Namespace) -> int:
         return 0
 
     with tempfile.TemporaryDirectory(prefix="seed-hf-") as tmp:
-        local_dir = Path(tmp) / "snapshot"
-        local_dir.mkdir()
+        hf_home = Path(tmp)
+        # NOTE: we deliberately do NOT use `--local-dir` here. Without it,
+        # huggingface-cli downloads into $HF_HOME/hub/models--{ORG}--{MODEL}/
+        # with the proper snapshots/{hash}/ + blobs/{sha256}/ + refs/main
+        # layout that transformers/vLLM expect when loading from a cache.
+        # Using --local-dir flattens files and produces a directory that
+        # transformers does NOT recognise as an HF cache — vLLM would either
+        # re-download from HF at runtime or fail with ActorDiedError.
 
         print(f"\n{C.BOLD}1/2  Downloading from HuggingFace...{C.RESET}")
         t0 = time.time()
-        env = {}
+        env = {"HF_HOME": str(hf_home)}
         try:
             import hf_transfer  # noqa: F401
             env["HF_HUB_ENABLE_HF_TRANSFER"] = "1"
@@ -163,24 +169,39 @@ def cmd_seed(args: argparse.Namespace) -> int:
         try:
             run([
                 "huggingface-cli", "download", model,
-                "--local-dir", str(local_dir),
             ], env=env)
         except SystemExit:
             raise
         t_hf = time.time() - t0
 
-        size = sum(f.stat().st_size for f in local_dir.rglob("*") if f.is_file())
+        # Locate the model directory produced by huggingface-cli.
+        # HF uses `models--{ORG}--{MODEL}` with `--` as the path separator.
+        model_dir_name = "models--" + model.replace("/", "--")
+        model_dir = hf_home / "hub" / model_dir_name
+        if not model_dir.exists():
+            die(f"expected HF cache at {model_dir} but it's missing — "
+                f"check huggingface-cli output above")
+
+        size = sum(f.stat().st_size for f in model_dir.rglob("*")
+                   if f.is_file() and not f.is_symlink())
         info(f"Downloaded {human_size(size)} in {t_hf:.0f}s")
 
         print(f"\n{C.BOLD}2/2  Uploading to s3://{bucket}/hf/{model}/...{C.RESET}")
         t0 = time.time()
+        # --follow-symlinks: HF uses symlinks from snapshots/{hash}/*  ->
+        # blobs/{sha256}/. S3 has no symlinks, so we dereference and upload
+        # actual content. This doubles disk use on download (files appear
+        # at both snapshot and blob paths), but transformers looks at
+        # snapshots/{hash}/ and finds real files — which is what matters.
         run([
-            "aws", "s3", "sync", str(local_dir), f"s3://{bucket}/hf/{model}/",
+            "aws", "s3", "sync", str(model_dir), f"s3://{bucket}/hf/{model}/",
             "--region", region,
+            "--follow-symlinks",
             "--only-show-errors",
         ])
         t_s3 = time.time() - t0
-        info(f"Uploaded {human_size(size)} in {t_s3:.0f}s  ({size / (t_s3 * 1024**2):.0f} MiB/s)")
+        info(f"Uploaded {human_size(size)} in {t_s3:.0f}s  "
+             f"({size / max(t_s3 * 1024**2, 1e-6):.0f} MiB/s)")
 
     print(f"\n{C.GREEN}✓ Cache seeded.{C.RESET}  Next deploy of {C.CYAN}{model}{C.RESET} "
           f"will sync from S3 on pod startup.")
