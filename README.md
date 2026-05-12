@@ -402,6 +402,7 @@ workloads/                       # Self-service — teams add YAMLs here
   teams/                         #   AITeam instances
 ops/                             # Operational scripts
   recommend-instance.py          #   Recommend EC2 GPU instances for a given model
+  seed-model-cache.py            #   Pre-populate S3 HF weights cache for fast deploys
   ssm-tunnel.sh                  #   SSM port forwarding to platform services
   test-model.sh                  #   One-shot model testing
   scale-down.sh                  #   Cost savings: suspend platform
@@ -410,7 +411,48 @@ ops/                             # Operational scripts
 terraform/                       # Infrastructure (VPC, IAM, EKS, addons)
 ```
 
-## Cost Management
+## Fast model deployment (S3 cache + warm pool)
+
+First deploys of a model pull ~13 GB of container image and download weights from HuggingFace — typically 5-7 minutes end-to-end. The platform ships two optimizations that knock that down to ~90 seconds for demo-friendly models:
+
+### HuggingFace weights cache in S3
+
+Terraform creates an S3 bucket `{cluster-name}-model-cache` and an IRSA role scoped to the `inference:inference-worker` ServiceAccount. Every Ray worker pod gets:
+
+- **initContainer** (`hf-cache-download`) — runs `s5cmd` to sync `s3://{bucket}/hf/{model-id}/` to a local `emptyDir` at `/hf-cache` before vLLM starts. Cache miss is silent: vLLM falls back to a live HF download as before.
+- **HF_HOME** env var pointing at the same `emptyDir`, so vLLM reads from wherever the weights ended up.
+- **auto-warm sidecar** (`hf-cache-uploader`) — after waiting 5 minutes for vLLM to finish loading, uploads the populated cache to S3 *if the bucket doesn't already have this model*. Next deploy of the same model hits the cache automatically.
+
+Result: *any model tried before is fast; any new model still works, with a one-time slow first deploy.*
+
+**Manual seed** (pre-populate before a demo):
+
+```bash
+./ops/seed-model-cache.py HuggingFaceTB/SmolLM3-3B
+HF_TOKEN=hf_... ./ops/seed-model-cache.py google/gemma-3-4b-it
+./ops/seed-model-cache.py list         # what's cached
+./ops/seed-model-cache.py purge org/model
+```
+
+The tool reads the bucket name from the `platform-config` ConfigMap, downloads the model locally via `huggingface-cli` (uses `hf_transfer` for speed), and uploads to `s3://{bucket}/hf/{model}/` via `aws s3 sync`.
+
+### Warm GPU node pool
+
+`platform/config/warm-pool/gpu-shared-warmup.yaml` defines a low-priority (`value: -100`) placeholder Deployment that holds one GPU slice on the `gpu-shared` NodePool. Karpenter keeps the node alive; the Ray LLM image is pre-pulled there. When a `shared: true` InferenceEndpoint arrives, its pod preempts the placeholder and schedules onto the warm node — skipping ~90 s of Karpenter provisioning and ~100 s of image pull. Scale replicas to 0 to disable.
+
+### Expected demo timeline (SmolLM3-3B)
+
+| Stage | Cold | With S3 cache + warm pool |
+|---|---|---|
+| ArgoCD sync (with nudge) | 30 s | 10 s |
+| Karpenter node provisioning | 90 s | **0 s** (warm) |
+| Ray LLM image pull | 100 s | **0 s** (pre-pulled) |
+| Weights → pod | 60 s (HF) | **~15 s** (S3 sync) |
+| vLLM init + weight load | 45 s | 45 s |
+| LiteLLM register + Open WebUI refresh | 35 s | 35 s |
+| **Total from `git push` to working model** | ~5-7 min | **~90 s** |
+
+
 
 Scale down during off-hours to release GPU nodes:
 

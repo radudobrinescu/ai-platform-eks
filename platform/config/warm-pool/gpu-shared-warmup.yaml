@@ -1,0 +1,68 @@
+---
+# Negative-priority class used by the gpu-shared warm-pool placeholder.
+# Real InferenceEndpoint workers have priority 0 (the cluster default), so they
+# preempt these pods the moment they need the GPU slice. The placeholder keeps
+# Karpenter from consolidating the warm node in the meantime.
+apiVersion: scheduling.k8s.io/v1
+kind: PriorityClass
+metadata:
+  name: gpu-warmup-placeholder
+value: -100
+globalDefault: false
+preemptionPolicy: PreemptLowerPriority
+description: |
+  Lowest-priority class for gpu-shared warm-pool pods. Any real workload
+  requesting nvidia.com/gpu at priority >= 0 evicts these instantly.
+---
+# Keeps one single-GPU NVIDIA G-family node (cheapest = g6.xlarge) continuously
+# warm in the gpu-shared NodePool. A pod running here means:
+#   * Karpenter has already provisioned the node (~90 s saved)
+#   * Bottlerocket + kubelet have booted (~30 s saved)
+#   * The Ray LLM image has been pulled once (~100 s saved)
+#
+# When a developer deploys `shared: true` InferenceEndpoint, its pod
+# preempts the placeholder. Since the node is already warm and the
+# container image is cached, only the model weights need to be fetched
+# (S3 → local in ~15 s if cached, HF → local in ~60 s if not).
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: gpu-shared-warmup
+  namespace: ai-platform
+  labels:
+    app.kubernetes.io/part-of: ai-platform
+    app.kubernetes.io/component: warm-pool
+  annotations:
+    ai-platform/purpose: |
+      Keeps one g6.xlarge node (or similar) always warm in the
+      gpu-shared NodePool. Scale replicas to 0 to disable.
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: gpu-shared-warmup
+  template:
+    metadata:
+      labels:
+        app: gpu-shared-warmup
+    spec:
+      priorityClassName: gpu-warmup-placeholder
+      terminationGracePeriodSeconds: 0
+      tolerations:
+        - key: nvidia.com/gpu
+          operator: Exists
+          effect: NoSchedule
+      nodeSelector:
+        workload-type: gpu-shared
+      containers:
+        - name: pause
+          image: registry.k8s.io/pause:3.10
+          resources:
+            requests:
+              nvidia.com/gpu: "1"
+              cpu: "10m"
+              memory: "16Mi"
+            limits:
+              nvidia.com/gpu: "1"
+              cpu: "50m"
+              memory: "32Mi"

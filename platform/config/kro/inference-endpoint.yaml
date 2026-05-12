@@ -165,6 +165,11 @@ spec:
                 rayStartParams: {}
                 template:
                   spec:
+                    # ServiceAccount with IRSA annotation (Terraform-managed)
+                    # grants s3:GetObject / s3:PutObject on the model-cache bucket.
+                    # Default fallback "default" keeps RayServices renderable on
+                    # clusters where Terraform hasn't created the SA yet.
+                    serviceAccountName: "inference-worker"
                     tolerations:
                       - key: nvidia.com/gpu
                         operator: Exists
@@ -185,6 +190,48 @@ spec:
                                   operator: Gt
                                   values:
                                     - "${string((schema.spec.minVramPerGpuGiB * 1024) - 1)}"
+                    # --- Weights cache ---------------------------------------
+                    # initContainer: sync pre-populated HF cache from S3 if it
+                    # exists. On cache miss, vLLM will download from HF at
+                    # runtime — fully backwards-compatible, no regression.
+                    initContainers:
+                      - name: hf-cache-download
+                        image: peakcom/s5cmd:v2.3.0
+                        env:
+                          - name: MODEL_ID
+                            value: ${schema.spec.model}
+                          - name: CACHE_BUCKET
+                            value: ${platformConfig.data.?modelCacheBucket.orValue("")}
+                          - name: AWS_REGION
+                            value: ${platformConfig.data.?region.orValue("us-east-1")}
+                        command:
+                          - sh
+                          - -c
+                          - |
+                            set -u
+                            if [ -z "${CACHE_BUCKET}" ]; then
+                              echo "ℹ modelCacheBucket not configured — vLLM will download from HF at runtime."
+                              exit 0
+                            fi
+                            PREFIX="hf/${MODEL_ID}"
+                            LOCAL="/hf-cache/hub/models--$(echo "$MODEL_ID" | sed 's#/#--#g')"
+                            echo "Probing s3://${CACHE_BUCKET}/${PREFIX}/ ..."
+                            if /s5cmd ls "s3://${CACHE_BUCKET}/${PREFIX}/" >/dev/null 2>&1; then
+                              echo "✓ Cache hit — syncing to ${LOCAL}"
+                              mkdir -p "${LOCAL}"
+                              if /s5cmd sync "s3://${CACHE_BUCKET}/${PREFIX}/*" "${LOCAL}/"; then
+                                echo "✓ Cache populated from S3 in $(date -u +%T)"
+                              else
+                                echo "⚠ Partial sync — wiping local cache so vLLM falls back to HF."
+                                rm -rf "${LOCAL}"
+                              fi
+                            else
+                              echo "ℹ Cache miss for ${MODEL_ID} — vLLM will download from HF."
+                              echo "  (A sidecar will auto-warm the cache after vLLM finishes loading.)"
+                            fi
+                        volumeMounts:
+                          - name: hf-cache
+                            mountPath: /hf-cache
                     containers:
                       - name: ray-worker
                         image: ${platformConfig.data.?rayImage.orValue(schema.spec.rayImage)}
@@ -195,6 +242,10 @@ spec:
                                 name: hf-token
                                 key: token
                                 optional: true
+                          - name: HF_HOME
+                            value: /hf-cache
+                          - name: HF_HUB_ENABLE_HF_TRANSFER
+                            value: "1"
                         resources:
                           requests:
                             cpu: ${schema.spec.workerCpu}
@@ -204,6 +255,60 @@ spec:
                             cpu: ${schema.spec.workerCpu}
                             memory: ${schema.spec.workerMemory}
                             nvidia.com/gpu: ${schema.spec.gpuCount}
+                        volumeMounts:
+                          - name: hf-cache
+                            mountPath: /hf-cache
+                      # --- Auto-warm sidecar -------------------------------
+                      # Uploads the local HF cache to S3 a few minutes after
+                      # vLLM has finished loading, so the next deploy of this
+                      # model hits the cache. No-op if the bucket already has
+                      # the model or if the Ray worker never finished loading.
+                      - name: hf-cache-uploader
+                        image: peakcom/s5cmd:v2.3.0
+                        env:
+                          - name: MODEL_ID
+                            value: ${schema.spec.model}
+                          - name: CACHE_BUCKET
+                            value: ${platformConfig.data.?modelCacheBucket.orValue("")}
+                          - name: AWS_REGION
+                            value: ${platformConfig.data.?region.orValue("us-east-1")}
+                        command:
+                          - sh
+                          - -c
+                          - |
+                            set -u
+                            if [ -z "${CACHE_BUCKET}" ]; then
+                              echo "ℹ modelCacheBucket not configured — uploader idle."
+                              exec tail -f /dev/null
+                            fi
+                            sleep 300  # let vLLM finish loading before we inspect the cache
+                            PREFIX="hf/${MODEL_ID}"
+                            LOCAL="/hf-cache/hub/models--$(echo "$MODEL_ID" | sed 's#/#--#g')"
+                            if /s5cmd ls "s3://${CACHE_BUCKET}/${PREFIX}/" >/dev/null 2>&1; then
+                              echo "S3 cache already populated for ${MODEL_ID} — nothing to do."
+                            elif [ -d "${LOCAL}" ] && [ -n "$(ls -A "${LOCAL}" 2>/dev/null)" ]; then
+                              echo "Uploading ${MODEL_ID} to s3://${CACHE_BUCKET}/${PREFIX}/ ..."
+                              /s5cmd sync "${LOCAL}/" "s3://${CACHE_BUCKET}/${PREFIX}/" \
+                                && echo "✓ Cache warmed." || echo "⚠ Upload failed; cache not warmed."
+                            else
+                              echo "Local cache empty — vLLM likely failed to load; skip upload."
+                            fi
+                            exec tail -f /dev/null
+                        resources:
+                          requests:
+                            cpu: "50m"
+                            memory: "128Mi"
+                          limits:
+                            cpu: "500m"
+                            memory: "512Mi"
+                        volumeMounts:
+                          - name: hf-cache
+                            mountPath: /hf-cache
+                            readOnly: true
+                    volumes:
+                      - name: hf-cache
+                        emptyDir:
+                          sizeLimit: 100Gi
 
     # --- CloudWatch Log Group (via ACK) ---
     - id: loggroup
