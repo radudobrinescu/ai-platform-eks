@@ -10,6 +10,15 @@ locals {
   ray_image_tag = "2.54.0-py311-cu128"
   ray_image     = "anyscale/ray-llm:${local.ray_image_tag}"
 
+  # HuggingFace model-weights cache.
+  # S3 bucket is populated by ops/seed-model-cache.py (manual) or by the Ray
+  # worker's sidecar after first successful load (automatic). The initContainer
+  # in the KRO InferenceEndpoint template syncs from here on pod startup —
+  # falling back to a live HF download on cache miss.
+  model_cache_bucket            = "${local.cluster_name}-model-cache"
+  inference_worker_sa_namespace = "inference"
+  inference_worker_sa_name      = "inference-worker"
+
   private_subnet_ids       = data.terraform_remote_state.vpc.outputs.private_subnet_ids
   control_plane_subnet_ids = try(var.cluster_config.use_intra_subnets, true) ? data.terraform_remote_state.vpc.outputs.intra_subnet_ids : local.private_subnet_ids
 

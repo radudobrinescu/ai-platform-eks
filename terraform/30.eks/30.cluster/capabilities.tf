@@ -138,6 +138,8 @@ resource "aws_ecr_pull_through_cache_rule" "docker_hub" {
 # Platform Config — KRO externalRef reads this ConfigMap.
 # rayImage always set: ECR mirror when pull-through cache is enabled, Docker Hub otherwise.
 # Version is defined once in locals.tf (ray_image_tag).
+# modelCacheBucket + region are consumed by the Ray worker's initContainer
+# and auto-warm sidecar to sync HF weights to/from s3://{bucket}/hf/...
 ################################################################################
 resource "kubernetes_config_map" "platform_config" {
   count = local.capabilities.gitops ? 1 : 0
@@ -148,8 +150,135 @@ resource "kubernetes_config_map" "platform_config" {
   }
 
   data = {
-    cluster  = module.eks.cluster_name
-    rayImage = var.docker_hub_username != "" ? "${data.aws_caller_identity.current.account_id}.dkr.ecr.${local.region}.amazonaws.com/docker-hub/${local.ray_image}" : local.ray_image
+    cluster          = module.eks.cluster_name
+    region           = local.region
+    rayImage         = var.docker_hub_username != "" ? "${data.aws_caller_identity.current.account_id}.dkr.ecr.${local.region}.amazonaws.com/docker-hub/${local.ray_image}" : local.ray_image
+    modelCacheBucket = local.capabilities.gitops ? aws_s3_bucket.model_cache[0].bucket : ""
+  }
+
+  depends_on = [kubernetes_namespace.inference]
+}
+
+################################################################################
+# Model weights cache — S3 bucket + IRSA role for Ray worker pods.
+#
+# The initContainer in the KRO InferenceEndpoint template s5cmd-syncs HF
+# weights from this bucket on pod startup (cache hit) or falls back to a live
+# HuggingFace download (cache miss). An auto-warm sidecar uploads new models
+# after vLLM finishes loading, so subsequent deploys hit the cache.
+#
+# Bucket layout: s3://{bucket}/hf/{org}/{model}/...   (mirrors HF cache tree)
+################################################################################
+
+resource "aws_s3_bucket" "model_cache" {
+  count         = local.capabilities.gitops ? 1 : 0
+  bucket        = local.model_cache_bucket
+  force_destroy = true # cache is regeneratable; safe to destroy with the cluster
+
+  tags = merge(local.tags, { Purpose = "hf-model-weights-cache" })
+}
+
+resource "aws_s3_bucket_public_access_block" "model_cache" {
+  count                   = local.capabilities.gitops ? 1 : 0
+  bucket                  = aws_s3_bucket.model_cache[0].id
+  block_public_acls       = true
+  block_public_policy     = true
+  ignore_public_acls      = true
+  restrict_public_buckets = true
+}
+
+resource "aws_s3_bucket_server_side_encryption_configuration" "model_cache" {
+  count  = local.capabilities.gitops ? 1 : 0
+  bucket = aws_s3_bucket.model_cache[0].id
+
+  rule {
+    apply_server_side_encryption_by_default {
+      sse_algorithm = "AES256"
+    }
+  }
+}
+
+resource "aws_s3_bucket_lifecycle_configuration" "model_cache" {
+  count  = local.capabilities.gitops ? 1 : 0
+  bucket = aws_s3_bucket.model_cache[0].id
+
+  rule {
+    id     = "transition-stale-to-ia"
+    status = "Enabled"
+
+    filter { prefix = "hf/" }
+
+    transition {
+      days          = 60
+      storage_class = "STANDARD_IA"
+    }
+  }
+}
+
+# IAM role scoped to the inference-worker ServiceAccount via OIDC.
+# Only Ray worker pods that use this SA can read/write the cache bucket.
+resource "aws_iam_role" "inference_worker" {
+  count = local.capabilities.gitops ? 1 : 0
+  name  = "${local.cluster_name}-inference-worker"
+
+  assume_role_policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [{
+      Effect    = "Allow"
+      Principal = { Federated = module.eks.oidc_provider_arn }
+      Action    = "sts:AssumeRoleWithWebIdentity"
+      Condition = {
+        StringEquals = {
+          "${module.eks.oidc_provider}:sub" = "system:serviceaccount:${local.inference_worker_sa_namespace}:${local.inference_worker_sa_name}"
+          "${module.eks.oidc_provider}:aud" = "sts.amazonaws.com"
+        }
+      }
+    }]
+  })
+
+  tags = local.tags
+}
+
+resource "aws_iam_role_policy" "inference_worker_s3_cache" {
+  count = local.capabilities.gitops ? 1 : 0
+  name  = "model-cache-access"
+  role  = aws_iam_role.inference_worker[0].id
+
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [
+      {
+        Effect   = "Allow"
+        Action   = ["s3:GetObject", "s3:PutObject", "s3:DeleteObject"]
+        Resource = "${aws_s3_bucket.model_cache[0].arn}/hf/*"
+      },
+      {
+        Effect   = "Allow"
+        Action   = "s3:ListBucket"
+        Resource = aws_s3_bucket.model_cache[0].arn
+        Condition = {
+          StringLike = { "s3:prefix" = ["hf/*", ""] }
+        }
+      },
+    ]
+  })
+}
+
+# The ServiceAccount the Ray worker pods reference. Annotation ties it to the
+# IAM role via IRSA. Kept Terraform-managed so the ARN is injected at apply
+# time without hardcoding account IDs in git-tracked YAML.
+resource "kubernetes_service_account" "inference_worker" {
+  count = local.capabilities.gitops ? 1 : 0
+
+  metadata {
+    name      = local.inference_worker_sa_name
+    namespace = local.inference_worker_sa_namespace
+    annotations = {
+      "eks.amazonaws.com/role-arn" = aws_iam_role.inference_worker[0].arn
+    }
+    labels = {
+      "app.kubernetes.io/part-of" = "ai-platform"
+    }
   }
 
   depends_on = [kubernetes_namespace.inference]
