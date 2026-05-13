@@ -18,10 +18,17 @@ spec:
       minVramPerGpuGiB: "integer | default=0"       # Min per-GPU VRAM in GiB (Karpenter hint; 0 = no constraint)
       rayImage:         "string  | default=anyscale/ray-llm:2.54.0-py311-cu128"
     status:
-      ready:            "${rayservice.status.?activeServiceStatus.?applicationStatuses.?llm.?status.orValue('') == 'RUNNING' ? 'True' : 'False'}"
-      modelStatus:      "${rayservice.status.?activeServiceStatus.?applicationStatuses.?llm.?status.orValue('Pending')}"
+      # Ready=True only when Ray Serve has an ACTIVE application at 'RUNNING'
+      # AND nothing pending. During a rollout, KubeRay keeps the old active
+      # spec serving (possibly with terminating replicas) while a new spec
+      # goes through DEPLOYING in pendingServiceStatus — requests during that
+      # window can fail with "Connection error" even though active looks
+      # healthy. Treating the combination (active=RUNNING AND pending=empty)
+      # as the only 'Ready' state eliminates that false-positive window.
+      ready:            "${rayservice.status.?activeServiceStatus.?applicationStatuses.?llm.?status.orValue('') == 'RUNNING' && rayservice.status.?pendingServiceStatus.?applicationStatuses.?llm.?status.orValue('') == '' ? 'True' : 'False'}"
+      modelStatus:      "${rayservice.status.?activeServiceStatus.?applicationStatuses.?llm.?status.orValue(rayservice.status.?pendingServiceStatus.?applicationStatuses.?llm.?status.orValue('Pending'))}"
       endpoint:         "${rayservice.metadata.name}-serve-svc.${rayservice.metadata.namespace}.svc.cluster.local:8000"
-      message:          "${rayservice.status.?activeServiceStatus.?applicationStatuses.?llm.?status.orValue('') == 'RUNNING' ? 'Model is live and serving requests' : (rayservice.status.?activeServiceStatus.?applicationStatuses.?llm.?status.orValue('') == 'DEPLOYING' ? 'Model is loading onto GPU workers' : 'Waiting for GPU node provisioning and image pull')}"
+      message:          "${rayservice.status.?activeServiceStatus.?applicationStatuses.?llm.?status.orValue('') == 'RUNNING' && rayservice.status.?pendingServiceStatus.?applicationStatuses.?llm.?status.orValue('') == '' ? 'Model is live and serving requests' : (rayservice.status.?pendingServiceStatus.?applicationStatuses.?llm.?status.orValue('') == 'RUNNING' ? 'Model rollout finishing' : (rayservice.status.?pendingServiceStatus.?applicationStatuses.?llm.?status.orValue('') == 'DEPLOYING' || rayservice.status.?activeServiceStatus.?applicationStatuses.?llm.?status.orValue('') == 'DEPLOYING' ? 'Model is loading onto GPU workers' : 'Waiting for GPU node provisioning and image pull'))}"
 
   resources:
     # --- Platform config (created by Terraform) ---
