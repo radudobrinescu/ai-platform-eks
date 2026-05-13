@@ -20,6 +20,19 @@
 
 - [ ] **Security hardening** — Add `securityContext` (runAsNonRoot, drop capabilities) to all containers. Enforce Pod Security Standards on namespaces. Add network policies for LiteLLM/OpenWebUI. Restrict EKS public endpoint to specific CIDRs.
 
+- [ ] **Enable NetworkPolicy enforcement on VPC CNI** — `team-default` NetworkPolicy is created by the AITeam RGD (ingress + egress) but **not enforced** today. The VPC CNI addon runs `aws-eks-nodeagent --enable-network-policy=false` because `enableNetworkPolicy` is not set in the addon's `configuration_values`.
+
+  Two things blocked enabling this on cnd-demo:
+  1. Setting `enableNetworkPolicy=true` triggers a rolling restart of aws-node DaemonSet pods, which need to re-pull the CNI init image. On older (22h+) Bottlerocket nodes that have already GC'd the image, the re-pull fails with "pull access denied, authorization failed: no basic auth credentials" — not a permissions issue (node IAM has `AmazonEC2ContainerRegistryReadOnly`), but some Bottlerocket-level credential-provider staleness. Fresh Karpenter nodes pull fine (~100ms).
+  2. Replacing the stuck nodes evicts stateful workloads (Langfuse ClickHouse/Redis/Zookeeper, smollm3 Ray head) — not acceptable during demo prep.
+
+  Fix path (in calmer window):
+  1. Evict and replace the old Bottlerocket nodes one at a time (accept brief Langfuse downtime)
+  2. Enable `enableNetworkPolicy=true` in Terraform once all nodes are fresh
+  3. Verify `curl https://www.google.com` from a team pod times out
+
+  Current isolation story without enforcement: namespace boundary + RBAC + ResourceQuota + LiteLLM team-scoped API key + Langfuse project tag. All real and working. Network egress blocking is the missing layer.
+
 - [ ] **Inference observability** — vLLM/Ray metrics (TTFT, tokens/sec, queue depth, GPU utilization) exported to Prometheus. Grafana dashboards for model performance. Alerts on latency spikes and GPU OOM.
 
 - [ ] **Scope KRO RBAC** — Replace ClusterAdmin with a custom ClusterRole granting access only to the specific API groups KRO needs (ray.io, apps, core). Least-privilege.

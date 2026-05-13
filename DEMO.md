@@ -227,8 +227,5 @@ Karpenter reclaims the GPU node after 300s empty.
 
 ## Known gaps (for Q&A)
 
-- NetworkPolicy egress is declared on team namespaces but not yet enforced
-  by the CNI. Namespace + quota + API-key isolation work; network-level
-  blocking of internet egress is a follow-up.
-- Langfuse + LiteLLM integration requires a one-time manual API key
-  exchange (see README step 9). Not part of the live onboarding flow.
+- **NetworkPolicy egress is declared on team namespaces but not enforced** by the VPC CNI today (CNI runs with `--enable-network-policy=false`). Enabling it requires a rolling DaemonSet restart that hits an image-pull issue on older Bottlerocket nodes — safe to fix in a calmer window by replacing those nodes. Until then, team isolation works at these layers: namespace boundary + RBAC + ResourceQuota + LiteLLM team-scoped API key with budget/rate limits + Langfuse project tag. Network-level egress blocking is the missing layer.
+- Langfuse + LiteLLM integration requires a one-time manual API key exchange (see README step 9). Not part of the live onboarding flow.
