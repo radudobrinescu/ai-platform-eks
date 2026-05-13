@@ -201,20 +201,29 @@ First deployment takes ~7 min with ECR cache, ~14 min without.
 
 ### 7. Access Services
 
-The platform uses an internal ALB with per-service listener ports. Use the SSM tunnel script to access services from your laptop:
+The platform runs an **internet-facing ALB restricted by an IP allowlist** at the Security Group level (`alb.ingress.kubernetes.io/inbound-cidrs`). All three services share one ALB via `group.name: ai-platform`; each gets its own HTTP listener port.
 
 ```bash
-./ops/ssm-tunnel.sh
+kubectl get ingress -n ai-platform ai-platform-litellm \
+  -o jsonpath='{.status.loadBalancer.ingress[0].hostname}{"\n"}'
+# → k8s-aiplatform-<hash>.<region>.elb.amazonaws.com
 ```
 
-This creates SSM port forwards through a criticaladdons node:
-- `http://localhost:8080` — Open WebUI
-- `http://localhost:4000` — LiteLLM API
-- `http://localhost:3000` — Langfuse
+- `http://<alb-host>:8080` — Open WebUI
+- `http://<alb-host>:4000` — LiteLLM API
+- `http://<alb-host>:3000` — Langfuse
 
-Requires the [Session Manager plugin](https://docs.aws.amazon.com/systems-manager/latest/userguide/session-manager-working-with-install-plugin.html) (`brew install --cask session-manager-plugin`).
+Update the allowlist in `platform/config/ingress.yaml` when your public IP changes:
 
-Alternatively, use `kubectl port-forward` directly:
+```yaml
+alb.ingress.kubernetes.io/inbound-cidrs: 203.0.113.42/32  # operator laptop
+```
+
+Commit + push → ArgoCD reconciles the Security Group rule in ~5 s; the ALB itself is not re-provisioned.
+
+**Fallback for unstable public IPs (airport, VPN, etc.):** `./ops/ssm-tunnel.sh` still works — it forwards via SSM through a criticaladdons node. Requires the [Session Manager plugin](https://docs.aws.amazon.com/systems-manager/latest/userguide/session-manager-working-with-install-plugin.html) (`brew install --cask session-manager-plugin`). Local ports stay the same: `localhost:8080 / :4000 / :3000`.
+
+Alternatively, short-lived `kubectl port-forward` for quick API calls:
 
 ```bash
 kubectl port-forward svc/litellm 4000:4000 -n ai-platform       # API
@@ -223,27 +232,27 @@ kubectl port-forward svc/open-webui 8080:8080 -n ai-platform     # Chat UI
 
 ### 8. Test a Model
 
-Quick one-shot test (handles port-forward automatically):
-
-```bash
-./ops/test-model.sh gemma-4b "What is Kubernetes?"
-```
-
-Or manually with curl:
-
 ```bash
 export LITELLM_KEY=$(kubectl get secret litellm-secrets -n ai-platform \
   -o jsonpath='{.data.master-key}' | base64 -d)
+export ALB_HOST=$(kubectl get ingress ai-platform-litellm -n ai-platform \
+  -o jsonpath='{.status.loadBalancer.ingress[0].hostname}')
 
-curl http://localhost:4000/v1/chat/completions \
+curl http://$ALB_HOST:4000/v1/chat/completions \
   -H "Content-Type: application/json" \
   -H "Authorization: Bearer $LITELLM_KEY" \
   -d '{"model": "gemma-4b", "messages": [{"role": "user", "content": "Hello!"}]}'
 ```
 
+Or the convenience wrapper (uses the SSM tunnel path by default):
+
+```bash
+./ops/test-model.sh gemma-4b "What is Kubernetes?"
+```
+
 ### 9. Enable Langfuse Tracing
 
-Langfuse is deployed automatically as part of the platform. To connect it to LiteLLM, create an API key pair in the Langfuse UI at `http://localhost:3000` (use `./ops/ssm-tunnel.sh` to access it):
+Langfuse is deployed automatically as part of the platform. Create an API key pair in the Langfuse UI at `http://<alb-host>:3000`:
 
 ```bash
 kubectl create secret generic langfuse-litellm-keys -n ai-platform \
