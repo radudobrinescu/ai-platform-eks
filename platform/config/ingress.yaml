@@ -1,3 +1,16 @@
+---
+# NOTE: The three ingresses below share a single ALB via
+# `alb.ingress.kubernetes.io/group.name: ai-platform`. ALB-level annotations
+# (scheme, inbound-cidrs, subnets, ...) must be consistent across all three
+# or AWS Load Balancer Controller refuses to merge. Keep them in sync.
+#
+# SCHEME: internet-facing (public ALB). Replaces the previous SSM-tunnel-only
+# access path (ops/ssm-tunnel.sh). The SSM tunnel remains available as a
+# fallback for networks without a stable public IP.
+#
+# INBOUND-CIDRS: operator laptop only. The ALB security group is restricted
+# to the listed CIDRs — everything else is dropped at the SG. Update this
+# list when the laptop moves networks.
 apiVersion: networking.k8s.io/v1
 kind: Ingress
 metadata:
@@ -5,10 +18,11 @@ metadata:
   namespace: ai-platform
   annotations:
     alb.ingress.kubernetes.io/group.name: ai-platform
-    alb.ingress.kubernetes.io/scheme: internal
+    alb.ingress.kubernetes.io/scheme: internet-facing
     alb.ingress.kubernetes.io/target-type: ip
     alb.ingress.kubernetes.io/listen-ports: '[{"HTTP": 4000}]'
     alb.ingress.kubernetes.io/healthcheck-path: /health/liveliness
+    alb.ingress.kubernetes.io/inbound-cidrs: 212.93.153.62/32
 spec:
   ingressClassName: alb
   rules:
@@ -29,10 +43,11 @@ metadata:
   namespace: ai-platform
   annotations:
     alb.ingress.kubernetes.io/group.name: ai-platform
-    alb.ingress.kubernetes.io/scheme: internal
+    alb.ingress.kubernetes.io/scheme: internet-facing
     alb.ingress.kubernetes.io/target-type: ip
     alb.ingress.kubernetes.io/listen-ports: '[{"HTTP": 8080}]'
     alb.ingress.kubernetes.io/healthcheck-path: /health
+    alb.ingress.kubernetes.io/inbound-cidrs: 212.93.153.62/32
 spec:
   ingressClassName: alb
   rules:
@@ -53,10 +68,11 @@ metadata:
   namespace: ai-platform
   annotations:
     alb.ingress.kubernetes.io/group.name: ai-platform
-    alb.ingress.kubernetes.io/scheme: internal
+    alb.ingress.kubernetes.io/scheme: internet-facing
     alb.ingress.kubernetes.io/target-type: ip
     alb.ingress.kubernetes.io/listen-ports: '[{"HTTP": 3000}]'
     alb.ingress.kubernetes.io/healthcheck-path: /api/public/health
+    alb.ingress.kubernetes.io/inbound-cidrs: 212.93.153.62/32
 spec:
   ingressClassName: alb
   rules:
