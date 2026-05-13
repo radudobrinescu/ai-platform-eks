@@ -12,7 +12,7 @@ spec:
       shared:           "boolean | default=false"   # Use GPU time-slicing (shared GPU node pool)
       minReplicas:      "integer | default=1"       # Min Ray Serve replicas
       maxReplicas:      "integer | default=4"       # Max Ray Serve replicas
-      workerMemory:     "string  | default=24Gi"    # Memory per GPU worker
+      workerMemory:     "string  | default=12Gi"    # Memory per GPU worker (default fits 3B models; larger models should override via the recommender)
       workerCpu:        "string  | default=4"       # CPU per GPU worker
       maxModelLen:      "integer | default=8192"    # Max sequence length
       minVramPerGpuGiB: "integer | default=0"       # Min per-GPU VRAM in GiB (Karpenter hint; 0 = no constraint)

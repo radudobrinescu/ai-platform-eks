@@ -815,7 +815,7 @@ def print_human(
             _print_table_row(o, C, over=True)
 
     # -------- 6. YAML artifact + next steps ------------------------------ #
-    _print_yaml_snippet(model, best, args, C)
+    _print_yaml_snippet(model, vram, best, args, C)
 
     # -------- 7. Footnotes ----------------------------------------------- #
     print(f"\n{C.DIM}Notes:")
@@ -855,7 +855,7 @@ def _print_table_row(o: Option, C: type, over: bool) -> None:
           f"{usage:<12} {fit}{' ' * max(fit_pad, 0)}  {price:>6}  {month:>9}  {flags}")
 
 
-def _print_yaml_snippet(model: ModelSpec, best: Option,
+def _print_yaml_snippet(model: ModelSpec, vram: VramEstimate, best: Option,
                         args: argparse.Namespace, C: type) -> None:
     name = model.model_id.split("/")[-1].lower().replace(".", "-").replace("_", "-")
     max_len = args.seq
@@ -881,6 +881,15 @@ def _print_yaml_snippet(model: ModelSpec, best: Option,
     else:
         min_vram_gib = max(1, math.ceil(best.per_gpu_need_gb * 1.15))
 
+    # Size the Ray worker pod's CPU memory request based on model weights.
+    # During vLLM startup the weights are briefly held in CPU RAM before being
+    # transferred to the GPU — that's the peak. After startup, workers use
+    # ~2-3Gi. We size for the startup peak + overhead:
+    #   weights_gb (CPU copy) + 4Gi (Python, Ray, vLLM, HF tokenizer, buffers)
+    # Rounded up with a floor of 8Gi so tiny models still have headroom for
+    # Ray's own footprint on cold start.
+    worker_mem_gib = max(8, math.ceil(vram.weights_gb + 4))
+
     # Build the YAML body. Intentionally flush-left so copy-paste into a shell
     # heredoc produces a clean file (no stray indentation).
     lines: list[str] = [
@@ -900,6 +909,8 @@ def _print_yaml_snippet(model: ModelSpec, best: Option,
         f"  maxModelLen: {max_len}",
         f"  minVramPerGpuGiB: {min_vram_gib}   "
         f"# min per-GPU VRAM; Karpenter picks the cheapest NVIDIA GPU that qualifies",
+        f"  workerMemory: \"{worker_mem_gib}Gi\"   "
+        f"# CPU memory for the Ray worker pod (default is conservative; this is sized to model)",
         "  minReplicas: 1",
         "  maxReplicas: 2",
     ])

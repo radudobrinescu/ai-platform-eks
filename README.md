@@ -277,7 +277,7 @@ spec:
   shared: false                   # GPU time-slicing — share GPU with other models (default: false)
   minReplicas: 1                  # Min Ray Serve replicas (default: 1)
   maxReplicas: 4                  # Max Ray Serve replicas (default: 4)
-  workerMemory: "24Gi"            # Memory per GPU worker (default: 24Gi)
+  workerMemory: "12Gi"            # Memory per GPU worker (default: 12Gi — fits 3B; the recommender emits a right-sized value per model)
   workerCpu: "4"                  # CPU per GPU worker (default: 4)
   maxModelLen: 8192               # Max sequence length (default: 8192)
   minVramPerGpuGiB: 0             # Min per-GPU VRAM in GiB (Karpenter hint, default: 0 = unconstrained)
