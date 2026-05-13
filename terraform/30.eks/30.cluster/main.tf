@@ -57,11 +57,6 @@ module "eks" {
         most_recent    = true # To ensure access to the latest settings provided
         preserve       = false
         configuration_values = jsonencode({
-          # Enforce Kubernetes NetworkPolicy resources. Without this the CNI
-          # accepts NetworkPolicy objects but the aws-eks-nodeagent runs with
-          # --enable-network-policy=false, so egress rules are silently
-          # ignored. Required for the team isolation story to actually work.
-          enableNetworkPolicy = "true"
           env = {
             ENABLE_PREFIX_DELEGATION = "false"
             WARM_ENI_TARGET          = "0"
