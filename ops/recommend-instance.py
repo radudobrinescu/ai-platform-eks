@@ -136,6 +136,13 @@ KV_BYTES = {
 CLUSTER_INFERENCE_CATEGORIES = {"g", "p"}
 CLUSTER_SHARED_CATEGORIES    = {"g"}
 CLUSTER_GPU_MANUFACTURER     = "nvidia"
+# Matches the `replicas: 4` in terraform/30.eks/30.cluster/karpenter/gpu-shared.yaml
+# under kubelet-device-plugins.nvidia.time-slicing. When gpu-shared is used,
+# NVIDIA advertises 1 physical GPU as this many logical slots. Time-slicing
+# does NOT partition GPU memory — all co-located models compete for the full
+# VRAM, so a model is shared-eligible only if TIME_SLICE_REPLICAS copies of it
+# fit in the GPU's memory.
+TIME_SLICE_REPLICAS = 4
 # Fallback pricing region — matches the static catalog. Overridden when the
 # Pricing API is reachable or a cached snapshot exists for the target region.
 CATALOG_PRICING_REGION = "us-east-1"
@@ -553,16 +560,27 @@ class Option:
 
     @property
     def effective_price_usd_h(self) -> float:
-        """Per-model cost, accounting for 4-way time-slicing when applicable.
+        """Concrete per-model cost — what the user pays today for one model.
 
-        If the model uses <30% of a shared-eligible GPU, the YAML snippet sets
-        `shared: true` — meaning the GPU is amortised across up to 4 models.
-        Rank using that effective cost so the recommender doesn't undercut its
-        own shared-mode suggestion with a cheaper-but-dedicated alternative.
+        Don't amortise across TIME_SLICE_REPLICAS here: that's a hypothetical
+        future cost that only materialises if the user actually runs N models
+        on the same shared GPU. Ranking on hypothetical cost would promote a
+        3× more expensive instance over a cheaper dedicated one based on
+        sharing that may never happen. `amortised_price_usd_h` exposes the
+        shared-mode number separately for display.
         """
-        if self.shared_eligible and self.headroom_gb >= (self.instance.vram_gb * 0.70):
-            return self.price_usd_h / 4.0
         return self.price_usd_h
+
+    @property
+    def amortised_price_usd_h(self) -> float | None:
+        """Per-model cost if TIME_SLICE_REPLICAS models co-locate on the GPU.
+
+        Returns None when sharing isn't applicable (TP>1, or not shared-
+        eligible). Use for informational display, not ranking.
+        """
+        if self.shared_eligible and self.tp_degree == 1:
+            return self.price_usd_h / TIME_SLICE_REPLICAS
+        return None
 
     @property
     def sort_key(self) -> tuple:
@@ -580,20 +598,30 @@ def _tp_overhead(tp: int) -> float:
     return 1.0 if tp == 1 else 1.0 + 0.05 * math.log2(tp)
 
 
-def _classify_nodepool(inst: Instance, tp: int) -> tuple[str, bool]:
+def _classify_nodepool(
+    inst:              Instance,
+    tp:                int,
+    per_gpu_need_gb:   float,
+    safety_margin:     float,
+) -> tuple[str, bool]:
     """Which NodePool can schedule this instance, and is it shared-eligible?
 
     Returns (nodepool, shared_eligible). Mirrors the requirements in
     terraform/30.eks/30.cluster/karpenter/gpu-{inference,shared}.yaml.
+
+    Shared eligibility requires that TIME_SLICE_REPLICAS copies of the model
+    fit within the GPU's memory budget, because NVIDIA time-slicing shares
+    compute but NOT memory — all co-tenants compete for the same VRAM.
     """
     if inst.gpu_manufacturer != CLUSTER_GPU_MANUFACTURER:
         return "out-of-cluster", False
 
-    # gpu-shared: single-GPU G-family NVIDIA, large enough to time-slice sensibly.
+    # gpu-shared: single-GPU G-family NVIDIA where TIME_SLICE_REPLICAS copies fit.
+    available_per_slice = inst.vram_gb * (1.0 - safety_margin) / TIME_SLICE_REPLICAS
     shared_eligible = (
         inst.category in CLUSTER_SHARED_CATEGORIES
         and inst.num_gpus == 1
-        and inst.vram_gb >= 24
+        and per_gpu_need_gb <= available_per_slice
     )
 
     # gpu-inference: any NVIDIA G or P instance.
@@ -630,7 +658,9 @@ def find_options(
             if per_gpu > available:
                 continue
 
-            nodepool, shared_eligible = _classify_nodepool(inst, tp)
+            nodepool, shared_eligible = _classify_nodepool(
+                inst, tp, per_gpu, safety_margin,
+            )
             if require_in_cluster and nodepool == "out-of-cluster":
                 continue
 
@@ -694,11 +724,12 @@ def print_human(
     marker    = f"{C.YELLOW}⚠{C.RESET}" if best.over_price_ceiling else f"{C.GREEN}✓{C.RESET}"
     verdict   = f"{C.YELLOW}FITS, BUT OVER BUDGET{C.RESET}" if best.over_price_ceiling \
                 else f"{C.GREEN}RECOMMENDED{C.RESET}"
-    shared_on = best.shared_eligible and best.tp_degree == 1 \
-                and best.headroom_gb >= (best.instance.vram_gb * 0.70)
-    mode_lbl  = "shared mode (up to 4 models per GPU)" if shared_on else (
-                f"tensor-parallel across {best.tp_degree} GPUs" if best.tp_degree > 1 else
-                "dedicated GPU")
+    shared_on = best.shared_eligible and best.tp_degree == 1
+    mode_lbl  = (f"shared mode (up to {TIME_SLICE_REPLICAS} models per GPU)"
+                 if shared_on else
+                 f"tensor-parallel across {best.tp_degree} GPUs"
+                 if best.tp_degree > 1 else
+                 "dedicated GPU")
 
     print()
     print(ruler)
@@ -708,8 +739,9 @@ def print_human(
     monthly = _fmt_monthly(best.price_usd_h)
     line    = f"    {C.BOLD}${best.price_usd_h:.2f}/hr{C.RESET}  ·  ~{monthly}/month"
     if shared_on:
-        eff   = _fmt_monthly(best.price_usd_h / 4.0)
-        line += f"  ·  ~{eff}/month per model when 4 share the GPU"
+        eff   = _fmt_monthly(best.price_usd_h / TIME_SLICE_REPLICAS)
+        line += (f"  ·  ~{eff}/month per model "
+                 f"if {TIME_SLICE_REPLICAS} share the GPU")
     print(line)
     headroom_tone = C.GREEN if util_pct < 60 else (C.YELLOW if util_pct < 85 else C.RED)
     print(f"    Utilisation: {headroom_tone}{best.per_gpu_need_gb:.1f} / "
@@ -767,7 +799,7 @@ def print_human(
     over_budget   = [o for o in opts if o.over_price_ceiling]
 
     print(f"\n{C.BOLD}Alternatives{C.RESET} "
-          f"(sorted: within budget, in-cluster, lowest effective cost)\n")
+          f"(sorted: within budget, in-cluster, lowest $/hr)\n")
     header = (f"  {'INSTANCE':<15} {'GPU':<9} {'TP':>2}  {'USAGE':<12} "
               f"{'FIT':<15}  {'$/HR':>6}  {'MONTHLY':>9}  FLAGS")
     print(f"{C.DIM}{header}{C.RESET}")
@@ -787,7 +819,8 @@ def print_human(
 
     # -------- 7. Footnotes ----------------------------------------------- #
     print(f"\n{C.DIM}Notes:")
-    print("  • FLAGS: ✓ in-cluster · shared = eligible for 4-way time-slicing")
+    print(f"  • FLAGS: ✓ in-cluster · shared = {TIME_SLICE_REPLICAS} copies of this model")
+    print("    fit on one GPU — amortised cost shown in parens")
     print(f"  • Monthly = hourly × 730 h/month. Prices from: {price_src}")
     print("  • Use --refresh-prices to invalidate the local cache")
     print(f"  • Estimates are first-order (±10%). Validate with a real deployment.{C.RESET}")
@@ -801,7 +834,12 @@ def _print_table_row(o: Option, C: type, over: bool) -> None:
                C.YELLOW if util_pct >= 60 else
                C.GREEN)
     flag_ic  = f"{C.GREEN}✓{C.RESET}" if o.in_cluster else f"{C.DIM}·{C.RESET}"
-    flag_sh  = "shared"     if o.shared_eligible else "dedicated"
+    if o.shared_eligible:
+        amort = o.amortised_price_usd_h
+        flag_sh = (f"shared ({C.DIM}${amort:.2f}/hr each{C.RESET})"
+                   if amort is not None else "shared")
+    else:
+        flag_sh = "dedicated"
     flags    = f"{flag_ic} {flag_sh}"
     if over:
         flags = f"{C.YELLOW}⚠ over budget{C.RESET}"
@@ -821,22 +859,27 @@ def _print_yaml_snippet(model: ModelSpec, best: Option,
                         args: argparse.Namespace, C: type) -> None:
     name = model.model_id.split("/")[-1].lower().replace(".", "-").replace("_", "-")
     max_len = args.seq
-    # Suggest shared: true only when the instance is actually shared-eligible AND
-    # the model fits with huge headroom (using <30% of the GPU).
-    shared = (
-        best.tp_degree == 1
-        and best.shared_eligible
-        and best.headroom_gb >= (best.instance.vram_gb * 0.70)
-    )
+    # Suggest shared: true only when the instance is truly shared-eligible —
+    # meaning TIME_SLICE_REPLICAS copies of the model fit in GPU memory.
+    # `shared_eligible` already encodes that check.
+    shared = best.tp_degree == 1 and best.shared_eligible
     yaml_path  = f"workloads/models/{name}.yaml"
     commit_msg = f"feat: deploy {name}"
 
     # Compute a conservative VRAM hint in GiB that Karpenter's
     # `instance-gpu-memory` label (reported in MiB) will compare against with `Gt`.
-    # Karpenter reports *schedulable* VRAM, which is ~5-10% below the marketing
-    # size (e.g. L4: reports 22888 MiB, marketed 24 GB). Using 90% of marketing
-    # cleanly keeps the target GPU eligible while excluding the next tier down.
-    min_vram_gib = max(1, int(best.instance.vram_gb * 0.9))
+    # The goal: exclude GPUs too small for the model, WITHOUT locking Karpenter
+    # to a single instance family. Based on the model's actual per-GPU need plus
+    # a 15% headroom — not the recommended instance's full VRAM (which would
+    # e.g. pin a 48 GB L40S-class selection even when a 16 GB T4 would fit).
+    # When `shared: true`, the requirement scales by TIME_SLICE_REPLICAS because
+    # all co-tenants compete for the same physical VRAM.
+    if shared:
+        min_vram_gib = max(1, math.ceil(
+            best.per_gpu_need_gb * TIME_SLICE_REPLICAS * 1.10
+        ))
+    else:
+        min_vram_gib = max(1, math.ceil(best.per_gpu_need_gb * 1.15))
 
     # Build the YAML body. Intentionally flush-left so copy-paste into a shell
     # heredoc produces a clean file (no stray indentation).
@@ -856,7 +899,7 @@ def _print_yaml_snippet(model: ModelSpec, best: Option,
     lines.extend([
         f"  maxModelLen: {max_len}",
         f"  minVramPerGpuGiB: {min_vram_gib}   "
-        f"# pins Karpenter to {best.instance.gpu}-class or better",
+        f"# min per-GPU VRAM; Karpenter picks the cheapest NVIDIA GPU that qualifies",
         "  minReplicas: 1",
         "  maxReplicas: 2",
     ])
