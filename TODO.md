@@ -38,7 +38,14 @@
 
 ## P3 — Scale & differentiation
 
-- [ ] **DRA (Dynamic Resource Allocation)** — Right-size GPU nodes precisely. Enable MIG for running multiple small models on one GPU. Significant cost savings at scale.
+- [ ] **DRA (Dynamic Resource Allocation)** — Blocked on ecosystem, not our platform. Status as of May 2026:
+  - **Ready at our layer**: K8s 1.35 (DRA is GA), GPU Operator v25.10.1 (≥25.3 required), DRA feature gates enabled by default on EKS 1.33+.
+  - **Not installed**: NVIDIA DRA Driver Helm chart. Trivial to add as a new platform service when needed.
+  - **Blocker**: Karpenter does not support DRA scheduling ([kubernetes-sigs/karpenter#1231](https://github.com/kubernetes-sigs/karpenter/issues/1231), in development). Our entire GPU compute is Karpenter-provisioned (`gpu-inference`, `gpu-shared`). A DRA ResourceClaim stays Pending on Karpenter nodes today.
+  - **Workaround we explicitly rejected**: running a parallel Managed Node Group for DRA workloads. Adds a second provisioning path alongside Karpenter and splits the `InferenceEndpoint` abstraction into two worlds. Only worth it for CBR-heavy P-series workloads (P4d/P5/P6), which we don't run.
+  - **What we already have that covers the demo ground**: time-slicing via Karpenter NodeOverlay on `gpu-shared` NodePool — 1 physical GPU advertised as 4 slots, driven by `shared: true` on `InferenceEndpoint`. Audience-visible GPU sharing story without DRA.
+  - **When to revisit**: Karpenter #1231 merges, OR we move to P-series with CBR (then DRA becomes essential for MIG/IMEX/Multi-Node NVLink).
+  - **Q&A stance for the conference**: "We already solve small-model GPU sharing via Karpenter NodeOverlay + time-slicing (the `shared: true` demo). DRA is complementary — it's what we'd add for multi-node GB200-class topologies needing IMEX/ComputeDomains. Architecturally we're ready; we're waiting on upstream Karpenter DRA support so we don't have to run a second node provisioning stack."
 
 - [ ] **Additional KRO templates** — ChatAssistant (model + OpenWebUI config), RAG pipeline (model + vector DB + embeddings), Agentic stack (model + tools + orchestrator), Batch inference (Ray Job).
 
