@@ -142,6 +142,12 @@ spec:
                 dashboard-host: "0.0.0.0"
                 num-cpus: "0"
               template:
+                metadata:
+                  annotations:
+                    # Prevent Karpenter from disrupting nodes while a model is serving.
+                    # Nodes are still reclaimed when empty (see gpu-*.yaml NodePools,
+                    # consolidationPolicy: WhenEmpty).
+                    karpenter.sh/do-not-disrupt: "true"
                 spec:
                   # Place the Ray head on gpu-shared pool so it lands on the
                   # warm-pool node where the Ray LLM image is pre-pulled.
@@ -182,6 +188,11 @@ spec:
                 maxReplicas: ${schema.spec.maxReplicas}
                 rayStartParams: {}
                 template:
+                  metadata:
+                    annotations:
+                      # Same rationale as the head: keep Karpenter from consolidating a node
+                      # hosting a serving model. Empty nodes are still reclaimed.
+                      karpenter.sh/do-not-disrupt: "true"
                   spec:
                     # ServiceAccount with IRSA annotation (Terraform-managed)
                     # grants s3:GetObject / s3:PutObject on the model-cache bucket.
