@@ -136,8 +136,19 @@ spec:
                 num-cpus: "0"
               template:
                 spec:
+                  # Place the Ray head on gpu-shared pool so it lands on the
+                  # warm-pool node where the Ray LLM image is pre-pulled.
+                  # The head doesn't request GPU, so it schedules alongside
+                  # the worker (which preempts the placeholder for its GPU
+                  # slice). Result: head container starts in <5 s instead of
+                  # ~7 min of image pull on a fresh default-pool instance.
                   nodeSelector:
                     kubernetes.io/arch: amd64
+                    workload-type: gpu-shared
+                  tolerations:
+                    - key: nvidia.com/gpu
+                      operator: Exists
+                      effect: NoSchedule
                   containers:
                     - name: ray-head
                       image: ${platformConfig.data.?rayImage.orValue(schema.spec.rayImage)}
