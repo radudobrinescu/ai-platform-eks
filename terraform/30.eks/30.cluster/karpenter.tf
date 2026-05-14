@@ -101,7 +101,8 @@ data "kubectl_path_documents" "karpenter_manifests" {
     environment  = terraform.workspace
     # Renders as a complete YAML line when set, or empty string when not.
     # This avoids passing an invalid empty snapshotID to Karpenter.
-    gpu_snapshot_id_line = var.gpu_data_volume_snapshot_id != "" ? "snapshotID: ${var.gpu_data_volume_snapshot_id}" : ""
+    # Source: explicit tfvar override > auto-discovered snapshot > disabled.
+    gpu_snapshot_id_line = local.resolved_snapshot_id != "" ? "snapshotID: ${local.resolved_snapshot_id}" : ""
   }
   depends_on = [
     module.eks

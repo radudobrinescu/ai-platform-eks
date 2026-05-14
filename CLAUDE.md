@@ -121,16 +121,24 @@ Setting `shared: true` on an InferenceEndpoint schedules it on the `gpu-shared` 
 
 Three layers reduce time-to-first-inference for new model deployments:
 
-1. **EBS Data Volume Snapshot** (fastest, optional): Pre-pulled Ray LLM image baked into an EBS snapshot. GPU nodes boot with the 13 GiB image already on disk → 0s image pull. Created by `ops/create-data-volume-snapshot.sh`, referenced via `gpu_data_volume_snapshot_id` tfvar. Must be rebuilt when `ray_image_tag` changes.
+1. **EBS Data Volume Snapshot** (fastest): Pre-pulled Ray LLM image baked into an EBS snapshot. GPU nodes boot with the 13 GiB image already on disk → 0s image pull. **Automated by Terraform** — `null_resource` in `image-optimization.tf` triggers when `ray_image_tag` changes. Snapshot discovered by tags on subsequent applies.
 
-2. **SOCI lazy-loading** (always active): Bottlerocket's containerd uses the SOCI snapshotter to stream image layers on demand. Falls back gracefully when no SOCI index exists or when the snapshot is stale. SOCI indices created by `ops/create-soci-index.sh`.
+2. **SOCI lazy-loading** (always active): Bottlerocket's containerd uses the SOCI snapshotter to stream image layers on demand. Falls back gracefully when no SOCI index exists or when the snapshot is stale. **Automated by Terraform** — SOCI index created alongside the snapshot.
 
 3. **S3 model weight cache** (always active): An initContainer syncs model weights from S3 (~15s) instead of downloading from HuggingFace (~60s). Auto-populated by the worker sidecar after first load.
 
-**When to rebuild the snapshot**: any time `ray_image_tag` in `terraform/30.eks/30.cluster/locals.tf` is bumped:
+**Automation flow** (defined in `terraform/30.eks/30.cluster/image-optimization.tf`):
+- Triggered by changes to `ray_image_tag` in `locals.tf`
+- Requires ECR pull-through cache (`TF_VAR_docker_hub_username` set)
+- First `terraform apply`: creates SOCI index + EBS snapshot (nodes use SOCI only)
+- Second `terraform apply`: discovers snapshot, updates Karpenter NodeClasses (nodes boot with image on disk)
+
+**Manual override**: set `gpu_data_volume_snapshot_id` in tfvars to pin a specific snapshot.
+
+**Manual scripts** (for ad-hoc use or CI pipelines):
 ```bash
-./ops/create-data-volume-snapshot.sh --write-tfvars anyscale/ray-llm:<new-tag>
-make ENVIRONMENT=<env> MODULE=./30.eks/30.cluster apply
+./ops/create-soci-index.sh <ecr-image-uri>
+./ops/create-data-volume-snapshot.sh --write-tfvars <image>
 ```
 
 ## ArgoCD Bootstrap Structure
