@@ -59,3 +59,9 @@ observability_configuration = {
 # with this URL and everything else flows from argocd/bootstrap/.
 gitops_repo_url = "https://github.com/YOUR-ORG/YOUR-REPO.git"
 gitops_revision = "main"
+
+# GPU cold-start optimization (optional) — pre-pulled container images on EBS snapshot.
+# Created by: ./ops/create-data-volume-snapshot.sh <ecr-image-uri>
+# When set, GPU nodes boot with the Ray LLM image already on disk (~0s image pull).
+# When empty (default), nodes fall back to SOCI lazy-loading or full image pull.
+# gpu_data_volume_snapshot_id = "snap-0123456789abcdef0"

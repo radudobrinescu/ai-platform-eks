@@ -97,6 +97,13 @@ module "eks" {
       aws-ebs-csi-driver = {
         service_account_role_arn = module.ebs_csi_driver_irsa[0].iam_role_arn
         preserve                 = false
+        configuration_values = jsonencode({
+          sidecars = {
+            snapshotter = {
+              forceEnable = false
+            }
+          }
+        })
       }
     } : {}
   )

@@ -54,3 +54,9 @@ variable "gitops_revision" {
   type        = string
   default     = "main"
 }
+
+variable "gpu_data_volume_snapshot_id" {
+  description = "EBS snapshot ID containing pre-pulled GPU container images (Ray LLM). Created by ops/create-data-volume-snapshot.sh. When set, Karpenter GPU nodes boot with images already on disk, eliminating the multi-minute image pull."
+  type        = string
+  default     = ""
+}

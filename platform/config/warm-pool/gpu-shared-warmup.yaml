@@ -79,13 +79,12 @@ spec:
         # on machine" → pod starts in <5 s instead of the usual ~7 min pull
         # on a fresh small-instance node.
         #
-        # IMPORTANT: the image reference is cluster-specific (ECR account ID +
-        # region). When bumping the Ray LLM tag, update:
-        #   1. terraform/30.eks/30.cluster/locals.tf  (ray_image_tag)
-        #   2. this file                              (image:)
-        # platform-config ConfigMap is derived from #1; this manifest is not.
+        # Uses the Docker Hub reference so it works across any account/region.
+        # ECR pull-through cache (configured in Terraform) transparently
+        # resolves this to the regional ECR mirror. When bumping the tag,
+        # also update terraform/30.eks/30.cluster/locals.tf (ray_image_tag).
         - name: warmer
-          image: 802019299867.dkr.ecr.eu-central-1.amazonaws.com/docker-hub/anyscale/ray-llm:2.54.0-py311-cu128
+          image: anyscale/ray-llm:2.54.0-py311-cu128
           command: ["sh", "-c", "exec sleep infinity"]
           resources:
             requests:

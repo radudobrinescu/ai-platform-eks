@@ -99,6 +99,9 @@ data "kubectl_path_documents" "karpenter_manifests" {
     role         = local.capabilities.autoscaling ? module.karpenter.node_iam_role_name : "KarpenterNodeInstanceProfile-${local.cluster_name}"
     cluster_name = local.cluster_name
     environment  = terraform.workspace
+    # Renders as a complete YAML line when set, or empty string when not.
+    # This avoids passing an invalid empty snapshotID to Karpenter.
+    gpu_snapshot_id_line = var.gpu_data_volume_snapshot_id != "" ? "snapshotID: ${var.gpu_data_volume_snapshot_id}" : ""
   }
   depends_on = [
     module.eks
@@ -111,9 +114,10 @@ data "kubectl_path_documents" "karpenter_manifests_dummy" {
   count   = (local.capabilities.autoscaling || local.eks_auto_mode) ? 1 : 0
   pattern = "${path.module}/karpenter/*.yaml"
   vars = {
-    role         = ""
-    cluster_name = ""
-    environment  = terraform.workspace
+    role                 = ""
+    cluster_name         = ""
+    environment          = terraform.workspace
+    gpu_snapshot_id_line = ""
   }
 }
 

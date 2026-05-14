@@ -30,6 +30,7 @@ spec:
         encrypted: true
         throughput: 500
         iops: 6000
+        ${gpu_snapshot_id_line}
   userData: |
     [settings.container-runtime]
     snapshotter = "soci"
