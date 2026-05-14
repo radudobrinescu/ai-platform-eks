@@ -258,12 +258,14 @@ spec:
                               echo "Cache miss for $MODEL_ID — vLLM will download from HF."
                               echo "  (A sidecar will auto-warm the cache after vLLM finishes loading.)"
                             fi
-                            # The initContainer runs as root; ray-worker runs as the non-root
-                            # 'ray' user and needs to create /hf-cache/hub/.locks on first
-                            # import. Make the whole cache world-writable so HF can maintain
-                            # its lock file directory regardless of who populated the cache.
+                            # Ensure the worker pod's `ray` user (uid 1000)
+                            # can write into /hf-cache/hub on cache miss. The
+                            # init container runs as root, so any directories
+                            # we create here inherit root ownership; we must
+                            # explicitly create AND chmod the full hub path
+                            # regardless of cache hit/miss order.
+                            mkdir -p /hf-cache/hub/.locks
                             chmod -R a+rwX /hf-cache
-                            mkdir -p /hf-cache/hub/.locks && chmod 777 /hf-cache/hub/.locks
                         volumeMounts:
                           - name: hf-cache
                             mountPath: /hf-cache
