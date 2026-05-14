@@ -42,6 +42,14 @@ metadata:
 spec:
   amiSelectorTerms:
     - alias: bottlerocket@latest
+  metadataOptions:
+    # Bottlerocket runs pluto (the metadata fetcher) inside a container, so
+    # IMDS responses need to traverse one extra network hop. The Karpenter
+    # default of 1 leaves pluto unable to reach IMDS — node never registers.
+    # See: https://github.com/bottlerocket-os/bottlerocket/issues/3399
+    httpPutResponseHopLimit: 2
+    httpTokens: required
+    httpEndpoint: enabled
   blockDeviceMappings:
     - deviceName: /dev/xvdb
       ebs:

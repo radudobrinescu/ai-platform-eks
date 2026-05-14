@@ -6,6 +6,12 @@ metadata:
 spec:
   amiSelectorTerms:
     - alias: bottlerocket@latest
+  metadataOptions:
+    # Hop limit 2 required so Bottlerocket's pluto (containerised) can reach
+    # IMDS to fetch the private DNS name during bootstrap.
+    httpPutResponseHopLimit: 2
+    httpTokens: required
+    httpEndpoint: enabled
   role: ${role}
   subnetSelectorTerms:
     - tags:
