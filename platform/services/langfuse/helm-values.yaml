@@ -13,7 +13,13 @@ langfuse:
       key: salt
 
   nextauth:
-    url: "http://langfuse-web.ai-platform.svc.cluster.local:3000"
+    # Public URL via the platform ALB (port 3000 listener). NextAuth uses
+    # this to validate the origin of sign-in requests; if it doesn't match
+    # the request's Host header, login fails with "An unexpected error
+    # occurred." Set to the ALB hostname so browser-based logins work.
+    # NOTE: hardcoded for cnd-demo. Behind a real domain + cert, set this
+    # to https://langfuse.<your-domain>.
+    url: "http://k8s-aiplatform-0f70754cbc-22700774.eu-central-1.elb.amazonaws.com:3000"
     secret:
       secretKeyRef:
         name: langfuse-secrets
