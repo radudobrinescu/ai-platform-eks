@@ -13,13 +13,18 @@ langfuse:
       key: salt
 
   nextauth:
-    # Public URL via the platform ALB (port 3000 listener). NextAuth uses
-    # this to validate the origin of sign-in requests; if it doesn't match
-    # the request's Host header, login fails with "An unexpected error
-    # occurred." Set to the ALB hostname so browser-based logins work.
-    # NOTE: hardcoded for cnd-demo. Behind a real domain + cert, set this
-    # to https://langfuse.<your-domain>.
-    url: "http://k8s-aiplatform-0f70754cbc-22700774.eu-central-1.elb.amazonaws.com:3000"
+    # URL of the Langfuse web deployment as seen by the BROWSER. NextAuth
+    # validates the Host header of every sign-in request against this URL,
+    # so it must match exactly what the user types into their browser.
+    #
+    # Default `http://localhost:3000` works out of the box with the SSM
+    # tunnel workflow (`./ops/ssm-tunnel.sh`).
+    #
+    # When accessing Langfuse through the ALB, edit this to the ALB
+    # hostname after the first ArgoCD sync, for example:
+    #   url: "http://k8s-aiplatform-<hash>.<region>.elb.amazonaws.com:3000"
+    # Behind a real domain + cert it would be `https://langfuse.<your-domain>`.
+    url: "http://localhost:3000"
     secret:
       secretKeyRef:
         name: langfuse-secrets

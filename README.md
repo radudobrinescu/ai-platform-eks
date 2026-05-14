@@ -252,7 +252,17 @@ Or the convenience wrapper (uses the SSM tunnel path by default):
 
 ### 9. Enable Langfuse Tracing
 
-Langfuse is deployed automatically as part of the platform. Create an API key pair in the Langfuse UI at `http://<alb-host>:3000`:
+Langfuse is deployed automatically as part of the platform. Before opening the UI you need to point Langfuse at the URL the browser will actually use — NextAuth rejects sign-ins where the request `Host` header doesn't match `nextauth.url`.
+
+For SSM-tunnel access (default), the bundled `http://localhost:3000` already works. For ALB access, edit `platform/services/langfuse/helm-values.yaml` and set `langfuse.nextauth.url` to your ALB hostname:
+
+```yaml
+langfuse:
+  nextauth:
+    url: "http://k8s-aiplatform-<hash>.<region>.elb.amazonaws.com:3000"
+```
+
+Commit + push; ArgoCD restarts the `langfuse-web` pod with the new env. Then create an API key pair in the Langfuse UI and wire LiteLLM to it:
 
 ```bash
 kubectl create secret generic langfuse-litellm-keys -n ai-platform \
