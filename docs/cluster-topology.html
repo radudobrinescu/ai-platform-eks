@@ -157,7 +157,7 @@ const POOL_CONFIG = {
 };
 const DAEMONSETS = ['aws-node', 'kube-proxy', 'ebs-csi-node', 'eks-pod-identity-agent', 'aws-for-fluent-bit', 'cloudwatch-agent', 'fluent-bit', 'prometheus-node-exporter', 'nfd-worker'];
 
-let state = { nodes: {}, pods: {}, prevPodsByNode: {} };
+let state = { nodes: {}, pods: {}, endpoints: {}, prevPodsByNode: {} };
 let eventLog = [];
 
 function logEvent(type, msg) {
@@ -348,6 +348,39 @@ function render() {
     html += `</div>`;
   }
 
+  // Render InferenceEndpoints status panel
+  const endpoints = Object.values(state.endpoints);
+  if (endpoints.length > 0) {
+    html += `<div class="node-group" style="border-color:#6366f1;">`;
+    html += `<div class="node-group-header" style="background:#eef2ff;border-bottom:1px solid #c7d2fe;color:#4338ca;">`;
+    html += `<span class="badge" style="background:#4338ca;color:#fff;">KRO</span> InferenceEndpoints`;
+    html += `<span class="count">${endpoints.length} model${endpoints.length !== 1 ? 's' : ''}</span>`;
+    html += `<span class="desc">Custom Resources — model deployment status</span>`;
+    html += `</div>`;
+    html += `<div class="nodes"><div class="node" style="width:100%;">`;
+    html += `<div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(280px,1fr));gap:12px;">`;
+    for (const ep of endpoints) {
+      const name = ep.metadata?.name || '?';
+      const status = ep.status?.modelStatus || 'Pending';
+      const ready = ep.status?.ready === 'True';
+      const message = ep.status?.message || '';
+      const shared = ep.spec?.shared ? 'shared' : 'dedicated';
+      const color = ready ? '#059669' : status === 'DEPLOYING' ? '#d97706' : '#6b7280';
+      const bg = ready ? '#ecfdf5' : status === 'DEPLOYING' ? '#fffbeb' : '#f8fafc';
+      const icon = ready ? '●' : status === 'DEPLOYING' ? '◐' : '○';
+      html += `<div style="padding:12px;border-radius:8px;border:1px solid ${color}30;background:${bg};">`;
+      html += `<div style="display:flex;align-items:center;gap:8px;margin-bottom:4px;">`;
+      html += `<span style="color:${color};font-size:14px;">${icon}</span>`;
+      html += `<span style="font-weight:700;font-size:13px;">${name}</span>`;
+      html += `<span style="margin-left:auto;font-size:10px;padding:1px 6px;border-radius:3px;background:${color}20;color:${color};font-weight:600;">${status}</span>`;
+      html += `</div>`;
+      html += `<div style="font-size:11px;color:#64748b;">${message}</div>`;
+      html += `<div style="font-size:10px;color:#94a3b8;margin-top:4px;">gpu: ${shared} · model: ${ep.spec?.model || '?'}</div>`;
+      html += `</div>`;
+    }
+    html += `</div></div></div></div>`;
+  }
+
   document.getElementById('cluster-container').innerHTML = html;
   state.prevPodsByNode = podsByNode;
 }
@@ -364,8 +397,9 @@ async function fetchInitial(resource, handler) {
 }
 
 async function watchResource(resource, handler, resourceVersion) {
-  const url = `${API_BASE}/${resource}?watch=1&resourceVersion=${resourceVersion}`;
+  const url = `${API_BASE}/${resource}?watch=1&resourceVersion=${resourceVersion}&timeoutSeconds=300`;
   const resp = await fetch(url);
+  if (!resp.ok) throw new Error(`Watch HTTP ${resp.status}`);
   const reader = resp.body.getReader();
   const decoder = new TextDecoder();
   let buffer = '';
@@ -380,10 +414,16 @@ async function watchResource(resource, handler, resourceVersion) {
       if (!line.trim()) continue;
       try {
         const event = JSON.parse(line);
+        if (event.type === 'ERROR') {
+          throw new Error(`Watch error: ${event.object?.message || 'unknown'}`);
+        }
         handler(event.type, event.object);
-      } catch(e) {}
+      } catch(e) {
+        if (e.message?.includes('Watch error')) throw e;
+      }
     }
   }
+  throw new Error('Watch stream ended');
 }
 
 function handleNode(type, node) {
@@ -416,6 +456,28 @@ function handlePod(type, pod) {
   if (state.initialized) render();
 }
 
+function handleEndpoint(type, ep) {
+  const name = ep.metadata?.name;
+  if (type === 'ADDED' || type === 'MODIFIED') {
+    const prev = state.endpoints[name];
+    state.endpoints[name] = ep;
+    const status = ep.status?.modelStatus || 'Pending';
+    const ready = ep.status?.ready;
+    if (state.initialized) {
+      if (!prev) {
+        logEvent('add', `Model "${name}" created → ${status}`);
+      } else if (prev.status?.modelStatus !== status) {
+        const cls = ready === 'True' ? 'add' : 'mod';
+        logEvent(cls, `Model "${name}" → ${status}${ready === 'True' ? ' ✓' : ''}`);
+      }
+    }
+  } else if (type === 'DELETED') {
+    delete state.endpoints[name];
+    if (state.initialized) logEvent('del', `Model "${name}" removed`);
+  }
+  if (state.initialized) render();
+}
+
 async function start() {
   try {
     setConnection('connecting', 'Connecting to Kubernetes API...');
@@ -423,16 +485,28 @@ async function start() {
     const nodeRV = await fetchInitial('api/v1/nodes', handleNode);
     const podRV = await fetchInitial('api/v1/pods', handlePod);
 
+    // InferenceEndpoints (CRD) — may not exist, handle gracefully
+    let epRV = null;
+    try {
+      epRV = await fetchInitial('apis/kro.run/v1alpha1/namespaces/inference/inferenceendpoints', handleEndpoint);
+    } catch(e) { /* CRD not installed or no permissions */ }
+
     state.initialized = true;
     render();
     setConnection('connected', `Connected — watching for changes`);
     logEvent('mod', 'Connected to Kubernetes API, watching for events');
 
     // Watch in parallel
-    Promise.all([
+    const watches = [
       watchResource('api/v1/nodes', handleNode, nodeRV).catch(reconnect),
       watchResource('api/v1/pods', handlePod, podRV).catch(reconnect),
-    ]);
+    ];
+    if (epRV) {
+      watches.push(
+        watchResource('apis/kro.run/v1alpha1/namespaces/inference/inferenceendpoints', handleEndpoint, epRV).catch(reconnect)
+      );
+    }
+    Promise.all(watches);
   } catch (e) {
     setConnection('disconnected', `Connection failed — run: kubectl proxy --port=8001 && python3 docs/serve.py`);
     logEvent('del', `Connection error: ${e.message}`);
