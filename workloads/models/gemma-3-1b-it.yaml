@@ -8,7 +8,7 @@ spec:
   gpuCount: 1
   shared: true          # fits with headroom — up to 4 models share the GPU
   maxModelLen: 8192
-  minVramPerGpuGiB: 11   # min per-GPU VRAM; Karpenter picks the cheapest NVIDIA GPU that qualifies
+  minVramPerGpuGiB: 20   # ≥20 GiB excludes T4 (16 GB) — required because gemma uses bf16 (CC ≥ 8.0; T4 is 7.5)
   workerMemory: "8Gi"   # CPU memory for the Ray worker pod (default is conservative; this is sized to model)
   minReplicas: 1
   maxReplicas: 2

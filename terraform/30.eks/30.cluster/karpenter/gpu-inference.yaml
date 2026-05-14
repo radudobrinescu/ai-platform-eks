@@ -83,6 +83,12 @@ spec:
         - key: karpenter.k8s.aws/instance-gpu-manufacturer
           operator: In
           values: ["nvidia"]
+        # Exclude pre-Ampere NVIDIA GPUs (T4 in g4dn, V100 in p3). Modern
+        # vLLM model defaults use bfloat16, which requires compute capability
+        # ≥ 8.0 (Ampere/Ada/Hopper). T4 is CC 7.5, V100 is CC 7.0.
+        - key: karpenter.k8s.aws/instance-family
+          operator: NotIn
+          values: ["g4dn", "g4ad", "p3", "p2"]
   # Cost cap: max 16 NVIDIA GPUs provisioned by this NodePool at any time.
   # With P5 at 8 GPUs/node this caps worst-case hourly spend; raise/lower to taste.
   limits:

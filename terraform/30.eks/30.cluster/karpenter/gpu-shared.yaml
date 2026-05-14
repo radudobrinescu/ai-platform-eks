@@ -89,6 +89,12 @@ spec:
         - key: karpenter.k8s.aws/instance-gpu-manufacturer
           operator: In
           values: ["nvidia"]
+        # Exclude pre-Ampere NVIDIA GPUs (T4 in g4dn). Modern vLLM model
+        # defaults use bfloat16, which requires compute capability ≥ 8.0
+        # (Ampere/Ada/Hopper). T4 is CC 7.5.
+        - key: karpenter.k8s.aws/instance-family
+          operator: NotIn
+          values: ["g4dn", "g4ad"]
         - key: karpenter.k8s.aws/instance-gpu-count
           operator: In
           values: ["1"]
