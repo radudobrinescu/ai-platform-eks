@@ -10,7 +10,7 @@ Built on EKS Managed Capabilities (ArgoCD, KRO, ACK), Karpenter, Ray Serve, and 
 - **GitOps workflow** — commit a YAML, ArgoCD deploys it, model is live
 - **OpenAI-compatible API** — LiteLLM proxies all models behind `/v1/chat/completions`
 - **Chat UI** — Open WebUI for interactive testing
-- **Fast cold starts** — Bottlerocket + SOCI parallel pull, optional ECR pull-through cache
+- **Fast cold starts** — EBS data volume snapshots (0s image pull), SOCI lazy-loading, S3 model weight cache, GPU warm pool
 - **Team onboarding** — `AITeam` resource creates namespace, RBAC, quotas, and scoped API key
 - **LLM observability** — Langfuse tracing
 
@@ -98,21 +98,33 @@ export TF_VAR_docker_hub_access_token="dckr_pat_XXXXXXXXXX"
 
 Without this, images pull directly from Docker Hub (works fine, just slower).
 
-### 3b. (Optional) Create SOCI Indices for Faster Cold Starts
+### 3b. GPU Image Optimization (SOCI + EBS Snapshot)
 
-> **Requires Step 3** — SOCI indices are created for ECR images, so the pull-through cache must be configured first.
+> **Requires Step 3** — these optimizations depend on ECR pull-through cache being configured.
 
-GPU nodes use Bottlerocket with the SOCI snapshotter in `parallel-pull-unpack` mode. Without SOCI indices, images are pulled in parallel but fully downloaded before containers start. With SOCI indices, containers start via lazy-loading — only fetching layers on demand (~30-70% faster cold starts).
+When ECR pull-through cache is enabled (`TF_VAR_docker_hub_username` set), Terraform **automatically** creates both optimization artifacts on `apply`:
 
-Create a SOCI index for the Ray LLM image (or any large ECR image):
+1. **SOCI index** in ECR — enables lazy-loading of image layers (~50% faster pulls)
+2. **EBS data volume snapshot** — pre-pulls the 13 GiB Ray LLM image onto an EBS snapshot. New GPU nodes boot with the image already on disk (**0s image pull**)
+
+This is handled by `terraform/30.eks/30.cluster/image-optimization.tf`. Both are triggered by changes to `ray_image_tag` in `locals.tf`.
+
+**Two-apply flow for new clusters:**
+- First `apply`: creates the SOCI index + EBS snapshot (GPU nodes use SOCI-only)
+- Second `apply`: discovers the snapshot by tags, wires it into Karpenter NodeClasses
 
 ```bash
-./ops/create-soci-index.sh <ACCOUNT_ID>.dkr.ecr.<REGION>.amazonaws.com/docker-hub/anyscale/ray-llm:2.54.0-py311-cu128
+# After initial deploy, run a second apply to activate the snapshot:
+make ENVIRONMENT=your-env MODULE=./30.eks/30.cluster apply
 ```
 
-This runs on a criticaladdons node via SSM (requires the 100GB EBS volume from the MNG config). Re-run whenever you update the Ray image tag.
+**Manual scripts** (for ad-hoc use outside Terraform):
+```bash
+./ops/create-soci-index.sh <ecr-image-uri>
+./ops/create-data-volume-snapshot.sh --write-tfvars <image>
+```
 
-> **Note:** The AWS SOCI Index Builder (Lambda-based) has a 6 GB compressed image limit. The Ray LLM image is ~13 GB, so indices must be created via this script instead.
+> **Note:** The AWS SOCI Index Builder (Lambda-based) has a 6 GB compressed image limit. The Ray LLM image is ~13 GB, so indices are created via the ops script instead.
 
 ### 4. Bootstrap ArgoCD
 
@@ -197,7 +209,7 @@ The `MESSAGE` column shows the current phase:
 - `Model is loading onto GPU workers` — vLLM is loading the model
 - `Model is live and serving requests` — ready to use
 
-First deployment takes ~7 min with ECR cache, ~14 min without.
+First deployment takes ~60s when fully optimized (EBS snapshot + S3 cache + warm pool), ~7 min with ECR cache only, ~14 min without any cache.
 
 ### 7. Access Services
 
@@ -422,17 +434,26 @@ workloads/                       # Self-service — teams add YAMLs here
 ops/                             # Operational scripts
   recommend-instance.py          #   Recommend EC2 GPU instances for a given model
   seed-model-cache.py            #   Pre-populate S3 HF weights cache for fast deploys
+  create-data-volume-snapshot.sh #   EBS snapshot with pre-pulled images (fastest cold start)
+  create-soci-index.sh           #   Create SOCI indices for large images
   ssm-tunnel.sh                  #   SSM port forwarding to platform services
   test-model.sh                  #   One-shot model testing
   scale-down.sh                  #   Cost savings: suspend platform
   scale-up.sh                    #   Restore platform via ArgoCD sync
-  create-soci-index.sh           #   Create SOCI indices for large images
+  demo.sh                        #   End-to-end demo flow
 terraform/                       # Infrastructure (VPC, IAM, EKS, addons)
 ```
 
-## Fast model deployment (S3 cache + warm pool)
+## Fast model deployment (cold-start optimization)
 
-First deploys of a model pull ~13 GB of container image and download weights from HuggingFace — typically 5-7 minutes end-to-end. The platform ships two optimizations that knock that down to ~90 seconds for demo-friendly models:
+First deploys of a model pull ~13 GB of container image and download weights from HuggingFace — typically 5-7 minutes end-to-end. The platform ships four layers of optimization that knock that down to **~60 seconds**:
+
+| Layer | What | Effect | Automated? |
+|-------|------|--------|------------|
+| EBS data volume snapshot | Pre-pulled image baked into EBS | 0s image pull | Yes (Terraform) |
+| SOCI lazy-loading | Stream image layers on demand | ~50% faster pull (fallback) | Yes (Terraform) |
+| S3 model weight cache | Sync weights from S3 instead of HF | ~15s vs ~60s model load | Yes (sidecar auto-warms) |
+| GPU warm pool | Keep one node always provisioned | Skip 90s Karpenter provision | Yes (ArgoCD) |
 
 ### HuggingFace weights cache in S3
 
@@ -459,17 +480,17 @@ The tool reads the bucket name from the `platform-config` ConfigMap, downloads t
 
 `platform/config/warm-pool/gpu-shared-warmup.yaml` defines a low-priority (`value: -100`) placeholder Deployment that holds one GPU slice on the `gpu-shared` NodePool. Karpenter keeps the node alive; the Ray LLM image is pre-pulled there. When a `shared: true` InferenceEndpoint arrives, its pod preempts the placeholder and schedules onto the warm node — skipping ~90 s of Karpenter provisioning and ~100 s of image pull. Scale replicas to 0 to disable.
 
-### Expected demo timeline (SmolLM3-3B)
+### Expected timeline (SmolLM3-3B on gpu-shared)
 
-| Stage | Cold | With S3 cache + warm pool |
+| Stage | Cold (no optimization) | Fully optimized |
 |---|---|---|
-| ArgoCD sync (with nudge) | 30 s | 10 s |
-| Karpenter node provisioning | 90 s | **0 s** (warm) |
-| Ray LLM image pull | 100 s | **0 s** (pre-pulled) |
-| Weights → pod | 60 s (HF) | **~15 s** (S3 sync) |
+| ArgoCD sync | 30 s | 10 s |
+| Karpenter node provisioning | 90 s | **0 s** (warm pool) |
+| Ray LLM image pull | 180 s | **0 s** (EBS snapshot) |
+| Weights → pod | 60 s (HF download) | **~15 s** (S3 cache) |
 | vLLM init + weight load | 45 s | 45 s |
-| LiteLLM register + Open WebUI refresh | 35 s | 35 s |
-| **Total from `git push` to working model** | ~5-7 min | **~90 s** |
+| LiteLLM register | 10 s | 10 s |
+| **Total from `git push` to working model** | ~7 min | **~60-80 s** |
 
 
 
