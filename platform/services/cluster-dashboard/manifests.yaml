@@ -140,6 +140,8 @@ spec:
     metadata:
       labels:
         app: cluster-dashboard
+      annotations:
+        instrumentation.opentelemetry.io/inject-python: "false"
     spec:
       serviceAccountName: cluster-dashboard
       automountServiceAccountToken: true
