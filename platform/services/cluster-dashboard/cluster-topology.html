@@ -138,42 +138,41 @@
   <div class="event"><span class="event-time">--:--:--</span> Waiting for connection...</div>
 </div>
 
+
 <script>
-const API_BASE = '';
-const NAMESPACES_SKIP_PODS = new Set(['kube-system', 'amazon-cloudwatch', 'prometheus-node-exporter']);
-const NS_COLORS = {
-  'ai-platform': 'ns-ai-platform',
-  'kube-system': 'ns-kube-system',
-  'gpu-operator': 'ns-gpu-operator',
-  'kuberay': 'ns-kuberay',
-  'inference': 'ns-inference',
-  'external-secrets': 'ns-external-secrets',
-  'grafana-operator': 'ns-grafana',
-  'amazon-cloudwatch': 'ns-cloudwatch',
-  'prometheus-node-exporter': 'ns-prometheus',
-};
+// Fetches /data.json every 2s (backend builds this from K8s API).
+// No streaming, no WebSocket, no K8s auth in browser. Rock-solid.
+
 const POOL_CONFIG = {
   '__mng__': { class: 'mng', label: 'MNG', name: 'CriticalAddons', desc: 'Managed Node Group · ARM Graviton · Always-on' },
   'default': { class: 'default', label: 'Karpenter', name: 'default', desc: 'Spot/On-demand · x86 compute (c/m/r) · Platform services' },
   'gpu-shared': { class: 'gpu-shared', label: 'Karpenter', name: 'gpu-shared', desc: 'Spot/On-demand · NVIDIA L4 · Time-sliced 4x · EBS Snapshot' },
   'gpu-inference': { class: 'gpu-inference', label: 'Karpenter', name: 'gpu-inference', desc: 'Spot/On-demand · Dedicated GPU · Scales to zero' },
 };
-const DAEMONSETS = ['aws-node', 'kube-proxy', 'ebs-csi-node', 'eks-pod-identity-agent', 'aws-for-fluent-bit', 'cloudwatch-agent', 'fluent-bit', 'prometheus-node-exporter', 'nfd-worker'];
+const NS_COLORS = {
+  'ai-platform': 'ns-ai-platform', 'kube-system': 'ns-kube-system',
+  'gpu-operator': 'ns-gpu-operator', 'kuberay': 'ns-kuberay',
+  'inference': 'ns-inference', 'external-secrets': 'ns-external-secrets',
+  'grafana-operator': 'ns-grafana', 'amazon-cloudwatch': 'ns-cloudwatch',
+  'prometheus-node-exporter': 'ns-prometheus',
+};
+const DAEMONSETS = ['aws-node','kube-proxy','ebs-csi-node','eks-pod-identity-agent','aws-for-fluent-bit','cloudwatch-agent','fluent-bit','prometheus-node-exporter','nfd-worker','dcgm-exporter'];
 
-let state = { nodes: {}, pods: {}, endpoints: {}, initialized: false, reconnecting: false };
+let prevNodeNames = new Set();
+let prevPodKeys = new Set();
+let prevEndpointNames = new Set();
+let prevEndpointStatus = {};
 let eventLog = [];
+let connected = false;
 
 function logEvent(type, msg) {
   const time = new Date().toLocaleTimeString('en-GB', {hour12: false});
   const cls = type === 'add' ? 'event-add' : type === 'del' ? 'event-del' : 'event-mod';
   eventLog.unshift({time, cls, msg});
   if (eventLog.length > 30) eventLog.pop();
-  renderEventLog();
-}
-
-function renderEventLog() {
-  const el = document.getElementById('event-log');
-  el.innerHTML = eventLog.map(e => `<div class="event"><span class="event-time">${e.time}</span> <span class="${e.cls}">${e.msg}</span></div>`).join('');
+  document.getElementById('event-log').innerHTML = eventLog.map(e =>
+    `<div class="event"><span class="event-time">${e.time}</span> <span class="${e.cls}">${e.msg}</span></div>`
+  ).join('');
 }
 
 function setConnection(status, text) {
@@ -186,64 +185,22 @@ function shortName(name) {
   return name.replace(/-[a-z0-9]{5,10}(-[a-z0-9]{5})?$/, '').replace(/-[0-9]+$/, '');
 }
 
-function getPool(node) {
-  const labels = node.metadata?.labels || {};
-  const pool = labels['karpenter.sh/nodepool'];
-  if (pool) return pool;
-  if (labels['eks.amazonaws.com/nodegroup']) return '__mng__';
-  return '__mng__';
-}
-
-function getZone(node) {
-  return (node.metadata?.labels?.['topology.kubernetes.io/zone'] || '').replace('eu-central-', '');
-}
-
-function getInstanceType(node) {
-  return node.metadata?.labels?.['node.kubernetes.io/instance-type'] || 'unknown';
-}
-
-function getCapacityType(node) {
-  return node.metadata?.labels?.['karpenter.sh/capacity-type'] || node.metadata?.labels?.['eks.amazonaws.com/capacityType'] || 'on-demand';
-}
-
-function getHostname(node) {
-  return node.metadata?.name?.split('.')[0] || node.metadata?.name;
-}
-
-function isGpuNode(node) {
-  const pool = getPool(node);
-  return pool === 'gpu-shared' || pool === 'gpu-inference';
-}
-
-function getGpuAllocatable(node) {
-  return parseInt(node.status?.allocatable?.['nvidia.com/gpu'] || '0');
-}
-
 function isDaemonsetPod(pod) {
-  const name = pod.metadata?.name || '';
-  return DAEMONSETS.some(ds => name.startsWith(ds));
+  return DAEMONSETS.some(ds => pod.name.startsWith(ds));
 }
 
-function isWarmupPod(pod) {
-  return (pod.metadata?.name || '').includes('warmup');
-}
+function render(data) {
+  const {nodes, pods, endpoints} = data;
 
-function isInferencePod(pod) {
-  return pod.metadata?.namespace === 'inference';
-}
-
-function render() {
-  const nodes = Object.values(state.nodes).filter(n =>
-    n.status?.conditions?.some(c => c.type === 'Ready' && c.status === 'True')
-  );
-  const pods = Object.values(state.pods).filter(p =>
-    p.status?.phase === 'Running' || p.status?.phase === 'Pending'
-  );
+  // Stats
+  document.getElementById('stat-nodes').textContent = nodes.length;
+  document.getElementById('stat-gpus').textContent = nodes.reduce((s, n) => s + n.gpu, 0);
+  document.getElementById('stat-models').textContent = endpoints.length;
 
   // Group nodes by pool
   const pools = {};
   for (const node of nodes) {
-    const pool = getPool(node);
+    const pool = node.pool || '__mng__';
     if (!pools[pool]) pools[pool] = [];
     pools[pool].push(node);
   }
@@ -251,21 +208,12 @@ function render() {
   // Group pods by node
   const podsByNode = {};
   for (const pod of pods) {
-    const nodeName = pod.spec?.nodeName;
-    if (!nodeName) continue;
-    if (!podsByNode[nodeName]) podsByNode[nodeName] = [];
-    podsByNode[nodeName].push(pod);
+    if (!pod.node) continue;
+    if (!podsByNode[pod.node]) podsByNode[pod.node] = [];
+    podsByNode[pod.node].push(pod);
   }
 
-  // Count models
-  const models = pods.filter(p => p.metadata?.namespace === 'inference' && (p.metadata?.name || '').includes('head')).length;
-  const gpuCount = nodes.filter(n => isGpuNode(n)).reduce((sum, n) => sum + getGpuAllocatable(n), 0);
-
-  document.getElementById('stat-nodes').textContent = nodes.length;
-  document.getElementById('stat-gpus').textContent = gpuCount;
-  document.getElementById('stat-models').textContent = models;
-
-  // Render pools
+  // Render
   const poolOrder = ['__mng__', 'default', 'gpu-shared', 'gpu-inference'];
   let html = '';
 
@@ -285,31 +233,28 @@ function render() {
     } else {
       html += `<div class="nodes">`;
       for (const node of poolNodes) {
-        const nodeName = node.metadata.name;
-        const nodePods = (podsByNode[nodeName] || []).filter(p => !isDaemonsetPod(p));
-        const isWarm = nodePods.some(p => isWarmupPod(p));
-        const isNew = (Date.now() - new Date(node.metadata.creationTimestamp).getTime()) < 120000;
+        const nodePods = (podsByNode[node.name] || []).filter(p => !isDaemonsetPod(p));
+        const isWarm = nodePods.some(p => p.name.includes('warmup'));
+        const isNew = (Date.now() - new Date(node.created).getTime()) < 120000;
+        const capClass = node.capacity === 'spot' ? 'capacity-spot' : 'capacity-ondemand';
+        const capLabel = node.capacity === 'spot' ? 'spot' : 'on-demand';
+        const zone = node.zone.replace('eu-central-', '');
 
         html += `<div class="node ${isNew ? 'highlight' : ''}">`;
-        const capType = getCapacityType(node);
-        const capClass = capType === 'spot' ? 'capacity-spot' : 'capacity-ondemand';
-        const capLabel = capType === 'spot' ? 'spot' : 'on-demand';
-
         html += `<div class="node-title">`;
-        html += `<span class="hostname">${getHostname(node)}</span>`;
-        html += `<span class="instance-badge">${getInstanceType(node)}</span>`;
+        html += `<span class="hostname">${node.name.split('.')[0]}</span>`;
+        html += `<span class="instance-badge">${node.instance}</span>`;
         html += `<span class="capacity-badge ${capClass}">${capLabel}</span>`;
         if (isWarm) html += `<span class="warm-badge">Warm Pool</span>`;
         if (isNew) html += `<span class="new-badge">New</span>`;
-        html += `<span class="zone" style="margin-left:auto;">${getZone(node)}</span>`;
+        html += `<span class="zone" style="margin-left:auto;">${zone}</span>`;
         html += `</div>`;
 
         // Group pods by namespace
         const byNs = {};
         for (const pod of nodePods) {
-          const ns = pod.metadata.namespace;
-          if (!byNs[ns]) byNs[ns] = [];
-          byNs[ns].push(pod);
+          if (!byNs[pod.namespace]) byNs[pod.namespace] = [];
+          byNs[pod.namespace].push(pod);
         }
 
         html += `<div class="workloads">`;
@@ -320,31 +265,22 @@ function render() {
           html += `<span class="ns-label ${nsClass}">${displayNs}</span>`;
           html += `<div class="pod-list">`;
           for (const pod of nsPods) {
-            const name = shortName(pod.metadata.name);
-            const isNewPod = (Date.now() - new Date(pod.metadata.creationTimestamp).getTime()) < 30000;
-            const isTerminating = pod.metadata.deletionTimestamp;
-            const cls = isNewPod ? 'new' : isTerminating ? 'terminating' : '';
-            html += `<span class="pod ${cls}">${name}</span>`;
+            const isNewPod = (Date.now() - new Date(pod.created).getTime()) < 30000;
+            html += `<span class="pod ${isNewPod ? 'new' : ''}">${shortName(pod.name)}</span>`;
           }
           html += `</div></div>`;
         }
         html += `</div>`;
 
-        // GPU meter for GPU nodes
-        if (isGpuNode(node)) {
-          const totalSlots = getGpuAllocatable(node);
-          const usedSlots = nodePods.filter(p => {
-            const containers = p.spec?.containers || [];
-            return containers.some(c => parseInt(c.resources?.requests?.['nvidia.com/gpu'] || '0') > 0);
-          }).length;
-
+        // GPU meter
+        if (node.gpu > 0) {
+          const gpuPods = nodePods.filter(p => p.gpu > 0);
           html += `<div class="gpu-meter">`;
-          html += `<div class="gpu-meter-label">NVIDIA L4 · ${totalSlots} GPU Slots</div>`;
+          html += `<div class="gpu-meter-label">NVIDIA L4 · ${node.gpu} GPU Slots</div>`;
           html += `<div class="gpu-slots">`;
-          for (let i = 0; i < totalSlots; i++) {
-            if (i < usedSlots) {
-              const gpuPod = nodePods.filter(p => p.spec?.containers?.some(c => parseInt(c.resources?.requests?.['nvidia.com/gpu'] || '0') > 0))[i];
-              const label = gpuPod ? shortName(gpuPod.metadata.name).substring(0, 12) : 'used';
+          for (let i = 0; i < node.gpu; i++) {
+            if (i < gpuPods.length) {
+              const label = shortName(gpuPods[i].name).substring(0, 14);
               html += `<div class="gpu-slot used">${label}</div>`;
             } else {
               html += `<div class="gpu-slot free">free</div>`;
@@ -352,7 +288,6 @@ function render() {
           }
           html += `</div></div>`;
         }
-
         html += `</div>`;
       }
       html += `</div>`;
@@ -360,8 +295,7 @@ function render() {
     html += `</div>`;
   }
 
-  // Render InferenceEndpoints status panel (always visible)
-  const endpoints = Object.values(state.endpoints);
+  // InferenceEndpoints (always visible)
   html += `<div class="node-group" style="border-color:#6366f1;">`;
   html += `<div class="node-group-header" style="background:#eef2ff;border-bottom:1px solid #c7d2fe;color:#4338ca;">`;
   html += `<span class="badge" style="background:#4338ca;color:#fff;">KRO</span> InferenceEndpoints`;
@@ -373,35 +307,27 @@ function render() {
   } else {
     html += `<div style="display:flex;flex-wrap:wrap;gap:0;border-top:1px solid #e2e8f0;">`;
     for (const ep of endpoints) {
-      const name = ep.metadata?.name || '?';
-      const status = ep.status?.modelStatus || 'Pending';
-      const ready = ep.status?.ready === 'True';
-      const message = ep.status?.message || '';
-      const shared = ep.spec?.shared ? 'shared' : 'dedicated';
+      const ready = ep.ready === 'True';
+      const status = ep.modelStatus || 'Pending';
       const color = ready ? '#059669' : status === 'DEPLOYING' ? '#d97706' : '#6b7280';
       const bg = ready ? '#f0fdf4' : status === 'DEPLOYING' ? '#fffbeb' : '#f9fafb';
       const icon = ready ? '●' : status === 'DEPLOYING' ? '◐' : '○';
+      const shared = ep.shared ? 'shared' : 'dedicated';
 
-      // Timer: elapsed since creation
-      const created = new Date(ep.metadata?.creationTimestamp);
-      const elapsed = Math.floor((Date.now() - created.getTime()) / 1000);
+      const elapsed = Math.floor((Date.now() - new Date(ep.created).getTime()) / 1000);
       const timerStr = ready ? '' : `${Math.floor(elapsed/60)}m ${elapsed%60}s`;
 
-      html += `<div style="flex:1;min-width:280px;padding:14px 20px;border-right:1px solid #f1f5f9;border-bottom:1px solid #f1f5f9;background:${bg};transition:background 0.3s;">`;
+      html += `<div style="flex:1;min-width:280px;padding:14px 20px;border-right:1px solid #f1f5f9;border-bottom:1px solid #f1f5f9;background:${bg};">`;
       html += `<div style="display:flex;align-items:center;gap:8px;margin-bottom:6px;">`;
       html += `<span style="color:${color};font-size:16px;">${icon}</span>`;
-      html += `<span style="font-weight:700;font-size:14px;color:#1e293b;">${name}</span>`;
-      html += `<span style="margin-left:auto;font-size:10px;padding:2px 8px;border-radius:4px;background:${color}18;color:${color};font-weight:700;letter-spacing:0.3px;">${status}</span>`;
+      html += `<span style="font-weight:700;font-size:14px;color:#1e293b;">${ep.name}</span>`;
+      html += `<span style="margin-left:auto;font-size:10px;padding:2px 8px;border-radius:4px;background:${color}18;color:${color};font-weight:700;">${status}</span>`;
       html += `</div>`;
-      html += `<div style="font-size:12px;color:#475569;margin-bottom:4px;">${message}</div>`;
+      html += `<div style="font-size:12px;color:#475569;margin-bottom:4px;">${ep.message}</div>`;
       html += `<div style="display:flex;align-items:center;gap:12px;font-size:10px;color:#94a3b8;">`;
-      html += `<span>gpu: ${shared}</span>`;
-      html += `<span>model: ${ep.spec?.model || '?'}</span>`;
-      if (timerStr) {
-        html += `<span style="margin-left:auto;font-family:SF Mono,monospace;font-size:11px;color:${color};font-weight:600;">⏱ ${timerStr}</span>`;
-      }
-      html += `</div>`;
-      html += `</div>`;
+      html += `<span>gpu: ${shared}</span><span>model: ${ep.model}</span>`;
+      if (timerStr) html += `<span style="margin-left:auto;font-family:SF Mono,monospace;font-size:11px;color:${color};font-weight:600;">⏱ ${timerStr}</span>`;
+      html += `</div></div>`;
     }
     html += `</div>`;
   }
@@ -410,139 +336,74 @@ function render() {
   document.getElementById('cluster-container').innerHTML = html;
 }
 
-// --- Kubernetes API: poll-based for reliability ---
-// Instead of fragile long-lived watch streams that break on buffering,
-// timeouts, and proxy issues, we poll every 2 seconds. For a dashboard
-// with <100 resources this is lightweight and rock-solid.
+// --- Diff and log events ---
+function diffAndLog(data) {
+  const nodeNames = new Set(data.nodes.map(n => n.name));
+  const podKeys = new Set(data.pods.map(p => `${p.namespace}/${p.name}`));
+  const epNames = new Set(data.endpoints.map(e => e.name));
 
-const POLL_INTERVAL = 2000;
-let previousNodeNames = new Set();
-let previousPodKeys = new Set();
-let previousEndpointNames = new Set();
+  if (connected) {
+    // Nodes
+    for (const n of data.nodes) {
+      if (!prevNodeNames.has(n.name)) logEvent('add', `Node ${n.name.split('.')[0]} (${n.instance}) joined`);
+    }
+    for (const name of prevNodeNames) {
+      if (!nodeNames.has(name)) logEvent('del', `Node ${name.split('.')[0]} removed`);
+    }
+    // Pods (inference only)
+    for (const p of data.pods) {
+      const key = `${p.namespace}/${p.name}`;
+      if (!prevPodKeys.has(key) && p.namespace === 'inference' && !isDaemonsetPod(p)) {
+        logEvent('add', `Pod ${shortName(p.name)} → ${p.node || 'pending'}`);
+      }
+    }
+    for (const key of prevPodKeys) {
+      if (!podKeys.has(key) && key.startsWith('inference/')) {
+        logEvent('del', `Pod ${shortName(key.split('/')[1])} removed`);
+      }
+    }
+    // Endpoints
+    for (const ep of data.endpoints) {
+      if (!prevEndpointNames.has(ep.name)) {
+        logEvent('add', `Model "${ep.name}" deployed → ${ep.modelStatus}`);
+      } else if (prevEndpointStatus[ep.name] !== ep.modelStatus) {
+        const cls = ep.ready === 'True' ? 'add' : 'mod';
+        logEvent(cls, `Model "${ep.name}" → ${ep.modelStatus}${ep.ready === 'True' ? ' ✓' : ''}`);
+      }
+    }
+    for (const name of prevEndpointNames) {
+      if (!epNames.has(name)) logEvent('del', `Model "${name}" removed`);
+    }
+  }
 
-async function fetchJSON(resource) {
-  const resp = await fetch(`${API_BASE}/${resource}`);
-  if (!resp.ok) return null;
-  return resp.json();
+  prevNodeNames = nodeNames;
+  prevPodKeys = podKeys;
+  prevEndpointNames = epNames;
+  prevEndpointStatus = {};
+  for (const ep of data.endpoints) prevEndpointStatus[ep.name] = ep.modelStatus;
 }
 
+// --- Poll loop ---
 async function poll() {
   try {
-    const [nodesData, podsData, epData] = await Promise.all([
-      fetchJSON('api/v1/nodes'),
-      fetchJSON('api/v1/pods'),
-      fetchJSON('apis/kro.run/v1alpha1/namespaces/inference/inferenceendpoints').catch(() => null),
-    ]);
-
-    if (!nodesData || !podsData) throw new Error('API unreachable');
-
-    // --- Diff nodes ---
-    const newNodes = {};
-    const newNodeNames = new Set();
-    for (const node of nodesData.items) {
-      const name = node.metadata.name;
-      newNodes[name] = node;
-      newNodeNames.add(name);
-    }
-    if (state.initialized) {
-      for (const name of newNodeNames) {
-        if (!previousNodeNames.has(name)) {
-          const node = newNodes[name];
-          logEvent('add', `Node ${getHostname(node)} (${getInstanceType(node)}) joined`);
-        }
-      }
-      for (const name of previousNodeNames) {
-        if (!newNodeNames.has(name)) {
-          logEvent('del', `Node ${name.split('.')[0]} removed`);
-        }
-      }
-    }
-    previousNodeNames = newNodeNames;
-    state.nodes = newNodes;
-
-    // --- Diff pods ---
-    const newPods = {};
-    const newPodKeys = new Set();
-    for (const pod of podsData.items) {
-      const key = `${pod.metadata.namespace}/${pod.metadata.name}`;
-      newPods[key] = pod;
-      newPodKeys.add(key);
-    }
-    if (state.initialized) {
-      for (const key of newPodKeys) {
-        if (!previousPodKeys.has(key)) {
-          const pod = newPods[key];
-          if (pod.metadata.namespace === 'inference' && !isDaemonsetPod(pod)) {
-            logEvent('add', `Pod ${shortName(pod.metadata.name)} → ${pod.spec.nodeName || 'pending'}`);
-          }
-        }
-      }
-      for (const key of previousPodKeys) {
-        if (!newPodKeys.has(key)) {
-          const [ns, name] = key.split('/');
-          if (ns === 'inference') {
-            logEvent('del', `Pod ${shortName(name)} removed`);
-          }
-        }
-      }
-    }
-    previousPodKeys = newPodKeys;
-    state.pods = newPods;
-
-    // --- Diff InferenceEndpoints ---
-    const newEndpoints = {};
-    const newEpNames = new Set();
-    if (epData && epData.items) {
-      for (const ep of epData.items) {
-        const name = ep.metadata.name;
-        newEndpoints[name] = ep;
-        newEpNames.add(name);
-      }
-    }
-    if (state.initialized) {
-      for (const name of newEpNames) {
-        if (!previousEndpointNames.has(name)) {
-          const status = newEndpoints[name].status?.modelStatus || 'Pending';
-          logEvent('add', `Model "${name}" deployed → ${status}`);
-        } else {
-          const prev = state.endpoints[name];
-          const curr = newEndpoints[name];
-          const prevStatus = prev?.status?.modelStatus;
-          const currStatus = curr?.status?.modelStatus;
-          if (prevStatus !== currStatus) {
-            const cls = curr?.status?.ready === 'True' ? 'add' : 'mod';
-            logEvent(cls, `Model "${name}" → ${currStatus}${curr?.status?.ready === 'True' ? ' ✓' : ''}`);
-          }
-        }
-      }
-      for (const name of previousEndpointNames) {
-        if (!newEpNames.has(name)) {
-          logEvent('del', `Model "${name}" removed`);
-        }
-      }
-    }
-    previousEndpointNames = newEpNames;
-    state.endpoints = newEndpoints;
-
-    // --- Render ---
-    if (!state.initialized) {
-      state.initialized = true;
+    const resp = await fetch('/data.json');
+    if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
+    const data = await resp.json();
+    diffAndLog(data);
+    render(data);
+    if (!connected) {
+      connected = true;
       logEvent('mod', 'Connected to cluster');
     }
     setConnection('connected', 'Connected — live');
-    render();
-
   } catch (e) {
-    if (!state.initialized) {
-      setConnection('connecting', 'Connecting to cluster...');
-    }
-    // Don't clear state on transient errors — keep showing last known good state
+    if (!connected) setConnection('connecting', 'Connecting to cluster...');
+    // Keep showing last state on error — never blank the dashboard
   }
 }
 
-// Start polling
 poll();
-setInterval(poll, POLL_INTERVAL);
+setInterval(poll, 2000);
 </script>
 </body>
 </html>

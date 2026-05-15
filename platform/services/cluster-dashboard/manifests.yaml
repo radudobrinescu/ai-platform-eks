@@ -12,10 +12,10 @@ metadata:
 rules:
   - apiGroups: [""]
     resources: ["nodes", "pods"]
-    verbs: ["get", "list", "watch"]
+    verbs: ["get", "list"]
   - apiGroups: ["kro.run"]
     resources: ["inferenceendpoints"]
-    verbs: ["get", "list", "watch"]
+    verbs: ["list"]
 ---
 apiVersion: rbac.authorization.k8s.io/v1
 kind: ClusterRoleBinding
@@ -33,14 +33,17 @@ roleRef:
 apiVersion: v1
 kind: ConfigMap
 metadata:
-  name: cluster-dashboard-proxy
+  name: cluster-dashboard-backend
   namespace: ai-platform
 data:
-  proxy.py: |
+  backend.py: |
     #!/usr/bin/env python3
-    """Serves static HTML and proxies /api/* to Kubernetes API with SA token auth.
-    Streams watch responses without buffering for real-time updates."""
-    import http.server, http.client, ssl, os, threading, select, socket
+    """Cluster dashboard backend.
+    - Polls Kubernetes API every 2s, builds a JSON snapshot of cluster state.
+    - Serves /data.json (the snapshot) and static HTML files.
+    - Browser only fetches /data.json — no streaming, no proxying, no auth in browser.
+    """
+    import http.server, http.client, ssl, os, json, threading, time
 
     PORT = 8080
     K8S_HOST = os.environ.get("KUBERNETES_SERVICE_HOST", "kubernetes.default.svc")
@@ -48,83 +51,127 @@ data:
     TOKEN_PATH = "/var/run/secrets/kubernetes.io/serviceaccount/token"
     CA_PATH = "/var/run/secrets/kubernetes.io/serviceaccount/ca.crt"
     HTML_DIR = "/html"
+    POLL_INTERVAL = 2
+
+    snapshot = {"nodes": [], "pods": [], "endpoints": [], "ts": 0}
+    snapshot_lock = threading.Lock()
 
     def get_token():
         with open(TOKEN_PATH) as f:
             return f.read().strip()
+
+    def k8s_get(path):
+        try:
+            ctx = ssl.create_default_context(cafile=CA_PATH)
+            conn = http.client.HTTPSConnection(K8S_HOST, K8S_PORT, context=ctx, timeout=10)
+            conn.request("GET", path, headers={
+                "Authorization": f"Bearer {get_token()}",
+                "Accept": "application/json",
+            })
+            resp = conn.getresponse()
+            if resp.status == 200:
+                return json.loads(resp.read())
+            return None
+        except Exception:
+            return None
+
+    def build_snapshot():
+        nodes_data = k8s_get("/api/v1/nodes")
+        pods_data = k8s_get("/api/v1/pods")
+        ep_data = k8s_get("/apis/kro.run/v1alpha1/namespaces/inference/inferenceendpoints")
+
+        nodes = []
+        if nodes_data:
+            for n in nodes_data.get("items", []):
+                labels = n.get("metadata", {}).get("labels", {})
+                conditions = n.get("status", {}).get("conditions", [])
+                ready = any(c.get("type") == "Ready" and c.get("status") == "True" for c in conditions)
+                if not ready:
+                    continue
+                allocatable = n.get("status", {}).get("allocatable", {})
+                nodes.append({
+                    "name": n["metadata"]["name"],
+                    "instance": labels.get("node.kubernetes.io/instance-type", "unknown"),
+                    "pool": labels.get("karpenter.sh/nodepool", "__mng__" if labels.get("eks.amazonaws.com/nodegroup") else "__mng__"),
+                    "zone": labels.get("topology.kubernetes.io/zone", ""),
+                    "capacity": labels.get("karpenter.sh/capacity-type", labels.get("eks.amazonaws.com/capacityType", "on-demand")),
+                    "gpu": int(allocatable.get("nvidia.com/gpu", "0")),
+                    "created": n["metadata"].get("creationTimestamp", ""),
+                })
+
+        pods = []
+        if pods_data:
+            for p in pods_data.get("items", []):
+                phase = p.get("status", {}).get("phase", "")
+                if phase not in ("Running", "Pending"):
+                    continue
+                containers = p.get("spec", {}).get("containers", [])
+                gpu_req = sum(int(c.get("resources", {}).get("requests", {}).get("nvidia.com/gpu", "0")) for c in containers)
+                pods.append({
+                    "name": p["metadata"]["name"],
+                    "namespace": p["metadata"]["namespace"],
+                    "node": p.get("spec", {}).get("nodeName", ""),
+                    "phase": phase,
+                    "gpu": gpu_req,
+                    "created": p["metadata"].get("creationTimestamp", ""),
+                })
+
+        endpoints = []
+        if ep_data:
+            for ep in ep_data.get("items", []):
+                status = ep.get("status", {})
+                spec = ep.get("spec", {})
+                endpoints.append({
+                    "name": ep["metadata"]["name"],
+                    "model": spec.get("model", ""),
+                    "shared": spec.get("shared", False),
+                    "modelStatus": status.get("modelStatus", "Pending"),
+                    "ready": status.get("ready", "False"),
+                    "message": status.get("message", ""),
+                    "created": ep["metadata"].get("creationTimestamp", ""),
+                })
+
+        return {"nodes": nodes, "pods": pods, "endpoints": endpoints, "ts": time.time()}
+
+    def poll_loop():
+        global snapshot
+        while True:
+            try:
+                new_snapshot = build_snapshot()
+                with snapshot_lock:
+                    snapshot = new_snapshot
+            except Exception:
+                pass
+            time.sleep(POLL_INTERVAL)
 
     class Handler(http.server.SimpleHTTPRequestHandler):
         def __init__(self, *args, **kwargs):
             super().__init__(*args, directory=HTML_DIR, **kwargs)
 
         def do_GET(self):
-            if self.path.startswith("/api/") or self.path.startswith("/apis/"):
-                self._proxy()
+            if self.path == "/data.json":
+                with snapshot_lock:
+                    data = json.dumps(snapshot)
+                self.send_response(200)
+                self.send_header("Content-Type", "application/json")
+                self.send_header("Cache-Control", "no-cache")
+                self.send_header("Content-Length", str(len(data)))
+                self.end_headers()
+                self.wfile.write(data.encode())
             else:
                 super().do_GET()
-
-        def _proxy(self):
-            try:
-                ctx = ssl.create_default_context(cafile=CA_PATH)
-                conn = http.client.HTTPSConnection(K8S_HOST, K8S_PORT, context=ctx, timeout=600)
-                conn.request("GET", self.path, headers={
-                    "Authorization": f"Bearer {get_token()}",
-                    "Accept": "application/json",
-                })
-                resp = conn.getresponse()
-
-                self.send_response(resp.status)
-                self.send_header("Content-Type", resp.getheader("Content-Type", "application/json"))
-                self.send_header("Cache-Control", "no-cache")
-                self.send_header("X-Accel-Buffering", "no")
-                self.end_headers()
-
-                # Stream response — read 1 byte at a time from the socket to
-                # avoid http.client's internal buffering on chunked responses.
-                # This ensures watch events are forwarded immediately.
-                raw_sock = resp.fp.raw._sock if hasattr(resp.fp, 'raw') else resp.fp
-                if hasattr(raw_sock, '_sock'):
-                    raw_sock = raw_sock._sock
-
-                # Fallback: use resp.read with small amt for compatibility
-                while True:
-                    chunk = resp.read(1)
-                    if not chunk:
-                        break
-                    self.wfile.write(chunk)
-                    # Flush on newline (end of JSON event line)
-                    if chunk == b'\n':
-                        self.wfile.flush()
-
-                conn.close()
-            except (BrokenPipeError, ConnectionResetError):
-                pass
-            except Exception as e:
-                try:
-                    self.send_response(502)
-                    self.end_headers()
-                    self.wfile.write(f'{{"error":"{e}"}}'.encode())
-                except Exception:
-                    pass
 
         def log_message(self, format, *args):
             pass
 
-    class ThreadedServer(http.server.HTTPServer):
-        def process_request(self, req, addr):
-            t = threading.Thread(target=self._handle, args=(req, addr), daemon=True)
-            t.start()
-        def _handle(self, req, addr):
-            try:
-                self.finish_request(req, addr)
-            except Exception:
-                pass
-            finally:
-                self.shutdown_request(req)
-
     if __name__ == "__main__":
-        print(f"Dashboard proxy on :{PORT}")
-        ThreadedServer(("", PORT), Handler).serve_forever()
+        # Start poller in background
+        t = threading.Thread(target=poll_loop, daemon=True)
+        t.start()
+        # Wait for first snapshot
+        time.sleep(3)
+        print(f"Dashboard backend on :{PORT}")
+        http.server.HTTPServer(("", PORT), Handler).serve_forever()
 ---
 apiVersion: apps/v1
 kind: Deployment
@@ -146,13 +193,13 @@ spec:
       serviceAccountName: cluster-dashboard
       automountServiceAccountToken: true
       containers:
-        - name: proxy
+        - name: backend
           image: python:3.12-alpine
-          command: ["python3", "/app/proxy.py"]
+          command: ["python3", "/app/backend.py"]
           ports:
             - containerPort: 8080
           volumeMounts:
-            - name: proxy-script
+            - name: backend-script
               mountPath: /app
             - name: html
               mountPath: /html
@@ -165,18 +212,18 @@ spec:
               memory: "128Mi"
           livenessProbe:
             httpGet:
-              path: /
+              path: /data.json
               port: 8080
             initialDelaySeconds: 5
           readinessProbe:
             httpGet:
-              path: /
+              path: /data.json
               port: 8080
-            initialDelaySeconds: 3
+            initialDelaySeconds: 5
       volumes:
-        - name: proxy-script
+        - name: backend-script
           configMap:
-            name: cluster-dashboard-proxy
+            name: cluster-dashboard-backend
         - name: html
           configMap:
             name: cluster-dashboard-html
@@ -203,7 +250,7 @@ metadata:
     alb.ingress.kubernetes.io/scheme: internet-facing
     alb.ingress.kubernetes.io/target-type: ip
     alb.ingress.kubernetes.io/listen-ports: '[{"HTTP": 9090}]'
-    alb.ingress.kubernetes.io/healthcheck-path: /
+    alb.ingress.kubernetes.io/healthcheck-path: /data.json
     alb.ingress.kubernetes.io/inbound-cidrs: 82.76.116.166/32
 spec:
   ingressClassName: alb
