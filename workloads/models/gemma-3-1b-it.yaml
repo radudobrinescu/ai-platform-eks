@@ -1,0 +1,14 @@
+apiVersion: kro.run/v1alpha1
+kind: InferenceEndpoint
+metadata:
+  name: gemma-3-1b-it
+  namespace: inference
+spec:
+  model: "google/gemma-3-1b-it"
+  shared: true
+  gpuCount: 1
+  maxModelLen: 4096
+  minVramPerGpuGiB: 9
+  workerMemory: "10Gi"
+  minReplicas: 1
+  maxReplicas: 2
