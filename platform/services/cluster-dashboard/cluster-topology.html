@@ -154,20 +154,20 @@ const NS_COLORS = {
 };
 const POOL_CONFIG = {
   '__mng__': { class: 'mng', label: 'MNG', name: 'CriticalAddons', desc: 'Managed Node Group · ARM Graviton · Always-on' },
-  'default': { class: 'default', label: 'Karpenter', name: 'default', desc: 'Spot · x86 compute (c/m/r) · Platform services' },
-  'gpu-shared': { class: 'gpu-shared', label: 'Karpenter', name: 'gpu-shared', desc: 'Spot · NVIDIA L4 · Time-sliced 4x · EBS Snapshot' },
+  'default': { class: 'default', label: 'Karpenter', name: 'default', desc: 'Spot/On-demand · x86 compute (c/m/r) · Platform services' },
+  'gpu-shared': { class: 'gpu-shared', label: 'Karpenter', name: 'gpu-shared', desc: 'Spot/On-demand · NVIDIA L4 · Time-sliced 4x · EBS Snapshot' },
   'gpu-inference': { class: 'gpu-inference', label: 'Karpenter', name: 'gpu-inference', desc: 'Spot/On-demand · Dedicated GPU · Scales to zero' },
 };
 const DAEMONSETS = ['aws-node', 'kube-proxy', 'ebs-csi-node', 'eks-pod-identity-agent', 'aws-for-fluent-bit', 'cloudwatch-agent', 'fluent-bit', 'prometheus-node-exporter', 'nfd-worker'];
 
-let state = { nodes: {}, pods: {}, endpoints: {}, prevPodsByNode: {} };
+let state = { nodes: {}, pods: {}, endpoints: {}, initialized: false, reconnecting: false };
 let eventLog = [];
 
 function logEvent(type, msg) {
   const time = new Date().toLocaleTimeString('en-GB', {hour12: false});
   const cls = type === 'add' ? 'event-add' : type === 'del' ? 'event-del' : 'event-mod';
   eventLog.unshift({time, cls, msg});
-  if (eventLog.length > 50) eventLog.pop();
+  if (eventLog.length > 30) eventLog.pop();
   renderEventLog();
 }
 
@@ -281,7 +281,7 @@ function render() {
     html += `</div>`;
 
     if (poolNodes.length === 0) {
-      html += `<div class="empty-state">No nodes provisioned — scales from zero when needed</div>`;
+      html += `<div class="empty-state">No nodes — scales from zero when workloads arrive</div>`;
     } else {
       html += `<div class="nodes">`;
       for (const node of poolNodes) {
@@ -360,15 +360,17 @@ function render() {
     html += `</div>`;
   }
 
-  // Render InferenceEndpoints status panel
+  // Render InferenceEndpoints status panel (always visible)
   const endpoints = Object.values(state.endpoints);
-  if (endpoints.length > 0) {
-    html += `<div class="node-group" style="border-color:#6366f1;">`;
-    html += `<div class="node-group-header" style="background:#eef2ff;border-bottom:1px solid #c7d2fe;color:#4338ca;">`;
-    html += `<span class="badge" style="background:#4338ca;color:#fff;">KRO</span> InferenceEndpoints`;
-    html += `<span class="count">${endpoints.length} model${endpoints.length !== 1 ? 's' : ''}</span>`;
-    html += `<span class="desc">Custom Resources — model deployment status</span>`;
-    html += `</div>`;
+  html += `<div class="node-group" style="border-color:#6366f1;">`;
+  html += `<div class="node-group-header" style="background:#eef2ff;border-bottom:1px solid #c7d2fe;color:#4338ca;">`;
+  html += `<span class="badge" style="background:#4338ca;color:#fff;">KRO</span> InferenceEndpoints`;
+  html += `<span class="count">${endpoints.length} model${endpoints.length !== 1 ? 's' : ''}</span>`;
+  html += `<span class="desc">Custom Resources — model deployment status</span>`;
+  html += `</div>`;
+  if (endpoints.length === 0) {
+    html += `<div class="empty-state">No models deployed — commit a YAML to workloads/models/ to deploy</div>`;
+  } else {
     html += `<div style="display:flex;flex-wrap:wrap;gap:0;border-top:1px solid #e2e8f0;">`;
     for (const ep of endpoints) {
       const name = ep.metadata?.name || '?';
@@ -401,168 +403,146 @@ function render() {
       html += `</div>`;
       html += `</div>`;
     }
-    html += `</div></div>`;
+    html += `</div>`;
   }
+  html += `</div>`;
 
   document.getElementById('cluster-container').innerHTML = html;
-  state.prevPodsByNode = podsByNode;
 }
 
-// --- Kubernetes API Watch ---
+// --- Kubernetes API: poll-based for reliability ---
+// Instead of fragile long-lived watch streams that break on buffering,
+// timeouts, and proxy issues, we poll every 2 seconds. For a dashboard
+// with <100 resources this is lightweight and rock-solid.
 
-async function fetchInitial(resource, handler) {
+const POLL_INTERVAL = 2000;
+let previousNodeNames = new Set();
+let previousPodKeys = new Set();
+let previousEndpointNames = new Set();
+
+async function fetchJSON(resource) {
   const resp = await fetch(`${API_BASE}/${resource}`);
-  if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
-  const data = await resp.json();
-  const rv = data.metadata.resourceVersion;
-  for (const item of data.items) handler('ADDED', item);
-  return rv;
+  if (!resp.ok) return null;
+  return resp.json();
 }
 
-async function watchResource(resource, handler, resourceVersion) {
-  const url = `${API_BASE}/${resource}?watch=1&resourceVersion=${resourceVersion}&timeoutSeconds=300`;
-  const resp = await fetch(url);
-  if (!resp.ok) throw new Error(`Watch HTTP ${resp.status}`);
-  const reader = resp.body.getReader();
-  const decoder = new TextDecoder();
-  let buffer = '';
-
-  while (true) {
-    const {done, value} = await reader.read();
-    if (done) break;
-    buffer += decoder.decode(value, {stream: true});
-    const lines = buffer.split('\n');
-    buffer = lines.pop();
-    for (const line of lines) {
-      if (!line.trim()) continue;
-      try {
-        const event = JSON.parse(line);
-        if (event.type === 'ERROR') {
-          throw new Error(`Watch error: ${event.object?.message || 'unknown'}`);
-        }
-        handler(event.type, event.object);
-      } catch(e) {
-        if (e.message?.includes('Watch error')) throw e;
-      }
-    }
-  }
-  throw new Error('Watch stream ended');
-}
-
-function handleNode(type, node) {
-  const name = node.metadata.name;
-  if (type === 'ADDED' || type === 'MODIFIED') {
-    const isNew = !state.nodes[name];
-    state.nodes[name] = node;
-    if (isNew && state.initialized) logEvent('add', `Node ${getHostname(node)} (${getInstanceType(node)}) joined`);
-  } else if (type === 'DELETED') {
-    delete state.nodes[name];
-    logEvent('del', `Node ${getHostname(node)} removed`);
-  }
-  if (state.initialized) render();
-}
-
-function handlePod(type, pod) {
-  const key = `${pod.metadata.namespace}/${pod.metadata.name}`;
-  if (type === 'ADDED' || type === 'MODIFIED') {
-    const isNew = !state.pods[key];
-    state.pods[key] = pod;
-    if (isNew && state.initialized && pod.metadata.namespace === 'inference' && !isDaemonsetPod(pod)) {
-      logEvent('add', `Pod ${shortName(pod.metadata.name)} scheduled → ${pod.spec.nodeName || 'pending'}`);
-    }
-  } else if (type === 'DELETED') {
-    delete state.pods[key];
-    if (state.initialized && pod.metadata.namespace === 'inference') {
-      logEvent('del', `Pod ${shortName(pod.metadata.name)} removed`);
-    }
-  }
-  if (state.initialized) render();
-}
-
-function handleEndpoint(type, ep) {
-  const name = ep.metadata?.name;
-  if (type === 'ADDED' || type === 'MODIFIED') {
-    if (ep.metadata?.deletionTimestamp) {
-      delete state.endpoints[name];
-      if (state.initialized) logEvent('del', `Model "${name}" removed`);
-    } else {
-      const prev = state.endpoints[name];
-      state.endpoints[name] = ep;
-      const status = ep.status?.modelStatus || 'Pending';
-      const ready = ep.status?.ready;
-      if (state.initialized) {
-        if (!prev) {
-          logEvent('add', `Model "${name}" created → ${status}`);
-        } else if (prev.status?.modelStatus !== status) {
-          const cls = ready === 'True' ? 'add' : 'mod';
-          logEvent(cls, `Model "${name}" → ${status}${ready === 'True' ? ' ✓' : ''}`);
-        }
-      }
-    }
-  } else if (type === 'DELETED') {
-    delete state.endpoints[name];
-    if (state.initialized) logEvent('del', `Model "${name}" removed`);
-  }
-  if (state.initialized) render();
-}
-
-
-async function start() {
+async function poll() {
   try {
-    setConnection('connecting', 'Connecting to Kubernetes API...');
+    const [nodesData, podsData, epData] = await Promise.all([
+      fetchJSON('api/v1/nodes'),
+      fetchJSON('api/v1/pods'),
+      fetchJSON('apis/kro.run/v1alpha1/namespaces/inference/inferenceendpoints').catch(() => null),
+    ]);
 
-    // Reset state on reconnect to clear stale entries
-    state.nodes = {};
-    state.pods = {};
-    state.endpoints = {};
+    if (!nodesData || !podsData) throw new Error('API unreachable');
 
-    const nodeRV = await fetchInitial('api/v1/nodes', handleNode);
-    const podRV = await fetchInitial('api/v1/pods', handlePod);
+    // --- Diff nodes ---
+    const newNodes = {};
+    const newNodeNames = new Set();
+    for (const node of nodesData.items) {
+      const name = node.metadata.name;
+      newNodes[name] = node;
+      newNodeNames.add(name);
+    }
+    if (state.initialized) {
+      for (const name of newNodeNames) {
+        if (!previousNodeNames.has(name)) {
+          const node = newNodes[name];
+          logEvent('add', `Node ${getHostname(node)} (${getInstanceType(node)}) joined`);
+        }
+      }
+      for (const name of previousNodeNames) {
+        if (!newNodeNames.has(name)) {
+          logEvent('del', `Node ${name.split('.')[0]} removed`);
+        }
+      }
+    }
+    previousNodeNames = newNodeNames;
+    state.nodes = newNodes;
 
-    // InferenceEndpoints (CRD) — may not exist, handle gracefully
-    let epRV = null;
-    try {
-      epRV = await fetchInitial('apis/kro.run/v1alpha1/namespaces/inference/inferenceendpoints', handleEndpoint);
-    } catch(e) { /* CRD not installed or no permissions */ }
+    // --- Diff pods ---
+    const newPods = {};
+    const newPodKeys = new Set();
+    for (const pod of podsData.items) {
+      const key = `${pod.metadata.namespace}/${pod.metadata.name}`;
+      newPods[key] = pod;
+      newPodKeys.add(key);
+    }
+    if (state.initialized) {
+      for (const key of newPodKeys) {
+        if (!previousPodKeys.has(key)) {
+          const pod = newPods[key];
+          if (pod.metadata.namespace === 'inference' && !isDaemonsetPod(pod)) {
+            logEvent('add', `Pod ${shortName(pod.metadata.name)} → ${pod.spec.nodeName || 'pending'}`);
+          }
+        }
+      }
+      for (const key of previousPodKeys) {
+        if (!newPodKeys.has(key)) {
+          const [ns, name] = key.split('/');
+          if (ns === 'inference') {
+            logEvent('del', `Pod ${shortName(name)} removed`);
+          }
+        }
+      }
+    }
+    previousPodKeys = newPodKeys;
+    state.pods = newPods;
 
+    // --- Diff InferenceEndpoints ---
+    const newEndpoints = {};
+    const newEpNames = new Set();
+    if (epData && epData.items) {
+      for (const ep of epData.items) {
+        const name = ep.metadata.name;
+        newEndpoints[name] = ep;
+        newEpNames.add(name);
+      }
+    }
+    if (state.initialized) {
+      for (const name of newEpNames) {
+        if (!previousEndpointNames.has(name)) {
+          const status = newEndpoints[name].status?.modelStatus || 'Pending';
+          logEvent('add', `Model "${name}" deployed → ${status}`);
+        } else {
+          const prev = state.endpoints[name];
+          const curr = newEndpoints[name];
+          const prevStatus = prev?.status?.modelStatus;
+          const currStatus = curr?.status?.modelStatus;
+          if (prevStatus !== currStatus) {
+            const cls = curr?.status?.ready === 'True' ? 'add' : 'mod';
+            logEvent(cls, `Model "${name}" → ${currStatus}${curr?.status?.ready === 'True' ? ' ✓' : ''}`);
+          }
+        }
+      }
+      for (const name of previousEndpointNames) {
+        if (!newEpNames.has(name)) {
+          logEvent('del', `Model "${name}" removed`);
+        }
+      }
+    }
+    previousEndpointNames = newEpNames;
+    state.endpoints = newEndpoints;
+
+    // --- Render ---
     if (!state.initialized) {
       state.initialized = true;
-      logEvent('mod', 'Connected to Kubernetes API, watching for events');
+      logEvent('mod', 'Connected to cluster');
     }
+    setConnection('connected', 'Connected — live');
     render();
-    setConnection('connected', `Connected — watching for changes`);
 
-    // Watch in parallel
-    const watches = [
-      watchResource('api/v1/nodes', handleNode, nodeRV).catch(reconnect),
-      watchResource('api/v1/pods', handlePod, podRV).catch(reconnect),
-    ];
-    if (epRV) {
-      watches.push(
-        watchResource('apis/kro.run/v1alpha1/namespaces/inference/inferenceendpoints', handleEndpoint, epRV).catch(reconnect)
-      );
-    }
-    Promise.all(watches);
   } catch (e) {
     if (!state.initialized) {
       setConnection('connecting', 'Connecting to cluster...');
     }
-    setTimeout(start, 1000);
+    // Don't clear state on transient errors — keep showing last known good state
   }
 }
 
-function reconnect(e) {
-  // Always silently reconnect — never show disconnect state to avoid demo embarrassment
-  setTimeout(start, 500);
-}
-
-start();
-
-// Tick the deploy timer every second when models are not yet ready
-setInterval(() => {
-  const hasDeploying = Object.values(state.endpoints).some(ep => ep.status?.ready !== 'True');
-  if (hasDeploying && state.initialized) render();
-}, 1000);
+// Start polling
+poll();
+setInterval(poll, POLL_INTERVAL);
 </script>
 </body>
 </html>
