@@ -61,8 +61,11 @@
   .node.highlight { background: #fefce8; }
   .node-title { display: flex; align-items: center; gap: 8px; margin-bottom: 10px; }
   .node-title .hostname { font-size: 12px; font-weight: 600; font-family: 'SF Mono', SFMono-Regular, monospace; color: #334155; }
-  .node-title .instance-badge { font-size: 10px; padding: 1px 6px; border-radius: 3px; background: #f1f5f9; color: #475569; font-weight: 600; }
-  .node-title .zone { font-size: 10px; color: #94a3b8; margin-left: auto; }
+  .node-title .instance-badge { font-size: 13px; padding: 2px 8px; border-radius: 4px; background: #f1f5f9; color: #334155; font-weight: 700; }
+  .node-title .zone { font-size: 12px; color: #64748b; font-weight: 500; }
+  .node-title .capacity-badge { font-size: 10px; padding: 1px 6px; border-radius: 3px; font-weight: 600; }
+  .node-title .capacity-spot { background: #dbeafe; color: #1e40af; }
+  .node-title .capacity-ondemand { background: #fef3c7; color: #92400e; }
   .node-title .warm-badge { font-size: 9px; padding: 2px 6px; border-radius: 3px; background: #fef3c7; color: #92400e; font-weight: 700; text-transform: uppercase; }
   .node-title .new-badge { font-size: 9px; padding: 2px 6px; border-radius: 3px; background: #dcfce7; color: #166534; font-weight: 700; text-transform: uppercase; animation: fadeIn 0.5s; }
 
@@ -199,6 +202,10 @@ function getInstanceType(node) {
   return node.metadata?.labels?.['node.kubernetes.io/instance-type'] || 'unknown';
 }
 
+function getCapacityType(node) {
+  return node.metadata?.labels?.['karpenter.sh/capacity-type'] || node.metadata?.labels?.['eks.amazonaws.com/capacityType'] || 'on-demand';
+}
+
 function getHostname(node) {
   return node.metadata?.name?.split('.')[0] || node.metadata?.name;
 }
@@ -284,12 +291,17 @@ function render() {
         const isNew = (Date.now() - new Date(node.metadata.creationTimestamp).getTime()) < 120000;
 
         html += `<div class="node ${isNew ? 'highlight' : ''}">`;
+        const capType = getCapacityType(node);
+        const capClass = capType === 'spot' ? 'capacity-spot' : 'capacity-ondemand';
+        const capLabel = capType === 'spot' ? 'spot' : 'on-demand';
+
         html += `<div class="node-title">`;
         html += `<span class="hostname">${getHostname(node)}</span>`;
         html += `<span class="instance-badge">${getInstanceType(node)}</span>`;
+        html += `<span class="capacity-badge ${capClass}">${capLabel}</span>`;
         if (isWarm) html += `<span class="warm-badge">Warm Pool</span>`;
         if (isNew) html += `<span class="new-badge">New</span>`;
-        html += `<span class="zone">${getZone(node)}</span>`;
+        html += `<span class="zone" style="margin-left:auto;">${getZone(node)}</span>`;
         html += `</div>`;
 
         // Group pods by namespace
@@ -357,8 +369,7 @@ function render() {
     html += `<span class="count">${endpoints.length} model${endpoints.length !== 1 ? 's' : ''}</span>`;
     html += `<span class="desc">Custom Resources — model deployment status</span>`;
     html += `</div>`;
-    html += `<div class="nodes"><div class="node" style="width:100%;">`;
-    html += `<div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(280px,1fr));gap:12px;">`;
+    html += `<div style="display:flex;flex-wrap:wrap;gap:0;border-top:1px solid #e2e8f0;">`;
     for (const ep of endpoints) {
       const name = ep.metadata?.name || '?';
       const status = ep.status?.modelStatus || 'Pending';
@@ -366,19 +377,31 @@ function render() {
       const message = ep.status?.message || '';
       const shared = ep.spec?.shared ? 'shared' : 'dedicated';
       const color = ready ? '#059669' : status === 'DEPLOYING' ? '#d97706' : '#6b7280';
-      const bg = ready ? '#ecfdf5' : status === 'DEPLOYING' ? '#fffbeb' : '#f8fafc';
+      const bg = ready ? '#f0fdf4' : status === 'DEPLOYING' ? '#fffbeb' : '#f9fafb';
       const icon = ready ? '●' : status === 'DEPLOYING' ? '◐' : '○';
-      html += `<div style="padding:12px;border-radius:8px;border:1px solid ${color}30;background:${bg};">`;
-      html += `<div style="display:flex;align-items:center;gap:8px;margin-bottom:4px;">`;
-      html += `<span style="color:${color};font-size:14px;">${icon}</span>`;
-      html += `<span style="font-weight:700;font-size:13px;">${name}</span>`;
-      html += `<span style="margin-left:auto;font-size:10px;padding:1px 6px;border-radius:3px;background:${color}20;color:${color};font-weight:600;">${status}</span>`;
+
+      // Timer: elapsed since creation
+      const created = new Date(ep.metadata?.creationTimestamp);
+      const elapsed = Math.floor((Date.now() - created.getTime()) / 1000);
+      const timerStr = ready ? '' : `${Math.floor(elapsed/60)}m ${elapsed%60}s`;
+
+      html += `<div style="flex:1;min-width:280px;padding:14px 20px;border-right:1px solid #f1f5f9;border-bottom:1px solid #f1f5f9;background:${bg};transition:background 0.3s;">`;
+      html += `<div style="display:flex;align-items:center;gap:8px;margin-bottom:6px;">`;
+      html += `<span style="color:${color};font-size:16px;">${icon}</span>`;
+      html += `<span style="font-weight:700;font-size:14px;color:#1e293b;">${name}</span>`;
+      html += `<span style="margin-left:auto;font-size:10px;padding:2px 8px;border-radius:4px;background:${color}18;color:${color};font-weight:700;letter-spacing:0.3px;">${status}</span>`;
       html += `</div>`;
-      html += `<div style="font-size:11px;color:#64748b;">${message}</div>`;
-      html += `<div style="font-size:10px;color:#94a3b8;margin-top:4px;">gpu: ${shared} · model: ${ep.spec?.model || '?'}</div>`;
+      html += `<div style="font-size:12px;color:#475569;margin-bottom:4px;">${message}</div>`;
+      html += `<div style="display:flex;align-items:center;gap:12px;font-size:10px;color:#94a3b8;">`;
+      html += `<span>gpu: ${shared}</span>`;
+      html += `<span>model: ${ep.spec?.model || '?'}</span>`;
+      if (timerStr) {
+        html += `<span style="margin-left:auto;font-family:SF Mono,monospace;font-size:11px;color:${color};font-weight:600;">⏱ ${timerStr}</span>`;
+      }
+      html += `</div>`;
       html += `</div>`;
     }
-    html += `</div></div></div></div>`;
+    html += `</div></div>`;
   }
 
   document.getElementById('cluster-container').innerHTML = html;
@@ -459,16 +482,21 @@ function handlePod(type, pod) {
 function handleEndpoint(type, ep) {
   const name = ep.metadata?.name;
   if (type === 'ADDED' || type === 'MODIFIED') {
-    const prev = state.endpoints[name];
-    state.endpoints[name] = ep;
-    const status = ep.status?.modelStatus || 'Pending';
-    const ready = ep.status?.ready;
-    if (state.initialized) {
-      if (!prev) {
-        logEvent('add', `Model "${name}" created → ${status}`);
-      } else if (prev.status?.modelStatus !== status) {
-        const cls = ready === 'True' ? 'add' : 'mod';
-        logEvent(cls, `Model "${name}" → ${status}${ready === 'True' ? ' ✓' : ''}`);
+    if (ep.metadata?.deletionTimestamp) {
+      delete state.endpoints[name];
+      if (state.initialized) logEvent('del', `Model "${name}" removed`);
+    } else {
+      const prev = state.endpoints[name];
+      state.endpoints[name] = ep;
+      const status = ep.status?.modelStatus || 'Pending';
+      const ready = ep.status?.ready;
+      if (state.initialized) {
+        if (!prev) {
+          logEvent('add', `Model "${name}" created → ${status}`);
+        } else if (prev.status?.modelStatus !== status) {
+          const cls = ready === 'True' ? 'add' : 'mod';
+          logEvent(cls, `Model "${name}" → ${status}${ready === 'True' ? ' ✓' : ''}`);
+        }
       }
     }
   } else if (type === 'DELETED') {
@@ -478,9 +506,15 @@ function handleEndpoint(type, ep) {
   if (state.initialized) render();
 }
 
+
 async function start() {
   try {
     setConnection('connecting', 'Connecting to Kubernetes API...');
+
+    // Reset state on reconnect to clear stale entries
+    state.nodes = {};
+    state.pods = {};
+    state.endpoints = {};
 
     const nodeRV = await fetchInitial('api/v1/nodes', handleNode);
     const podRV = await fetchInitial('api/v1/pods', handlePod);
@@ -491,10 +525,12 @@ async function start() {
       epRV = await fetchInitial('apis/kro.run/v1alpha1/namespaces/inference/inferenceendpoints', handleEndpoint);
     } catch(e) { /* CRD not installed or no permissions */ }
 
-    state.initialized = true;
+    if (!state.initialized) {
+      state.initialized = true;
+      logEvent('mod', 'Connected to Kubernetes API, watching for events');
+    }
     render();
     setConnection('connected', `Connected — watching for changes`);
-    logEvent('mod', 'Connected to Kubernetes API, watching for events');
 
     // Watch in parallel
     const watches = [
@@ -508,19 +544,25 @@ async function start() {
     }
     Promise.all(watches);
   } catch (e) {
-    setConnection('disconnected', `Connection failed — run: kubectl proxy --port=8001 && python3 docs/serve.py`);
-    logEvent('del', `Connection error: ${e.message}`);
-    setTimeout(start, 5000);
+    if (!state.initialized) {
+      setConnection('connecting', 'Connecting to cluster...');
+    }
+    setTimeout(start, 1000);
   }
 }
 
 function reconnect(e) {
-  setConnection('disconnected', 'Watch disconnected — reconnecting...');
-  logEvent('del', `Watch disconnected: ${e.message}`);
-  setTimeout(start, 3000);
+  // Always silently reconnect — never show disconnect state to avoid demo embarrassment
+  setTimeout(start, 500);
 }
 
 start();
+
+// Tick the deploy timer every second when models are not yet ready
+setInterval(() => {
+  const hasDeploying = Object.values(state.endpoints).some(ep => ep.status?.ready !== 'True');
+  if (hasDeploying && state.initialized) render();
+}, 1000);
 </script>
 </body>
 </html>

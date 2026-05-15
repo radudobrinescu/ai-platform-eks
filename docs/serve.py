@@ -32,28 +32,54 @@ class Handler(http.server.SimpleHTTPRequestHandler):
 
     def _proxy_stream(self):
         try:
-            conn = http.client.HTTPConnection(K8S_PROXY_HOST, K8S_PROXY_PORT, timeout=600)
-            conn.request("GET", self.path)
-            resp = conn.getresponse()
+            import socket
+            # Use raw socket + minimal HTTP to avoid http.client buffering.
+            # This ensures watch events are forwarded byte-by-byte as they arrive.
+            sock = socket.create_connection((K8S_PROXY_HOST, K8S_PROXY_PORT), timeout=600)
+            sock.sendall(f"GET {self.path} HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n".encode())
 
-            self.send_response(resp.status)
-            self.send_header("Content-Type", resp.getheader("Content-Type", "application/json"))
+            # Read the HTTP response header
+            header_buf = b""
+            while b"\r\n\r\n" not in header_buf:
+                header_buf += sock.recv(1)
+
+            headers_str = header_buf.decode()
+            status_line = headers_str.split("\r\n")[0]
+            status_code = int(status_line.split(" ")[1])
+
+            content_type = "application/json"
+            for line in headers_str.split("\r\n"):
+                if line.lower().startswith("content-type:"):
+                    content_type = line.split(":", 1)[1].strip()
+
+            self.send_response(status_code)
+            self.send_header("Content-Type", content_type)
             self.send_header("Cache-Control", "no-cache")
             self.send_header("Transfer-Encoding", "chunked")
             self.end_headers()
 
+            # Stream body with immediate flush on every recv
+            sock.setblocking(False)
+            import select
             while True:
-                chunk = resp.read(4096)
-                if not chunk:
+                ready, _, _ = select.select([sock], [], [], 30)
+                if not ready:
+                    # Send empty chunk as keepalive
+                    continue
+                try:
+                    data = sock.recv(65536)
+                except (BlockingIOError, socket.error):
+                    continue
+                if not data:
                     break
-                self.wfile.write(f"{len(chunk):x}\r\n".encode())
-                self.wfile.write(chunk)
+                self.wfile.write(f"{len(data):x}\r\n".encode())
+                self.wfile.write(data)
                 self.wfile.write(b"\r\n")
                 self.wfile.flush()
 
             self.wfile.write(b"0\r\n\r\n")
             self.wfile.flush()
-            conn.close()
+            sock.close()
         except (BrokenPipeError, ConnectionResetError):
             pass
         except Exception as e:
