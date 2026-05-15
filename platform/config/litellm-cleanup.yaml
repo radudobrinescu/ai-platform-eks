@@ -1,0 +1,105 @@
+---
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: litellm-model-cleanup
+  namespace: ai-platform
+spec:
+  schedule: "* * * * *"
+  concurrencyPolicy: Forbid
+  successfulJobsHistoryLimit: 1
+  failedJobsHistoryLimit: 1
+  jobTemplate:
+    spec:
+      ttlSecondsAfterFinished: 60
+      template:
+        spec:
+          restartPolicy: Never
+          serviceAccountName: litellm-cleanup
+          containers:
+            - name: cleanup
+              image: curlimages/curl:8.12.1
+              command: ["sh", "-c"]
+              args:
+                - |
+                  set -e
+                  LITELLM="http://litellm.ai-platform.svc.cluster.local:4000"
+                  K8S="https://kubernetes.default.svc"
+                  SA_TOKEN=$(cat /var/run/secrets/kubernetes.io/serviceaccount/token)
+                  CA=/var/run/secrets/kubernetes.io/serviceaccount/ca.crt
+
+                  # Get all models registered in LiteLLM
+                  MODELS=$(curl -sf "$LITELLM/v1/models" \
+                    -H "Authorization: Bearer $LITELLM_MASTER_KEY" \
+                    | sed -n 's/.*"id":"\([^"]*\)".*/\1/gp' | sort -u)
+
+                  if [ -z "$MODELS" ]; then
+                    echo "No models in LiteLLM."
+                    exit 0
+                  fi
+
+                  # Get all InferenceEndpoints that exist in the cluster
+                  ENDPOINTS=$(curl -sf --cacert "$CA" \
+                    -H "Authorization: Bearer $SA_TOKEN" \
+                    "$K8S/apis/kro.run/v1alpha1/namespaces/inference/inferenceendpoints" \
+                    | sed -n 's/.*"name":"\([^"]*\)".*/\1/gp' | sort -u)
+
+                  # Delete models that have no matching InferenceEndpoint
+                  for model in $MODELS; do
+                    if ! echo "$ENDPOINTS" | grep -qx "$model"; then
+                      echo "Orphaned model: $model — deregistering from LiteLLM"
+                      # Get the model ID from LiteLLM's model list
+                      MODEL_INFO=$(curl -sf "$LITELLM/model/info" \
+                        -H "Authorization: Bearer $LITELLM_MASTER_KEY" \
+                        | sed -n "s/.*\"model_id\":\"\([^\"]*\)\".*\"model_name\":\"$model\".*/\1/p" | head -1)
+                      if [ -n "$MODEL_INFO" ]; then
+                        curl -sf -X POST "$LITELLM/model/delete" \
+                          -H "Content-Type: application/json" \
+                          -H "Authorization: Bearer $LITELLM_MASTER_KEY" \
+                          -d "{\"id\":\"$MODEL_INFO\"}" \
+                          && echo "  Deleted $model (id: $MODEL_INFO)"
+                      fi
+                    fi
+                  done
+                  echo "Cleanup complete."
+              env:
+                - name: LITELLM_MASTER_KEY
+                  valueFrom:
+                    secretKeyRef:
+                      name: litellm-api-key
+                      key: master-key
+              resources:
+                requests:
+                  cpu: "10m"
+                  memory: "32Mi"
+                limits:
+                  cpu: "100m"
+                  memory: "64Mi"
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: litellm-cleanup
+  namespace: ai-platform
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: litellm-cleanup
+rules:
+  - apiGroups: ["kro.run"]
+    resources: ["inferenceendpoints"]
+    verbs: ["list"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: litellm-cleanup
+subjects:
+  - kind: ServiceAccount
+    name: litellm-cleanup
+    namespace: ai-platform
+roleRef:
+  kind: ClusterRole
+  name: litellm-cleanup
+  apiGroup: rbac.authorization.k8s.io
