@@ -1,0 +1,14 @@
+apiVersion: kro.run/v1alpha1
+kind: InferenceEndpoint
+metadata:
+  name: smollm3-3b
+  namespace: inference
+spec:
+  model: "HuggingFaceTB/SmolLM3-3B"
+  gpuCount: 1
+  maxModelLen: 8192
+  minVramPerGpuGiB: 9   # min per-GPU VRAM; Karpenter picks the cheapest NVIDIA GPU that qualifies
+  workerMemory: "10Gi"   # CPU memory for the Ray worker pod (default is conservative; this is sized to model)
+  minReplicas: 1
+  maxReplicas: 2
+  shared: true
