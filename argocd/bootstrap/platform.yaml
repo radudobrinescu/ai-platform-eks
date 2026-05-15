@@ -21,23 +21,13 @@ spec:
   generators:
     - list:
         elements:
+          # --- Infrastructure (hidden in day-to-day, always healthy) ---
           - name: platform-config
             namespace: argocd
             type: directory
             path: platform/config
             recurse: "true"
-          - name: litellm
-            namespace: ai-platform
-            type: directory
-            path: platform/services/litellm
-          - name: open-webui
-            namespace: ai-platform
-            type: directory
-            path: platform/services/open-webui
-          - name: cluster-dashboard
-            namespace: ai-platform
-            type: directory
-            path: platform/services/cluster-dashboard
+            tier: infra
           - name: gpu-operator
             namespace: gpu-operator
             type: helm
@@ -45,6 +35,7 @@ spec:
             chartRepo: https://helm.ngc.nvidia.com/nvidia
             chartVersion: v25.10.1
             valuesPath: platform/services/gpu-operator/helm-values.yaml
+            tier: infra
           - name: kuberay-operator
             namespace: kuberay
             type: helm
@@ -52,6 +43,18 @@ spec:
             chartRepo: https://ray-project.github.io/kuberay-helm/
             chartVersion: "1.5.1"
             valuesPath: platform/services/kuberay/helm-values.yaml
+            tier: infra
+          # --- Platform Services (user-facing) ---
+          - name: litellm
+            namespace: ai-platform
+            type: directory
+            path: platform/services/litellm
+            tier: platform
+          - name: open-webui
+            namespace: ai-platform
+            type: directory
+            path: platform/services/open-webui
+            tier: platform
           - name: langfuse
             namespace: ai-platform
             type: helm
@@ -59,10 +62,19 @@ spec:
             chartRepo: https://langfuse.github.io/langfuse-k8s
             chartVersion: "1.5.20"
             valuesPath: platform/services/langfuse/helm-values.yaml
+            tier: platform
+          - name: cluster-dashboard
+            namespace: ai-platform
+            type: directory
+            path: platform/services/cluster-dashboard
+            tier: platform
   template:
     metadata:
       name: '{{.name}}'
       namespace: argocd
+      labels:
+        app.kubernetes.io/part-of: ai-platform
+        tier: '{{.tier}}'
     spec:
       project: default
       destination:
