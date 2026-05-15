@@ -5,13 +5,13 @@ metadata:
   name: litellm-model-cleanup
   namespace: inference
 spec:
-  schedule: "* * * * *"
+  schedule: "0 * * * *"
   concurrencyPolicy: Forbid
   successfulJobsHistoryLimit: 1
   failedJobsHistoryLimit: 1
   jobTemplate:
     spec:
-      ttlSecondsAfterFinished: 60
+      ttlSecondsAfterFinished: 120
       template:
         spec:
           restartPolicy: Never
@@ -60,6 +60,23 @@ spec:
                       fi
                     fi
                   done
+                  # Clean up completed registration Jobs older than 5 minutes
+                  JOBS=$(curl -sf --cacert "$CA" \
+                    -H "Authorization: Bearer $SA_TOKEN" \
+                    "$K8S/apis/batch/v1/namespaces/inference/jobs?labelSelector=job-name" \
+                    | sed -n 's/.*"name":"\([^"]*-register[^"]*\)".*/\1/gp' | sort -u)
+                  for job in $JOBS; do
+                    STATUS=$(curl -sf --cacert "$CA" \
+                      -H "Authorization: Bearer $SA_TOKEN" \
+                      "$K8S/apis/batch/v1/namespaces/inference/jobs/$job" \
+                      | sed -n 's/.*"complete".*"status":"True".*/complete/p')
+                    if [ "$STATUS" = "complete" ]; then
+                      curl -sf --cacert "$CA" \
+                        -H "Authorization: Bearer $SA_TOKEN" \
+                        -X DELETE "$K8S/apis/batch/v1/namespaces/inference/jobs/$job?propagationPolicy=Background" \
+                        && echo "  Cleaned job: $job"
+                    fi
+                  done
                   echo "Done."
               env:
                 - name: LITELLM_MASTER_KEY
@@ -90,6 +107,9 @@ rules:
   - apiGroups: ["kro.run"]
     resources: ["inferenceendpoints"]
     verbs: ["list"]
+  - apiGroups: ["batch"]
+    resources: ["jobs"]
+    verbs: ["list", "delete"]
 ---
 apiVersion: rbac.authorization.k8s.io/v1
 kind: RoleBinding
