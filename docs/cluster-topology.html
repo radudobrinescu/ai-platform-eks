@@ -350,16 +350,18 @@ function diffAndLog(data) {
     for (const name of prevNodeNames) {
       if (!nodeNames.has(name)) logEvent('del', `Node ${name.split('.')[0]} removed`);
     }
-    // Pods (inference only)
+    // Pods (inference only, skip register/cleanup Jobs)
+    const skipPod = (name) => name.includes('-register') || name.includes('cleanup');
     for (const p of data.pods) {
       const key = `${p.namespace}/${p.name}`;
-      if (!prevPodKeys.has(key) && p.namespace === 'inference' && !isDaemonsetPod(p)) {
+      if (!prevPodKeys.has(key) && p.namespace === 'inference' && !isDaemonsetPod(p) && !skipPod(p.name)) {
         logEvent('add', `Pod ${shortName(p.name)} → ${p.node || 'pending'}`);
       }
     }
     for (const key of prevPodKeys) {
       if (!podKeys.has(key) && key.startsWith('inference/')) {
-        logEvent('del', `Pod ${shortName(key.split('/')[1])} removed`);
+        const podName = key.split('/')[1];
+        if (!skipPod(podName)) logEvent('del', `Pod ${shortName(podName)} removed`);
       }
     }
     // Endpoints
