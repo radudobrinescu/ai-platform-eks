@@ -3,7 +3,7 @@ apiVersion: batch/v1
 kind: CronJob
 metadata:
   name: litellm-model-cleanup
-  namespace: ai-platform
+  namespace: inference
 spec:
   schedule: "* * * * *"
   concurrencyPolicy: Forbid
@@ -38,7 +38,7 @@ spec:
                     exit 0
                   fi
 
-                  # Get all InferenceEndpoints that exist in the cluster
+                  # Get all InferenceEndpoints in this namespace
                   ENDPOINTS=$(curl -sf --cacert "$CA" \
                     -H "Authorization: Bearer $SA_TOKEN" \
                     "$K8S/apis/kro.run/v1alpha1/namespaces/inference/inferenceendpoints" \
@@ -47,8 +47,7 @@ spec:
                   # Delete models that have no matching InferenceEndpoint
                   for model in $MODELS; do
                     if ! echo "$ENDPOINTS" | grep -qx "$model"; then
-                      echo "Orphaned model: $model — deregistering from LiteLLM"
-                      # Get the model ID from LiteLLM's model list
+                      echo "Orphaned: $model — deregistering"
                       MODEL_INFO=$(curl -sf "$LITELLM/model/info" \
                         -H "Authorization: Bearer $LITELLM_MASTER_KEY" \
                         | sed -n "s/.*\"model_id\":\"\([^\"]*\)\".*\"model_name\":\"$model\".*/\1/p" | head -1)
@@ -57,16 +56,16 @@ spec:
                           -H "Content-Type: application/json" \
                           -H "Authorization: Bearer $LITELLM_MASTER_KEY" \
                           -d "{\"id\":\"$MODEL_INFO\"}" \
-                          && echo "  Deleted $model (id: $MODEL_INFO)"
+                          && echo "  Deleted $model"
                       fi
                     fi
                   done
-                  echo "Cleanup complete."
+                  echo "Done."
               env:
                 - name: LITELLM_MASTER_KEY
                   valueFrom:
                     secretKeyRef:
-                      name: litellm-secrets
+                      name: litellm-api-key
                       key: master-key
               resources:
                 requests:
@@ -80,26 +79,28 @@ apiVersion: v1
 kind: ServiceAccount
 metadata:
   name: litellm-cleanup
-  namespace: ai-platform
+  namespace: inference
 ---
 apiVersion: rbac.authorization.k8s.io/v1
-kind: ClusterRole
+kind: Role
 metadata:
   name: litellm-cleanup
+  namespace: inference
 rules:
   - apiGroups: ["kro.run"]
     resources: ["inferenceendpoints"]
     verbs: ["list"]
 ---
 apiVersion: rbac.authorization.k8s.io/v1
-kind: ClusterRoleBinding
+kind: RoleBinding
 metadata:
   name: litellm-cleanup
+  namespace: inference
 subjects:
   - kind: ServiceAccount
     name: litellm-cleanup
-    namespace: ai-platform
+    namespace: inference
 roleRef:
-  kind: ClusterRole
+  kind: Role
   name: litellm-cleanup
   apiGroup: rbac.authorization.k8s.io
