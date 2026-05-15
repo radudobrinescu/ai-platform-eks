@@ -1,6 +1,8 @@
 .DS_Store
 *.swp
 *.swo
+nohup.out
+
 # Terraform
 **/.terraform/
 **/.terraform.lock.hcl
@@ -11,6 +13,18 @@ terraform.tfstate.backup
 *.tfvars.backup
 !**/example*.tfvars
 terraform/tf-logs/
-TODO.md
-ops/.scale-state-*.json
 errored.tfstate
+
+# Python
+__pycache__/
+*.pyc
+
+# Ops
+ops/.scale-state-*.json
+
+# IDE / editor
+.vscode/
+.claude/settings.local.json
+
+# Build artifacts
+.next/
