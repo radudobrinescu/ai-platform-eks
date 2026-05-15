@@ -1,0 +1,568 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Cluster Topology — ai-platform-cnd-demo</title>
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body {
+    font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+    background: #f8fafc;
+    padding: 32px;
+    color: #1e293b;
+  }
+  .header { text-align: center; margin-bottom: 40px; }
+  .header h1 { font-size: 24px; font-weight: 700; }
+  .header .meta { font-size: 13px; color: #64748b; margin-top: 4px; }
+  .header .stats { display: flex; justify-content: center; gap: 32px; margin-top: 16px; }
+  .header .stat { text-align: center; }
+  .header .stat-value { font-size: 28px; font-weight: 800; color: #0f172a; transition: all 0.3s; }
+  .header .stat-label { font-size: 11px; color: #64748b; text-transform: uppercase; letter-spacing: 0.5px; }
+
+  .connection-bar {
+    max-width: 1100px;
+    margin: 0 auto 20px;
+    padding: 8px 16px;
+    border-radius: 8px;
+    font-size: 12px;
+    display: flex;
+    align-items: center;
+    gap: 8px;
+  }
+  .connection-bar.connected { background: #ecfdf5; border: 1px solid #a7f3d0; color: #065f46; }
+  .connection-bar.disconnected { background: #fef2f2; border: 1px solid #fecaca; color: #991b1b; }
+  .connection-bar.connecting { background: #fffbeb; border: 1px solid #fde68a; color: #92400e; }
+  .pulse { width: 8px; height: 8px; border-radius: 50%; animation: pulse 2s infinite; }
+  .connected .pulse { background: #10b981; }
+  .disconnected .pulse { background: #ef4444; }
+  .connecting .pulse { background: #f59e0b; }
+  @keyframes pulse { 0%,100% { opacity: 1; } 50% { opacity: 0.4; } }
+
+  .cluster { max-width: 1100px; margin: 0 auto; display: flex; flex-direction: column; gap: 24px; }
+
+  .node-group { border-radius: 12px; border: 1px solid #e2e8f0; background: #fff; overflow: hidden; box-shadow: 0 1px 3px rgba(0,0,0,0.04); transition: all 0.3s; }
+  .node-group-header { padding: 12px 20px; display: flex; align-items: center; gap: 10px; font-size: 13px; font-weight: 600; }
+  .node-group-header .badge { font-size: 10px; padding: 2px 8px; border-radius: 4px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.5px; }
+  .node-group-header .desc { font-weight: 400; color: #64748b; margin-left: auto; font-size: 12px; }
+  .node-group-header .count { font-size: 11px; padding: 2px 8px; border-radius: 10px; background: rgba(0,0,0,0.06); }
+
+  .mng .node-group-header { background: #f0fdf4; border-bottom: 1px solid #dcfce7; color: #166534; }
+  .mng .badge { background: #166534; color: #fff; }
+  .default .node-group-header { background: #eff6ff; border-bottom: 1px solid #dbeafe; color: #1e40af; }
+  .default .badge { background: #1e40af; color: #fff; }
+  .gpu-shared .node-group-header { background: #faf5ff; border-bottom: 1px solid #f3e8ff; color: #7c3aed; }
+  .gpu-shared .badge { background: #7c3aed; color: #fff; }
+  .gpu-inference .node-group-header { background: #fff7ed; border-bottom: 1px solid #ffedd5; color: #c2410c; }
+  .gpu-inference .badge { background: #c2410c; color: #fff; }
+
+  .nodes { display: grid; grid-template-columns: repeat(auto-fill, minmax(340px, 1fr)); gap: 1px; background: #f1f5f9; }
+  .node { background: #fff; padding: 16px 20px; transition: background 0.5s; }
+  .node.highlight { background: #fefce8; }
+  .node-title { display: flex; align-items: center; gap: 8px; margin-bottom: 10px; }
+  .node-title .hostname { font-size: 12px; font-weight: 600; font-family: 'SF Mono', SFMono-Regular, monospace; color: #334155; }
+  .node-title .instance-badge { font-size: 13px; padding: 2px 8px; border-radius: 4px; background: #f1f5f9; color: #334155; font-weight: 700; }
+  .node-title .zone { font-size: 12px; color: #64748b; font-weight: 500; }
+  .node-title .capacity-badge { font-size: 10px; padding: 1px 6px; border-radius: 3px; font-weight: 600; }
+  .node-title .capacity-spot { background: #dbeafe; color: #1e40af; }
+  .node-title .capacity-ondemand { background: #fef3c7; color: #92400e; }
+  .node-title .warm-badge { font-size: 9px; padding: 2px 6px; border-radius: 3px; background: #fef3c7; color: #92400e; font-weight: 700; text-transform: uppercase; }
+  .node-title .new-badge { font-size: 9px; padding: 2px 6px; border-radius: 3px; background: #dcfce7; color: #166534; font-weight: 700; text-transform: uppercase; animation: fadeIn 0.5s; }
+
+  .workloads { display: flex; flex-direction: column; gap: 6px; }
+  .ns-group { display: flex; align-items: flex-start; gap: 8px; }
+  .ns-label { font-size: 10px; font-weight: 600; color: #fff; padding: 1px 6px; border-radius: 3px; white-space: nowrap; min-width: 80px; text-align: center; flex-shrink: 0; }
+  .ns-ai-platform { background: #6366f1; }
+  .ns-kube-system { background: #475569; }
+  .ns-gpu-operator { background: #059669; }
+  .ns-kuberay { background: #0891b2; }
+  .ns-inference { background: #dc2626; }
+  .ns-external-secrets { background: #d97706; }
+  .ns-grafana { background: #e11d48; }
+  .ns-cloudwatch { background: #0284c7; }
+  .ns-prometheus { background: #ea580c; }
+
+  .pod-list { font-size: 11px; color: #475569; line-height: 1.8; display: flex; flex-wrap: wrap; gap: 3px; }
+  .pod { display: inline-block; padding: 1px 6px; background: #f8fafc; border: 1px solid #e2e8f0; border-radius: 3px; font-family: 'SF Mono', SFMono-Regular, monospace; font-size: 10px; transition: all 0.3s; }
+  .pod.new { background: #dcfce7; border-color: #86efac; animation: fadeIn 0.5s; }
+  .pod.terminating { opacity: 0.4; text-decoration: line-through; }
+
+  .gpu-meter { margin-top: 12px; padding: 10px 12px; background: #faf5ff; border-radius: 6px; border: 1px solid #f3e8ff; }
+  .gpu-meter-label { font-size: 10px; font-weight: 600; color: #7c3aed; margin-bottom: 6px; text-transform: uppercase; letter-spacing: 0.5px; }
+  .gpu-slots { display: flex; gap: 4px; }
+  .gpu-slot { flex: 1; height: 24px; border-radius: 4px; display: flex; align-items: center; justify-content: center; font-size: 9px; font-weight: 600; transition: all 0.5s; }
+  .gpu-slot.used { background: #7c3aed; color: #fff; }
+  .gpu-slot.free { background: #f3e8ff; color: #7c3aed; border: 1px dashed #c4b5fd; }
+
+  .empty-state { padding: 24px; text-align: center; color: #94a3b8; font-size: 13px; font-style: italic; }
+
+  .daemonsets { max-width: 1100px; margin: 24px auto 0; padding: 16px 20px; background: #fff; border: 1px solid #e2e8f0; border-radius: 12px; box-shadow: 0 1px 3px rgba(0,0,0,0.04); }
+  .daemonsets h3 { font-size: 12px; color: #64748b; margin-bottom: 8px; text-transform: uppercase; letter-spacing: 0.5px; }
+  .daemonsets .ds-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(250px, 1fr)); gap: 6px; }
+  .daemonsets .ds-item { font-size: 11px; display: flex; align-items: center; gap: 6px; }
+  .daemonsets .ds-ns { font-size: 9px; padding: 1px 5px; border-radius: 2px; background: #f1f5f9; color: #64748b; font-weight: 600; }
+
+  .event-log { max-width: 1100px; margin: 16px auto 0; padding: 12px 16px; background: #0f172a; border-radius: 8px; font-family: 'SF Mono', SFMono-Regular, monospace; font-size: 11px; color: #94a3b8; max-height: 150px; overflow-y: auto; }
+  .event-log .event { padding: 2px 0; border-bottom: 1px solid #1e293b; }
+  .event-log .event-time { color: #64748b; }
+  .event-log .event-add { color: #4ade80; }
+  .event-log .event-del { color: #f87171; }
+  .event-log .event-mod { color: #fbbf24; }
+
+  @keyframes fadeIn { from { opacity: 0; transform: translateY(-4px); } to { opacity: 1; transform: translateY(0); } }
+</style>
+</head>
+<body>
+
+<div class="header">
+  <h1>ai-platform-cnd-demo</h1>
+  <div class="meta">EKS 1.35 &middot; eu-central-1 &middot; Karpenter 1.10.0</div>
+  <div class="stats">
+    <div class="stat"><div class="stat-value" id="stat-nodes">-</div><div class="stat-label">Nodes</div></div>
+    <div class="stat"><div class="stat-value" id="stat-pools">3</div><div class="stat-label">Node Pools</div></div>
+    <div class="stat"><div class="stat-value" id="stat-gpus">-</div><div class="stat-label">GPUs</div></div>
+    <div class="stat"><div class="stat-value" id="stat-models">-</div><div class="stat-label">Models</div></div>
+  </div>
+</div>
+
+<div class="connection-bar connecting" id="connection-bar">
+  <div class="pulse"></div>
+  <span id="connection-text">Connecting to Kubernetes API...</span>
+</div>
+
+<div class="cluster" id="cluster-container">
+  <div style="text-align:center; padding: 60px; color: #94a3b8;">Loading cluster topology...</div>
+</div>
+
+<div class="event-log" id="event-log">
+  <div class="event"><span class="event-time">--:--:--</span> Waiting for connection...</div>
+</div>
+
+<script>
+const API_BASE = '';
+const NAMESPACES_SKIP_PODS = new Set(['kube-system', 'amazon-cloudwatch', 'prometheus-node-exporter']);
+const NS_COLORS = {
+  'ai-platform': 'ns-ai-platform',
+  'kube-system': 'ns-kube-system',
+  'gpu-operator': 'ns-gpu-operator',
+  'kuberay': 'ns-kuberay',
+  'inference': 'ns-inference',
+  'external-secrets': 'ns-external-secrets',
+  'grafana-operator': 'ns-grafana',
+  'amazon-cloudwatch': 'ns-cloudwatch',
+  'prometheus-node-exporter': 'ns-prometheus',
+};
+const POOL_CONFIG = {
+  '__mng__': { class: 'mng', label: 'MNG', name: 'CriticalAddons', desc: 'Managed Node Group · ARM Graviton · Always-on' },
+  'default': { class: 'default', label: 'Karpenter', name: 'default', desc: 'Spot · x86 compute (c/m/r) · Platform services' },
+  'gpu-shared': { class: 'gpu-shared', label: 'Karpenter', name: 'gpu-shared', desc: 'Spot · NVIDIA L4 · Time-sliced 4x · EBS Snapshot' },
+  'gpu-inference': { class: 'gpu-inference', label: 'Karpenter', name: 'gpu-inference', desc: 'Spot/On-demand · Dedicated GPU · Scales to zero' },
+};
+const DAEMONSETS = ['aws-node', 'kube-proxy', 'ebs-csi-node', 'eks-pod-identity-agent', 'aws-for-fluent-bit', 'cloudwatch-agent', 'fluent-bit', 'prometheus-node-exporter', 'nfd-worker'];
+
+let state = { nodes: {}, pods: {}, endpoints: {}, prevPodsByNode: {} };
+let eventLog = [];
+
+function logEvent(type, msg) {
+  const time = new Date().toLocaleTimeString('en-GB', {hour12: false});
+  const cls = type === 'add' ? 'event-add' : type === 'del' ? 'event-del' : 'event-mod';
+  eventLog.unshift({time, cls, msg});
+  if (eventLog.length > 50) eventLog.pop();
+  renderEventLog();
+}
+
+function renderEventLog() {
+  const el = document.getElementById('event-log');
+  el.innerHTML = eventLog.map(e => `<div class="event"><span class="event-time">${e.time}</span> <span class="${e.cls}">${e.msg}</span></div>`).join('');
+}
+
+function setConnection(status, text) {
+  const bar = document.getElementById('connection-bar');
+  bar.className = `connection-bar ${status}`;
+  document.getElementById('connection-text').textContent = text;
+}
+
+function shortName(name) {
+  return name.replace(/-[a-z0-9]{5,10}(-[a-z0-9]{5})?$/, '').replace(/-[0-9]+$/, '');
+}
+
+function getPool(node) {
+  const labels = node.metadata?.labels || {};
+  const pool = labels['karpenter.sh/nodepool'];
+  if (pool) return pool;
+  if (labels['eks.amazonaws.com/nodegroup']) return '__mng__';
+  return '__mng__';
+}
+
+function getZone(node) {
+  return (node.metadata?.labels?.['topology.kubernetes.io/zone'] || '').replace('eu-central-', '');
+}
+
+function getInstanceType(node) {
+  return node.metadata?.labels?.['node.kubernetes.io/instance-type'] || 'unknown';
+}
+
+function getCapacityType(node) {
+  return node.metadata?.labels?.['karpenter.sh/capacity-type'] || node.metadata?.labels?.['eks.amazonaws.com/capacityType'] || 'on-demand';
+}
+
+function getHostname(node) {
+  return node.metadata?.name?.split('.')[0] || node.metadata?.name;
+}
+
+function isGpuNode(node) {
+  const pool = getPool(node);
+  return pool === 'gpu-shared' || pool === 'gpu-inference';
+}
+
+function getGpuAllocatable(node) {
+  return parseInt(node.status?.allocatable?.['nvidia.com/gpu'] || '0');
+}
+
+function isDaemonsetPod(pod) {
+  const name = pod.metadata?.name || '';
+  return DAEMONSETS.some(ds => name.startsWith(ds));
+}
+
+function isWarmupPod(pod) {
+  return (pod.metadata?.name || '').includes('warmup');
+}
+
+function isInferencePod(pod) {
+  return pod.metadata?.namespace === 'inference';
+}
+
+function render() {
+  const nodes = Object.values(state.nodes).filter(n =>
+    n.status?.conditions?.some(c => c.type === 'Ready' && c.status === 'True')
+  );
+  const pods = Object.values(state.pods).filter(p =>
+    p.status?.phase === 'Running' || p.status?.phase === 'Pending'
+  );
+
+  // Group nodes by pool
+  const pools = {};
+  for (const node of nodes) {
+    const pool = getPool(node);
+    if (!pools[pool]) pools[pool] = [];
+    pools[pool].push(node);
+  }
+
+  // Group pods by node
+  const podsByNode = {};
+  for (const pod of pods) {
+    const nodeName = pod.spec?.nodeName;
+    if (!nodeName) continue;
+    if (!podsByNode[nodeName]) podsByNode[nodeName] = [];
+    podsByNode[nodeName].push(pod);
+  }
+
+  // Count models
+  const models = pods.filter(p => p.metadata?.namespace === 'inference' && (p.metadata?.name || '').includes('head')).length;
+  const gpuCount = nodes.filter(n => isGpuNode(n)).reduce((sum, n) => sum + getGpuAllocatable(n), 0);
+
+  document.getElementById('stat-nodes').textContent = nodes.length;
+  document.getElementById('stat-gpus').textContent = gpuCount;
+  document.getElementById('stat-models').textContent = models;
+
+  // Render pools
+  const poolOrder = ['__mng__', 'default', 'gpu-shared', 'gpu-inference'];
+  let html = '';
+
+  for (const poolName of poolOrder) {
+    const config = POOL_CONFIG[poolName];
+    const poolNodes = pools[poolName] || [];
+
+    html += `<div class="node-group ${config.class}">`;
+    html += `<div class="node-group-header">`;
+    html += `<span class="badge">${config.label}</span> ${config.name}`;
+    html += `<span class="count">${poolNodes.length} node${poolNodes.length !== 1 ? 's' : ''}</span>`;
+    html += `<span class="desc">${config.desc}</span>`;
+    html += `</div>`;
+
+    if (poolNodes.length === 0) {
+      html += `<div class="empty-state">No nodes provisioned — scales from zero when needed</div>`;
+    } else {
+      html += `<div class="nodes">`;
+      for (const node of poolNodes) {
+        const nodeName = node.metadata.name;
+        const nodePods = (podsByNode[nodeName] || []).filter(p => !isDaemonsetPod(p));
+        const isWarm = nodePods.some(p => isWarmupPod(p));
+        const isNew = (Date.now() - new Date(node.metadata.creationTimestamp).getTime()) < 120000;
+
+        html += `<div class="node ${isNew ? 'highlight' : ''}">`;
+        const capType = getCapacityType(node);
+        const capClass = capType === 'spot' ? 'capacity-spot' : 'capacity-ondemand';
+        const capLabel = capType === 'spot' ? 'spot' : 'on-demand';
+
+        html += `<div class="node-title">`;
+        html += `<span class="hostname">${getHostname(node)}</span>`;
+        html += `<span class="instance-badge">${getInstanceType(node)}</span>`;
+        html += `<span class="capacity-badge ${capClass}">${capLabel}</span>`;
+        if (isWarm) html += `<span class="warm-badge">Warm Pool</span>`;
+        if (isNew) html += `<span class="new-badge">New</span>`;
+        html += `<span class="zone" style="margin-left:auto;">${getZone(node)}</span>`;
+        html += `</div>`;
+
+        // Group pods by namespace
+        const byNs = {};
+        for (const pod of nodePods) {
+          const ns = pod.metadata.namespace;
+          if (!byNs[ns]) byNs[ns] = [];
+          byNs[ns].push(pod);
+        }
+
+        html += `<div class="workloads">`;
+        for (const [ns, nsPods] of Object.entries(byNs).sort()) {
+          const nsClass = NS_COLORS[ns] || 'ns-kube-system';
+          const displayNs = ns.length > 12 ? ns.substring(0, 11) + '…' : ns;
+          html += `<div class="ns-group">`;
+          html += `<span class="ns-label ${nsClass}">${displayNs}</span>`;
+          html += `<div class="pod-list">`;
+          for (const pod of nsPods) {
+            const name = shortName(pod.metadata.name);
+            const isNewPod = (Date.now() - new Date(pod.metadata.creationTimestamp).getTime()) < 30000;
+            const isTerminating = pod.metadata.deletionTimestamp;
+            const cls = isNewPod ? 'new' : isTerminating ? 'terminating' : '';
+            html += `<span class="pod ${cls}">${name}</span>`;
+          }
+          html += `</div></div>`;
+        }
+        html += `</div>`;
+
+        // GPU meter for GPU nodes
+        if (isGpuNode(node)) {
+          const totalSlots = getGpuAllocatable(node);
+          const usedSlots = nodePods.filter(p => {
+            const containers = p.spec?.containers || [];
+            return containers.some(c => parseInt(c.resources?.requests?.['nvidia.com/gpu'] || '0') > 0);
+          }).length;
+
+          html += `<div class="gpu-meter">`;
+          html += `<div class="gpu-meter-label">NVIDIA L4 · ${totalSlots} GPU Slots</div>`;
+          html += `<div class="gpu-slots">`;
+          for (let i = 0; i < totalSlots; i++) {
+            if (i < usedSlots) {
+              const gpuPod = nodePods.filter(p => p.spec?.containers?.some(c => parseInt(c.resources?.requests?.['nvidia.com/gpu'] || '0') > 0))[i];
+              const label = gpuPod ? shortName(gpuPod.metadata.name).substring(0, 12) : 'used';
+              html += `<div class="gpu-slot used">${label}</div>`;
+            } else {
+              html += `<div class="gpu-slot free">free</div>`;
+            }
+          }
+          html += `</div></div>`;
+        }
+
+        html += `</div>`;
+      }
+      html += `</div>`;
+    }
+    html += `</div>`;
+  }
+
+  // Render InferenceEndpoints status panel
+  const endpoints = Object.values(state.endpoints);
+  if (endpoints.length > 0) {
+    html += `<div class="node-group" style="border-color:#6366f1;">`;
+    html += `<div class="node-group-header" style="background:#eef2ff;border-bottom:1px solid #c7d2fe;color:#4338ca;">`;
+    html += `<span class="badge" style="background:#4338ca;color:#fff;">KRO</span> InferenceEndpoints`;
+    html += `<span class="count">${endpoints.length} model${endpoints.length !== 1 ? 's' : ''}</span>`;
+    html += `<span class="desc">Custom Resources — model deployment status</span>`;
+    html += `</div>`;
+    html += `<div style="display:flex;flex-wrap:wrap;gap:0;border-top:1px solid #e2e8f0;">`;
+    for (const ep of endpoints) {
+      const name = ep.metadata?.name || '?';
+      const status = ep.status?.modelStatus || 'Pending';
+      const ready = ep.status?.ready === 'True';
+      const message = ep.status?.message || '';
+      const shared = ep.spec?.shared ? 'shared' : 'dedicated';
+      const color = ready ? '#059669' : status === 'DEPLOYING' ? '#d97706' : '#6b7280';
+      const bg = ready ? '#f0fdf4' : status === 'DEPLOYING' ? '#fffbeb' : '#f9fafb';
+      const icon = ready ? '●' : status === 'DEPLOYING' ? '◐' : '○';
+
+      // Timer: elapsed since creation
+      const created = new Date(ep.metadata?.creationTimestamp);
+      const elapsed = Math.floor((Date.now() - created.getTime()) / 1000);
+      const timerStr = ready ? '' : `${Math.floor(elapsed/60)}m ${elapsed%60}s`;
+
+      html += `<div style="flex:1;min-width:280px;padding:14px 20px;border-right:1px solid #f1f5f9;border-bottom:1px solid #f1f5f9;background:${bg};transition:background 0.3s;">`;
+      html += `<div style="display:flex;align-items:center;gap:8px;margin-bottom:6px;">`;
+      html += `<span style="color:${color};font-size:16px;">${icon}</span>`;
+      html += `<span style="font-weight:700;font-size:14px;color:#1e293b;">${name}</span>`;
+      html += `<span style="margin-left:auto;font-size:10px;padding:2px 8px;border-radius:4px;background:${color}18;color:${color};font-weight:700;letter-spacing:0.3px;">${status}</span>`;
+      html += `</div>`;
+      html += `<div style="font-size:12px;color:#475569;margin-bottom:4px;">${message}</div>`;
+      html += `<div style="display:flex;align-items:center;gap:12px;font-size:10px;color:#94a3b8;">`;
+      html += `<span>gpu: ${shared}</span>`;
+      html += `<span>model: ${ep.spec?.model || '?'}</span>`;
+      if (timerStr) {
+        html += `<span style="margin-left:auto;font-family:SF Mono,monospace;font-size:11px;color:${color};font-weight:600;">⏱ ${timerStr}</span>`;
+      }
+      html += `</div>`;
+      html += `</div>`;
+    }
+    html += `</div></div>`;
+  }
+
+  document.getElementById('cluster-container').innerHTML = html;
+  state.prevPodsByNode = podsByNode;
+}
+
+// --- Kubernetes API Watch ---
+
+async function fetchInitial(resource, handler) {
+  const resp = await fetch(`${API_BASE}/${resource}`);
+  if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
+  const data = await resp.json();
+  const rv = data.metadata.resourceVersion;
+  for (const item of data.items) handler('ADDED', item);
+  return rv;
+}
+
+async function watchResource(resource, handler, resourceVersion) {
+  const url = `${API_BASE}/${resource}?watch=1&resourceVersion=${resourceVersion}&timeoutSeconds=300`;
+  const resp = await fetch(url);
+  if (!resp.ok) throw new Error(`Watch HTTP ${resp.status}`);
+  const reader = resp.body.getReader();
+  const decoder = new TextDecoder();
+  let buffer = '';
+
+  while (true) {
+    const {done, value} = await reader.read();
+    if (done) break;
+    buffer += decoder.decode(value, {stream: true});
+    const lines = buffer.split('\n');
+    buffer = lines.pop();
+    for (const line of lines) {
+      if (!line.trim()) continue;
+      try {
+        const event = JSON.parse(line);
+        if (event.type === 'ERROR') {
+          throw new Error(`Watch error: ${event.object?.message || 'unknown'}`);
+        }
+        handler(event.type, event.object);
+      } catch(e) {
+        if (e.message?.includes('Watch error')) throw e;
+      }
+    }
+  }
+  throw new Error('Watch stream ended');
+}
+
+function handleNode(type, node) {
+  const name = node.metadata.name;
+  if (type === 'ADDED' || type === 'MODIFIED') {
+    const isNew = !state.nodes[name];
+    state.nodes[name] = node;
+    if (isNew && state.initialized) logEvent('add', `Node ${getHostname(node)} (${getInstanceType(node)}) joined`);
+  } else if (type === 'DELETED') {
+    delete state.nodes[name];
+    logEvent('del', `Node ${getHostname(node)} removed`);
+  }
+  if (state.initialized) render();
+}
+
+function handlePod(type, pod) {
+  const key = `${pod.metadata.namespace}/${pod.metadata.name}`;
+  if (type === 'ADDED' || type === 'MODIFIED') {
+    const isNew = !state.pods[key];
+    state.pods[key] = pod;
+    if (isNew && state.initialized && pod.metadata.namespace === 'inference' && !isDaemonsetPod(pod)) {
+      logEvent('add', `Pod ${shortName(pod.metadata.name)} scheduled → ${pod.spec.nodeName || 'pending'}`);
+    }
+  } else if (type === 'DELETED') {
+    delete state.pods[key];
+    if (state.initialized && pod.metadata.namespace === 'inference') {
+      logEvent('del', `Pod ${shortName(pod.metadata.name)} removed`);
+    }
+  }
+  if (state.initialized) render();
+}
+
+function handleEndpoint(type, ep) {
+  const name = ep.metadata?.name;
+  if (type === 'ADDED' || type === 'MODIFIED') {
+    if (ep.metadata?.deletionTimestamp) {
+      delete state.endpoints[name];
+      if (state.initialized) logEvent('del', `Model "${name}" removed`);
+    } else {
+      const prev = state.endpoints[name];
+      state.endpoints[name] = ep;
+      const status = ep.status?.modelStatus || 'Pending';
+      const ready = ep.status?.ready;
+      if (state.initialized) {
+        if (!prev) {
+          logEvent('add', `Model "${name}" created → ${status}`);
+        } else if (prev.status?.modelStatus !== status) {
+          const cls = ready === 'True' ? 'add' : 'mod';
+          logEvent(cls, `Model "${name}" → ${status}${ready === 'True' ? ' ✓' : ''}`);
+        }
+      }
+    }
+  } else if (type === 'DELETED') {
+    delete state.endpoints[name];
+    if (state.initialized) logEvent('del', `Model "${name}" removed`);
+  }
+  if (state.initialized) render();
+}
+
+
+async function start() {
+  try {
+    setConnection('connecting', 'Connecting to Kubernetes API...');
+
+    // Reset state on reconnect to clear stale entries
+    state.nodes = {};
+    state.pods = {};
+    state.endpoints = {};
+
+    const nodeRV = await fetchInitial('api/v1/nodes', handleNode);
+    const podRV = await fetchInitial('api/v1/pods', handlePod);
+
+    // InferenceEndpoints (CRD) — may not exist, handle gracefully
+    let epRV = null;
+    try {
+      epRV = await fetchInitial('apis/kro.run/v1alpha1/namespaces/inference/inferenceendpoints', handleEndpoint);
+    } catch(e) { /* CRD not installed or no permissions */ }
+
+    if (!state.initialized) {
+      state.initialized = true;
+      logEvent('mod', 'Connected to Kubernetes API, watching for events');
+    }
+    render();
+    setConnection('connected', `Connected — watching for changes`);
+
+    // Watch in parallel
+    const watches = [
+      watchResource('api/v1/nodes', handleNode, nodeRV).catch(reconnect),
+      watchResource('api/v1/pods', handlePod, podRV).catch(reconnect),
+    ];
+    if (epRV) {
+      watches.push(
+        watchResource('apis/kro.run/v1alpha1/namespaces/inference/inferenceendpoints', handleEndpoint, epRV).catch(reconnect)
+      );
+    }
+    Promise.all(watches);
+  } catch (e) {
+    if (!state.initialized) {
+      setConnection('connecting', 'Connecting to cluster...');
+    }
+    setTimeout(start, 1000);
+  }
+}
+
+function reconnect(e) {
+  // Always silently reconnect — never show disconnect state to avoid demo embarrassment
+  setTimeout(start, 500);
+}
+
+start();
+
+// Tick the deploy timer every second when models are not yet ready
+setInterval(() => {
+  const hasDeploying = Object.values(state.endpoints).some(ep => ep.status?.ready !== 'True');
+  if (hasDeploying && state.initialized) render();
+}, 1000);
+</script>
+</body>
+</html>

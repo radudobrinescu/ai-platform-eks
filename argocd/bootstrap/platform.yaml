@@ -34,6 +34,10 @@ spec:
             namespace: ai-platform
             type: directory
             path: platform/services/open-webui
+          - name: cluster-dashboard
+            namespace: ai-platform
+            type: directory
+            path: platform/services/cluster-dashboard
           - name: gpu-operator
             namespace: gpu-operator
             type: helm
