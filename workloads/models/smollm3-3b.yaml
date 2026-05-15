@@ -1,0 +1,14 @@
+apiVersion: kro.run/v1alpha1
+kind: InferenceEndpoint
+metadata:
+  name: smollm3-3b
+  namespace: inference
+spec:
+  model: "HuggingFaceTB/SmolLM3-3B"
+  shared: true
+  gpuCount: 1
+  maxModelLen: 4096
+  minVramPerGpuGiB: 9
+  workerMemory: "10Gi"
+  minReplicas: 1
+  maxReplicas: 2
