@@ -364,13 +364,19 @@ function diffAndLog(data) {
         if (!skipPod(podName)) logEvent('del', `Pod ${shortName(podName)} removed`);
       }
     }
-    // Endpoints
+    // Endpoints — ignore transient status flaps (KRO reconciliation noise)
     for (const ep of data.endpoints) {
       if (!prevEndpointNames.has(ep.name)) {
         logEvent('add', `Model "${ep.name}" deployed → ${ep.modelStatus}`);
       } else if (prevEndpointStatus[ep.name] !== ep.modelStatus) {
-        const cls = ep.ready === 'True' ? 'add' : 'mod';
-        logEvent(cls, `Model "${ep.name}" → ${ep.modelStatus}${ep.ready === 'True' ? ' ✓' : ''}`);
+        // Only log if transitioning forward (not flapping back to Pending from RUNNING)
+        const prev = prevEndpointStatus[ep.name];
+        const curr = ep.modelStatus;
+        const isFlap = prev === 'RUNNING' && (curr === 'Pending' || curr === '' || !curr);
+        if (!isFlap) {
+          const cls = ep.ready === 'True' ? 'add' : 'mod';
+          logEvent(cls, `Model "${ep.name}" → ${curr}${ep.ready === 'True' ? ' ✓' : ''}`);
+        }
       }
     }
     for (const name of prevEndpointNames) {
