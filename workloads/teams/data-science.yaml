@@ -1,0 +1,12 @@
+apiVersion: kro.run/v1alpha1
+kind: AITeam
+metadata:
+  name: data-science
+  namespace: ai-platform
+spec:
+  teamName: data-science
+  models: ["smollm3-3b", "gemma-3-1b-it"]
+  maxBudget: "500.0"
+  budgetDuration: "30d"
+  rpmLimit: 120
+  tpmLimit: 200000
