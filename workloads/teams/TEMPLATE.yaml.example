@@ -1,0 +1,14 @@
+# Example AITeam — copy this file and edit to onboard a new team.
+# Commit and push; ArgoCD deploys it automatically.
+apiVersion: kro.run/v1alpha1
+kind: AITeam
+metadata:
+  name: example-team
+  namespace: ai-platform
+spec:
+  teamName: example
+  models: ["smollm3-3b"]       # Models this team can access (* = all)
+  maxBudget: "100.0"           # Monthly budget in USD
+  budgetDuration: "30d"        # Budget reset period
+  rpmLimit: 60                 # Requests per minute
+  tpmLimit: 100000             # Tokens per minute
