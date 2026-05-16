@@ -60,7 +60,27 @@ spec:
                       fi
                     fi
                   done
-                  # Clean up completed registration Jobs older than 5 minutes
+                  # Clean up orphaned teams from LiteLLM
+                  TEAMS=$(curl -sf "$LITELLM/team/list" \
+                    -H "Authorization: Bearer $LITELLM_MASTER_KEY" \
+                    | sed -n 's/.*"team_alias":"\([^"]*\)".*"team_id":"\([^"]*\)".*/\1 \2/gp')
+                  AITEAMS=$(curl -sf --cacert "$CA" \
+                    -H "Authorization: Bearer $SA_TOKEN" \
+                    "$K8S/apis/kro.run/v1alpha1/namespaces/ai-platform/aiteams" \
+                    | sed -n 's/.*"teamName":"\([^"]*\)".*/\1/gp' | sort -u)
+                  echo "$TEAMS" | while read -r alias tid; do
+                    [ -z "$alias" ] && continue
+                    if ! echo "$AITEAMS" | grep -qx "$alias"; then
+                      echo "Orphaned team: $alias — deregistering"
+                      curl -sf -X POST "$LITELLM/team/delete" \
+                        -H "Content-Type: application/json" \
+                        -H "Authorization: Bearer $LITELLM_MASTER_KEY" \
+                        -d "{\"team_ids\":[\"$tid\"]}" \
+                        && echo "  Deleted team $alias"
+                    fi
+                  done
+
+                  # Clean up completed registration Jobs
                   JOBS=$(curl -sf --cacert "$CA" \
                     -H "Authorization: Bearer $SA_TOKEN" \
                     "$K8S/apis/batch/v1/namespaces/inference/jobs?labelSelector=job-name" \
@@ -99,28 +119,26 @@ metadata:
   namespace: inference
 ---
 apiVersion: rbac.authorization.k8s.io/v1
-kind: Role
+kind: ClusterRole
 metadata:
   name: litellm-cleanup
-  namespace: inference
 rules:
   - apiGroups: ["kro.run"]
-    resources: ["inferenceendpoints"]
+    resources: ["inferenceendpoints", "aiteams"]
     verbs: ["list"]
   - apiGroups: ["batch"]
     resources: ["jobs"]
     verbs: ["list", "delete"]
 ---
 apiVersion: rbac.authorization.k8s.io/v1
-kind: RoleBinding
+kind: ClusterRoleBinding
 metadata:
   name: litellm-cleanup
-  namespace: inference
 subjects:
   - kind: ServiceAccount
     name: litellm-cleanup
     namespace: inference
 roleRef:
-  kind: Role
+  kind: ClusterRole
   name: litellm-cleanup
   apiGroup: rbac.authorization.k8s.io
