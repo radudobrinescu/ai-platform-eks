@@ -103,7 +103,7 @@ metadata:
   namespace: ai-platform
 spec:
   teamName: data-science
-  models: ["smollm3-3b", "gemma-3-1b-it"]
+  models: [*]
   maxBudget: "500.0"
   budgetDuration: "30d"
   rpmLimit: 120
@@ -123,16 +123,12 @@ Nudge ArgoCD (Sync "teams" app). Wait ~30s.
 **Retrieve team API keys:**
 
 ```bash
-export DEV_KEY=$(kubectl get configmap welcome -n team-dev \
-  -o jsonpath='{.data.api-key}' 2>/dev/null || \
-  kubectl get secret litellm-team-key -n team-dev \
-  -o jsonpath='{.data.key}' | base64 -d)
+export DEV_KEY=$(kubectl get secret dev-api-key -n team-dev \
+  -o jsonpath='{.data.api-key}' | base64 -d)
 echo "Dev team key: $DEV_KEY"
 
-export DS_KEY=$(kubectl get configmap welcome -n team-data-science \
-  -o jsonpath='{.data.api-key}' 2>/dev/null || \
-  kubectl get secret litellm-team-key -n team-data-science \
-  -o jsonpath='{.data.key}' | base64 -d)
+export DS_KEY=$(kubectl get secret data-science-api-key -n team-data-science \
+  -o jsonpath='{.data.api-key}' | base64 -d)
 echo "Data science key: $DS_KEY"
 ```
 
@@ -256,7 +252,7 @@ Switch to Open WebUI tab. Select gemma-3-1b-it or smollm3-3b. Type a question. S
 ## Cleanup (after demo)
 
 ```bash
-rm workloads/models/gemma-3-1b-it.yaml workloads/models/smollm3-3b.yaml
+rm workloads/models/gemma-3-1b-it.yaml
 rm workloads/teams/dev-team.yaml workloads/teams/data-science.yaml
 git add -A workloads/
 git commit -m "chore: cleanup after demo"
