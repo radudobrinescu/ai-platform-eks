@@ -1,0 +1,12 @@
+apiVersion: kro.run/v1alpha1
+kind: AITeam
+metadata:
+  name: dev-team
+  namespace: ai-platform
+spec:
+  teamName: dev
+  models: ["smollm3-3b"]
+  maxBudget: "100.0"
+  budgetDuration: "30d"
+  rpmLimit: 60
+  tpmLimit: 100000
