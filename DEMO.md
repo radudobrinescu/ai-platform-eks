@@ -103,7 +103,7 @@ metadata:
   namespace: ai-platform
 spec:
   teamName: data-science
-  models: [*]
+  models: ["*"]
   maxBudget: "500.0"
   budgetDuration: "30d"
   rpmLimit: 120
