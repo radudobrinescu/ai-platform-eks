@@ -96,6 +96,7 @@ data:
                     "zone": labels.get("topology.kubernetes.io/zone", ""),
                     "capacity": labels.get("karpenter.sh/capacity-type", labels.get("eks.amazonaws.com/capacityType", "on-demand")),
                     "gpu": int(allocatable.get("nvidia.com/gpu", "0")),
+                    "gpuProduct": labels.get("nvidia.com/gpu.product", "").replace("-", " "),
                     "created": n["metadata"].get("creationTimestamp", ""),
                 })
 

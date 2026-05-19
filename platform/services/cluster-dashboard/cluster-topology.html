@@ -3,415 +3,422 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>Cluster Topology — ai-platform-cnd-demo</title>
+<title>AI Platform — Cluster Dashboard</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;600;700&family=Manrope:wght@400;500;600;700;800&display=swap" rel="stylesheet">
 <style>
-  * { margin: 0; padding: 0; box-sizing: border-box; }
-  body {
-    font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
-    background: #f8fafc;
-    padding: 32px;
-    color: #1e293b;
-  }
-  .header { text-align: center; margin-bottom: 40px; }
-  .header h1 { font-size: 24px; font-weight: 700; }
-  .header .meta { font-size: 13px; color: #64748b; margin-top: 4px; }
-  .header .stats { display: flex; justify-content: center; gap: 32px; margin-top: 16px; }
-  .header .stat { text-align: center; }
-  .header .stat-value { font-size: 28px; font-weight: 800; color: #0f172a; transition: all 0.3s; }
-  .header .stat-label { font-size: 11px; color: #64748b; text-transform: uppercase; letter-spacing: 0.5px; }
+:root, [data-theme="dark"] {
+  --bg: #151722;
+  --surface: #1c1f2e;
+  --surface-hover: #242738;
+  --border: #2a2d3e;
+  --border-light: #353849;
+  --text: #e8eaed;
+  --text-secondary: #9ba1b0;
+  --text-muted: #5f6577;
+  --accent: #5b5ff6;
+  --accent-soft: rgba(91,95,246,0.12);
+  --green: #3ddc84;
+  --green-soft: rgba(61,220,132,0.12);
+  --amber: #ffb340;
+  --amber-soft: rgba(255,179,64,0.12);
+  --red: #ff6b6b;
+  --red-soft: rgba(255,107,107,0.1);
+  --purple: #a78bfa;
+  --purple-soft: rgba(167,139,250,0.12);
+  --cyan: #67e8f9;
+  --font: 'Manrope', -apple-system, sans-serif;
+  --mono: 'JetBrains Mono', monospace;
+  --radius: 10px;
+  --radius-sm: 6px;
+}
+[data-theme="light"] {
+  --bg: #f8f9fb;
+  --surface: #ffffff;
+  --surface-hover: #f3f4f6;
+  --border: #e5e7eb;
+  --border-light: #d1d5db;
+  --text: #111827;
+  --text-secondary: #4b5563;
+  --text-muted: #9ca3af;
+  --accent: #4f46e5;
+  --accent-soft: rgba(79,70,229,0.08);
+  --green: #059669;
+  --green-soft: rgba(5,150,105,0.08);
+  --amber: #d97706;
+  --amber-soft: rgba(217,119,6,0.08);
+  --red: #dc2626;
+  --red-soft: rgba(220,38,38,0.06);
+  --purple: #7c3aed;
+  --purple-soft: rgba(124,58,237,0.08);
+  --cyan: #0891b2;
+}
+* { margin: 0; padding: 0; box-sizing: border-box; }
+body { font-family: var(--font); background: var(--bg); color: var(--text); height: 100vh; overflow: hidden; }
 
-  .connection-bar {
-    max-width: 1100px;
-    margin: 0 auto 20px;
-    padding: 8px 16px;
-    border-radius: 8px;
-    font-size: 12px;
-    display: flex;
-    align-items: center;
-    gap: 8px;
-  }
-  .connection-bar.connected { background: #ecfdf5; border: 1px solid #a7f3d0; color: #065f46; }
-  .connection-bar.disconnected { background: #fef2f2; border: 1px solid #fecaca; color: #991b1b; }
-  .connection-bar.connecting { background: #fffbeb; border: 1px solid #fde68a; color: #92400e; }
-  .pulse { width: 8px; height: 8px; border-radius: 50%; animation: pulse 2s infinite; }
-  .connected .pulse { background: #10b981; }
-  .disconnected .pulse { background: #ef4444; }
-  .connecting .pulse { background: #f59e0b; }
-  @keyframes pulse { 0%,100% { opacity: 1; } 50% { opacity: 0.4; } }
+/* Layout */
+.shell { display: grid; grid-template-columns: 280px 1fr; grid-template-rows: 56px 1fr; height: 100vh; }
 
-  .cluster { max-width: 1100px; margin: 0 auto; display: flex; flex-direction: column; gap: 24px; }
+/* Topbar */
+.topbar {
+  grid-column: 1 / -1; padding: 0 24px;
+  display: flex; align-items: center; gap: 16px;
+  background: var(--surface); border-bottom: 1px solid var(--border);
+}
+.logo { font-size: 16px; font-weight: 800; letter-spacing: -0.3px; }
+.logo span { color: var(--accent); }
+.topbar-sep { width: 1px; height: 24px; background: var(--border); }
+.cluster-id { font-family: var(--mono); font-size: 12px; color: var(--text-muted); padding: 4px 10px; background: rgba(255,255,255,0.03); border: 1px solid var(--border); border-radius: var(--radius-sm); }
+.topbar-spacer { flex: 1; }
+.theme-toggle { background: none; border: 1px solid var(--border); border-radius: var(--radius-sm); padding: 5px 10px; cursor: pointer; font-size: 14px; line-height: 1; color: var(--text-secondary); transition: all 0.2s; }
+.theme-toggle:hover { background: var(--surface-hover); border-color: var(--border-light); }
+.live-badge { display: flex; align-items: center; gap: 6px; font-size: 12px; font-weight: 600; color: var(--green); }
+.live-badge::before { content: ''; width: 7px; height: 7px; border-radius: 50%; background: var(--green); box-shadow: 0 0 8px var(--green); animation: pulse 2s infinite; }
 
-  .node-group { border-radius: 12px; border: 1px solid #e2e8f0; background: #fff; overflow: hidden; box-shadow: 0 1px 3px rgba(0,0,0,0.04); transition: all 0.3s; }
-  .node-group-header { padding: 12px 20px; display: flex; align-items: center; gap: 10px; font-size: 13px; font-weight: 600; }
-  .node-group-header .badge { font-size: 10px; padding: 2px 8px; border-radius: 4px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.5px; }
-  .node-group-header .desc { font-weight: 400; color: #64748b; margin-left: auto; font-size: 12px; }
-  .node-group-header .count { font-size: 11px; padding: 2px 8px; border-radius: 10px; background: rgba(0,0,0,0.06); }
+/* Sidebar */
+.sidebar {
+  position: relative;
+  padding: 16px 12px; overflow-y: auto;
+  background: var(--surface); border-right: 1px solid var(--border);
+  display: flex; flex-direction: column; gap: 12px;
+}
+.sidebar-resizer {
+  position: absolute; top: 0; right: -2px; bottom: 0; width: 4px;
+  cursor: col-resize; z-index: 100; background: transparent; transition: background 0.15s;
+}
+.sidebar-resizer:hover { background: var(--accent); opacity: 0.5; }
+.sidebar-resizer.active { background: var(--accent); opacity: 1; }
+.card {
+  background: rgba(255,255,255,0.02); border: 1px solid var(--border);
+  border-radius: var(--radius); padding: 16px;
+}
+.card-title {
+  font-size: 10px; font-weight: 700; text-transform: uppercase;
+  letter-spacing: 1.2px; color: var(--text-muted); margin-bottom: 12px;
+}
+.stat-row { display: flex; justify-content: space-between; align-items: baseline; padding: 5px 0; }
+.stat-label { font-size: 13px; color: var(--text-secondary); }
+.stat-val { font-size: 20px; font-weight: 800; }
+.stat-val.purple { color: var(--purple); }
 
-  .mng .node-group-header { background: #f0fdf4; border-bottom: 1px solid #dcfce7; color: #166534; }
-  .mng .badge { background: #166534; color: #fff; }
-  .default .node-group-header { background: #eff6ff; border-bottom: 1px solid #dbeafe; color: #1e40af; }
-  .default .badge { background: #1e40af; color: #fff; }
-  .gpu-shared .node-group-header { background: #faf5ff; border-bottom: 1px solid #f3e8ff; color: #7c3aed; }
-  .gpu-shared .badge { background: #7c3aed; color: #fff; }
-  .gpu-inference .node-group-header { background: #fff7ed; border-bottom: 1px solid #ffedd5; color: #c2410c; }
-  .gpu-inference .badge { background: #c2410c; color: #fff; }
+/* Model items */
+.model-item {
+  padding: 12px 14px; border-radius: var(--radius-sm); margin-bottom: 6px;
+  background: rgba(255,255,255,0.015); border: 1px solid var(--border);
+  cursor: pointer; transition: all 0.15s;
+}
+.model-item:hover { background: var(--surface-hover); border-color: var(--border-light); }
+.model-item.selected { border-color: var(--accent); background: var(--accent-soft); }
+.model-top { display: flex; align-items: center; gap: 8px; }
+.mdot { width: 8px; height: 8px; border-radius: 50%; flex-shrink: 0; }
+.mdot.running { background: var(--green); box-shadow: 0 0 6px rgba(61,220,132,0.5); }
+.mdot.deploying { background: var(--amber); animation: pulse 1.5s infinite; }
+.mdot.pending { background: var(--text-muted); }
+.mname { font-size: 14px; font-weight: 700; }
+.mstatus { margin-left: auto; font-size: 10px; font-weight: 700; padding: 3px 8px; border-radius: 4px; text-transform: uppercase; letter-spacing: 0.3px; }
+.mstatus.running { background: var(--green-soft); color: var(--green); }
+.mstatus.deploying { background: var(--amber-soft); color: var(--amber); }
+.mstatus.pending { background: rgba(255,255,255,0.05); color: var(--text-muted); }
+.mdetail { font-size: 11px; color: var(--text-muted); margin-top: 4px; font-family: var(--mono); }
+.mtimer { font-size: 11px; font-family: var(--mono); color: var(--amber); font-weight: 600; margin-top: 3px; }
+.model-empty { font-size: 12px; color: var(--text-muted); padding: 12px 0; }
 
-  .nodes { display: grid; grid-template-columns: repeat(auto-fill, minmax(340px, 1fr)); gap: 1px; background: #f1f5f9; }
-  .node { background: #fff; padding: 16px 20px; transition: background 0.5s; }
-  .node.highlight { background: #fefce8; }
-  .node-title { display: flex; align-items: center; gap: 8px; margin-bottom: 10px; }
-  .node-title .hostname { font-size: 12px; font-weight: 600; font-family: 'SF Mono', SFMono-Regular, monospace; color: #334155; }
-  .node-title .instance-badge { font-size: 13px; padding: 2px 8px; border-radius: 4px; background: #f1f5f9; color: #334155; font-weight: 700; }
-  .node-title .zone { font-size: 12px; color: #64748b; font-weight: 500; }
-  .node-title .capacity-badge { font-size: 10px; padding: 1px 6px; border-radius: 3px; font-weight: 600; }
-  .node-title .capacity-spot { background: #dbeafe; color: #1e40af; }
-  .node-title .capacity-ondemand { background: #fef3c7; color: #92400e; }
-  .node-title .warm-badge { font-size: 9px; padding: 2px 6px; border-radius: 3px; background: #fef3c7; color: #92400e; font-weight: 700; text-transform: uppercase; }
-  .node-title .new-badge { font-size: 9px; padding: 2px 6px; border-radius: 3px; background: #dcfce7; color: #166534; font-weight: 700; text-transform: uppercase; animation: fadeIn 0.5s; }
+/* Events */
+.event-list { font-size: 11px; font-family: var(--mono); color: var(--text-secondary); max-height: 200px; overflow-y: auto; }
+.ev { padding: 4px 0; border-bottom: 1px solid rgba(255,255,255,0.03); line-height: 1.6; }
+.ev-time { color: var(--text-muted); }
+.ev-add { color: var(--green); }
+.ev-del { color: var(--red); }
+.ev-mod { color: var(--amber); }
 
-  .workloads { display: flex; flex-direction: column; gap: 6px; }
-  .ns-group { display: flex; align-items: flex-start; gap: 8px; }
-  .ns-label { font-size: 10px; font-weight: 600; color: #fff; padding: 1px 6px; border-radius: 3px; white-space: nowrap; min-width: 80px; text-align: center; flex-shrink: 0; }
-  .ns-ai-platform { background: #6366f1; }
-  .ns-kube-system { background: #475569; }
-  .ns-gpu-operator { background: #059669; }
-  .ns-kuberay { background: #0891b2; }
-  .ns-inference { background: #dc2626; }
-  .ns-external-secrets { background: #d97706; }
-  .ns-grafana { background: #e11d48; }
-  .ns-cloudwatch { background: #0284c7; }
-  .ns-prometheus { background: #ea580c; }
+/* Main */
+.main { padding: 16px; overflow-y: auto; background: var(--bg); }
 
-  .pod-list { font-size: 11px; color: #475569; line-height: 1.8; display: flex; flex-wrap: wrap; gap: 3px; }
-  .pod { display: inline-block; padding: 1px 6px; background: #f8fafc; border: 1px solid #e2e8f0; border-radius: 3px; font-family: 'SF Mono', SFMono-Regular, monospace; font-size: 10px; transition: all 0.3s; }
-  .pod.new { background: #dcfce7; border-color: #86efac; animation: fadeIn 0.5s; }
-  .pod.terminating { opacity: 0.4; text-decoration: line-through; }
+/* Pools */
+.pool { margin-bottom: 16px; border-radius: var(--radius); border: 1px solid var(--border); background: var(--surface); overflow: hidden; transition: opacity 0.3s; }
+.pool.dimmed { opacity: 0.2; }
+.pool-hdr { padding: 12px 18px; display: flex; align-items: center; gap: 10px; border-bottom: 1px solid var(--border); }
+.pool-hdr .badge { font-size: 9px; padding: 3px 8px; border-radius: 4px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.5px; }
+.pool-hdr .pool-name { font-size: 14px; font-weight: 700; }
+.pool-hdr .cnt { font-size: 11px; color: var(--text-muted); padding: 2px 8px; background: rgba(255,255,255,0.04); border-radius: 10px; }
+.pool-hdr .desc { font-size: 11px; color: var(--text-muted); margin-left: auto; }
+.gpu-shared .pool-hdr { background: rgba(167,139,250,0.05); }
+.gpu-shared .badge { background: var(--purple-soft); color: var(--purple); border: 1px solid rgba(167,139,250,0.2); }
+.gpu-inference .pool-hdr { background: rgba(255,179,64,0.04); }
+.gpu-inference .badge { background: var(--amber-soft); color: var(--amber); border: 1px solid rgba(255,179,64,0.2); }
+.default .pool-hdr { background: rgba(91,95,246,0.04); }
+.default .badge { background: var(--accent-soft); color: var(--accent); border: 1px solid rgba(91,95,246,0.2); }
+.mng .pool-hdr { background: rgba(61,220,132,0.04); }
+.mng .badge { background: var(--green-soft); color: var(--green); border: 1px solid rgba(61,220,132,0.2); }
 
-  .gpu-meter { margin-top: 12px; padding: 10px 12px; background: #faf5ff; border-radius: 6px; border: 1px solid #f3e8ff; }
-  .gpu-meter-label { font-size: 10px; font-weight: 600; color: #7c3aed; margin-bottom: 6px; text-transform: uppercase; letter-spacing: 0.5px; }
-  .gpu-slots { display: flex; gap: 4px; }
-  .gpu-slot { flex: 1; height: 24px; border-radius: 4px; display: flex; align-items: center; justify-content: center; font-size: 9px; font-weight: 600; transition: all 0.5s; }
-  .gpu-slot.used { background: #7c3aed; color: #fff; }
-  .gpu-slot.free { background: #f3e8ff; color: #7c3aed; border: 1px dashed #c4b5fd; }
+.pool-body { display: grid; grid-template-columns: repeat(auto-fill, minmax(480px, 1fr)); gap: 8px; padding: 10px; }
+.pool-empty { padding: 24px; text-align: center; color: var(--text-muted); font-size: 12px; }
 
-  .empty-state { padding: 24px; text-align: center; color: #94a3b8; font-size: 13px; font-style: italic; }
+/* Node cards */
+.nd { background: var(--surface-hover); padding: 16px 18px; border-radius: 8px; border: 1px solid var(--border); transition: all 0.2s; }
+.nd.dimmed { opacity: 0.15; }
+.nd.highlight { background: var(--accent-soft); border-color: var(--accent); }
+.nd-top { display: flex; align-items: center; gap: 8px; margin-bottom: 10px; flex-wrap: wrap; }
+.nd-instance { font-size: 15px; font-weight: 800; font-family: var(--mono); }
+.nd-tag { font-size: 10px; padding: 2px 7px; border-radius: 4px; font-weight: 600; border: 1px solid; }
+.nd-tag.spot { background: rgba(91,95,246,0.08); color: var(--accent); border-color: rgba(91,95,246,0.2); }
+.nd-tag.od { background: var(--amber-soft); color: var(--amber); border-color: rgba(255,179,64,0.2); }
+.nd-tag.warm { background: var(--green-soft); color: var(--green); border-color: rgba(61,220,132,0.2); }
+.nd-tag.new { background: var(--green-soft); color: var(--green); border-color: rgba(61,220,132,0.3); animation: fadeIn 0.5s; }
+.nd-host { margin-left: auto; font-size: 11px; color: var(--text-muted); font-family: var(--mono); }
 
-  .daemonsets { max-width: 1100px; margin: 24px auto 0; padding: 16px 20px; background: #fff; border: 1px solid #e2e8f0; border-radius: 12px; box-shadow: 0 1px 3px rgba(0,0,0,0.04); }
-  .daemonsets h3 { font-size: 12px; color: #64748b; margin-bottom: 8px; text-transform: uppercase; letter-spacing: 0.5px; }
-  .daemonsets .ds-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(250px, 1fr)); gap: 6px; }
-  .daemonsets .ds-item { font-size: 11px; display: flex; align-items: center; gap: 6px; }
-  .daemonsets .ds-ns { font-size: 9px; padding: 1px 5px; border-radius: 2px; background: #f1f5f9; color: #64748b; font-weight: 600; }
+/* Pods */
+.nd-pods { display: flex; flex-wrap: wrap; gap: 5px; }
+.pd { height: 24px; padding: 0 9px; border-radius: 5px; font-size: 11px; font-family: var(--mono); display: flex; align-items: center; font-weight: 500; cursor: default; border: 1px solid; }
+.pd.inf { background: var(--red-soft); color: var(--red); border-color: rgba(255,107,107,0.2); }
+.pd.plat { background: var(--accent-soft); color: #818cf8; border-color: rgba(91,95,246,0.2); }
+.pd.gpu-op { background: var(--green-soft); color: var(--green); border-color: rgba(61,220,132,0.2); }
+.pd.kuberay { background: rgba(103,232,249,0.1); color: var(--cyan); border-color: rgba(103,232,249,0.2); }
+.pd.sys { background: rgba(255,255,255,0.03); color: var(--text-muted); border-color: var(--border); }
+.pd.new { background: var(--green-soft); color: var(--green); border-color: rgba(61,220,132,0.3); animation: fadeIn 0.4s; }
 
-  .event-log { max-width: 1100px; margin: 16px auto 0; padding: 12px 16px; background: #0f172a; border-radius: 8px; font-family: 'SF Mono', SFMono-Regular, monospace; font-size: 11px; color: #94a3b8; max-height: 150px; overflow-y: auto; }
-  .event-log .event { padding: 2px 0; border-bottom: 1px solid #1e293b; }
-  .event-log .event-time { color: #64748b; }
-  .event-log .event-add { color: #4ade80; }
-  .event-log .event-del { color: #f87171; }
-  .event-log .event-mod { color: #fbbf24; }
+/* Namespace legend */
+.ns-legend { display: flex; flex-wrap: wrap; gap: 10px; margin-top: 10px; padding-top: 8px; border-top: 1px solid var(--border); }
+.ns-leg-item { display: flex; align-items: center; gap: 5px; font-size: 10px; color: var(--text-muted); font-family: var(--mono); }
+.ns-leg-dot { width: 8px; height: 8px; border-radius: 3px; }
 
-  @keyframes fadeIn { from { opacity: 0; transform: translateY(-4px); } to { opacity: 1; transform: translateY(0); } }
+/* GPU meter */
+.gpu-m { margin-top: 12px; padding: 12px 14px; background: rgba(167,139,250,0.04); border-radius: var(--radius-sm); border: 1px solid rgba(167,139,250,0.1); }
+.gpu-m-label { font-size: 10px; font-weight: 700; color: var(--purple); margin-bottom: 8px; text-transform: uppercase; letter-spacing: 0.5px; font-family: var(--mono); }
+.gpu-slots { display: flex; gap: 5px; }
+.gs { flex: 1; min-height: 44px; border-radius: 6px; display: flex; align-items: center; justify-content: center; font-size: 11px; font-weight: 700; font-family: var(--mono); padding: 6px 8px; text-align: center; word-break: break-all; line-height: 1.3; }
+.gs.used { background: linear-gradient(135deg, #7c3aed, #6366f1); color: #fff; box-shadow: 0 2px 8px rgba(124,58,237,0.3); }
+.gs.free { background: rgba(167,139,250,0.05); border: 1px dashed rgba(167,139,250,0.25); color: var(--text-muted); }
+
+@keyframes pulse { 0%,100%{opacity:1;}50%{opacity:0.3;} }
+@keyframes fadeIn { from{opacity:0;transform:translateY(-3px);}to{opacity:1;transform:translateY(0);} }
 </style>
 </head>
-<body>
+<body data-theme="dark">
+<div class="shell">
+  <div class="topbar">
+    <div class="logo"><span>AI</span> Platform</div>
+    <div class="topbar-sep"></div>
+    <div class="cluster-id" id="top-cluster">connecting...</div>
+    <div class="topbar-spacer"></div>
+    <button class="theme-toggle" onclick="toggleTheme()" title="Toggle light/dark mode">◐</button>
+    <div class="live-badge" id="live-badge">Live</div>
+  </div>
 
-<div class="header">
-  <h1>ai-platform-cnd-demo</h1>
-  <div class="meta">EKS 1.35 &middot; eu-central-1 &middot; Karpenter 1.10.0</div>
-  <div class="stats">
-    <div class="stat"><div class="stat-value" id="stat-nodes">-</div><div class="stat-label">Nodes</div></div>
-    <div class="stat"><div class="stat-value" id="stat-pools">3</div><div class="stat-label">Node Pools</div></div>
-    <div class="stat"><div class="stat-value" id="stat-gpus">-</div><div class="stat-label">GPUs</div></div>
-    <div class="stat"><div class="stat-value" id="stat-models">-</div><div class="stat-label">Models</div></div>
+  <div class="sidebar">
+    <div class="sidebar-resizer" id="sidebar-resizer"></div>
+    <div class="card">
+      <div class="card-title">Cluster</div>
+      <div class="stat-row"><span class="stat-label">Nodes</span><span class="stat-val" id="s-nodes">–</span></div>
+      <div class="stat-row"><span class="stat-label">GPU Slots</span><span class="stat-val purple" id="s-gpus">–</span></div>
+      <div class="stat-row"><span class="stat-label">Models</span><span class="stat-val" id="s-models">–</span></div>
+    </div>
+    <div class="card">
+      <div class="card-title">Inference Endpoints</div>
+      <div id="sidebar-models"><div class="model-empty">No models deployed</div></div>
+    </div>
+    <div class="card" style="flex:1;min-height:0;">
+      <div class="card-title">Activity</div>
+      <div class="event-list" id="event-log"><div class="ev"><span class="ev-time">--:--</span> waiting...</div></div>
+    </div>
+  </div>
+
+  <div class="main" id="main-scroll">
+    <div id="infra"></div>
   </div>
 </div>
 
-<div class="connection-bar connecting" id="connection-bar">
-  <div class="pulse"></div>
-  <span id="connection-text">Connecting to Kubernetes API...</span>
-</div>
-
-<div class="cluster" id="cluster-container">
-  <div style="text-align:center; padding: 60px; color: #94a3b8;">Loading cluster topology...</div>
-</div>
-
-<div class="event-log" id="event-log">
-  <div class="event"><span class="event-time">--:--:--</span> Waiting for connection...</div>
-</div>
-
-
 <script>
-// Fetches /data.json every 2s (backend builds this from K8s API).
-// No streaming, no WebSocket, no K8s auth in browser. Rock-solid.
-
-const POOL_CONFIG = {
-  '__mng__': { class: 'mng', label: 'MNG', name: 'CriticalAddons', desc: 'Managed Node Group · ARM Graviton · Always-on' },
-  'default': { class: 'default', label: 'Karpenter', name: 'default', desc: 'Spot/On-demand · x86 compute (c/m/r) · Platform services' },
-  'gpu-shared': { class: 'gpu-shared', label: 'Karpenter', name: 'gpu-shared', desc: 'Spot/On-demand · NVIDIA L4 · Time-sliced 4x · EBS Snapshot' },
-  'gpu-inference': { class: 'gpu-inference', label: 'Karpenter', name: 'gpu-inference', desc: 'Spot/On-demand · Dedicated GPU · Scales to zero' },
-};
-const NS_COLORS = {
-  'ai-platform': 'ns-ai-platform', 'kube-system': 'ns-kube-system',
-  'gpu-operator': 'ns-gpu-operator', 'kuberay': 'ns-kuberay',
-  'inference': 'ns-inference', 'external-secrets': 'ns-external-secrets',
-  'grafana-operator': 'ns-grafana', 'amazon-cloudwatch': 'ns-cloudwatch',
-  'prometheus-node-exporter': 'ns-prometheus',
-};
+const POOLS = [
+  { key:'gpu-shared', cls:'gpu-shared', label:'KARPENTER', name:'gpu-shared', desc:'Spot/On-demand · Time-sliced · EBS Snapshot' },
+  { key:'gpu-inference', cls:'gpu-inference', label:'KARPENTER', name:'gpu-inference', desc:'Spot/On-demand · Dedicated GPU · Scales to zero' },
+  { key:'default', cls:'default', label:'KARPENTER', name:'default', desc:'Spot/On-demand · Platform services' },
+  { key:'__mng__', cls:'mng', label:'MNG', name:'CriticalAddons', desc:'Managed · Graviton · Always-on' },
+];
 const DAEMONSETS = ['aws-node','kube-proxy','ebs-csi-node','eks-pod-identity-agent','aws-for-fluent-bit','cloudwatch-agent','fluent-bit','prometheus-node-exporter','nfd-worker','dcgm-exporter'];
+const SKIP_POD = ['-register','cleanup'];
+const NS_CLS = {'inference':'inf','ai-platform':'plat','kuberay':'kuberay','gpu-operator':'gpu-op','external-secrets':'sys','grafana-operator':'sys'};
+const NS_COLORS = {'inference':['rgba(255,107,107,0.3)','var(--red)'],'ai-platform':['rgba(91,95,246,0.3)','#818cf8'],'kuberay':['rgba(103,232,249,0.3)','var(--cyan)'],'gpu-operator':['rgba(61,220,132,0.3)','var(--green)']};
 
-let prevNodeNames = new Set();
-let prevPodKeys = new Set();
-let prevEndpointNames = new Set();
-let prevEndpointStatus = {};
-let eventLog = [];
-let connected = false;
+let prevNodes=new Set(),prevPods=new Set(),prevEps=new Set(),prevEpSt={};
+let events=[],connected=false,selectedModel=null,lastData=null;
 
-function logEvent(type, msg) {
-  const time = new Date().toLocaleTimeString('en-GB', {hour12: false});
-  const cls = type === 'add' ? 'event-add' : type === 'del' ? 'event-del' : 'event-mod';
-  eventLog.unshift({time, cls, msg});
-  if (eventLog.length > 30) eventLog.pop();
-  document.getElementById('event-log').innerHTML = eventLog.map(e =>
-    `<div class="event"><span class="event-time">${e.time}</span> <span class="${e.cls}">${e.msg}</span></div>`
-  ).join('');
+function short(n){return n.replace(/-[a-z0-9]{5,10}(-[a-z0-9]{5})?$/,'').replace(/-[0-9]+$/,'');}
+function isDS(n){return DAEMONSETS.some(d=>n.startsWith(d));}
+function skipEv(n){return SKIP_POD.some(s=>n.includes(s));}
+function ts(){return new Date().toLocaleTimeString('en-GB',{hour:'2-digit',minute:'2-digit',second:'2-digit'});}
+
+function log(type,msg){
+  events.unshift({t:ts(),c:type==='add'?'ev-add':type==='del'?'ev-del':'ev-mod',m:msg});
+  if(events.length>25)events.pop();
+  document.getElementById('event-log').innerHTML=events.map(e=>`<div class="ev"><span class="ev-time">${e.t}</span> <span class="${e.c}">${e.m}</span></div>`).join('');
 }
 
-function setConnection(status, text) {
-  const bar = document.getElementById('connection-bar');
-  bar.className = `connection-bar ${status}`;
-  document.getElementById('connection-text').textContent = text;
+function selectModel(name){selectedModel=selectedModel===name?null:name;renderAll();}
+
+function renderModels(eps){
+  const el=document.getElementById('sidebar-models');
+  if(!eps.length){el.innerHTML='<div class="model-empty">No models deployed</div>';return;}
+  el.innerHTML=eps.map(ep=>{
+    const ready=ep.ready==='True',st=ep.modelStatus||'Pending';
+    const cls=ready?'running':st==='DEPLOYING'?'deploying':'pending';
+    const sel=selectedModel===ep.name?'selected':'';
+    const elapsed=Math.floor((Date.now()-new Date(ep.created).getTime())/1000);
+    const timer=ready?'':`<div class="mtimer">⏱ ${Math.floor(elapsed/60)}m ${elapsed%60}s</div>`;
+    return `<div class="model-item ${sel}" onclick="selectModel('${ep.name}')">
+      <div class="model-top"><div class="mdot ${cls}"></div><div class="mname">${ep.name}</div><div class="mstatus ${cls}">${st}</div></div>
+      <div class="mdetail">${ep.shared?'shared':'dedicated'} · ${ep.model}</div>${timer}</div>`;
+  }).join('');
 }
 
-function shortName(name) {
-  return name.replace(/-[a-z0-9]{5,10}(-[a-z0-9]{5})?$/, '').replace(/-[0-9]+$/, '');
-}
+function renderAll(){if(!lastData)return;renderModels(lastData.endpoints);renderInfra(lastData.nodes,lastData.pods);}
 
-function isDaemonsetPod(pod) {
-  return DAEMONSETS.some(ds => pod.name.startsWith(ds));
-}
+function renderInfra(nodes,pods){
+  const pools={};
+  for(const n of nodes){const p=n.pool||'__mng__';(pools[p]=pools[p]||[]).push(n);}
+  const podsByNode={};
+  for(const p of pods){if(!p.node||isDS(p.name))continue;(podsByNode[p.node]=podsByNode[p.node]||[]).push(p);}
+  const modelNodes=new Set();
+  if(selectedModel)for(const p of pods)if(p.namespace==='inference'&&p.name.startsWith(selectedModel)&&p.node)modelNodes.add(p.node);
 
-function render(data) {
-  const {nodes, pods, endpoints} = data;
+  let html='';
+  for(const pool of POOLS){
+    const pNodes=pools[pool.key]||[];
+    const poolHasModel=!selectedModel||pNodes.some(n=>modelNodes.has(n.name));
+    html+=`<div class="pool ${pool.cls} ${selectedModel&&!poolHasModel?'dimmed':''}">`;
+    html+=`<div class="pool-hdr"><span class="badge">${pool.label}</span><span class="pool-name">${pool.name}</span><span class="cnt">${pNodes.length}</span><span class="desc">${pool.desc}</span></div>`;
+    if(!pNodes.length){html+=`<div class="pool-empty">No nodes — scales from zero when workloads arrive</div>`;}
+    else{
+      html+=`<div class="pool-body">`;
+      for(const node of pNodes){
+        const ndPods=podsByNode[node.name]||[];
+        const isNew=(Date.now()-new Date(node.created).getTime())<120000;
+        const isWarm=ndPods.some(p=>p.name.includes('warmup'));
+        const cap=node.capacity==='spot'?'spot':'od';
+        const capLbl=node.capacity==='spot'?'spot':'on-demand';
+        const host=node.name.split('.')[0];
+        const zone=node.zone.replace(/eu-central-/,'');
+        const nodeDim=selectedModel&&!modelNodes.has(node.name)?'dimmed':'';
+        const nodeHL=selectedModel&&modelNodes.has(node.name)?'highlight':'';
 
-  // Stats
-  document.getElementById('stat-nodes').textContent = nodes.length;
-  document.getElementById('stat-gpus').textContent = nodes.reduce((s, n) => s + n.gpu, 0);
-  document.getElementById('stat-models').textContent = endpoints.length;
+        html+=`<div class="nd ${nodeDim} ${nodeHL}">`;
+        html+=`<div class="nd-top"><span class="nd-instance">${node.instance}</span><span class="nd-tag ${cap}">${capLbl}</span>`;
+        if(isWarm)html+=`<span class="nd-tag warm">warm pool</span>`;
+        if(isNew)html+=`<span class="nd-tag new">new</span>`;
+        html+=`<span class="nd-host">${host} · ${zone}</span></div>`;
 
-  // Group nodes by pool
-  const pools = {};
-  for (const node of nodes) {
-    const pool = node.pool || '__mng__';
-    if (!pools[pool]) pools[pool] = [];
-    pools[pool].push(node);
-  }
-
-  // Group pods by node
-  const podsByNode = {};
-  for (const pod of pods) {
-    if (!pod.node) continue;
-    if (!podsByNode[pod.node]) podsByNode[pod.node] = [];
-    podsByNode[pod.node].push(pod);
-  }
-
-  // Render
-  const poolOrder = ['__mng__', 'default', 'gpu-shared', 'gpu-inference'];
-  let html = '';
-
-  for (const poolName of poolOrder) {
-    const config = POOL_CONFIG[poolName];
-    const poolNodes = pools[poolName] || [];
-
-    html += `<div class="node-group ${config.class}">`;
-    html += `<div class="node-group-header">`;
-    html += `<span class="badge">${config.label}</span> ${config.name}`;
-    html += `<span class="count">${poolNodes.length} node${poolNodes.length !== 1 ? 's' : ''}</span>`;
-    html += `<span class="desc">${config.desc}</span>`;
-    html += `</div>`;
-
-    if (poolNodes.length === 0) {
-      html += `<div class="empty-state">No nodes — scales from zero when workloads arrive</div>`;
-    } else {
-      html += `<div class="nodes">`;
-      for (const node of poolNodes) {
-        const nodePods = (podsByNode[node.name] || []).filter(p => !isDaemonsetPod(p));
-        const isWarm = nodePods.some(p => p.name.includes('warmup'));
-        const isNew = (Date.now() - new Date(node.created).getTime()) < 120000;
-        const capClass = node.capacity === 'spot' ? 'capacity-spot' : 'capacity-ondemand';
-        const capLabel = node.capacity === 'spot' ? 'spot' : 'on-demand';
-        const zone = node.zone.replace('eu-central-', '');
-
-        html += `<div class="node ${isNew ? 'highlight' : ''}">`;
-        html += `<div class="node-title">`;
-        html += `<span class="hostname">${node.name.split('.')[0]}</span>`;
-        html += `<span class="instance-badge">${node.instance}</span>`;
-        html += `<span class="capacity-badge ${capClass}">${capLabel}</span>`;
-        if (isWarm) html += `<span class="warm-badge">Warm Pool</span>`;
-        if (isNew) html += `<span class="new-badge">New</span>`;
-        html += `<span class="zone" style="margin-left:auto;">${zone}</span>`;
-        html += `</div>`;
-
-        // Group pods by namespace
-        const byNs = {};
-        for (const pod of nodePods) {
-          if (!byNs[pod.namespace]) byNs[pod.namespace] = [];
-          byNs[pod.namespace].push(pod);
-        }
-
-        html += `<div class="workloads">`;
-        for (const [ns, nsPods] of Object.entries(byNs).sort()) {
-          const nsClass = NS_COLORS[ns] || 'ns-kube-system';
-          const displayNs = ns.length > 12 ? ns.substring(0, 11) + '…' : ns;
-          html += `<div class="ns-group">`;
-          html += `<span class="ns-label ${nsClass}">${displayNs}</span>`;
-          html += `<div class="pod-list">`;
-          for (const pod of nsPods) {
-            const isNewPod = (Date.now() - new Date(pod.created).getTime()) < 30000;
-            html += `<span class="pod ${isNewPod ? 'new' : ''}">${shortName(pod.name)}</span>`;
+        if(ndPods.length){
+          html+=`<div class="nd-pods">`;
+          const nsUsed=new Set();
+          for(const p of ndPods){
+            const isNewP=(Date.now()-new Date(p.created).getTime())<30000;
+            let c=NS_CLS[p.namespace]||'sys';if(isNewP)c='new';
+            nsUsed.add(p.namespace);
+            html+=`<span class="pd ${c}" title="${p.namespace}/${p.name}">${short(p.name)}</span>`;
           }
-          html += `</div></div>`;
+          html+=`</div>`;
+          const legendNs=[...nsUsed].filter(ns=>NS_COLORS[ns]);
+          if(legendNs.length>0){
+            html+=`<div class="ns-legend">`;
+            for(const ns of legendNs){const[bg,fg]=NS_COLORS[ns];html+=`<div class="ns-leg-item"><div class="ns-leg-dot" style="background:${bg};"></div>${ns}</div>`;}
+            html+=`</div>`;
+          }
         }
-        html += `</div>`;
 
-        // GPU meter
-        if (node.gpu > 0) {
-          const gpuPods = nodePods.filter(p => p.gpu > 0);
-          html += `<div class="gpu-meter">`;
-          html += `<div class="gpu-meter-label">NVIDIA L4 · ${node.gpu} GPU Slots</div>`;
-          html += `<div class="gpu-slots">`;
-          for (let i = 0; i < node.gpu; i++) {
-            if (i < gpuPods.length) {
-              const label = shortName(gpuPods[i].name).substring(0, 14);
-              html += `<div class="gpu-slot used">${label}</div>`;
-            } else {
-              html += `<div class="gpu-slot free">free</div>`;
+        if(node.gpu>0){
+          const gpuPods=ndPods.filter(p=>p.gpu>0);
+          const gpuLabel=node.gpuProduct||node.instance;
+          html+=`<div class="gpu-m"><div class="gpu-m-label">${gpuLabel} · ${node.gpu} GPU slot${node.gpu>1?'s':''}</div><div class="gpu-slots">`;
+          for(let i=0;i<node.gpu;i++){
+            if(i<gpuPods.length){
+              const podName=gpuPods[i].name;
+              // Extract model name: "smollm3-3b" from full pod name, handle warmup specially
+              let label;
+              if(podName.includes('warmup')) label='warmup';
+              else label=podName.replace(/-[a-z0-9]{5}-(?:gpu-workers-worker|head).*$/,'').replace(/-gpu-workers.*$/,'').replace(/-head.*$/,'');
+              html+=`<div class="gs used">${label}</div>`;
             }
+            else html+=`<div class="gs free">free</div>`;
           }
-          html += `</div></div>`;
+          html+=`</div></div>`;
         }
-        html += `</div>`;
+        html+=`</div>`;
       }
-      html += `</div>`;
+      html+=`</div>`;
     }
-    html += `</div>`;
+    html+=`</div>`;
   }
-
-  // InferenceEndpoints (always visible)
-  html += `<div class="node-group" style="border-color:#6366f1;">`;
-  html += `<div class="node-group-header" style="background:#eef2ff;border-bottom:1px solid #c7d2fe;color:#4338ca;">`;
-  html += `<span class="badge" style="background:#4338ca;color:#fff;">KRO</span> InferenceEndpoints`;
-  html += `<span class="count">${endpoints.length} model${endpoints.length !== 1 ? 's' : ''}</span>`;
-  html += `<span class="desc">Custom Resources — model deployment status</span>`;
-  html += `</div>`;
-  if (endpoints.length === 0) {
-    html += `<div class="empty-state">No models deployed — commit a YAML to workloads/models/ to deploy</div>`;
-  } else {
-    html += `<div style="display:flex;flex-wrap:wrap;gap:0;border-top:1px solid #e2e8f0;">`;
-    for (const ep of endpoints) {
-      const ready = ep.ready === 'True';
-      const status = ep.modelStatus || 'Pending';
-      const color = ready ? '#059669' : status === 'DEPLOYING' ? '#d97706' : '#6b7280';
-      const bg = ready ? '#f0fdf4' : status === 'DEPLOYING' ? '#fffbeb' : '#f9fafb';
-      const icon = ready ? '●' : status === 'DEPLOYING' ? '◐' : '○';
-      const shared = ep.shared ? 'shared' : 'dedicated';
-
-      const elapsed = Math.floor((Date.now() - new Date(ep.created).getTime()) / 1000);
-      const timerStr = ready ? '' : `${Math.floor(elapsed/60)}m ${elapsed%60}s`;
-
-      html += `<div style="flex:1;min-width:280px;padding:14px 20px;border-right:1px solid #f1f5f9;border-bottom:1px solid #f1f5f9;background:${bg};">`;
-      html += `<div style="display:flex;align-items:center;gap:8px;margin-bottom:6px;">`;
-      html += `<span style="color:${color};font-size:16px;">${icon}</span>`;
-      html += `<span style="font-weight:700;font-size:14px;color:#1e293b;">${ep.name}</span>`;
-      html += `<span style="margin-left:auto;font-size:10px;padding:2px 8px;border-radius:4px;background:${color}18;color:${color};font-weight:700;">${status}</span>`;
-      html += `</div>`;
-      html += `<div style="font-size:12px;color:#475569;margin-bottom:4px;">${ep.message}</div>`;
-      html += `<div style="display:flex;align-items:center;gap:12px;font-size:10px;color:#94a3b8;">`;
-      html += `<span>gpu: ${shared}</span><span>model: ${ep.model}</span>`;
-      if (timerStr) html += `<span style="margin-left:auto;font-family:SF Mono,monospace;font-size:11px;color:${color};font-weight:600;">⏱ ${timerStr}</span>`;
-      html += `</div></div>`;
-    }
-    html += `</div>`;
-  }
-  html += `</div>`;
-
-  document.getElementById('cluster-container').innerHTML = html;
+  document.getElementById('infra').innerHTML=html;
 }
 
-// --- Diff and log events ---
-function diffAndLog(data) {
-  const nodeNames = new Set(data.nodes.map(n => n.name));
-  const podKeys = new Set(data.pods.map(p => `${p.namespace}/${p.name}`));
-  const epNames = new Set(data.endpoints.map(e => e.name));
-
-  if (connected) {
-    // Nodes
-    for (const n of data.nodes) {
-      if (!prevNodeNames.has(n.name)) logEvent('add', `Node ${n.name.split('.')[0]} (${n.instance}) joined`);
-    }
-    for (const name of prevNodeNames) {
-      if (!nodeNames.has(name)) logEvent('del', `Node ${name.split('.')[0]} removed`);
-    }
-    // Pods (inference only, skip register/cleanup Jobs)
-    const skipPod = (name) => name.includes('-register') || name.includes('cleanup');
-    for (const p of data.pods) {
-      const key = `${p.namespace}/${p.name}`;
-      if (!prevPodKeys.has(key) && p.namespace === 'inference' && !isDaemonsetPod(p) && !skipPod(p.name)) {
-        logEvent('add', `Pod ${shortName(p.name)} → ${p.node || 'pending'}`);
-      }
-    }
-    for (const key of prevPodKeys) {
-      if (!podKeys.has(key) && key.startsWith('inference/')) {
-        const podName = key.split('/')[1];
-        if (!skipPod(podName)) logEvent('del', `Pod ${shortName(podName)} removed`);
-      }
-    }
-    // Endpoints — ignore transient status flaps (KRO reconciliation noise)
-    for (const ep of data.endpoints) {
-      if (!prevEndpointNames.has(ep.name)) {
-        logEvent('add', `Model "${ep.name}" deployed → ${ep.modelStatus}`);
-      } else if (prevEndpointStatus[ep.name] !== ep.modelStatus) {
-        // Only log if transitioning forward (not flapping back to Pending from RUNNING)
-        const prev = prevEndpointStatus[ep.name];
-        const curr = ep.modelStatus;
-        const isFlap = prev === 'RUNNING' && (curr === 'Pending' || curr === '' || !curr);
-        if (!isFlap) {
-          const cls = ep.ready === 'True' ? 'add' : 'mod';
-          logEvent(cls, `Model "${ep.name}" → ${curr}${ep.ready === 'True' ? ' ✓' : ''}`);
-        }
-      }
-    }
-    for (const name of prevEndpointNames) {
-      if (!epNames.has(name)) logEvent('del', `Model "${name}" removed`);
-    }
+function diff(data){
+  const nN=new Set(data.nodes.map(n=>n.name)),pK=new Set(data.pods.map(p=>`${p.namespace}/${p.name}`)),eN=new Set(data.endpoints.map(e=>e.name));
+  if(connected){
+    for(const n of data.nodes)if(!prevNodes.has(n.name))log('add',`Node ${n.name.split('.')[0]} (${n.instance}) joined`);
+    for(const n of prevNodes)if(!nN.has(n))log('del',`Node ${n.split('.')[0]} removed`);
+    for(const p of data.pods){const k=`${p.namespace}/${p.name}`;if(!prevPods.has(k)&&p.namespace==='inference'&&!isDS(p.name)&&!skipEv(p.name))log('add',`Pod ${short(p.name)} → ${p.node?p.node.split('.')[0]:'pending'}`);}
+    for(const k of prevPods){if(!pK.has(k)&&k.startsWith('inference/')){const n=k.split('/')[1];if(!skipEv(n))log('del',`Pod ${short(n)} removed`);}}
+    for(const e of data.endpoints){if(!prevEps.has(e.name))log('add',`Model "${e.name}" deployed → ${e.modelStatus}`);else if(prevEpSt[e.name]!==e.modelStatus){const isFlap=prevEpSt[e.name]==='RUNNING'&&(!e.modelStatus||e.modelStatus==='Pending');if(!isFlap)log(e.ready==='True'?'add':'mod',`Model "${e.name}" → ${e.modelStatus}${e.ready==='True'?' ✓':''}`);}}
+    for(const n of prevEps)if(!eN.has(n))log('del',`Model "${n}" removed`);
   }
-
-  prevNodeNames = nodeNames;
-  prevPodKeys = podKeys;
-  prevEndpointNames = epNames;
-  prevEndpointStatus = {};
-  for (const ep of data.endpoints) prevEndpointStatus[ep.name] = ep.modelStatus;
+  prevNodes=nN;prevPods=pK;prevEps=eN;prevEpSt={};
+  for(const e of data.endpoints)prevEpSt[e.name]=e.modelStatus;
 }
 
-// --- Poll loop ---
-async function poll() {
-  try {
-    const resp = await fetch('/data.json');
-    if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
-    const data = await resp.json();
-    diffAndLog(data);
-    render(data);
-    if (!connected) {
-      connected = true;
-      logEvent('mod', 'Connected to cluster');
-    }
-    setConnection('connected', 'Connected — live');
-  } catch (e) {
-    if (!connected) setConnection('connecting', 'Connecting to cluster...');
-    // Keep showing last state on error — never blank the dashboard
-  }
+async function poll(){
+  try{
+    const r=await fetch('/data.json');if(!r.ok)throw 0;
+    const data=await r.json();lastData=data;diff(data);
+    document.getElementById('s-nodes').textContent=data.nodes.length;
+    document.getElementById('s-gpus').textContent=data.nodes.reduce((s,n)=>s+n.gpu,0);
+    document.getElementById('s-models').textContent=data.endpoints.length;
+    document.getElementById('top-cluster').textContent=`ai-platform · ${data.nodes.length} nodes`;
+    renderAll();
+    if(!connected){connected=true;log('mod','Connected to cluster');}
+  }catch(e){if(!connected)document.getElementById('top-cluster').textContent='connecting...';}
 }
+poll();setInterval(poll,2000);
 
-poll();
-setInterval(poll, 2000);
+function toggleTheme(){
+  const body=document.body;
+  const current=body.getAttribute('data-theme');
+  const next=current==='dark'?'light':'dark';
+  body.setAttribute('data-theme',next);
+  localStorage.setItem('theme',next);
+}
+// Restore saved theme
+const saved=localStorage.getItem('theme');
+if(saved)document.body.setAttribute('data-theme',saved);
+
+// Resizable sidebar
+(function(){
+  const resizer=document.getElementById('sidebar-resizer');
+  const shell=document.querySelector('.shell');
+  let dragging=false;
+  resizer.addEventListener('mousedown',e=>{
+    dragging=true;
+    resizer.classList.add('active');
+    document.body.style.cursor='col-resize';
+    document.body.style.userSelect='none';
+    e.preventDefault();
+  });
+  document.addEventListener('mousemove',e=>{
+    if(!dragging)return;
+    const w=Math.max(220,Math.min(420,e.clientX));
+    shell.style.gridTemplateColumns=w+'px 1fr';
+  });
+  document.addEventListener('mouseup',()=>{
+    if(!dragging)return;
+    dragging=false;
+    resizer.classList.remove('active');
+    document.body.style.cursor='';
+    document.body.style.userSelect='';
+    localStorage.setItem('sidebar-w',shell.style.gridTemplateColumns);
+  });
+  const savedW=localStorage.getItem('sidebar-w');
+  if(savedW)shell.style.gridTemplateColumns=savedW;
+})();
+
 </script>
 </body>
 </html>
