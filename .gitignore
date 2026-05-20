@@ -32,6 +32,7 @@ ops/.scale-state-*.json
 .kiro/
 .playwright-mcp/
 skills-lock.json
+CLAUDE.md
 
 # Build artifacts
 .next/
