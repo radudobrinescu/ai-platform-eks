@@ -26,5 +26,12 @@ ops/.scale-state-*.json
 .vscode/
 .claude/settings.local.json
 
+# Agent tooling
+.agents/
+.claude/
+.kiro/
+.playwright-mcp/
+skills-lock.json
+
 # Build artifacts
 .next/

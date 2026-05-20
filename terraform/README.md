@@ -109,7 +109,7 @@ This architecture is designed to provide a secure, scalable, and easily manageab
 ### Architecture Diagram
 
 <div align="center">
-<img src="single-account-single-cluster-multi-env/automated-provisioning-of-application-ready-amazon-eks-clusters.png" width=70%> 
+<img src="automated-provisioning-of-application-ready-amazon-eks-clusters.png" width=70%> 
 <br/>
 <i>Figure 1:  Application-Ready Amazon EKS Cluster Reference architecture </i>
 </div>
