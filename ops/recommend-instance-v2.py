@@ -1673,9 +1673,10 @@ def _explain_recommendation(
         util_pct = 100.0 * anchor.per_gpu_need_gb / anchor.instance.vram_gb
         if anchor.single_stream_tok_s > 0:
             if args.users > 1:
+                actual_pu = per_user_tok_s(anchor.single_stream_tok_s, args.users)
                 parts.append(
                     f"At {args.users} concurrent users, each user gets "
-                    f"~{anchor.per_user_tok_s_at_users:.0f} tok/s "
+                    f"~{actual_pu:.0f} tok/s "
                     f"(ceiling {anchor.single_stream_tok_s:.0f} tok/s single-stream)."
                 )
             else:
@@ -1816,8 +1817,9 @@ def print_human(
               f"{best.instance.vram_gb} GB ({util_pct:.0f}%){C.RESET}  "
               f"— {best.headroom_gb:.1f} GB headroom")
         if best.single_stream_tok_s > 0:
+            actual_per_user = per_user_tok_s(best.single_stream_tok_s, args.users)
             per_user_label = (
-                f"~{best.per_user_tok_s_at_users:.0f} tok/s/user @ {args.users} concurrent"
+                f"~{actual_per_user:.0f} tok/s/user @ {args.users} concurrent"
                 if args.users > 1 else
                 f"~{best.single_stream_tok_s:.0f} tok/s single-stream"
             )
@@ -1921,9 +1923,10 @@ def print_human(
             useful: list[Option] = []
             best_tok_s_so_far = 0.0
             for o in within_budget:
-                if o.per_user_tok_s_at_users > best_tok_s_so_far or o is best:
+                o_tok_s = per_user_tok_s(o.single_stream_tok_s, args.users)
+                if o_tok_s > best_tok_s_so_far or o is best:
                     useful.append(o)
-                    best_tok_s_so_far = max(best_tok_s_so_far, o.per_user_tok_s_at_users)
+                    best_tok_s_so_far = max(best_tok_s_so_far, o_tok_s)
             within_budget = useful
 
         # Default: show top 4. With --verbose, show the full table.
@@ -1938,12 +1941,12 @@ def print_human(
               f"{'-'*12} {'-'*6}  {'-'*7}  {'-'*9}  {'-'*10}{C.RESET}")
 
         for o in within_budget[:display_limit]:
-            _print_table_row(o, C, over=False)
+            _print_table_row(o, C, over=False, users=args.users)
         if args.verbose and over_budget:
             remaining = display_limit - len(within_budget[:display_limit])
             if remaining > 0:
                 for o in over_budget[:remaining]:
-                    _print_table_row(o, C, over=True)
+                    _print_table_row(o, C, over=True, users=args.users)
 
     # -------- 6. Fleet scaling (when auto-fleet is triggered) ------------ #
     if scaling:
@@ -1966,11 +1969,12 @@ def print_human(
           f"Monthly = hourly × 730h. Prices: {price_src}{C.RESET}")
 
 
-def _print_table_row(o: Option, C: type, over: bool) -> None:
+def _print_table_row(o: Option, C: type, over: bool, users: int = 1) -> None:
     util_pct = 100.0 * o.per_gpu_need_gb / o.instance.vram_gb
     strategy = o.parallelism_label or "1 GPU"
     usage  = f"{o.per_gpu_need_gb:.0f}/{o.instance.vram_gb} GB"
-    tok_s  = f"{o.per_user_tok_s_at_users:.0f}" if o.single_stream_tok_s > 0 else "?"
+    tok_s  = (f"{per_user_tok_s(o.single_stream_tok_s, users):.0f}"
+              if o.single_stream_tok_s > 0 else "?")
     price  = f"${o.price_usd_h:.2f}"
     month  = _fmt_monthly(o.price_usd_h)
 
