@@ -1650,10 +1650,11 @@ def _explain_recommendation(
         parts.append(
             f"{fb.replicas}× {anchor.instance.name} runs the model with {strategy_phrase}."
         )
+        r_word = "replica" if fb.replicas == 1 else "replicas"
         parts.append(
             f"Each replica serves {fb.effective_capacity} concurrent users at "
             f"~{fb.estimated_tok_s_per_user:.0f} tok/s/user; "
-            f"fleet of {fb.replicas} replicas covers {args.target_users} users at "
+            f"fleet of {fb.replicas} {r_word} covers {args.target_users} users at "
             f"${fb.fleet_cost_usd_h:.2f}/hr (~{_fmt_monthly(fb.fleet_cost_usd_h)}/month)."
         )
         # Fleet-mode runner-up: cheapest alternative fleet config
@@ -1762,7 +1763,7 @@ def print_human(
     # In fleet mode, anchor labels to the fleet pick (which may differ from
     # the single-instance `best` in instance type AND parallelism strategy).
     banner_opt = fleet_best.option if is_fleet_mode else best
-    shared_on = banner_opt.shared_eligible and banner_opt.total_gpus == 1
+    shared_on = (not is_fleet_mode) and banner_opt.shared_eligible and banner_opt.total_gpus == 1
     if shared_on:
         mode_lbl = f"shared mode (up to {TIME_SLICE_REPLICAS} models per GPU)"
     elif banner_opt.parallelism_label:
@@ -1787,9 +1788,10 @@ def print_human(
               f"{fb.replicas}× {fb.option.instance.name}{C.RESET} — "
               f"{fb.option.total_gpus}× NVIDIA {fb.option.instance.gpu} per replica · {mode_lbl}")
         fleet_monthly = _fmt_monthly(fb.fleet_cost_usd_h)
+        r_word = "replica" if fb.replicas == 1 else "replicas"
         print(f"    {C.BOLD}${fb.fleet_cost_usd_h:.2f}/hr fleet{C.RESET}  ·  "
               f"~{fleet_monthly}/month  ({C.DIM}${fb.option.price_usd_h:.2f}/hr × "
-              f"{fb.replicas} replicas{C.RESET})")
+              f"{fb.replicas} {r_word}{C.RESET})")
         slo_tone = C.GREEN if fb.estimated_tok_s_per_user >= args.target_tok_s else C.YELLOW
         print(f"    Capacity:    {fb.replicas} × {fb.effective_capacity} concurrent users "
               f"= {fb.replicas * fb.effective_capacity} total"
