@@ -1037,8 +1037,13 @@ def _valid_parallelism_configs(
     - TP: num_attention_heads must be evenly divisible by tp_degree
     - PP: splits model along layer boundaries (no head constraint)
     - TP × PP must equal the instance's GPU count
-    - Without NVLink: prefer PP over TP (TP throughput suffers on PCIe)
-    - With NVLink: prefer TP (maximises per-layer parallelism)
+
+    Returns ALL valid configurations unsorted. Selection between configs is
+    done by `_best_config_for_instance` based on predicted throughput at the
+    user's target concurrency — not by a hardcoded interconnect heuristic.
+    Earlier versions of this function preferred TP on NVLink and PP on PCIe;
+    that was a rule of thumb. With the calibrated throughput model we can
+    just compute and pick.
     """
     n = inst.num_gpus
     if n == 1:
@@ -1063,18 +1068,62 @@ def _valid_parallelism_configs(
             continue
         configs.append((tp, pp))
 
-    if not configs:
-        return []
-
-    # Sort: prefer the strategy that matches the interconnect
-    if inst.has_nvlink:
-        # NVLink: maximise TP (higher tp first)
-        configs.sort(key=lambda c: (-c[0], c[1]))
-    else:
-        # No NVLink (PCIe): prefer PP over TP to avoid communication bottleneck
-        configs.sort(key=lambda c: (c[0], -c[1]))
-
     return configs
+
+
+def _best_config_for_instance(
+    inst:       Instance,
+    model:      ModelSpec,
+    weight_q:   str,
+    kv_q:       str,
+    configs:    list[tuple[int, int]],
+    users:      int,
+) -> tuple[int, int] | None:
+    """Pick the (tp, pp) config that maximizes per-user throughput at the
+    target concurrency.
+
+    This makes v2 a true throughput optimizer — it now decides between TP,
+    PP, and TP×PP based on the calibrated throughput model rather than a
+    hardcoded interconnect rule. For NVLink instances this typically picks
+    max-TP (the old heuristic was right). For PCIe instances the choice
+    depends on the model size and concurrency target — sometimes TP=4 PCIe
+    with its 0.25× efficiency factor still beats PP=4 because PP doesn't
+    aggregate bandwidth at all for single-stream.
+
+    Tiebreak: prefer the lower TP × PP product (less coordination overhead),
+    then prefer max TP (NVLink-style) when ties remain. None ⇒ no valid
+    configs.
+    """
+    if not configs:
+        return None
+    if len(configs) == 1:
+        return configs[0]
+
+    scored: list[tuple[float, int, int]] = []
+    for tp, pp in configs:
+        ss = single_stream_decode_tok_s(
+            inst, model, weight_q, tp * pp,
+            shared_mode=False, kv_q=kv_q,
+            tp_degree=tp, pp_degree=pp,
+        )
+        score = per_user_tok_s(ss, max(1, users))
+        # Tiebreaker: smaller (tp+pp) wins (less coordination), then larger TP wins.
+        scored.append((score, -(tp + pp), tp))
+    scored.sort(reverse=True)
+    best_idx = scored[0]
+    # Find back the actual (tp, pp) tuple corresponding to the winner.
+    best_tp = best_idx[2]
+    for tp, pp in configs:
+        if tp == best_tp and per_user_tok_s(
+            single_stream_decode_tok_s(
+                inst, model, weight_q, tp * pp,
+                shared_mode=False, kv_q=kv_q,
+                tp_degree=tp, pp_degree=pp,
+            ),
+            max(1, users),
+        ) == best_idx[0]:
+            return (tp, pp)
+    return configs[0]
 
 
 def find_options(
@@ -1098,8 +1147,19 @@ def find_options(
         if not configs:
             continue
 
-        # Use the best config for this instance (first after sort)
-        tp, pp = configs[0]
+        # Pick the (tp, pp) config that maximizes per-user throughput at the
+        # target concurrency. This is what makes v2 a true optimizer rather
+        # than a heuristic-driven recommender. When `model` is None (no
+        # context), fall back to the natural TP=gpuCount choice.
+        if model is not None:
+            selected = _best_config_for_instance(
+                inst, model, weight_q, kv_q, configs, users,
+            )
+            if selected is None:
+                continue
+            tp, pp = selected
+        else:
+            tp, pp = configs[0]
         total_gpus = tp * pp
 
         # Per-GPU VRAM: weights sharded across all GPUs (TP shards layers,
