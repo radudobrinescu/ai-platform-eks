@@ -1237,6 +1237,51 @@ def find_options(
 DEFAULT_UTILIZATION_FACTOR = 0.70  # leave 30% headroom for burst traffic
 DEFAULT_TARGET_TOK_S       = 0.0   # disabled by default — only enforce when user explicitly sets SLO
 
+
+# Workload presets — fill in sensible defaults for --avg-context, --target-tok-s,
+# and (in fleet mode) --target-users when the user asks for one of these labels
+# instead of having to tune individual flags. Users can still override any
+# individual value; the preset only fills fields the user didn't explicitly set.
+#
+# These are calibrated to typical production loads, not paper-spec scenarios.
+# Fields:
+#   avg_context  : input + output tokens per active sequence at steady state
+#   target_tok_s : per-user decode rate that "feels right" for that workload
+#   users        : default per-instance concurrency target (when --users not set)
+#                  (only applied if --target-users is also unset; i.e., single-instance mode)
+WORKLOAD_PRESETS = {
+    "chat": {
+        "avg_context":  1024,   # short turns, ~500 input + ~500 output
+        "target_tok_s": 25,     # interactive feel — 20-30 tok/s reads as snappy
+        "users":         4,
+        "description": "Interactive chat: short turns, snappy decode required",
+    },
+    "rag": {
+        "avg_context":  4096,   # retrieved context blob + modest answer
+        "target_tok_s": 15,     # users tolerate slower output for grounded responses
+        "users":         8,
+        "description": "Retrieval-augmented generation: long context, modest output",
+    },
+    "code": {
+        "avg_context":  2048,   # surrounding file context + completion
+        "target_tok_s": 50,     # IDE users won't tolerate slow completions
+        "users":         4,
+        "description": "Code completion / IDE assistant: fast decode is critical",
+    },
+    "summarization": {
+        "avg_context":  8192,   # long input documents, short summaries
+        "target_tok_s": 10,     # latency tolerance is high for batch-y work
+        "users":         8,
+        "description": "Document summarization: long context, short output, modest latency",
+    },
+    "batch": {
+        "avg_context":  1024,   # mixed prompts/outputs in offline pipelines
+        "target_tok_s":  5,     # throughput dominates; latency doesn't matter much
+        "users":        64,
+        "description": "Offline batch inference: maximize throughput, latency irrelevant",
+    },
+}
+
 @dataclass(frozen=True)
 class ScalingRecommendation:
     option:                    Option
@@ -1427,6 +1472,121 @@ def _fmt_params(p: int) -> str:
     return str(p)
 
 
+def _explain_recommendation(
+    best: "Option",
+    all_opts: list["Option"],
+    args: argparse.Namespace,
+    model: ModelSpec,
+) -> str:
+    """Generate a single-sentence rationale for why `best` was recommended.
+
+    The explanation walks down a hierarchy of "why":
+      1. The dominant constraint (cost, throughput, or fit)
+      2. Why this strategy (TP/PP/single-GPU)
+      3. Any caveats (quant warning, near VRAM limit, shared mode)
+
+    The runner-up — if there is one on a different instance type — is used
+    as the comparator: "picked X over Y because ...". This makes the
+    rationale concrete rather than abstract.
+    """
+    if best is None:
+        return ""
+
+    # Find a meaningful runner-up: next-cheapest option on a different instance.
+    runner_up = None
+    for o in all_opts[1:]:
+        if o is best:
+            continue
+        if o.instance.name != best.instance.name:
+            runner_up = o
+            break
+
+    parts: list[str] = []
+
+    # --- Strategy explanation (TP vs PP vs single-GPU) -------------------- #
+    if best.tp_degree > 1 and best.pp_degree > 1:
+        strategy_phrase = (
+            f"TP={best.tp_degree} × PP={best.pp_degree} on {best.total_gpus} GPUs "
+            f"({'NVLink' if best.instance.has_nvlink else 'PCIe'})"
+        )
+    elif best.tp_degree > 1:
+        nvlink = "NVLink" if best.instance.has_nvlink else "PCIe"
+        strategy_phrase = (
+            f"TP={best.tp_degree} on {nvlink} (aggregate "
+            f"{best.instance.hbm_bandwidth_tb_s * best.tp_degree:.2f} TB/s HBM)"
+        )
+    elif best.pp_degree > 1:
+        strategy_phrase = (
+            f"PP={best.pp_degree} (sequential stages, no bandwidth aggregation)"
+        )
+    else:
+        strategy_phrase = (
+            f"single-GPU on {best.instance.gpu} "
+            f"({best.instance.hbm_bandwidth_tb_s:.2f} TB/s HBM)"
+        )
+
+    parts.append(f"{best.instance.name} runs the model with {strategy_phrase}.")
+
+    # --- Throughput context (what does the user actually get?) ------------ #
+    util_pct = 100.0 * best.per_gpu_need_gb / best.instance.vram_gb
+    if best.single_stream_tok_s > 0:
+        if args.users > 1:
+            parts.append(
+                f"At {args.users} concurrent users, each user gets "
+                f"~{best.per_user_tok_s_at_users:.0f} tok/s "
+                f"(ceiling {best.single_stream_tok_s:.0f} tok/s single-stream)."
+            )
+        else:
+            parts.append(
+                f"Single-stream throughput ~{best.single_stream_tok_s:.0f} tok/s, "
+                f"{util_pct:.0f}% VRAM utilized."
+            )
+
+    # --- Why this instance over the runner-up? ---------------------------- #
+    if runner_up is not None and runner_up.single_stream_tok_s > 0:
+        price_delta = (runner_up.price_usd_h - best.price_usd_h) / runner_up.price_usd_h
+        speed_delta = (best.single_stream_tok_s - runner_up.single_stream_tok_s) / max(
+            runner_up.single_stream_tok_s, 1e-6
+        )
+        if price_delta > 0.10 and speed_delta > -0.20:
+            parts.append(
+                f"Beats {runner_up.instance.name} by "
+                f"{price_delta * 100:.0f}% on price."
+            )
+        elif speed_delta > 0.20:
+            parts.append(
+                f"Beats {runner_up.instance.name} by "
+                f"{speed_delta * 100:.0f}% on throughput."
+            )
+        elif speed_delta > 0.05:
+            parts.append(
+                f"Slightly faster than {runner_up.instance.name} "
+                f"({speed_delta * 100:.0f}% more tok/s)."
+            )
+
+    # --- Caveats ---------------------------------------------------------- #
+    caveats: list[str] = []
+    if best.quant_warning:
+        caveats.append(f"⚠ {args.quant} dtype emulated on {best.instance.gpu} "
+                       f"— real-world throughput will be ~half of estimates")
+    if util_pct > 80:
+        caveats.append(f"⚠ {util_pct:.0f}% VRAM used — limited headroom for "
+                       f"longer contexts or higher concurrency")
+    if best.shared_eligible and best.total_gpus == 1:
+        caveats.append(
+            f"could share GPU with up to {TIME_SLICE_REPLICAS} models "
+            f"via time-slicing (set shared: true to amortize cost)"
+        )
+    if best.over_price_ceiling:
+        caveats.append("over your --max-price ceiling — no cheaper option fits")
+    if caveats:
+        parts.append(" ".join(caveats[:2]))   # cap at 2 caveats
+
+    return " ".join(parts)
+
+
+
+
 def print_human(
     model:       ModelSpec,
     vram:        VramEstimate,
@@ -1489,6 +1649,15 @@ def print_human(
         print(f"    {C.YELLOW}Note: exceeds --max-price ${args.max_price:.2f}/hr. "
               f"No cheaper option fits.{C.RESET}")
     print(ruler)
+
+    # -------- 1b. Why this recommendation? ------------------------------- #
+    rationale = _explain_recommendation(best, opts, args, model)
+    if rationale:
+        print()
+        print(f"  {C.BOLD}Why:{C.RESET} {rationale}")
+    if getattr(args, "_preset_applied", None):
+        print(f"  {C.DIM}Workload preset '{args.workload}' applied: "
+              f"{', '.join(args._preset_applied)}{C.RESET}")
 
     # -------- 2. MoE callout (if applicable) ----------------------------- #
     if model.is_moe and model.num_experts:
@@ -1939,6 +2108,15 @@ def main(argv: list[str] | None = None) -> int:
                    default="fp16", help="KV cache quantisation (default: fp16)")
     p.add_argument("--seq", type=int, default=8192,
                    help="Max sequence length / maxModelLen (default: 8192)")
+    p.add_argument("--workload", choices=sorted(WORKLOAD_PRESETS),
+                   default=None,
+                   help="Workload preset that fills sensible defaults for "
+                        "--avg-context, --target-tok-s, and --users. "
+                        "Override any individual field by setting it explicitly. "
+                        "Choices: " + ", ".join(
+                            f"{k}={v['description']}"
+                            for k, v in WORKLOAD_PRESETS.items()
+                        ))
     p.add_argument("--avg-context", type=int, default=None,
                    help="Typical input+output tokens per active sequence (default: --seq // 4). "
                         "Used for concurrency calculations to reflect PagedAttention reality "
@@ -1995,6 +2173,24 @@ def main(argv: list[str] | None = None) -> int:
         sys.exit("error: --target-tok-s must be >= 0")
     if args.avg_context is not None and args.avg_context < 1:
         sys.exit("error: --avg-context must be >= 1")
+
+    # Apply workload preset (only fills fields the user didn't explicitly set).
+    # We detect "user didn't set" by checking against the argparse default. For
+    # --avg-context the default is None so detection is clean. For --target-tok-s
+    # we use the DEFAULT_TARGET_TOK_S sentinel (0). For --users the default is 1.
+    args._preset_applied: list[str] = []
+    if args.workload:
+        preset = WORKLOAD_PRESETS[args.workload]
+        if args.avg_context is None:
+            args.avg_context = preset["avg_context"]
+            args._preset_applied.append(f"--avg-context {preset['avg_context']}")
+        if args.target_tok_s == DEFAULT_TARGET_TOK_S:
+            args.target_tok_s = float(preset["target_tok_s"])
+            args._preset_applied.append(f"--target-tok-s {preset['target_tok_s']}")
+        # Only fill --users in single-instance mode (no --target-users)
+        if args.users == 1 and args.target_users is None:
+            args.users = preset["users"]
+            args._preset_applied.append(f"--users {preset['users']}")
 
     args.region = detect_region(args.region)
     prices, price_src = resolve_prices(args.region, args.refresh_prices, args.verbose)
