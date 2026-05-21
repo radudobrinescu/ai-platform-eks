@@ -192,8 +192,8 @@ metadata:
 spec:
   model: "org/model-id"           # REQUIRED — HuggingFace model ID
   gpuCount: 1                     # GPUs per worker (1, 2, 4, or 8)
-  tensorParallelSize: 1           # TP — splits layers across NVLink GPUs
-  pipelineParallelSize: 1         # PP — splits layer groups across PCIe GPUs
+  tensorParallelSize: 1           # TP — shards each layer's weights across GPUs (prefers NVLink)
+  pipelineParallelSize: 1         # PP — assigns layer groups to pipeline stages (works on any interconnect)
   shared: false                   # Time-slice GPU with up to 4 models
   minReplicas: 1
   maxReplicas: 4
