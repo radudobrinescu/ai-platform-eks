@@ -23,8 +23,8 @@ Supports two modes (auto-selected based on whether one instance can handle --use
      (--target-tok-s) when set
 
 Parallelism strategy (per https://docs.vllm.ai/en/latest/serving/parallelism_scaling/):
-  - Tensor Parallelism (TP): splits layers across GPUs on NVLink-connected nodes
-  - Pipeline Parallelism (PP): splits layer groups across GPUs on PCIe (no NVLink)
+  - Tensor Parallelism (TP): shards each layer's weights across GPUs (prefers NVLink)
+  - Pipeline Parallelism (PP): assigns layer groups to pipeline stages (any interconnect)
   - TP×PP: combines both for large multi-GPU deployments
   - TP requires num_attention_heads to be evenly divisible by tp_degree
 
@@ -1232,10 +1232,10 @@ def find_options(
         if tp > 1 and pp > 1:
             notes.append(f"TP={tp} × PP={pp} across {total_gpus} GPUs")
         elif pp > 1:
-            notes.append(f"pipeline-parallel across {pp} GPUs (no NVLink → PP preferred)")
+            notes.append(f"pipeline-parallel across {pp} GPUs")
         elif tp > 1:
             notes.append(f"tensor-parallel across {tp} GPUs"
-                         + (" (NVLink)" if inst.has_nvlink else ""))
+                         + (" (NVLink)" if inst.has_nvlink else " (PCIe)"))
         if nodepool == "out-of-cluster":
             notes.append("not covered by Karpenter NodePools")
         if over_ceiling:
