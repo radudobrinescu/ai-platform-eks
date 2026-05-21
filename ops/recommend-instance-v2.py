@@ -16,11 +16,11 @@ Reads model architecture from HuggingFace, estimates VRAM requirements, and
 recommends the cheapest instance that fits — with the right parallelism strategy
 (TP, PP, or TP×PP) based on vLLM best practices and GPU interconnect topology.
 
-Supports two modes:
-  1. Single-instance sizing (default): pick the best GPU for one replica
-  2. Fleet scaling (--target-users N): recommend instance type + replica count
-     for serving N concurrent users across multiple workers, validated against
-     the per-user throughput SLO (--target-tok-s)
+Supports two modes (auto-selected based on whether one instance can handle --users):
+  1. Single-instance sizing: pick the best GPU for one replica
+  2. Fleet scaling: recommend instance type + replica count when one instance
+     can't serve all users — validated against the per-user throughput SLO
+     (--target-tok-s) when set
 
 Parallelism strategy (per https://docs.vllm.ai/en/latest/serving/parallelism_scaling/):
   - Tensor Parallelism (TP): splits layers across GPUs on NVLink-connected nodes
@@ -46,11 +46,11 @@ Examples:
   # Quantised 32B model — int4 cuts VRAM in half
   ./ops/recommend-instance-v2.py Qwen/Qwen2.5-32B-Instruct --quant int4
 
-  # Fleet sizing — how many replicas for 50 concurrent users? (VRAM-only, no SLO)
-  ./ops/recommend-instance-v2.py meta-llama/Llama-3.1-8B-Instruct --target-users 50
+  # 50 concurrent users — auto-scales to fleet if one instance can't handle it
+  ./ops/recommend-instance-v2.py meta-llama/Llama-3.1-8B-Instruct --users 50
 
-  # Latency SLO — 25 tok/s/user (forces faster GPUs into the mix)
-  ./ops/recommend-instance-v2.py Qwen/Qwen2.5-7B-Instruct --target-users 100 --target-tok-s 25
+  # 100 users with latency SLO — forces faster GPUs and more replicas
+  ./ops/recommend-instance-v2.py Qwen/Qwen2.5-7B-Instruct --users 100 --target-tok-s 25
 
   # Pin to TP=4, only show in-cluster options, machine-readable output
   ./ops/recommend-instance-v2.py meta-llama/Llama-3.1-70B-Instruct --tp 4 --in-cluster-only --json
@@ -561,7 +561,18 @@ def fetch_model(model_id: str, token: str | None) -> ModelSpec:
         if e.code == 401:
             sys.exit(f"error: {model_id} is gated. Set HF_TOKEN=hf_... and retry.")
         if e.code == 404:
-            sys.exit(f"error: model {model_id!r} not found on HuggingFace.")
+            # Distinguish "model doesn't exist" from "model exists but has no
+            # config.json" (typical for GGUF-only repos, ONNX exports, etc).
+            try:
+                _http_get_json(HF_API.format(model_id), token)
+                sys.exit(
+                    f"error: {model_id} exists on HuggingFace but has no config.json "
+                    f"(typical for GGUF/ONNX/quant-only repos). The recommender needs "
+                    f"the original transformer config — point to the source HF model "
+                    f"instead of the converted artifact."
+                )
+            except Exception:
+                sys.exit(f"error: model {model_id!r} not found on HuggingFace.")
         sys.exit(f"error: failed to fetch config.json for {model_id}: {e}")
     except urllib.error.URLError as e:
         sys.exit(f"error: network failure fetching {model_id}: {e.reason}")
@@ -595,8 +606,25 @@ def fetch_model(model_id: str, token: str | None) -> ModelSpec:
     try:
         info = _http_get_json(HF_API.format(model_id), token)
         st = info.get("safetensors") or {}
-        if "total" in st and isinstance(st["total"], int):
-            params = st["total"]
+        # Prefer the per-dtype parameter sum when present — it's typically
+        # more reliable than `total`. Some models (e.g. Qwen/WebWorld-32B
+        # in May 2026) have a wonky `total` field reporting tensor-count
+        # rather than parameter-count, so we'd see 676K instead of 32B.
+        per_dtype = st.get("parameters", {})
+        if isinstance(per_dtype, dict) and per_dtype:
+            params_sum = sum(v for v in per_dtype.values() if isinstance(v, int))
+            if params_sum > 1_000_000:    # sanity threshold: must be > 1M params
+                params = params_sum
+        # Fall back to total if parameters block unusable.
+        if params is None and "total" in st and isinstance(st["total"], int):
+            if st["total"] > 1_000_000:
+                params = st["total"]
+            else:
+                # 'total' is suspiciously small — likely tensor count, not param count.
+                warnings.append(
+                    f"safetensors.total={st['total']:,} looks wrong for a real LLM; "
+                    f"falling back to architectural estimate"
+                )
     except Exception:
         pass
 
@@ -1210,16 +1238,17 @@ def find_options(
         if over_ceiling:
             notes.append(f"${price:.2f}/hr exceeds --max-price ${max_price:.2f}")
 
-        # PR 2: throughput estimate. shared_mode_active reflects whether a
-        # shared deployment would actually be picked (only true for single-GPU,
-        # shared-eligible instances).
+        # PR 2: throughput estimate. Always compute DEDICATED throughput —
+        # fleet scaling and SLO checks need the full-bandwidth figure.
+        # Shared-mode throughput (÷ TIME_SLICE_REPLICAS) is only relevant for
+        # display when the user deploys a single model with `shared: true`;
+        # that's handled in the presentation layer, not here.
         single_stream = 0.0
         per_user_at_users = 0.0
         if model is not None:
-            shared_mode_active = shared_eligible and total_gpus == 1
             single_stream = single_stream_decode_tok_s(
                 inst, model, weight_q, total_gpus,
-                shared_mode=shared_mode_active, kv_q=kv_q,
+                shared_mode=False, kv_q=kv_q,
                 tp_degree=tp, pp_degree=pp,
             )
             per_user_at_users = per_user_tok_s(single_stream, max(1, users))
@@ -1492,12 +1521,7 @@ def _fmt_params(p: int) -> str:
 
 
 def _mode_line(args: argparse.Namespace) -> str:
-    """One-line summary of what mode the recommender is running in.
-
-    Tells the user upfront what's being optimized, so they can tell at a
-    glance whether SLO is being enforced, what concurrency is assumed, and
-    what flags would refine the result.
-    """
+    """One-line summary of what mode the recommender is running in."""
     if args.target_users is not None:
         slo_part = (
             f"@ {args.target_tok_s:.0f} tok/s/user SLO"
@@ -1505,13 +1529,11 @@ def _mode_line(args: argparse.Namespace) -> str:
         )
         return f"fleet sizing for {args.target_users} users {slo_part}"
     if args.tp is not None:
-        return f"cheapest fit, TP={args.tp} pinned"
+        return f"cheapest fit for {args.users} users, TP={args.tp} pinned"
     if args.users > 1:
-        return (
-            f"cheapest fit ({args.users} users, no SLO — pass "
-            f"--target-tok-s X to enforce latency)"
-        )
-    return "cheapest fit (1 user, no SLO)"
+        slo = f", {args.target_tok_s:.0f} tok/s SLO" if args.target_tok_s > 0 else ""
+        return f"single instance for {args.users} users{slo}"
+    return "cheapest fit (1 user)"
 
 
 def _next_steps_lines(
@@ -1526,10 +1548,10 @@ def _next_steps_lines(
     """
     suggestions: list[str] = []
 
-    # Default mode: tell user how to switch to fleet sizing
-    if args.target_users is None:
+    # Default mode: tell user how to add users/SLO
+    if args.users <= 1:
         suggestions.append(
-            "Production sizing:    --target-users N --target-tok-s X"
+            "Production sizing:    --users N --target-tok-s X"
         )
 
     # bf16 default → suggest int4 for cost
@@ -1824,31 +1846,21 @@ def print_human(
         act_ratio = active / model.num_experts if model.num_experts else 0
         dense_eq  = int(model.params * act_ratio) if active else model.params
         print()
-        print(f"  {C.YELLOW}⚠ MIXTURE-OF-EXPERTS MODEL{C.RESET}")
-        print(f"    {model.num_experts} experts total, {active} active per token — "
-              f"but ALL experts stay resident in VRAM.")
-        print(f"    Memory cost = dense ~{_fmt_params(model.params)} model, NOT the "
-              f"~{_fmt_params(dense_eq)} 'active-size' figure sometimes quoted.")
-        # PR 6: surface the bandwidth side of MoE — only active experts are
-        # streamed per token, so decode tok/s scales with active params, not
-        # total. This explains why MoE models often have higher tok/s than
-        # their parameter count would suggest.
-        if active > 0 and active < model.num_experts:
-            print(f"    {C.DIM}Bandwidth cost ≈ active params (~{_fmt_params(dense_eq)}); "
-                  f"decode tok/s reflects this, not the {_fmt_params(model.params)} "
-                  f"VRAM footprint.{C.RESET}")
+        print(f"  {C.YELLOW}⚠ MoE:{C.RESET} {model.num_experts} experts, {active} active/token — "
+              f"all {_fmt_params(model.params)} reside in VRAM; "
+              f"bandwidth ≈ {_fmt_params(dense_eq)} active.")
 
     # -------- 3. Model + request summary (compact) ----------------------- #
     gqa = f"GQA {model.num_kv_heads}KV/{model.num_heads}Q" \
           if model.num_kv_heads and model.num_kv_heads != model.num_heads else \
           f"MHA {model.num_heads} heads"
+    display_users = args.users
     print(f"\n{C.BOLD}Model:{C.RESET}   {model.model_id}  "
           f"({C.DIM}{_fmt_params(model.params)} params, {model.num_layers} layers, "
           f"{gqa}{C.RESET})")
-    print(f"{C.BOLD}Request:{C.RESET} {args.seq:,}-token context · batch {args.batch} · "
-          f"{args.users} concurrent · weights {args.quant} · kv {args.kv_quant}")
-    print(f"{C.BOLD}Region:{C.RESET}  {args.region}  "
-          f"{C.DIM}(prices: {price_src}){C.RESET}")
+    print(f"{C.BOLD}Request:{C.RESET} {args.seq:,}-token context · "
+          f"{display_users} concurrent · weights {args.quant} · kv {args.kv_quant}"
+          f"{C.DIM}  (prices: {price_src}){C.RESET}")
     if "⚠" in price_src:
         print(f"  {C.YELLOW}⚠ Pricing fallback: catalog prices may not reflect "
               f"{args.region}. Use --refresh-prices with valid AWS credentials "
@@ -1856,29 +1868,25 @@ def print_human(
     for w in model.warnings:
         print(f"  {C.YELLOW}⚠{C.RESET} {w}")
 
-    # -------- 4. VRAM breakdown ------------------------------------------ #
-    print(f"\n{C.BOLD}VRAM usage{C.RESET} (TP=1, per-GPU before sharding)")
-    total = vram.total_gb or 1e-9
-    rows  = [
-        ("weights",     vram.weights_gb),
-        ("kv-cache",    vram.kv_cache_gb),
-        ("activations", vram.activations_gb),
-        ("overhead",    vram.overhead_gb),
-    ]
-    for label, gb in rows:
-        pct = 100.0 * gb / total
-        print(f"  {label:<12}{_bar(gb, total, 24)}  "
-              f"{gb:>6.2f} GB  ({pct:>4.1f}%)")
-    print(f"  {C.BOLD}{'total':<12}{_bar(total, total, 24)}  "
-          f"{total:>6.2f} GB{C.RESET}")
+    # -------- 4. VRAM breakdown (verbose only) --------------------------- #
+    if args.verbose:
+        print(f"\n{C.BOLD}VRAM usage{C.RESET} (TP=1, per-GPU before sharding)")
+        total = vram.total_gb or 1e-9
+        rows  = [
+            ("weights",     vram.weights_gb),
+            ("kv-cache",    vram.kv_cache_gb),
+            ("activations", vram.activations_gb),
+            ("overhead",    vram.overhead_gb),
+        ]
+        for label, gb in rows:
+            pct = 100.0 * gb / total
+            print(f"  {label:<12}{_bar(gb, total, 24)}  "
+                  f"{gb:>6.2f} GB  ({pct:>4.1f}%)")
+        print(f"  {C.BOLD}{'total':<12}{_bar(total, total, 24)}  "
+              f"{total:>6.2f} GB{C.RESET}")
 
     # -------- 5. Alternatives table -------------------------------------- #
-    # Dedupe: when multiple instance variants are functionally identical for
-    # inference (same GPU model, same num_gpus, same TP/PP), only show the
-    # cheapest one. Without this, the table fills up with g6e.xlarge,
-    # g6e.2xlarge, g6e.4xlarge etc. that all have 1× L40S and identical
-    # throughput math — they only differ in host vCPU/RAM (already filtered
-    # by the host-mem check in find_options).
+    # Dedupe: same GPU + strategy → only show cheapest variant.
     def _dedupe_key(o: Option) -> tuple:
         return (o.instance.gpu, o.instance.num_gpus, o.tp_degree, o.pp_degree)
 
@@ -1891,30 +1899,49 @@ def print_human(
         seen_keys.add(k)
         deduped_opts.append(o)
 
-    within_budget = [o for o in deduped_opts if not o.over_price_ceiling]
-    over_budget   = [o for o in deduped_opts if o.over_price_ceiling]
+    # In fleet mode, skip the single-instance table (fleet alternatives
+    # are shown below and the single-instance table sends mixed signals).
+    if not is_fleet_mode:
+        within_budget = [o for o in deduped_opts if not o.over_price_ceiling
+                         and o.quant_warning is None]
+        over_budget   = [o for o in deduped_opts if o.over_price_ceiling
+                         or o.quant_warning is not None]
 
-    print(f"\n{C.BOLD}Alternatives{C.RESET} "
-          f"(sorted: within budget, in-cluster, lowest $/hr; "
-          f"{C.DIM}duplicates by GPU+strategy hidden{C.RESET})\n")
-    header = (f"  {'INSTANCE':<15} {'GPU':<9} {'STRATEGY':<10} {'USAGE':<12} "
-              f"{'FIT':<15}  {'TOK/S':>10}  {'$/HR':>6}  {'MONTHLY':>9}  FLAGS")
-    print(f"{C.DIM}{header}{C.RESET}")
-    print(f"{C.DIM}  {'-'*15} {'-'*9} {'-'*10} {'-'*12} {'-'*15}  "
-          f"{'-'*10}  {'-'*6}  {'-'*9}  {'-'*13}{C.RESET}")
+        # In default (non-verbose) mode, hide options that are more expensive
+        # but no faster than a cheaper option — they only add VRAM headroom,
+        # which isn't useful unless you need it (higher concurrency / longer
+        # context). The user can see them with --verbose.
+        if not args.verbose and best is not None:
+            useful: list[Option] = []
+            best_tok_s_so_far = 0.0
+            for o in within_budget:
+                if o.per_user_tok_s_at_users > best_tok_s_so_far or o is best:
+                    useful.append(o)
+                    best_tok_s_so_far = max(best_tok_s_so_far, o.per_user_tok_s_at_users)
+            within_budget = useful
 
-    for o in within_budget[: args.limit]:
-        _print_table_row(o, C, over=False)
-    if over_budget and len(within_budget) < args.limit:
-        remaining = args.limit - len(within_budget)
-        print(f"{C.DIM}  {'·'*75} above --max-price ${args.max_price:.2f}/hr{C.RESET}")
-        for o in over_budget[:remaining]:
-            _print_table_row(o, C, over=True)
+        # Default: show top 4. With --verbose, show the full table.
+        display_limit = args.limit if args.verbose else min(4, args.limit)
+
+        print(f"\n{C.BOLD}Alternatives{C.RESET} "
+              f"{C.DIM}(--verbose for full table){C.RESET}\n")
+        header = (f"  {'INSTANCE':<15} {'GPU':<9} {'STRATEGY':<10} "
+                  f"{'VRAM':<12} {'TOK/S':>6}  {'$/HR':>7}  {'MONTHLY':>9}  NOTE")
+        print(f"{C.DIM}{header}{C.RESET}")
+        print(f"{C.DIM}  {'-'*15} {'-'*9} {'-'*10} "
+              f"{'-'*12} {'-'*6}  {'-'*7}  {'-'*9}  {'-'*10}{C.RESET}")
+
+        for o in within_budget[:display_limit]:
+            _print_table_row(o, C, over=False)
+        if args.verbose and over_budget:
+            remaining = display_limit - len(within_budget[:display_limit])
+            if remaining > 0:
+                for o in over_budget[:remaining]:
+                    _print_table_row(o, C, over=True)
 
     # -------- 6. Fleet scaling (when --target-users is given) ------------ #
     if scaling:
         _print_scaling_section(scaling, args, C)
-        # 6b. Cost levers — show what knob tweaks would do to fleet cost.
         if prices is not None and scaling[0] is not None:
             _print_cost_levers(args, model, scaling[0], prices, C)
 
@@ -1928,56 +1955,35 @@ def print_human(
         for s in suggestions:
             print(f"  • {s}")
 
-    # -------- 8. Footnotes ----------------------------------------------- #
-    print(f"\n{C.DIM}Notes:")
-    print(f"  • TOK/S column: per-user tok/s @ {args.users} concurrent / single-stream ceiling")
-    print("    (decode is HBM-bandwidth bound; estimates ±25%, validate with `vllm bench serve`)")
-    print(f"  • FLAGS: ✓ in-cluster · shared = {TIME_SLICE_REPLICAS} copies of this model")
-    print("    fit on one GPU — amortised cost shown in parens · ⚠ quant = software fallback")
-    print(f"  • Monthly = hourly × 730 h/month. Prices from: {price_src}")
-    print("  • Use --refresh-prices to invalidate the local cache")
-    if scaling:
-        print(f"  • Fleet sizing uses {int(args.utilization * 100)}% utilization factor "
-              f"(adjust with --utilization)")
-        if args.target_tok_s > 0:
-            print(f"  • SLO: ≥{args.target_tok_s:.0f} tok/s/user (set via --target-tok-s)")
-    print(f"  • VRAM estimates are first-order (±10%). Real validation: deploy + benchmark.{C.RESET}")
+    # -------- 8. Footnotes (one line) ------------------------------------ #
+    print(f"\n{C.DIM}Throughput estimates ±25% — validate with `vllm bench serve`. "
+          f"Monthly = hourly × 730h. Prices: {price_src}{C.RESET}")
 
 
 def _print_table_row(o: Option, C: type, over: bool) -> None:
     util_pct = 100.0 * o.per_gpu_need_gb / o.instance.vram_gb
-    bar      = _bar(o.per_gpu_need_gb, o.instance.vram_gb, 8)
-    tone     = C.YELLOW if over else (
-               C.RED if util_pct >= 85 else
-               C.YELLOW if util_pct >= 60 else
-               C.GREEN)
-    flag_ic  = f"{C.GREEN}✓{C.RESET}" if o.in_cluster else f"{C.DIM}·{C.RESET}"
-    if o.shared_eligible:
-        amort = o.amortised_price_usd_h
-        flag_sh = (f"shared ({C.DIM}${amort:.2f}/hr each{C.RESET})"
-                   if amort is not None else "shared")
-    else:
-        flag_sh = "dedicated"
-    flags    = f"{flag_ic} {flag_sh}"
-    if over:
-        flags = f"{C.YELLOW}⚠ over budget{C.RESET}"
-    if o.quant_warning:
-        flags = f"{flags} {C.YELLOW}⚠ quant{C.RESET}"
-
     strategy = o.parallelism_label or "1 GPU"
-    usage  = f"{o.per_gpu_need_gb:.1f}/{o.instance.vram_gb} GB"
-    fit    = f"[{tone}{bar}{C.RESET}] {util_pct:>3.0f}%"
+    usage  = f"{o.per_gpu_need_gb:.0f}/{o.instance.vram_gb} GB"
+    tok_s  = f"{o.per_user_tok_s_at_users:.0f}" if o.single_stream_tok_s > 0 else "?"
     price  = f"${o.price_usd_h:.2f}"
     month  = _fmt_monthly(o.price_usd_h)
-    fit_pad = 15 - len(f"[{bar}] {util_pct:>3.0f}%")
-    # PR 2: tok/s column. Single-stream is the ceiling; per-user reflects
-    # the user's --users concurrency (or 1 if not specified).
-    if o.single_stream_tok_s > 0:
-        ts_str = f"{o.per_user_tok_s_at_users:>4.0f}/{o.single_stream_tok_s:.0f}"
-    else:
-        ts_str = "  ?  "
-    print(f"  {o.instance.name:<15} {o.instance.gpu:<9} {strategy:<10} {usage:<12} "
-          f"{fit}{' ' * max(fit_pad, 0)}  {ts_str:>10}  {price:>6}  {month:>9}  {flags}")
+
+    # Only flag exceptional states — shared eligibility or issues.
+    note_parts: list[str] = []
+    if over:
+        note_parts.append(f"{C.YELLOW}over budget{C.RESET}")
+    if o.shared_eligible:
+        amort = o.amortised_price_usd_h
+        if amort is not None:
+            note_parts.append(f"shared ok ({C.DIM}${amort:.2f}/hr ea{C.RESET})")
+    if o.quant_warning:
+        note_parts.append(f"{C.YELLOW}⚠ quant{C.RESET}")
+    if not o.in_cluster:
+        note_parts.append(f"{C.DIM}out-of-cluster{C.RESET}")
+    note = " · ".join(note_parts) if note_parts else ""
+
+    print(f"  {o.instance.name:<15} {o.instance.gpu:<9} {strategy:<10} "
+          f"{usage:<12} {tok_s:>6}  {price:>7}  {month:>9}  {note}")
 
 
 def _compute_alt_fleet_cost(
@@ -2049,7 +2055,7 @@ def _print_cost_levers(
     where the cost-quality / cost-latency / cost-context trade-offs are.
     """
     base_cost = fleet_best.fleet_cost_usd_h
-    levers: list[tuple[str, float, str]] = []   # (label, alt_cost, action_text)
+    levers: list[tuple[str, float, str, str]] = []   # (label, alt_cost, alt_instance, note)
 
     common_kwargs = dict(
         model=model,
@@ -2075,6 +2081,7 @@ def _print_cost_levers(
         )
         if alt is not None:
             levers.append(("--quant int4", alt.fleet_cost_usd_h,
+                           f"{alt.replicas}× {alt.option.instance.name}",
                            "1-2% quality loss on benchmarks"))
 
     # Lever 2: relax SLO by 40%
@@ -2088,6 +2095,7 @@ def _print_cost_levers(
         )
         if alt is not None and alt.fleet_cost_usd_h < base_cost:
             levers.append((f"--target-tok-s {new_slo}", alt.fleet_cost_usd_h,
+                           f"{alt.replicas}× {alt.option.instance.name}",
                            "lower per-user latency target"))
 
     # Lever 3: cap context at 256 (if not already short)
@@ -2100,6 +2108,7 @@ def _print_cost_levers(
         )
         if alt is not None and alt.fleet_cost_usd_h < base_cost:
             levers.append(("--avg-context 256", alt.fleet_cost_usd_h,
+                           f"{alt.replicas}× {alt.option.instance.name}",
                            "for short Q&A workloads"))
 
     if not levers:
@@ -2107,12 +2116,13 @@ def _print_cost_levers(
 
     print(f"\n{C.BOLD}Cost levers{C.RESET} {C.DIM}(impact on monthly fleet cost){C.RESET}")
     base_monthly = base_cost * 730
-    for label, alt_cost, note in levers:
+    for label, alt_cost, alt_instance, note in levers:
         delta = (alt_cost - base_cost) / base_cost * 100
         sign = "+" if delta > 0 else ""
         alt_monthly = alt_cost * 730
+        inst_note = f" on {alt_instance}" if alt_instance else ""
         print(f"  {label:<22}  ${alt_monthly:>7,.0f}/mo "
-              f"{C.DIM}({sign}{delta:.0f}% vs ${base_monthly:,.0f}/mo){C.RESET}  "
+              f"{C.DIM}({sign}{delta:.0f}%{inst_note}){C.RESET}  "
               f"{C.DIM}— {note}{C.RESET}")
 
 
@@ -2443,7 +2453,9 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--batch", type=int, default=1,
                    help="Batch size per step (default: 1)")
     p.add_argument("--users", type=int, default=1,
-                   help="Concurrent users / parallel requests (default: 1)")
+                   help="Total concurrent users to serve (default: 1). "
+                        "If one instance can handle all users, recommends a single instance. "
+                        "Otherwise, auto-scales to a fleet of replicas.")
     p.add_argument("--tp", type=int, choices=TP_DEGREES,
                    help="Pin tensor-parallel degree (1|2|4|8). Default: consider all.")
     p.add_argument("--region", default=None,
@@ -2464,9 +2476,7 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--verbose", action="store_true",
                    help="Print pricing API fallbacks and other diagnostics to stderr")
     p.add_argument("--target-users", type=int, default=None,
-                   help="Target concurrent users across the fleet. Triggers scaling mode: "
-                        "recommends instance type + replica count. Overrides --users for "
-                        "single-instance sizing.")
+                   help=argparse.SUPPRESS)  # hidden; kept for backwards compat — use --users instead
     p.add_argument("--utilization", type=float, default=DEFAULT_UTILIZATION_FACTOR,
                    help=f"Target utilization factor for scaling mode — fraction of max "
                         f"concurrency to plan for (default: {DEFAULT_UTILIZATION_FACTOR}). "
@@ -2483,8 +2493,6 @@ def main(argv: list[str] | None = None) -> int:
         sys.exit("error: --safety-margin must be in [0.0, 0.5)")
     if args.max_price <= 0:
         sys.exit("error: --max-price must be > 0")
-    if args.target_users is not None and args.target_users < 1:
-        sys.exit("error: --target-users must be >= 1")
     if not 0.1 <= args.utilization <= 1.0:
         sys.exit("error: --utilization must be in [0.1, 1.0]")
     if args.target_tok_s < 0:
@@ -2492,10 +2500,14 @@ def main(argv: list[str] | None = None) -> int:
     if args.avg_context is not None and args.avg_context < 1:
         sys.exit("error: --avg-context must be >= 1")
 
+    # Backwards compat: --target-users overrides --users for fleet mode.
+    if args.target_users is not None:
+        args.users = args.target_users
+
+    if args.users < 1:
+        sys.exit("error: --users must be >= 1")
+
     # Apply workload preset (only fills fields the user didn't explicitly set).
-    # We detect "user didn't set" by checking against the argparse default. For
-    # --avg-context the default is None so detection is clean. For --target-tok-s
-    # we use the DEFAULT_TARGET_TOK_S sentinel (0). For --users the default is 1.
     args._preset_applied: list[str] = []
     if args.workload:
         preset = WORKLOAD_PRESETS[args.workload]
@@ -2505,20 +2517,18 @@ def main(argv: list[str] | None = None) -> int:
         if args.target_tok_s == DEFAULT_TARGET_TOK_S:
             args.target_tok_s = float(preset["target_tok_s"])
             args._preset_applied.append(f"--target-tok-s {preset['target_tok_s']}")
-        # Only fill --users in single-instance mode (no --target-users)
-        if args.users == 1 and args.target_users is None:
+        if args.users == 1:
             args.users = preset["users"]
             args._preset_applied.append(f"--users {preset['users']}")
 
     args.region = detect_region(args.region)
     prices, price_src = resolve_prices(args.region, args.refresh_prices, args.verbose)
 
-    # In scaling mode, size a single instance for 1 user so that VRAM estimate
-    # reflects weights + overhead without inflating KV cache for the full fleet.
-    sizing_users = 1 if args.target_users else args.users
+    # Always size VRAM for 1 user (minimal fit check). The user count is
+    # handled by fleet scaling, not by inflating the per-instance VRAM estimate.
     model = fetch_model(args.model, args.hf_token)
     vram  = estimate_vram(model, args.quant, args.kv_quant, args.seq,
-                          args.batch, sizing_users,
+                          args.batch, 1,
                           avg_context_len=args.avg_context)
     opts  = find_options(
         total_need_gb=vram.total_gb,
@@ -2531,20 +2541,38 @@ def main(argv: list[str] | None = None) -> int:
         model=model,
         weight_q=args.quant,
         kv_q=args.kv_quant,
-        users=sizing_users,
+        users=1,
     )
     best  = opts[0] if opts else None
 
+    # Auto-fleet decision: can the best instance handle all requested users
+    # on its own? If yes → single-instance. If no → fleet mode.
+    # With --target-tok-s set, also check the SLO capacity.
     scaling: list[ScalingRecommendation] | None = None
-    if args.target_users and opts:
-        scaling = compute_scaling(
-            opts=opts,
-            vram=vram,
-            target_users=args.target_users,
-            utilization_factor=args.utilization,
-            safety_margin=args.safety_margin,
-            target_tok_s=args.target_tok_s,
-        )
+    args.target_users = None  # will be set if fleet mode activates
+
+    if best is not None and opts and args.users > 1:
+        max_conc = _max_concurrency_for_option(best, vram, args.safety_margin)
+        effective_cap = max(1, int(max_conc * args.utilization))
+
+        # SLO check: does the best instance meet the tok/s target at this load?
+        if args.target_tok_s > 0:
+            slo_cap, _, slo_unmet = _slo_capacity(
+                best.single_stream_tok_s, args.target_tok_s, effective_cap,
+            )
+            effective_cap = min(effective_cap, slo_cap)
+
+        if args.users > effective_cap:
+            # Best single instance can't handle all users → fleet mode
+            args.target_users = args.users
+            scaling = compute_scaling(
+                opts=opts,
+                vram=vram,
+                target_users=args.target_users,
+                utilization_factor=args.utilization,
+                safety_margin=args.safety_margin,
+                target_tok_s=args.target_tok_s,
+            )
 
     if args.json:
         print_json(model, vram, opts, best, args, price_src, scaling)
