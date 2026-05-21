@@ -706,7 +706,12 @@ def estimate_vram(
     # PagedAttention, this is what concurrency calculations should divide into
     # the available KV budget. Default to seq_len // 4 if not specified.
     if avg_context_len is None:
-        avg_context_len = max(1, seq_len // 4)
+        # Default to 1024 (chat-grade workload) capped at seq_len. Was previously
+        # seq_len // 4, which over-estimated KV usage for default-mode users
+        # (they typically run short prompts/short outputs, not max_model_len-sized
+        # working sets). For long-context workloads, set --avg-context explicitly
+        # or use --workload summarization.
+        avg_context_len = min(1024, seq_len)
     avg_context_len = max(1, min(avg_context_len, seq_len))
     kv_per_active_seq = kv_per_tok * avg_context_len
 
@@ -1486,6 +1491,72 @@ def _fmt_params(p: int) -> str:
     return str(p)
 
 
+def _mode_line(args: argparse.Namespace) -> str:
+    """One-line summary of what mode the recommender is running in.
+
+    Tells the user upfront what's being optimized, so they can tell at a
+    glance whether SLO is being enforced, what concurrency is assumed, and
+    what flags would refine the result.
+    """
+    if args.target_users is not None:
+        slo_part = (
+            f"@ {args.target_tok_s:.0f} tok/s/user SLO"
+            if args.target_tok_s > 0 else "no SLO"
+        )
+        return f"fleet sizing for {args.target_users} users {slo_part}"
+    if args.tp is not None:
+        return f"cheapest fit, TP={args.tp} pinned"
+    if args.users > 1:
+        return (
+            f"cheapest fit ({args.users} users, no SLO — pass "
+            f"--target-tok-s X to enforce latency)"
+        )
+    return "cheapest fit (1 user, no SLO)"
+
+
+def _next_steps_lines(
+    args:    argparse.Namespace,
+    best:    "Option | None",
+    scaling: "list[ScalingRecommendation] | None",
+) -> list[str]:
+    """Suggest next-step CLI flags the user might want to try.
+
+    Returns a list of suggestion strings (one per useful next step).
+    Suggestions are tailored to what the user *didn't* set, not generic.
+    """
+    suggestions: list[str] = []
+
+    # Default mode: tell user how to switch to fleet sizing
+    if args.target_users is None:
+        suggestions.append(
+            "Production sizing:    --target-users N --target-tok-s X"
+        )
+
+    # bf16 default → suggest int4 for cost
+    if args.quant == "bf16":
+        suggestions.append(
+            "Cut cost ~50% on this model:  --quant int4   "
+            "(may lose 1-2% on benchmarks)"
+        )
+
+    # No workload set → suggest one
+    if not args.workload:
+        suggestions.append(
+            "Workload-tuned defaults:  "
+            "--workload chat | rag | code | summarization | batch"
+        )
+
+    # If shared-eligible single-GPU model → mention shared mode
+    if best is not None and best.shared_eligible and best.total_gpus == 1 \
+            and not (scaling and len(scaling) > 0):
+        suggestions.append(
+            f"Reduce $/model by {TIME_SLICE_REPLICAS}×:    add 'shared: true' to InferenceEndpoint "
+            f"(time-slice with up to {TIME_SLICE_REPLICAS} models per GPU)"
+        )
+
+    return suggestions[:3]   # cap at 3 to keep output tidy
+
+
 def _explain_recommendation(
     best: "Option",
     all_opts: list["Option"],
@@ -1511,47 +1582,51 @@ def _explain_recommendation(
     if best is None:
         return ""
 
-    # Find a meaningful runner-up: next-cheapest option on a different instance.
+    # In fleet mode, the recommendation is about the FLEET's chosen
+    # (instance, tp, pp) — which may differ from the single-instance `best`
+    # (the cheapest fitter at concurrency=1). Switch the explainer's anchor
+    # to the fleet pick so the rationale matches the headline banner.
+    fleet_best = scaling[0] if scaling else None
+    is_fleet = args.target_users is not None and fleet_best is not None
+    anchor = fleet_best.option if is_fleet else best
+
+    # Find a meaningful runner-up on a different instance type.
     runner_up = None
-    for o in all_opts[1:]:
-        if o is best:
+    for o in all_opts:
+        if o is anchor:
             continue
-        if o.instance.name != best.instance.name:
+        if o.instance.name != anchor.instance.name:
             runner_up = o
             break
 
     parts: list[str] = []
 
     # --- Strategy explanation (TP vs PP vs single-GPU) -------------------- #
-    if best.tp_degree > 1 and best.pp_degree > 1:
+    if anchor.tp_degree > 1 and anchor.pp_degree > 1:
         strategy_phrase = (
-            f"TP={best.tp_degree} × PP={best.pp_degree} on {best.total_gpus} GPUs "
-            f"({'NVLink' if best.instance.has_nvlink else 'PCIe'})"
+            f"TP={anchor.tp_degree} × PP={anchor.pp_degree} on {anchor.total_gpus} GPUs "
+            f"({'NVLink' if anchor.instance.has_nvlink else 'PCIe'})"
         )
-    elif best.tp_degree > 1:
-        nvlink = "NVLink" if best.instance.has_nvlink else "PCIe"
+    elif anchor.tp_degree > 1:
+        nvlink = "NVLink" if anchor.instance.has_nvlink else "PCIe"
         strategy_phrase = (
-            f"TP={best.tp_degree} on {nvlink} (aggregate "
-            f"{best.instance.hbm_bandwidth_tb_s * best.tp_degree:.2f} TB/s HBM)"
+            f"TP={anchor.tp_degree} on {nvlink} (aggregate "
+            f"{anchor.instance.hbm_bandwidth_tb_s * anchor.tp_degree:.2f} TB/s HBM)"
         )
-    elif best.pp_degree > 1:
+    elif anchor.pp_degree > 1:
         strategy_phrase = (
-            f"PP={best.pp_degree} (sequential stages, no bandwidth aggregation)"
+            f"PP={anchor.pp_degree} (sequential stages, no bandwidth aggregation)"
         )
     else:
         strategy_phrase = (
-            f"single-GPU on {best.instance.gpu} "
-            f"({best.instance.hbm_bandwidth_tb_s:.2f} TB/s HBM)"
+            f"single-GPU on {anchor.instance.gpu} "
+            f"({anchor.instance.hbm_bandwidth_tb_s:.2f} TB/s HBM)"
         )
-
-    # --- Fleet-aware vs single-instance rationale ------------------------- #
-    fleet_best = scaling[0] if scaling else None
-    is_fleet = args.target_users is not None and fleet_best is not None
 
     if is_fleet:
         fb = fleet_best
         parts.append(
-            f"{fb.replicas}× {best.instance.name} runs the model with {strategy_phrase}."
+            f"{fb.replicas}× {anchor.instance.name} runs the model with {strategy_phrase}."
         )
         parts.append(
             f"Each replica serves {fb.effective_capacity} concurrent users at "
@@ -1570,27 +1645,27 @@ def _explain_recommendation(
                         f"by {price_delta * 100:.0f}% on total fleet cost."
                     )
     else:
-        parts.append(f"{best.instance.name} runs the model with {strategy_phrase}.")
+        parts.append(f"{anchor.instance.name} runs the model with {strategy_phrase}.")
 
         # Throughput context (single-instance mode)
-        util_pct = 100.0 * best.per_gpu_need_gb / best.instance.vram_gb
-        if best.single_stream_tok_s > 0:
+        util_pct = 100.0 * anchor.per_gpu_need_gb / anchor.instance.vram_gb
+        if anchor.single_stream_tok_s > 0:
             if args.users > 1:
                 parts.append(
                     f"At {args.users} concurrent users, each user gets "
-                    f"~{best.per_user_tok_s_at_users:.0f} tok/s "
-                    f"(ceiling {best.single_stream_tok_s:.0f} tok/s single-stream)."
+                    f"~{anchor.per_user_tok_s_at_users:.0f} tok/s "
+                    f"(ceiling {anchor.single_stream_tok_s:.0f} tok/s single-stream)."
                 )
             else:
                 parts.append(
-                    f"Single-stream throughput ~{best.single_stream_tok_s:.0f} tok/s, "
+                    f"Single-stream throughput ~{anchor.single_stream_tok_s:.0f} tok/s, "
                     f"{util_pct:.0f}% VRAM utilized."
                 )
 
         # Why this instance over the runner-up?
         if runner_up is not None and runner_up.single_stream_tok_s > 0:
-            price_delta = (runner_up.price_usd_h - best.price_usd_h) / runner_up.price_usd_h
-            speed_delta = (best.single_stream_tok_s - runner_up.single_stream_tok_s) / max(
+            price_delta = (runner_up.price_usd_h - anchor.price_usd_h) / runner_up.price_usd_h
+            speed_delta = (anchor.single_stream_tok_s - runner_up.single_stream_tok_s) / max(
                 runner_up.single_stream_tok_s, 1e-6
             )
             if price_delta > 0.10 and speed_delta > -0.20:
@@ -1610,20 +1685,20 @@ def _explain_recommendation(
                 )
 
     # --- Caveats (apply to both modes) ------------------------------------ #
-    util_pct = 100.0 * best.per_gpu_need_gb / best.instance.vram_gb
+    util_pct = 100.0 * anchor.per_gpu_need_gb / anchor.instance.vram_gb
     caveats: list[str] = []
-    if best.quant_warning:
-        caveats.append(f"⚠ {args.quant} dtype emulated on {best.instance.gpu} "
+    if anchor.quant_warning:
+        caveats.append(f"⚠ {args.quant} dtype emulated on {anchor.instance.gpu} "
                        f"— real-world throughput will be ~half of estimates")
     if util_pct > 80:
         caveats.append(f"⚠ {util_pct:.0f}% VRAM used — limited headroom for "
                        f"longer contexts or higher concurrency")
-    if best.shared_eligible and best.total_gpus == 1 and not is_fleet:
+    if anchor.shared_eligible and anchor.total_gpus == 1 and not is_fleet:
         caveats.append(
             f"could share GPU with up to {TIME_SLICE_REPLICAS} models "
             f"via time-slicing (set shared: true to amortize cost)"
         )
-    if best.over_price_ceiling:
+    if anchor.over_price_ceiling:
         caveats.append("over your --max-price ceiling — no cheaper option fits")
     if caveats:
         parts.append(" ".join(caveats[:2]))   # cap at 2 caveats
@@ -1641,6 +1716,7 @@ def print_human(
     args:        argparse.Namespace,
     price_src:   str,
     scaling:     list[ScalingRecommendation] | None = None,
+    prices:      dict[str, float] | None = None,
 ) -> None:
     C      = _palette(_should_use_colour(args))
     ruler  = _ruler(71, C)
@@ -1656,19 +1732,23 @@ def print_human(
     marker    = f"{C.YELLOW}⚠{C.RESET}" if best.over_price_ceiling else f"{C.GREEN}✓{C.RESET}"
     verdict   = f"{C.YELLOW}FITS, BUT OVER BUDGET{C.RESET}" if best.over_price_ceiling \
                 else f"{C.GREEN}RECOMMENDED{C.RESET}"
-    shared_on = best.shared_eligible and best.total_gpus == 1
-    if shared_on:
-        mode_lbl = f"shared mode (up to {TIME_SLICE_REPLICAS} models per GPU)"
-    elif best.parallelism_label:
-        mode_lbl = best.parallelism_label
-    else:
-        mode_lbl = "dedicated GPU"
-
     # Fleet mode: show fleet-aware banner. Otherwise: single-instance banner.
     fleet_best = scaling[0] if scaling else None
     is_fleet_mode = args.target_users is not None and fleet_best is not None
 
+    # In fleet mode, anchor labels to the fleet pick (which may differ from
+    # the single-instance `best` in instance type AND parallelism strategy).
+    banner_opt = fleet_best.option if is_fleet_mode else best
+    shared_on = banner_opt.shared_eligible and banner_opt.total_gpus == 1
+    if shared_on:
+        mode_lbl = f"shared mode (up to {TIME_SLICE_REPLICAS} models per GPU)"
+    elif banner_opt.parallelism_label:
+        mode_lbl = banner_opt.parallelism_label
+    else:
+        mode_lbl = "dedicated GPU"
+
     print()
+    print(f"  {C.DIM}Mode:{C.RESET} {C.BOLD}{_mode_line(args)}{C.RESET}")
     print(ruler)
 
     if is_fleet_mode:
@@ -1834,9 +1914,19 @@ def print_human(
     # -------- 6. Fleet scaling (when --target-users is given) ------------ #
     if scaling:
         _print_scaling_section(scaling, args, C)
+        # 6b. Cost levers — show what knob tweaks would do to fleet cost.
+        if prices is not None and scaling[0] is not None:
+            _print_cost_levers(args, model, scaling[0], prices, C)
 
     # -------- 7. YAML artifact + next steps ------------------------------ #
     _print_yaml_snippet(model, vram, best, args, C, scaling)
+
+    # -------- 7b. Next steps suggestions --------------------------------- #
+    suggestions = _next_steps_lines(args, best, scaling)
+    if suggestions:
+        print(f"\n{C.BOLD}Next steps:{C.RESET}")
+        for s in suggestions:
+            print(f"  • {s}")
 
     # -------- 8. Footnotes ----------------------------------------------- #
     print(f"\n{C.DIM}Notes:")
@@ -1888,6 +1978,142 @@ def _print_table_row(o: Option, C: type, over: bool) -> None:
         ts_str = "  ?  "
     print(f"  {o.instance.name:<15} {o.instance.gpu:<9} {strategy:<10} {usage:<12} "
           f"{fit}{' ' * max(fit_pad, 0)}  {ts_str:>10}  {price:>6}  {month:>9}  {flags}")
+
+
+def _compute_alt_fleet_cost(
+    model:          ModelSpec,
+    weight_q:       str,
+    kv_q:           str,
+    seq_len:        int,
+    avg_context:    int,
+    target_users:   int,
+    target_tok_s:   float,
+    utilization:    float,
+    safety_margin:  float,
+    prices:         dict[str, float],
+    max_price:      float,
+    num_heads:      int,
+) -> "ScalingRecommendation | None":
+    """Compute the cheapest fleet for an alternative parameter set.
+
+    Used by the cost-lever feature to show 'what if I switched to int4?' or
+    'what if I lowered the SLO?' impact in actual dollars.
+    """
+    vram_alt = estimate_vram(
+        model, weight_q, kv_q, seq_len, batch_size=1,
+        users=1, avg_context_len=avg_context,
+    )
+    opts_alt = find_options(
+        total_need_gb=vram_alt.total_gb,
+        num_heads=num_heads,
+        tp_pin=None,
+        require_in_cluster=False,
+        safety_margin=safety_margin,
+        prices=prices,
+        max_price=max_price,
+        model=model,
+        weight_q=weight_q,
+        kv_q=kv_q,
+        users=1,
+    )
+    if not opts_alt:
+        return None
+    scaling_alt = compute_scaling(
+        opts=opts_alt,
+        vram=vram_alt,
+        target_users=target_users,
+        utilization_factor=utilization,
+        safety_margin=safety_margin,
+        target_tok_s=target_tok_s,
+    )
+    if not scaling_alt:
+        return None
+    # Pick the first non-SLO-unmet option
+    for s in scaling_alt:
+        if not s.slo_unmet:
+            return s
+    return scaling_alt[0]
+
+
+def _print_cost_levers(
+    args:        argparse.Namespace,
+    model:       ModelSpec,
+    fleet_best:  "ScalingRecommendation",
+    prices:      dict[str, float],
+    C:           type,
+) -> None:
+    """Print 'what if?' alternatives showing how cost changes with knob tweaks.
+
+    Only runs in fleet mode. Computes 2-3 alternative fleet configurations
+    by re-evaluating with one parameter tweaked at a time, showing the user
+    where the cost-quality / cost-latency / cost-context trade-offs are.
+    """
+    base_cost = fleet_best.fleet_cost_usd_h
+    levers: list[tuple[str, float, str]] = []   # (label, alt_cost, action_text)
+
+    common_kwargs = dict(
+        model=model,
+        kv_q=args.kv_quant,
+        seq_len=args.seq,
+        target_users=args.target_users,
+        utilization=args.utilization,
+        safety_margin=args.safety_margin,
+        prices=prices,
+        max_price=args.max_price,
+        num_heads=model.num_heads,
+    )
+
+    avg_ctx = args.avg_context if args.avg_context else min(1024, args.seq)
+
+    # Lever 1: switch to int4 (only suggest if not already int4-class)
+    if args.quant in ("bf16", "fp16", "fp32"):
+        alt = _compute_alt_fleet_cost(
+            weight_q="int4",
+            avg_context=avg_ctx,
+            target_tok_s=args.target_tok_s,
+            **common_kwargs,
+        )
+        if alt is not None:
+            levers.append(("--quant int4", alt.fleet_cost_usd_h,
+                           "1-2% quality loss on benchmarks"))
+
+    # Lever 2: relax SLO by 40%
+    if args.target_tok_s >= 10:
+        new_slo = round(args.target_tok_s * 0.6)
+        alt = _compute_alt_fleet_cost(
+            weight_q=args.quant,
+            avg_context=avg_ctx,
+            target_tok_s=float(new_slo),
+            **common_kwargs,
+        )
+        if alt is not None and alt.fleet_cost_usd_h < base_cost:
+            levers.append((f"--target-tok-s {new_slo}", alt.fleet_cost_usd_h,
+                           "lower per-user latency target"))
+
+    # Lever 3: cap context at 256 (if not already short)
+    if avg_ctx > 256:
+        alt = _compute_alt_fleet_cost(
+            weight_q=args.quant,
+            avg_context=256,
+            target_tok_s=args.target_tok_s,
+            **common_kwargs,
+        )
+        if alt is not None and alt.fleet_cost_usd_h < base_cost:
+            levers.append(("--avg-context 256", alt.fleet_cost_usd_h,
+                           "for short Q&A workloads"))
+
+    if not levers:
+        return
+
+    print(f"\n{C.BOLD}Cost levers{C.RESET} {C.DIM}(impact on monthly fleet cost){C.RESET}")
+    base_monthly = base_cost * 730
+    for label, alt_cost, note in levers:
+        delta = (alt_cost - base_cost) / base_cost * 100
+        sign = "+" if delta > 0 else ""
+        alt_monthly = alt_cost * 730
+        print(f"  {label:<22}  ${alt_monthly:>7,.0f}/mo "
+              f"{C.DIM}({sign}{delta:.0f}% vs ${base_monthly:,.0f}/mo){C.RESET}  "
+              f"{C.DIM}— {note}{C.RESET}")
 
 
 def _print_scaling_section(
@@ -2323,7 +2549,7 @@ def main(argv: list[str] | None = None) -> int:
     if args.json:
         print_json(model, vram, opts, best, args, price_src, scaling)
     else:
-        print_human(model, vram, opts, best, args, price_src, scaling)
+        print_human(model, vram, opts, best, args, price_src, scaling, prices)
 
     return 0 if best else 2
 
