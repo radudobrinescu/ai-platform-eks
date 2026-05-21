@@ -552,6 +552,8 @@ def _http_get_json(url: str, token: str | None) -> dict[str, Any]:
 
 def fetch_model(model_id: str, token: str | None) -> ModelSpec:
     """Resolve model architecture + parameter count from HuggingFace."""
+    print(f"  Fetching {model_id} from HuggingFace...", end="", flush=True,
+          file=sys.stderr)
     warnings: list[str] = []
 
     # 1. config.json — canonical source of architecture.
@@ -642,6 +644,7 @@ def fetch_model(model_id: str, token: str | None) -> ModelSpec:
         per_layer = attn + ffn + (2 * hidden_size)  # + layernorms (tiny)
         params = embed + num_layers * per_layer + hidden_size  # final norm
 
+    print(" done.", file=sys.stderr)
     return ModelSpec(
         model_id=model_id,
         params=params,
@@ -1312,9 +1315,9 @@ WORKLOAD_PRESETS = {
     },
     "code": {
         "avg_context":  2048,   # surrounding file context + completion
-        "target_tok_s": 50,     # IDE users won't tolerate slow completions
+        "target_tok_s": 35,     # IDE streaming — 30-40 tok/s feels responsive
         "users":         4,
-        "description": "Code completion / IDE assistant: fast decode is critical",
+        "description": "Code completion / IDE assistant: fast decode, streamed output",
     },
     "summarization": {
         "avg_context":  8192,   # long input documents, short summaries
@@ -1554,29 +1557,29 @@ def _next_steps_lines(
             "Production sizing:    --users N --target-tok-s X"
         )
 
-    # bf16 default → suggest int4 for cost
-    if args.quant == "bf16":
+    # Non-quantized → suggest int4 for cost savings
+    if args.quant in ("bf16", "fp16", "fp32"):
         suggestions.append(
-            "Cut cost ~50% on this model:  --quant int4   "
-            "(may lose 1-2% on benchmarks)"
+            "Cut cost ~50%:  --quant int4  (may lose 1-2% on benchmarks)"
         )
 
     # No workload set → suggest one
     if not args.workload:
         suggestions.append(
-            "Workload-tuned defaults:  "
-            "--workload chat | rag | code | summarization | batch"
+            "Workload presets:  --workload chat | rag | code | summarization | batch"
         )
 
     # If shared-eligible single-GPU model → mention shared mode
     if best is not None and best.shared_eligible and best.total_gpus == 1 \
             and not (scaling and len(scaling) > 0):
         suggestions.append(
-            f"Reduce $/model by {TIME_SLICE_REPLICAS}×:    add 'shared: true' to InferenceEndpoint "
-            f"(time-slice with up to {TIME_SLICE_REPLICAS} models per GPU)"
+            f"Reduce $/model by {TIME_SLICE_REPLICAS}×:  add 'shared: true' "
+            f"(time-slice up to {TIME_SLICE_REPLICAS} models per GPU)"
         )
 
-    return suggestions[:3]   # cap at 3 to keep output tidy
+    suggestions.append("Full options:  --help | --verbose")
+
+    return suggestions[:4]
 
 
 def _explain_recommendation(
@@ -2077,7 +2080,7 @@ def _print_cost_levers(
         utilization=args.utilization,
         safety_margin=args.safety_margin,
         prices=prices,
-        max_price=args.max_price,
+        max_price=999999.0,  # cost levers explore all options regardless of user's ceiling
         num_heads=model.num_heads,
     )
 
@@ -2287,17 +2290,9 @@ def _print_yaml_snippet(model: ModelSpec, vram: VramEstimate, best: Option,
 
     lines.extend([
         f"  maxModelLen: {max_len}",
-        f"  minVramPerGpuGiB: {min_vram_gib}   "
-        f"# min per-GPU VRAM; Karpenter picks the cheapest NVIDIA GPU that qualifies",
-        f"  workerMemory: \"{worker_mem_gib}Gi\"   "
-        f"# CPU memory for the Ray worker pod (default is conservative; this is sized to model)",
-        # PR 6: max_num_seqs hint. The InferenceEndpoint CRD doesn't yet
-        # surface this knob, so we emit it as a comment that operators can
-        # plumb through (vLLM defaults to a very large value, which can OOM
-        # under prefix-cache pressure). To enable: add `maxNumSeqs:` to the
-        # CRD schema and pass it through to the RayService vLLM args.
-        f"  # maxNumSeqs: {max_num_seqs}   "
-        f"# vLLM concurrent-sequence cap (sized to fit; CRD wiring TBD)",
+        f"  minVramPerGpuGiB: {min_vram_gib}",
+        f"  workerMemory: \"{worker_mem_gib}Gi\"",
+        f"  # maxNumSeqs: {max_num_seqs}",
         f"  minReplicas: {min_replicas}",
         f"  maxReplicas: {max_replicas}",
     ])
