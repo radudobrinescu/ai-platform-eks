@@ -36,3 +36,7 @@ CLAUDE.md
 
 # Build artifacts
 .next/
+
+# Local test artifacts from recommend-instance-v2 multi-model runs
+output.md
+output*.md
