@@ -188,6 +188,11 @@ body { font-family: var(--font); background: var(--bg); color: var(--text); heig
 .gpu-slots { display: flex; gap: 5px; }
 .gs { flex: 1; min-height: 44px; border-radius: 6px; display: flex; align-items: center; justify-content: center; font-size: 11px; font-weight: 700; font-family: var(--mono); padding: 6px 8px; text-align: center; word-break: break-all; line-height: 1.3; }
 .gs.used { background: linear-gradient(135deg, #7c3aed, #6366f1); color: #fff; box-shadow: 0 2px 8px rgba(124,58,237,0.3); }
+.gs.used.multi { border-radius: 0; box-shadow: none; border-right: 1px solid rgba(255,255,255,0.15); position: relative; }
+.gs.used.multi.first { border-radius: 6px 0 0 6px; }
+.gs.used.multi.last { border-radius: 0 6px 6px 0; border-right: none; }
+.gs.used.multi:not(.first) { background: linear-gradient(135deg, #6366f1, #7c3aed); }
+.gs-badge { display: inline-block; font-size: 9px; font-weight: 700; background: rgba(255,255,255,0.2); border-radius: 3px; padding: 1px 5px; margin-left: 4px; vertical-align: middle; letter-spacing: 0.3px; }
 .gs.free { background: rgba(167,139,250,0.05); border: 1px dashed rgba(167,139,250,0.25); color: var(--text-muted); }
 
 @keyframes pulse { 0%,100%{opacity:1;}50%{opacity:0.3;} }
@@ -265,9 +270,12 @@ function renderModels(eps){
     const sel=selectedModel===ep.name?'selected':'';
     const elapsed=Math.floor((Date.now()-new Date(ep.created).getTime())/1000);
     const timer=ready?'':`<div class="mtimer">⏱ ${Math.floor(elapsed/60)}m ${elapsed%60}s</div>`;
+    const gpuCount=ep.gpuCount||1,tp=ep.tp||1,pp=ep.pp||1;
+    let strat=gpuCount===1?'1 GPU':tp>1&&pp>1?`TP=${tp}×PP=${pp}`:tp>1?`TP=${tp}`:pp>1?`PP=${pp}`:`${gpuCount} GPU`;
+    const mode=ep.shared?'shared':strat;
     return `<div class="model-item ${sel}" onclick="selectModel('${ep.name}')">
       <div class="model-top"><div class="mdot ${cls}"></div><div class="mname">${ep.name}</div><div class="mstatus ${cls}">${st}</div></div>
-      <div class="mdetail">${ep.shared?'shared':'dedicated'} · ${ep.model}</div>${timer}</div>`;
+      <div class="mdetail">${mode} · ${ep.model}</div>${timer}</div>`;
   }).join('');
 }
 
@@ -280,6 +288,9 @@ function renderInfra(nodes,pods){
   for(const p of pods){if(!p.node||isDS(p.name))continue;(podsByNode[p.node]=podsByNode[p.node]||[]).push(p);}
   const modelNodes=new Set();
   if(selectedModel)for(const p of pods)if(p.namespace==='inference'&&p.name.startsWith(selectedModel)&&p.node)modelNodes.add(p.node);
+  // Build endpoint lookup by name for TP/PP badge on GPU slots
+  const epByName={};
+  if(lastData)for(const ep of lastData.endpoints)epByName[ep.name]=ep;
 
   let html='';
   for(const pool of POOLS){
@@ -329,17 +340,30 @@ function renderInfra(nodes,pods){
           const gpuPods=ndPods.filter(p=>p.gpu>0);
           const gpuLabel=node.gpuProduct||node.instance;
           html+=`<div class="gpu-m"><div class="gpu-m-label">${gpuLabel} · ${node.gpu} GPU slot${node.gpu>1?'s':''}</div><div class="gpu-slots">`;
-          for(let i=0;i<node.gpu;i++){
-            if(i<gpuPods.length){
-              const podName=gpuPods[i].name;
-              // Extract model name: "smollm3-3b" from full pod name, handle warmup specially
-              let label;
-              if(podName.includes('warmup')) label='warmup';
-              else label=podName.replace(/-[a-z0-9]{5}-(?:gpu-workers-worker|head).*$/,'').replace(/-gpu-workers.*$/,'').replace(/-head.*$/,'');
-              html+=`<div class="gs used">${label}</div>`;
+          let slotIdx=0;
+          for(const gp of gpuPods){
+            const podName=gp.name;
+            let label;
+            if(podName.includes('warmup')) label='warmup';
+            else label=podName.replace(/-[a-z0-9]{5}-(?:gpu-workers-worker|head).*$/,'').replace(/-gpu-workers.*$/,'').replace(/-head.*$/,'');
+            const gpuCount=gp.gpu||1;
+            // Look up parallelism strategy from InferenceEndpoint
+            const ep=epByName[label];
+            let stratLabel='';
+            if(gpuCount>1&&ep){
+              const tp=ep.tp||1,pp=ep.pp||1;
+              stratLabel=tp>1&&pp>1?`TP${tp}×PP${pp}`:tp>1?`TP=${tp}`:pp>1?`PP=${pp}`:`${gpuCount}GPU`;
+            } else if(gpuCount>1){
+              stratLabel=`${gpuCount}GPU`;
             }
-            else html+=`<div class="gs free">free</div>`;
+            const stratBadge=stratLabel?`<div class="gs-badge">${stratLabel}</div>`:'';
+            for(let g=0;g<gpuCount&&slotIdx<node.gpu;g++,slotIdx++){
+              const spanLabel=g===0?`${label}${stratBadge}`:'';
+              if(gpuCount>1) html+=`<div class="gs used multi${g===0?' first':''}${g===gpuCount-1?' last':''}">${spanLabel}</div>`;
+              else html+=`<div class="gs used">${label}</div>`;
+            }
           }
+          for(;slotIdx<node.gpu;slotIdx++) html+=`<div class="gs free">free</div>`;
           html+=`</div></div>`;
         }
         html+=`</div>`;

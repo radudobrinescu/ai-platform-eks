@@ -122,10 +122,18 @@ data:
             for ep in ep_data.get("items", []):
                 status = ep.get("status", {})
                 spec = ep.get("spec", {})
+                gpu_count = int(spec.get("gpuCount", 1))
+                tp = int(spec.get("tensorParallelSize", 0))
+                pp = int(spec.get("pipelineParallelSize", 1))
+                if tp == 0:
+                    tp = gpu_count if pp == 1 else 1
                 endpoints.append({
                     "name": ep["metadata"]["name"],
                     "model": spec.get("model", ""),
                     "shared": spec.get("shared", False),
+                    "gpuCount": gpu_count,
+                    "tp": tp,
+                    "pp": pp,
                     "modelStatus": status.get("modelStatus", "Pending"),
                     "ready": status.get("ready", "False"),
                     "message": status.get("message", ""),
