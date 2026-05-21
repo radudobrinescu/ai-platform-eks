@@ -2,18 +2,46 @@
 """
 recommend-instance.py — Right-size EC2 GPU instances for an LLM on this EKS platform.
 
-Mirrors the inputs of https://apxml.com/tools/vram-calculator, but instead of
-reporting VRAM utilisation on a fixed GPU, it outputs a ranked list of AWS GPU
-instances that can host the model, and highlights which ones match this cluster's
-Karpenter NodePool constraints (g5/g5e/g6/g6e/g7/g7e × xlarge/2xlarge/4xlarge).
+Reads model architecture from HuggingFace, estimates VRAM requirements, and
+recommends the cheapest instance that fits — with the right parallelism strategy
+(TP, PP, or TP×PP) based on vLLM best practices and GPU interconnect topology.
 
-Uses only the Python stdlib. Reads model architecture from the HuggingFace Hub.
+Supports two modes:
+  1. Single-instance sizing (default): pick the best GPU for one replica
+  2. Fleet scaling (--target-users N): recommend instance type + replica count
+     for serving N concurrent users across multiple workers
+
+Parallelism strategy (per https://docs.vllm.ai/en/latest/serving/parallelism_scaling/):
+  - Tensor Parallelism (TP): splits layers across GPUs on NVLink-connected nodes
+  - Pipeline Parallelism (PP): splits layer groups across GPUs on PCIe (no NVLink)
+  - TP×PP: combines both for large multi-GPU deployments
+  - TP requires num_attention_heads to be evenly divisible by tp_degree
 
 Examples:
+
+  # Quick check — what GPU fits a 4B model?
   ./ops/recommend-instance.py google/gemma-3-4b-it
+
+  # 8B model with 16K context, 8 concurrent users per instance
   ./ops/recommend-instance.py meta-llama/Llama-3.1-8B-Instruct --seq 16384 --users 8
-  ./ops/recommend-instance.py Qwen/Qwen2.5-32B-Instruct --quant int4 --json
-  HF_TOKEN=hf_... ./ops/recommend-instance.py google/gemma-3-27b-it --quant bf16
+
+  # Quantised 32B model — int4 cuts VRAM in half
+  ./ops/recommend-instance.py Qwen/Qwen2.5-32B-Instruct --quant int4
+
+  # Fleet sizing — how many replicas for 50 concurrent users?
+  ./ops/recommend-instance.py meta-llama/Llama-3.1-8B-Instruct --target-users 50
+
+  # Fleet with tighter headroom (60% utilization) for cost sensitivity
+  ./ops/recommend-instance.py Qwen/Qwen2.5-7B-Instruct --target-users 100 --utilization 0.6
+
+  # Pin to TP=4, only show in-cluster options, machine-readable output
+  ./ops/recommend-instance.py meta-llama/Llama-3.1-70B-Instruct --tp 4 --in-cluster-only --json
+
+  # Gated model (needs HuggingFace token)
+  HF_TOKEN=hf_... ./ops/recommend-instance.py google/gemma-3-27b-it
+
+  # Budget-conscious: cap at $5/hr per instance
+  ./ops/recommend-instance.py Qwen/Qwen2.5-32B-Instruct --quant int4 --max-price 5
 """
 
 from __future__ import annotations
@@ -170,6 +198,7 @@ class Instance:
     mem_gb:            int     # host RAM
     price_usd_h:       float   # us-east-1 on-demand, approximate fallback
     gpu_manufacturer:  str = "nvidia"
+    has_nvlink:        bool = False  # NVLink interconnect (affects TP vs PP choice)
 
     @property
     def family(self) -> str:
@@ -190,40 +219,40 @@ class Instance:
 
 
 INSTANCES: list[Instance] = [
-    # g4dn — T4 (legacy, kept for reference; not in this cluster's NodePool)
+    # g4dn — T4 (no NVLink)
     Instance("g4dn.xlarge",   "T4",         1, 16,   4,  16,  0.526),
     Instance("g4dn.2xlarge",  "T4",         1, 16,   8,  32,  0.752),
     Instance("g4dn.12xlarge", "T4",         4, 16,  48, 192,  3.912),
 
-    # g5 — A10G (24GB)
+    # g5 — A10G (no NVLink)
     Instance("g5.xlarge",     "A10G",       1, 24,   4,  16,  1.006),
     Instance("g5.2xlarge",    "A10G",       1, 24,   8,  32,  1.212),
     Instance("g5.4xlarge",    "A10G",       1, 24,  16,  64,  1.624),
     Instance("g5.12xlarge",   "A10G",       4, 24,  48, 192,  5.672),
     Instance("g5.48xlarge",   "A10G",       8, 24, 192, 768, 16.288),
 
-    # g6 — L4 (24GB)
+    # g6 — L4 (no NVLink)
     Instance("g6.xlarge",     "L4",         1, 24,   4,  16,  0.805),
     Instance("g6.2xlarge",    "L4",         1, 24,   8,  32,  0.978),
     Instance("g6.4xlarge",    "L4",         1, 24,  16,  64,  1.323),
     Instance("g6.12xlarge",   "L4",         4, 24,  48, 192,  4.602),
     Instance("g6.48xlarge",   "L4",         8, 24, 192, 768, 13.350),
 
-    # g6e — L40S (48GB)
+    # g6e — L40S (no NVLink; prefer PP over TP for multi-GPU)
     Instance("g6e.xlarge",    "L40S",       1, 48,   4,  32,  1.861),
     Instance("g6e.2xlarge",   "L40S",       1, 48,   8,  64,  2.242),
     Instance("g6e.4xlarge",   "L40S",       1, 48,  16, 128,  3.004),
     Instance("g6e.12xlarge",  "L40S",       4, 48,  48, 384, 10.493),
     Instance("g6e.48xlarge",  "L40S",       8, 48, 192, 1536, 30.131),
 
-    # p4d / p4de — A100
-    Instance("p4d.24xlarge",  "A100 40GB",  8, 40,  96, 1152, 32.773),
-    Instance("p4de.24xlarge", "A100 80GB",  8, 80,  96, 1152, 40.966),
+    # p4d / p4de — A100 (NVLink)
+    Instance("p4d.24xlarge",  "A100 40GB",  8, 40,  96, 1152, 32.773, has_nvlink=True),
+    Instance("p4de.24xlarge", "A100 80GB",  8, 80,  96, 1152, 40.966, has_nvlink=True),
 
-    # p5 / p5e / p5en — H100 / H200
-    Instance("p5.48xlarge",   "H100 80GB",  8, 80, 192, 2048, 98.320),
-    Instance("p5e.48xlarge",  "H200 141GB", 8, 141, 192, 2048, 118.020),
-    Instance("p5en.48xlarge", "H200 141GB", 8, 141, 192, 2048, 124.000),
+    # p5 / p5e / p5en — H100 / H200 (NVLink)
+    Instance("p5.48xlarge",   "H100 80GB",  8, 80, 192, 2048, 98.320, has_nvlink=True),
+    Instance("p5e.48xlarge",  "H200 141GB", 8, 141, 192, 2048, 118.020, has_nvlink=True),
+    Instance("p5en.48xlarge", "H200 141GB", 8, 141, 192, 2048, 124.000, has_nvlink=True),
 ]
 
 
@@ -492,6 +521,7 @@ class VramEstimate:
     kv_cache_gb:    float
     activations_gb: float
     overhead_gb:    float
+    kv_per_seq_gb:  float = 0.0   # KV cache for a single sequence (used by scaling)
 
     @property
     def total_gb(self) -> float:
@@ -525,6 +555,9 @@ def estimate_vram(
     # vLLM / Flash-Attention reduces this materially; factor 4 is a safe pad.
     activations = 4 * batch_size * seq_len * m.hidden_size * 2  # fp16 activations
 
+    # KV cache for a single sequence (used by the scaling calculator).
+    kv_per_seq = kv_per_tok * seq_len
+
     # 15% pad for framework, CUDA graphs, allocator fragmentation.
     subtotal = weights + kv_cache + activations
     overhead = 0.15 * subtotal
@@ -535,6 +568,7 @@ def estimate_vram(
         kv_cache_gb=kv_cache / gb,
         activations_gb=activations / gb,
         overhead_gb=overhead / gb,
+        kv_per_seq_gb=kv_per_seq / gb,
     )
 
 
@@ -546,6 +580,7 @@ def estimate_vram(
 class Option:
     instance:           Instance
     tp_degree:          int
+    pp_degree:          int      # pipeline-parallel stages (1 = no PP)
     per_gpu_need_gb:    float
     headroom_gb:        float
     price_usd_h:        float    # effective price (from Pricing API or fallback)
@@ -555,41 +590,41 @@ class Option:
     notes:              list[str] = field(default_factory=list)
 
     @property
+    def total_gpus(self) -> int:
+        return self.tp_degree * self.pp_degree
+
+    @property
+    def parallelism_label(self) -> str:
+        if self.tp_degree > 1 and self.pp_degree > 1:
+            return f"TP={self.tp_degree} × PP={self.pp_degree}"
+        if self.pp_degree > 1:
+            return f"PP={self.pp_degree}"
+        if self.tp_degree > 1:
+            return f"TP={self.tp_degree}"
+        return ""
+
+    @property
     def in_cluster(self) -> bool:
         return self.nodepool != "out-of-cluster"
 
     @property
     def effective_price_usd_h(self) -> float:
-        """Concrete per-model cost — what the user pays today for one model.
-
-        Don't amortise across TIME_SLICE_REPLICAS here: that's a hypothetical
-        future cost that only materialises if the user actually runs N models
-        on the same shared GPU. Ranking on hypothetical cost would promote a
-        3× more expensive instance over a cheaper dedicated one based on
-        sharing that may never happen. `amortised_price_usd_h` exposes the
-        shared-mode number separately for display.
-        """
         return self.price_usd_h
 
     @property
     def amortised_price_usd_h(self) -> float | None:
-        """Per-model cost if TIME_SLICE_REPLICAS models co-locate on the GPU.
-
-        Returns None when sharing isn't applicable (TP>1, or not shared-
-        eligible). Use for informational display, not ranking.
-        """
-        if self.shared_eligible and self.tp_degree == 1:
+        if self.shared_eligible and self.total_gpus == 1:
             return self.price_usd_h / TIME_SLICE_REPLICAS
         return None
 
     @property
     def sort_key(self) -> tuple:
-        # Prefer: below ceiling, in-cluster, lowest effective price, tightest TP.
+        # Prefer: below ceiling, in-cluster, lowest effective price, fewest GPUs.
         return (
             self.over_price_ceiling,
             not self.in_cluster,
             self.effective_price_usd_h,
-            self.tp_degree,
+            self.total_gpus,
         )
 
 
@@ -633,8 +668,58 @@ def _classify_nodepool(
     return "out-of-cluster", False
 
 
+def _valid_parallelism_configs(
+    inst: Instance,
+    num_heads: int,
+    tp_pin: int | None,
+) -> list[tuple[int, int]]:
+    """Generate valid (tp, pp) pairs for an instance, respecting vLLM constraints.
+
+    Rules from https://docs.vllm.ai/en/latest/serving/parallelism_scaling/:
+    - TP: num_attention_heads must be evenly divisible by tp_degree
+    - PP: splits model along layer boundaries (no head constraint)
+    - TP × PP must equal the instance's GPU count
+    - Without NVLink: prefer PP over TP (TP throughput suffers on PCIe)
+    - With NVLink: prefer TP (maximises per-layer parallelism)
+    """
+    n = inst.num_gpus
+    if n == 1:
+        return [(1, 1)]
+
+    configs: list[tuple[int, int]] = []
+
+    # Enumerate all factorizations of num_gpus into tp × pp
+    for tp in TP_DEGREES:
+        if tp > n:
+            break
+        if n % tp != 0:
+            continue
+        pp = n // tp
+        # TP constraint: attention heads must be divisible by tp
+        if tp > 1 and num_heads % tp != 0:
+            continue
+        # If user pinned TP, only allow that exact value
+        if tp_pin is not None and tp != tp_pin:
+            continue
+        configs.append((tp, pp))
+
+    if not configs:
+        return []
+
+    # Sort: prefer the strategy that matches the interconnect
+    if inst.has_nvlink:
+        # NVLink: maximise TP (higher tp first)
+        configs.sort(key=lambda c: (-c[0], c[1]))
+    else:
+        # No NVLink (PCIe): prefer PP over TP to avoid communication bottleneck
+        configs.sort(key=lambda c: (c[0], -c[1]))
+
+    return configs
+
+
 def find_options(
     total_need_gb:      float,
+    num_heads:          int,
     tp_pin:             int | None,
     require_in_cluster: bool,
     safety_margin:      float,
@@ -642,53 +727,148 @@ def find_options(
     max_price:          float,
 ) -> list[Option]:
     options: list[Option] = []
-    tp_candidates = (tp_pin,) if tp_pin else TP_DEGREES
 
     for inst in INSTANCES:
-        for tp in tp_candidates:
-            if tp > inst.num_gpus:
-                continue
-            # vLLM uses all GPUs on the node for TP; skip partial allocations on
-            # multi-GPU nodes where the pool wouldn't naturally bin-pack.
-            if tp != inst.num_gpus and inst.num_gpus > 1:
-                continue
+        configs = _valid_parallelism_configs(inst, num_heads, tp_pin)
+        if not configs:
+            continue
 
-            per_gpu = (total_need_gb / tp) * _tp_overhead(tp)
-            available = inst.vram_gb * (1.0 - safety_margin)
-            if per_gpu > available:
-                continue
+        # Use the best config for this instance (first after sort)
+        tp, pp = configs[0]
+        total_gpus = tp * pp
 
-            nodepool, shared_eligible = _classify_nodepool(
-                inst, tp, per_gpu, safety_margin,
-            )
-            if require_in_cluster and nodepool == "out-of-cluster":
-                continue
+        # Per-GPU VRAM: weights sharded across all GPUs (TP shards layers,
+        # PP shards layer groups). KV cache and activations are per-stage.
+        per_gpu = (total_need_gb / total_gpus) * _tp_overhead(tp)
+        available = inst.vram_gb * (1.0 - safety_margin)
+        if per_gpu > available:
+            continue
 
-            price = prices.get(inst.name, inst.price_usd_h)
-            over_ceiling = price > max_price
+        nodepool, shared_eligible = _classify_nodepool(
+            inst, tp, per_gpu, safety_margin,
+        )
+        if require_in_cluster and nodepool == "out-of-cluster":
+            continue
 
-            notes: list[str] = []
-            if tp > 1:
-                notes.append(f"tensor-parallel across {tp} GPUs")
-            if nodepool == "out-of-cluster":
-                notes.append("not covered by Karpenter NodePools (non-NVIDIA or non-G/P)")
-            if over_ceiling:
-                notes.append(f"${price:.2f}/hr exceeds --max-price ${max_price:.2f}")
+        price = prices.get(inst.name, inst.price_usd_h)
+        over_ceiling = price > max_price
 
-            options.append(Option(
-                instance=inst,
-                tp_degree=tp,
-                per_gpu_need_gb=per_gpu,
-                headroom_gb=inst.vram_gb - per_gpu,
-                price_usd_h=price,
-                nodepool=nodepool,
-                shared_eligible=shared_eligible,
-                over_price_ceiling=over_ceiling,
-                notes=notes,
-            ))
+        notes: list[str] = []
+        if tp > 1 and pp > 1:
+            notes.append(f"TP={tp} × PP={pp} across {total_gpus} GPUs")
+        elif pp > 1:
+            notes.append(f"pipeline-parallel across {pp} GPUs (no NVLink → PP preferred)")
+        elif tp > 1:
+            notes.append(f"tensor-parallel across {tp} GPUs"
+                         + (" (NVLink)" if inst.has_nvlink else ""))
+        if nodepool == "out-of-cluster":
+            notes.append("not covered by Karpenter NodePools")
+        if over_ceiling:
+            notes.append(f"${price:.2f}/hr exceeds --max-price ${max_price:.2f}")
+
+        options.append(Option(
+            instance=inst,
+            tp_degree=tp,
+            pp_degree=pp,
+            per_gpu_need_gb=per_gpu,
+            headroom_gb=inst.vram_gb - per_gpu,
+            price_usd_h=price,
+            nodepool=nodepool,
+            shared_eligible=shared_eligible,
+            over_price_ceiling=over_ceiling,
+            notes=notes,
+        ))
 
     options.sort(key=lambda o: o.sort_key)
     return options
+
+
+# --------------------------------------------------------------------------- #
+# Fleet scaling                                                               #
+# --------------------------------------------------------------------------- #
+
+DEFAULT_UTILIZATION_FACTOR = 0.70  # leave 30% headroom for burst traffic
+
+@dataclass(frozen=True)
+class ScalingRecommendation:
+    option:                    Option
+    max_concurrency_per_inst:  int       # VRAM-limited max concurrent sequences
+    effective_capacity:        int       # after utilization factor
+    replicas:                  int
+    fleet_cost_usd_h:          float
+    utilization_factor:        float
+    target_users:              int
+
+    @property
+    def fleet_monthly_usd(self) -> float:
+        return self.fleet_cost_usd_h * 730
+
+    @property
+    def sort_key(self) -> tuple:
+        # Sort by total fleet cost — what the user actually pays. A single
+        # expensive instance (over per-instance ceiling) may still be the
+        # cheapest fleet option because it serves more concurrent users.
+        return (
+            not self.option.in_cluster,
+            self.fleet_cost_usd_h,
+            self.replicas,
+        )
+
+
+def _max_concurrency_for_option(
+    opt: Option,
+    vram: VramEstimate,
+    safety_margin: float,
+) -> int:
+    """Max concurrent sequences an instance can serve (VRAM-limited).
+
+    Subtracts weights + activations + overhead from available VRAM, then divides
+    by KV cache per sequence. This is the hard ceiling before vLLM starts queueing.
+
+    With PP, each GPU holds 1/pp of the layers (weights); with TP, each GPU holds
+    1/tp of each layer. Total sharding factor is tp × pp.
+    """
+    total_sharding = opt.total_gpus
+    available_per_gpu = opt.instance.vram_gb * (1.0 - safety_margin)
+    weights_per_gpu = vram.weights_gb / total_sharding
+    activations_per_gpu = vram.activations_gb / total_sharding
+    overhead_per_gpu = 0.15 * (weights_per_gpu + activations_per_gpu)
+    kv_budget = available_per_gpu - weights_per_gpu - activations_per_gpu - overhead_per_gpu
+    if kv_budget <= 0 or vram.kv_per_seq_gb <= 0:
+        return 0
+    return max(1, int(kv_budget / vram.kv_per_seq_gb))
+
+
+def compute_scaling(
+    opts:               list[Option],
+    vram:               VramEstimate,
+    target_users:       int,
+    utilization_factor: float,
+    safety_margin:      float,
+) -> list[ScalingRecommendation]:
+    """For each viable option, compute how many replicas are needed to serve target_users."""
+    results: list[ScalingRecommendation] = []
+
+    for opt in opts:
+        max_conc = _max_concurrency_for_option(opt, vram, safety_margin)
+        if max_conc < 1:
+            continue
+        effective = max(1, int(max_conc * utilization_factor))
+        replicas = math.ceil(target_users / effective)
+        fleet_cost = replicas * opt.price_usd_h
+
+        results.append(ScalingRecommendation(
+            option=opt,
+            max_concurrency_per_inst=max_conc,
+            effective_capacity=effective,
+            replicas=replicas,
+            fleet_cost_usd_h=fleet_cost,
+            utilization_factor=utilization_factor,
+            target_users=target_users,
+        ))
+
+    results.sort(key=lambda r: r.sort_key)
+    return results
 
 
 # --------------------------------------------------------------------------- #
@@ -709,6 +889,7 @@ def print_human(
     best:        Option | None,
     args:        argparse.Namespace,
     price_src:   str,
+    scaling:     list[ScalingRecommendation] | None = None,
 ) -> None:
     C      = _palette(_should_use_colour(args))
     ruler  = _ruler(71, C)
@@ -724,17 +905,18 @@ def print_human(
     marker    = f"{C.YELLOW}⚠{C.RESET}" if best.over_price_ceiling else f"{C.GREEN}✓{C.RESET}"
     verdict   = f"{C.YELLOW}FITS, BUT OVER BUDGET{C.RESET}" if best.over_price_ceiling \
                 else f"{C.GREEN}RECOMMENDED{C.RESET}"
-    shared_on = best.shared_eligible and best.tp_degree == 1
-    mode_lbl  = (f"shared mode (up to {TIME_SLICE_REPLICAS} models per GPU)"
-                 if shared_on else
-                 f"tensor-parallel across {best.tp_degree} GPUs"
-                 if best.tp_degree > 1 else
-                 "dedicated GPU")
+    shared_on = best.shared_eligible and best.total_gpus == 1
+    if shared_on:
+        mode_lbl = f"shared mode (up to {TIME_SLICE_REPLICAS} models per GPU)"
+    elif best.parallelism_label:
+        mode_lbl = best.parallelism_label
+    else:
+        mode_lbl = "dedicated GPU"
 
     print()
     print(ruler)
     print(f"  {marker} {C.BOLD}{verdict}: {best.instance.name}{C.RESET} — "
-          f"{best.tp_degree}× NVIDIA {best.instance.gpu}, "
+          f"{best.total_gpus}× NVIDIA {best.instance.gpu}, "
           f"{best.instance.vram_gb} GB VRAM per GPU · {mode_lbl}")
     monthly = _fmt_monthly(best.price_usd_h)
     line    = f"    {C.BOLD}${best.price_usd_h:.2f}/hr{C.RESET}  ·  ~{monthly}/month"
@@ -800,10 +982,10 @@ def print_human(
 
     print(f"\n{C.BOLD}Alternatives{C.RESET} "
           f"(sorted: within budget, in-cluster, lowest $/hr)\n")
-    header = (f"  {'INSTANCE':<15} {'GPU':<9} {'TP':>2}  {'USAGE':<12} "
+    header = (f"  {'INSTANCE':<15} {'GPU':<9} {'STRATEGY':<10} {'USAGE':<12} "
               f"{'FIT':<15}  {'$/HR':>6}  {'MONTHLY':>9}  FLAGS")
     print(f"{C.DIM}{header}{C.RESET}")
-    print(f"{C.DIM}  {'-'*15} {'-'*9} {'-'*2}  {'-'*12} {'-'*15}  "
+    print(f"{C.DIM}  {'-'*15} {'-'*9} {'-'*10} {'-'*12} {'-'*15}  "
           f"{'-'*6}  {'-'*9}  {'-'*13}{C.RESET}")
 
     for o in within_budget[: args.limit]:
@@ -814,15 +996,22 @@ def print_human(
         for o in over_budget[:remaining]:
             _print_table_row(o, C, over=True)
 
-    # -------- 6. YAML artifact + next steps ------------------------------ #
-    _print_yaml_snippet(model, vram, best, args, C)
+    # -------- 6. Fleet scaling (when --target-users is given) ------------ #
+    if scaling:
+        _print_scaling_section(scaling, args, C)
 
-    # -------- 7. Footnotes ----------------------------------------------- #
+    # -------- 7. YAML artifact + next steps ------------------------------ #
+    _print_yaml_snippet(model, vram, best, args, C, scaling)
+
+    # -------- 8. Footnotes ----------------------------------------------- #
     print(f"\n{C.DIM}Notes:")
     print(f"  • FLAGS: ✓ in-cluster · shared = {TIME_SLICE_REPLICAS} copies of this model")
     print("    fit on one GPU — amortised cost shown in parens")
     print(f"  • Monthly = hourly × 730 h/month. Prices from: {price_src}")
     print("  • Use --refresh-prices to invalidate the local cache")
+    if scaling:
+        print(f"  • Fleet sizing uses {int(args.utilization * 100)}% utilization factor "
+              f"(adjust with --utilization)")
     print(f"  • Estimates are first-order (±10%). Validate with a real deployment.{C.RESET}")
 
 
@@ -844,25 +1033,76 @@ def _print_table_row(o: Option, C: type, over: bool) -> None:
     if over:
         flags = f"{C.YELLOW}⚠ over budget{C.RESET}"
 
+    strategy = o.parallelism_label or "1 GPU"
     usage  = f"{o.per_gpu_need_gb:.1f}/{o.instance.vram_gb} GB"
     fit    = f"[{tone}{bar}{C.RESET}] {util_pct:>3.0f}%"
     price  = f"${o.price_usd_h:.2f}"
     month  = _fmt_monthly(o.price_usd_h)
-    # NOTE: `fit` contains ANSI escapes that don't count toward visible width,
-    # so we pad it by hand against the visible length.
     fit_pad = 15 - len(f"[{bar}] {util_pct:>3.0f}%")
-    print(f"  {o.instance.name:<15} {o.instance.gpu:<9} {o.tp_degree:>2}  "
-          f"{usage:<12} {fit}{' ' * max(fit_pad, 0)}  {price:>6}  {month:>9}  {flags}")
+    print(f"  {o.instance.name:<15} {o.instance.gpu:<9} {strategy:<10} {usage:<12} "
+          f"{fit}{' ' * max(fit_pad, 0)}  {price:>6}  {month:>9}  {flags}")
+
+
+def _print_scaling_section(
+    scaling: list[ScalingRecommendation],
+    args:    argparse.Namespace,
+    C:       type,
+) -> None:
+    best_s = scaling[0] if scaling else None
+    if not best_s:
+        return
+
+    ruler = _ruler(71, C)
+    print(f"\n{ruler}")
+    print(f"  {C.BOLD}FLEET SCALING{C.RESET} — {args.target_users} target concurrent users, "
+          f"{int(args.utilization * 100)}% utilization headroom")
+    print(ruler)
+
+    strat = best_s.option.parallelism_label
+    strat_info = f" ({strat})" if strat else ""
+    print(f"\n  {C.GREEN}✓ RECOMMENDED FLEET:{C.RESET} "
+          f"{C.BOLD}{best_s.replicas}× {best_s.option.instance.name}{C.RESET} "
+          f"({best_s.option.instance.gpu}{strat_info})")
+    print(f"    Max concurrency per instance: {best_s.max_concurrency_per_inst} sequences")
+    print(f"    Effective capacity per instance: {best_s.effective_capacity} sequences "
+          f"(at {int(best_s.utilization_factor * 100)}%)")
+    print(f"    Fleet capacity: {best_s.effective_capacity * best_s.replicas} concurrent users")
+    print(f"    Fleet cost: {C.BOLD}${best_s.fleet_cost_usd_h:.2f}/hr{C.RESET}  ·  "
+          f"~{_fmt_monthly(best_s.fleet_cost_usd_h)}/month")
+    print(f"    Total GPUs: {best_s.replicas * best_s.option.total_gpus}")
+
+    if len(scaling) > 1:
+        print(f"\n  {C.BOLD}Fleet alternatives{C.RESET} "
+              f"(sorted by total fleet cost)\n")
+        header = (f"    {'INSTANCE':<15} {'GPU':<9} {'STRATEGY':<10} "
+                  f"{'CONC/INST':>9}  {'REPLICAS':>8}  "
+                  f"{'FLEET $/HR':>10}  {'FLEET/MO':>9}  {'NODEPOOL':<14}")
+        print(f"{C.DIM}{header}{C.RESET}")
+        print(f"{C.DIM}    {'-'*15} {'-'*9} {'-'*10} "
+              f"{'-'*9}  {'-'*8}  {'-'*10}  {'-'*9}  {'-'*14}{C.RESET}")
+
+        for s in scaling[: args.limit]:
+            tone = C.GREEN if s is best_s else ""
+            reset = C.RESET if tone else ""
+            marker = "→ " if s is best_s else "  "
+            s_strat = s.option.parallelism_label or "1 GPU"
+            print(f"  {tone}{marker}{s.option.instance.name:<15} "
+                  f"{s.option.instance.gpu:<9} {s_strat:<10} "
+                  f"{s.effective_capacity:>9}  {s.replicas:>8}  "
+                  f"${s.fleet_cost_usd_h:>9.2f}  "
+                  f"{_fmt_monthly(s.fleet_cost_usd_h):>9}  "
+                  f"{s.option.nodepool:<14}{reset}")
 
 
 def _print_yaml_snippet(model: ModelSpec, vram: VramEstimate, best: Option,
-                        args: argparse.Namespace, C: type) -> None:
+                        args: argparse.Namespace, C: type,
+                        scaling: list[ScalingRecommendation] | None = None) -> None:
     name = model.model_id.split("/")[-1].lower().replace(".", "-").replace("_", "-")
     max_len = args.seq
     # Suggest shared: true only when the instance is truly shared-eligible —
     # meaning TIME_SLICE_REPLICAS copies of the model fit in GPU memory.
     # `shared_eligible` already encodes that check.
-    shared = best.tp_degree == 1 and best.shared_eligible
+    shared = best.total_gpus == 1 and best.shared_eligible
     yaml_path  = f"workloads/models/{name}.yaml"
     commit_msg = f"feat: deploy {name}"
 
@@ -900,19 +1140,32 @@ def _print_yaml_snippet(model: ModelSpec, vram: VramEstimate, best: Option,
         "  namespace: inference",
         "spec:",
         f'  model: "{model.model_id}"',
-        f"  gpuCount: {best.tp_degree}",
+        f"  gpuCount: {best.total_gpus}",
     ]
+    if best.tp_degree > 1 or best.pp_degree > 1:
+        lines.append(f"  tensorParallelSize: {best.tp_degree}")
+    if best.pp_degree > 1:
+        lines.append(f"  pipelineParallelSize: {best.pp_degree}")
     if shared:
         lines.append("  shared: true          "
                      "# fits with headroom — up to 4 models share the GPU")
+    # Determine replica counts — use scaling recommendation if available.
+    if scaling:
+        best_scaling = scaling[0]
+        min_replicas = best_scaling.replicas
+        max_replicas = max(min_replicas, math.ceil(min_replicas * 1.5))
+    else:
+        min_replicas = 1
+        max_replicas = 2
+
     lines.extend([
         f"  maxModelLen: {max_len}",
         f"  minVramPerGpuGiB: {min_vram_gib}   "
         f"# min per-GPU VRAM; Karpenter picks the cheapest NVIDIA GPU that qualifies",
         f"  workerMemory: \"{worker_mem_gib}Gi\"   "
         f"# CPU memory for the Ray worker pod (default is conservative; this is sized to model)",
-        "  minReplicas: 1",
-        "  maxReplicas: 2",
+        f"  minReplicas: {min_replicas}",
+        f"  maxReplicas: {max_replicas}",
     ])
     yaml_body = "\n".join(lines)
 
@@ -940,6 +1193,7 @@ def print_json(
     best:      Option | None,
     args:      argparse.Namespace,
     price_src: str,
+    scaling:   list[ScalingRecommendation] | None = None,
 ) -> None:
     payload = {
         "model": {
@@ -979,6 +1233,7 @@ def print_json(
                 "num_gpus":           o.instance.num_gpus,
                 "vram_gb_per_gpu":    o.instance.vram_gb,
                 "tp_degree":          o.tp_degree,
+                "pp_degree":          o.pp_degree,
                 "per_gpu_need_gb":    round(o.per_gpu_need_gb, 3),
                 "headroom_gb":        round(o.headroom_gb, 3),
                 "price_usd_h":        round(o.price_usd_h, 4),
@@ -993,6 +1248,8 @@ def print_json(
         "recommended": None if not best else {
             "instance":           best.instance.name,
             "tp_degree":          best.tp_degree,
+            "pp_degree":          best.pp_degree,
+            "total_gpus":         best.total_gpus,
             "nodepool":           best.nodepool,
             "shared_eligible":    best.shared_eligible,
             "price_usd_h":        round(best.price_usd_h, 4),
@@ -1000,6 +1257,39 @@ def print_json(
             "over_price_ceiling": best.over_price_ceiling,
         },
     }
+    if scaling:
+        best_s = scaling[0]
+        payload["scaling"] = {
+            "target_users":       args.target_users,
+            "utilization_factor": args.utilization,
+            "recommended": {
+                "instance":                    best_s.option.instance.name,
+                "tp_degree":                   best_s.option.tp_degree,
+                "pp_degree":                   best_s.option.pp_degree,
+                "replicas":                    best_s.replicas,
+                "max_concurrency_per_instance": best_s.max_concurrency_per_inst,
+                "effective_capacity_per_inst":  best_s.effective_capacity,
+                "fleet_capacity":              best_s.effective_capacity * best_s.replicas,
+                "fleet_cost_usd_h":            round(best_s.fleet_cost_usd_h, 4),
+                "fleet_monthly_usd":           round(best_s.fleet_monthly_usd, 2),
+                "total_gpus":                  best_s.replicas * best_s.option.total_gpus,
+                "nodepool":                    best_s.option.nodepool,
+            },
+            "alternatives": [
+                {
+                    "instance":                    s.option.instance.name,
+                    "tp_degree":                   s.option.tp_degree,
+                    "pp_degree":                   s.option.pp_degree,
+                    "replicas":                    s.replicas,
+                    "max_concurrency_per_instance": s.max_concurrency_per_inst,
+                    "effective_capacity_per_inst":  s.effective_capacity,
+                    "fleet_cost_usd_h":            round(s.fleet_cost_usd_h, 4),
+                    "fleet_monthly_usd":           round(s.fleet_monthly_usd, 2),
+                    "nodepool":                    s.option.nodepool,
+                }
+                for s in scaling[: args.limit]
+            ],
+        }
     print(json.dumps(payload, indent=2))
 
 
@@ -1043,6 +1333,14 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--json", action="store_true", help="Emit machine-readable JSON")
     p.add_argument("--verbose", action="store_true",
                    help="Print pricing API fallbacks and other diagnostics to stderr")
+    p.add_argument("--target-users", type=int, default=None,
+                   help="Target concurrent users across the fleet. Triggers scaling mode: "
+                        "recommends instance type + replica count. Overrides --users for "
+                        "single-instance sizing.")
+    p.add_argument("--utilization", type=float, default=DEFAULT_UTILIZATION_FACTOR,
+                   help=f"Target utilization factor for scaling mode — fraction of max "
+                        f"concurrency to plan for (default: {DEFAULT_UTILIZATION_FACTOR}). "
+                        f"Lower = more burst headroom.")
     p.add_argument("--hf-token", default=os.environ.get("HF_TOKEN"),
                    help="HuggingFace token (also $HF_TOKEN). Required for gated models.")
     args = p.parse_args(argv)
@@ -1051,14 +1349,23 @@ def main(argv: list[str] | None = None) -> int:
         sys.exit("error: --safety-margin must be in [0.0, 0.5)")
     if args.max_price <= 0:
         sys.exit("error: --max-price must be > 0")
+    if args.target_users is not None and args.target_users < 1:
+        sys.exit("error: --target-users must be >= 1")
+    if not 0.1 <= args.utilization <= 1.0:
+        sys.exit("error: --utilization must be in [0.1, 1.0]")
 
     args.region = detect_region(args.region)
     prices, price_src = resolve_prices(args.region, args.refresh_prices, args.verbose)
 
+    # In scaling mode, size a single instance for 1 user so that VRAM estimate
+    # reflects weights + overhead without inflating KV cache for the full fleet.
+    sizing_users = 1 if args.target_users else args.users
     model = fetch_model(args.model, args.hf_token)
-    vram  = estimate_vram(model, args.quant, args.kv_quant, args.seq, args.batch, args.users)
+    vram  = estimate_vram(model, args.quant, args.kv_quant, args.seq,
+                          args.batch, sizing_users)
     opts  = find_options(
         total_need_gb=vram.total_gb,
+        num_heads=model.num_heads,
         tp_pin=args.tp,
         require_in_cluster=args.in_cluster_only,
         safety_margin=args.safety_margin,
@@ -1067,10 +1374,20 @@ def main(argv: list[str] | None = None) -> int:
     )
     best  = opts[0] if opts else None
 
+    scaling: list[ScalingRecommendation] | None = None
+    if args.target_users and opts:
+        scaling = compute_scaling(
+            opts=opts,
+            vram=vram,
+            target_users=args.target_users,
+            utilization_factor=args.utilization,
+            safety_margin=args.safety_margin,
+        )
+
     if args.json:
-        print_json(model, vram, opts, best, args, price_src)
+        print_json(model, vram, opts, best, args, price_src, scaling)
     else:
-        print_human(model, vram, opts, best, args, price_src)
+        print_human(model, vram, opts, best, args, price_src, scaling)
 
     return 0 if best else 2
 

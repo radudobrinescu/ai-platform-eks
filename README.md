@@ -295,7 +295,9 @@ metadata:
   namespace: inference
 spec:
   model: "org/model-id"           # REQUIRED — HuggingFace model ID
-  gpuCount: 1                     # GPUs per worker — must be 1, 2, 4, or 8
+  gpuCount: 1                     # Total GPUs per worker (TP × PP) — must be 1, 2, 4, or 8
+  tensorParallelSize: 1           # TP degree — splits layers across GPUs (requires NVLink for efficiency)
+  pipelineParallelSize: 1         # PP degree — splits layer groups across GPUs (works on PCIe)
   shared: false                   # GPU time-slicing — share GPU with other models (default: false)
   minReplicas: 1                  # Min Ray Serve replicas (default: 1)
   maxReplicas: 4                  # Max Ray Serve replicas (default: 4)
@@ -305,6 +307,12 @@ spec:
   minVramPerGpuGiB: 0             # Min per-GPU VRAM in GiB (Karpenter hint, default: 0 = unconstrained)
   rayImage: "anyscale/ray-llm:2.54.0-py311-cu128"  # Override if needed
 ```
+
+**Parallelism guidance** (or just let `recommend-instance.py` pick for you):
+- `gpuCount: 1` — model fits on one GPU (most ≤7B models)
+- `gpuCount: 4, tensorParallelSize: 4` — model needs 4 GPUs on an NVLink node (A100/H100)
+- `gpuCount: 4, pipelineParallelSize: 4` — model needs 4 GPUs on PCIe (L4/L40S/A10G)
+- `gpuCount: 8, tensorParallelSize: 4, pipelineParallelSize: 2` — combine TP+PP for very large models
 
 `minVramPerGpuGiB` adds a `nodeAffinity` rule (`karpenter.k8s.aws/instance-gpu-memory > n`) to the Ray worker pod template, so Karpenter is forced to pick a GPU that actually fits the model. Without it, Karpenter optimises purely for `$/hr` and can land on a T4 (16 GB) when the model needs an L4 (24 GB) or larger — which silently OOMs at model-load time. Leave it at `0` for small models that can run on any GPU; `recommend-instance.py` emits a correct conservative value automatically.
 
@@ -343,26 +351,60 @@ When `shared: true`, the GPU worker schedules onto a time-sliced node where NVID
 
 ### Will my model fit?
 
-**Option 1 — use the built-in recommender.** Outputs a ranked list of EC2 instances for your region, flags anything above your price ceiling, and emits a drop-in `InferenceEndpoint` snippet:
+**Use the built-in recommender** — it reads the model architecture from HuggingFace, estimates VRAM, picks the cheapest instance, chooses the right parallelism strategy, and emits a ready-to-commit YAML:
 
 ```bash
-./ops/recommend-instance.py google/gemma-3-4b-it --seq 8192 --users 4
-./ops/recommend-instance.py Qwen/Qwen2.5-32B-Instruct --quant int4 --seq 16384 --users 8
-HF_TOKEN=hf_... ./ops/recommend-instance.py meta-llama/Llama-3.1-70B-Instruct --quant bf16
+# What GPU do I need for a 4B model?
+./ops/recommend-instance.py google/gemma-3-4b-it
+
+# 8B model with 16K context window and 8 concurrent users
+./ops/recommend-instance.py meta-llama/Llama-3.1-8B-Instruct --seq 16384 --users 8
+
+# Quantise to int4 — cuts VRAM requirement in half
+./ops/recommend-instance.py Qwen/Qwen2.5-32B-Instruct --quant int4
+
+# Fleet scaling — how many replicas for 50 concurrent users?
+./ops/recommend-instance.py meta-llama/Llama-3.1-8B-Instruct --target-users 50
+
+# Fleet with conservative headroom (60% utilization)
+./ops/recommend-instance.py Qwen/Qwen2.5-7B-Instruct --target-users 100 --utilization 0.6
+
+# Large model with pinned TP=4 and only in-cluster instances
+./ops/recommend-instance.py meta-llama/Llama-3.1-70B-Instruct --tp 4 --in-cluster-only
+
+# Cap per-instance budget at $5/hr
+./ops/recommend-instance.py Qwen/Qwen2.5-32B-Instruct --quant int4 --max-price 5
+
+# Gated model (Gemma, Llama, etc.)
+HF_TOKEN=hf_... ./ops/recommend-instance.py google/gemma-3-27b-it
 ```
 
-It reads the model's HuggingFace `config.json` (including GQA KV-head counts, MoE expert counts, etc.), estimates VRAM for weights + KV cache + activations, and matches against the full NVIDIA GPU instance catalog (G5/G6/G6e/P4/P5/P5e). Pricing is fetched live from the AWS Pricing API for your region (default from `$AWS_REGION`) and cached locally for 30 days.
+The tool:
+- Reads model `config.json` from HuggingFace (GQA head counts, MoE experts, etc.)
+- Estimates VRAM: weights + KV cache + activations + 15% overhead
+- Picks the optimal parallelism strategy per [vLLM docs](https://docs.vllm.ai/en/latest/serving/parallelism_scaling/):
+  - **TP (Tensor Parallelism)** on NVLink instances (A100, H100, H200) — splits layers across GPUs
+  - **PP (Pipeline Parallelism)** on PCIe instances (L4, L40S, A10G) — splits layer groups
+  - Enforces `num_attention_heads % tp == 0` constraint automatically
+- Fetches live pricing from the AWS Pricing API (cached 30 days)
+- Emits a copy-paste YAML with correct `gpuCount`, `tensorParallelSize`, `pipelineParallelSize`, `minVramPerGpuGiB`, `workerMemory`, and replica counts
+
+**Fleet scaling mode** (`--target-users N`) recommends instance type + replica count for multi-worker deployments. It computes VRAM-limited max concurrency per instance, applies a utilization factor for burst headroom, and ranks alternatives by total fleet cost — not single-instance price.
 
 Useful flags:
-- `--region eu-central-1` — override the detected region
-- `--max-price 15` — flag anything above $15/hr as over-budget (default: $20/hr)
+- `--region eu-central-1` — override the detected region (default: `$AWS_REGION`)
+- `--max-price 15` — flag single-instance prices above $15/hr (default: $20)
+- `--target-users 50` — fleet scaling mode
+- `--utilization 0.6` — leave 40% burst headroom (default: 0.7)
+- `--quant int4` — weight quantization (fp32, fp16, bf16, int8, fp8, int4, gptq4, awq4, nf4)
 - `--refresh-prices` — bust the pricing cache
-- `--in-cluster-only` — suppress instances your Karpenter NodePools can't schedule
-- `--json` — machine-readable output for scripting
+- `--in-cluster-only` — only show instances your Karpenter NodePools can schedule
+- `--json` — machine-readable output for scripting/CI
+- `--verbose` — show pricing API diagnostics
 
-Boto3 is a soft dependency: if it's not installed or credentials are missing, the tool falls back to the bundled us-east-1 catalog and says so in its output.
+Boto3 is a soft dependency: without it, the tool falls back to the bundled us-east-1 catalog.
 
-**Option 2 — web calculator.** The [APXML VRAM Calculator](https://apxml.com/tools/vram-calculator) is handy for interactive experimentation. As a rule of thumb for a g6.2xlarge (24GB VRAM, 4 slices = ~6GB each):
+**Quick reference** for `gpu-shared` time-slicing eligibility (24 GB VRAM, 4 slices ≈ 6 GB each):
 
 | Model size | Quantization | Shared? |
 |-----------|-------------|---------|
@@ -432,7 +474,7 @@ workloads/                       # Self-service — teams add YAMLs here
     TEMPLATE.yaml.example        #   Copy this to create a new model
   teams/                         #   AITeam instances
 ops/                             # Operational scripts
-  recommend-instance.py          #   Recommend EC2 GPU instances for a given model
+  recommend-instance.py          #   GPU instance + fleet sizing (TP/PP strategy, scaling)
   seed-model-cache.py            #   Pre-populate S3 HF weights cache for fast deploys
   create-data-volume-snapshot.sh #   EBS snapshot with pre-pulled images (fastest cold start)
   create-soci-index.sh           #   Create SOCI indices for large images
