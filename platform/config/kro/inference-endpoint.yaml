@@ -7,16 +7,18 @@ spec:
     apiVersion: v1alpha1
     kind: InferenceEndpoint
     spec:
-      model:            "string"                    # HuggingFace model ID (e.g. google/gemma-3-4b-it)
-      gpuCount:         "integer | default=1"       # GPUs per worker (tensor_parallel_size)
-      shared:           "boolean | default=false"   # Use GPU time-slicing (shared GPU node pool)
-      minReplicas:      "integer | default=1"       # Min Ray Serve replicas
-      maxReplicas:      "integer | default=4"       # Max Ray Serve replicas
-      workerMemory:     "string  | default=12Gi"    # Memory per GPU worker (default fits 3B models; larger models should override via the recommender)
-      workerCpu:        "string  | default=4"       # CPU per GPU worker
-      maxModelLen:      "integer | default=8192"    # Max sequence length
-      minVramPerGpuGiB: "integer | default=0"       # Min per-GPU VRAM in GiB (Karpenter hint; 0 = no constraint)
-      rayImage:         "string  | default=anyscale/ray-llm:2.54.0-py311-cu128"
+      model:                "string"                    # HuggingFace model ID (e.g. google/gemma-3-4b-it)
+      gpuCount:             "integer | default=1"       # Total GPUs per worker (must equal tensorParallelSize × pipelineParallelSize)
+      tensorParallelSize:   "integer | default=0"       # TP degree — splits layers across GPUs (0 = use gpuCount, backward-compat)
+      pipelineParallelSize: "integer | default=1"       # PP degree — splits layer groups across GPUs (prefer on PCIe/non-NVLink)
+      shared:               "boolean | default=false"   # Use GPU time-slicing (shared GPU node pool)
+      minReplicas:          "integer | default=1"       # Min Ray Serve replicas
+      maxReplicas:          "integer | default=4"       # Max Ray Serve replicas
+      workerMemory:         "string  | default=12Gi"    # Memory per GPU worker (default fits 3B models; larger models should override via the recommender)
+      workerCpu:            "string  | default=4"       # CPU per GPU worker
+      maxModelLen:          "integer | default=8192"    # Max sequence length
+      minVramPerGpuGiB:     "integer | default=0"       # Min per-GPU VRAM in GiB (Karpenter hint; 0 = no constraint)
+      rayImage:             "string  | default=anyscale/ray-llm:2.54.0-py311-cu128"
     status:
       # Ready=True only when Ray Serve has an ACTIVE application at 'RUNNING'
       # AND nothing pending. During a rollout, KubeRay keeps the old active
@@ -65,6 +67,15 @@ spec:
                         *) echo "ERROR: gpuCount=$GPU_COUNT is invalid. Must be 1, 2, 4, or 8."; exit 1 ;;
                       esac
 
+                      # --- Validate TP × PP = gpuCount when TP is explicitly set ---
+                      if [ "$TP_SIZE" -gt 0 ]; then
+                        EXPECTED=$((TP_SIZE * PP_SIZE))
+                        if [ "$EXPECTED" -ne "$GPU_COUNT" ]; then
+                          echo "ERROR: tensorParallelSize($TP_SIZE) × pipelineParallelSize($PP_SIZE) = $EXPECTED, but gpuCount=$GPU_COUNT. They must match."
+                          exit 1
+                        fi
+                      fi
+
                       # --- Validate model exists on HuggingFace ---
                       echo "Checking model $MODEL_ID on HuggingFace..."
                       HTTP_CODE=$(curl -s -o /dev/null -w '%{http_code}' "https://huggingface.co/api/models/$MODEL_ID")
@@ -105,6 +116,10 @@ spec:
                       value: ${schema.metadata.namespace}
                     - name: GPU_COUNT
                       value: ${string(schema.spec.gpuCount)}
+                    - name: TP_SIZE
+                      value: ${string(schema.spec.tensorParallelSize)}
+                    - name: PP_SIZE
+                      value: ${string(schema.spec.pipelineParallelSize)}
 
     # --- RayService with vLLM backend ---
     - id: rayservice
@@ -128,7 +143,8 @@ spec:
                         dtype: bfloat16
                         max_model_len: ${string(schema.spec.maxModelLen)}
                         gpu_memory_utilization: 0.9
-                        tensor_parallel_size: ${string(schema.spec.gpuCount)}
+                        tensor_parallel_size: "${schema.spec.tensorParallelSize > 0 ? string(schema.spec.tensorParallelSize) : string(schema.spec.gpuCount)}"
+                        pipeline_parallel_size: ${string(schema.spec.pipelineParallelSize)}
                       deployment_config:
                         autoscaling_config:
                           min_replicas: ${string(schema.spec.minReplicas)}
