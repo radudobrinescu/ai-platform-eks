@@ -778,7 +778,14 @@ DECODE_KERNEL_EFFICIENCY = 0.70
 # combinations.
 TP_OVERHEAD_NVLINK = {1: 1.00, 2: 0.85, 4: 0.50, 8: 0.35}
 TP_OVERHEAD_PCIE   = {1: 1.00, 2: 0.50, 4: 0.25, 8: 0.15}
-PP_OVERHEAD        = {1: 1.00, 2: 0.95, 4: 0.90, 8: 0.85}
+# PP_OVERHEAD calibrated against PP=4 on A100 NVLink (gemma-3-12b, May 2026):
+#   single-stream measured 35 tok/s vs raw bandwidth-roofline of 47 tok/s
+#   → real PP=4 effective penalty 0.75 (was 0.90 too optimistic).
+# At high concurrency (N=32), PP also under-performs the simple sqrt-decay
+# model — pipeline bubbles + cross-stage activation transfers add real cost.
+# Numbers below are first-order; refine with more PP test points across
+# different stage counts and interconnects.
+PP_OVERHEAD        = {1: 1.00, 2: 0.85, 4: 0.75, 8: 0.65}
 
 
 def _parallelism_efficiency(tp: int, pp: int, has_nvlink: bool) -> float:
@@ -860,14 +867,26 @@ def single_stream_decode_tok_s(
     active_bytes = _active_param_bytes(model, weight_q)
     if active_bytes <= 0:
         return 0.0
-    aggregate_hbm_bs = inst.hbm_bandwidth_tb_s * 1e12 * total_gpus
+    # Effective HBM bandwidth for SINGLE-STREAM decode.
+    # - TP aggregates bandwidth: each layer's matmul is split across `tp_degree`
+    #   GPUs working in parallel (with all-reduce after).
+    # - PP does NOT aggregate bandwidth for single-stream: stages run
+    #   sequentially, so total time = sum-of-per-stage-times = roughly the
+    #   same as a single GPU traversing all the model's weights. PP only
+    #   helps at high concurrency where stages can overlap (pipelining).
+    # Validated against gemma-3-12b on A100 NVLink (May 2026):
+    #   TP=4: measured 87 tok/s — predicted 94 with TP-only aggregation
+    #   PP=4: measured 35 tok/s — would predict 42 with no PP aggregation
+    # The pre-fix v2 (which aggregated bandwidth across PP) over-predicted
+    # PP throughput by 2.5×.
+    effective_hbm_bs = inst.hbm_bandwidth_tb_s * 1e12 * tp_degree
     if shared_mode:
-        aggregate_hbm_bs /= TIME_SLICE_REPLICAS
+        effective_hbm_bs /= TIME_SLICE_REPLICAS
     # Pick the kernel-efficiency factor that matches the requested weight dtype.
     efficiency = DECODE_KERNEL_EFFICIENCY_BY_DTYPE.get(
         weight_q, DECODE_KERNEL_EFFICIENCY,
     )
-    base = aggregate_hbm_bs / active_bytes * efficiency
+    base = effective_hbm_bs / active_bytes * efficiency
     # Software-emulation penalty for unsupported dtypes.
     if _quant_compat_warning(inst, weight_q, kv_q) is not None:
         base *= 0.5
@@ -885,7 +904,7 @@ def per_user_tok_s(single_stream: float, concurrency: int) -> float:
     bandwidth-bound regime, so adding more sequences is essentially free for
     per-user throughput up to the saturation point. Verified empirically with
     AWQ INT4 gemma-3-27b on L40S: per-user tok/s held within ±3% from N=1 to
-    N=16, then began to degrade.
+    N=24, then began to degrade.
 
     Above SATURATION_BATCH, decay is sub-linear at 1/sqrt(N/B_sat) — continuous
     batching still provides partial amortization even when compute-bound, so
@@ -957,8 +976,9 @@ class Option:
 
     @property
     def sort_key(self) -> tuple:
-        # Prefer: below ceiling, in-cluster, lowest effective price, fewest GPUs.
+        # Prefer: quant-compatible, below ceiling, in-cluster, lowest price, fewest GPUs.
         return (
+            self.quant_warning is not None,
             self.over_price_ceiling,
             not self.in_cluster,
             self.effective_price_usd_h,
@@ -1022,6 +1042,8 @@ def _valid_parallelism_configs(
     """
     n = inst.num_gpus
     if n == 1:
+        if tp_pin is not None and tp_pin != 1:
+            return []
         return [(1, 1)]
 
     configs: list[tuple[int, int]] = []
