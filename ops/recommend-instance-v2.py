@@ -1477,6 +1477,7 @@ def _explain_recommendation(
     all_opts: list["Option"],
     args: argparse.Namespace,
     model: ModelSpec,
+    scaling: "list[ScalingRecommendation] | None" = None,
 ) -> str:
     """Generate a single-sentence rationale for why `best` was recommended.
 
@@ -1488,6 +1489,10 @@ def _explain_recommendation(
     The runner-up — if there is one on a different instance type — is used
     as the comparator: "picked X over Y because ...". This makes the
     rationale concrete rather than abstract.
+
+    In fleet mode (when `scaling` is provided), the rationale is fleet-aware:
+    explains the replica count, per-instance load, and cost-per-fleet vs
+    the cheapest alternative.
     """
     if best is None:
         return ""
@@ -1525,46 +1530,73 @@ def _explain_recommendation(
             f"({best.instance.hbm_bandwidth_tb_s:.2f} TB/s HBM)"
         )
 
-    parts.append(f"{best.instance.name} runs the model with {strategy_phrase}.")
+    # --- Fleet-aware vs single-instance rationale ------------------------- #
+    fleet_best = scaling[0] if scaling else None
+    is_fleet = args.target_users is not None and fleet_best is not None
 
-    # --- Throughput context (what does the user actually get?) ------------ #
-    util_pct = 100.0 * best.per_gpu_need_gb / best.instance.vram_gb
-    if best.single_stream_tok_s > 0:
-        if args.users > 1:
-            parts.append(
-                f"At {args.users} concurrent users, each user gets "
-                f"~{best.per_user_tok_s_at_users:.0f} tok/s "
-                f"(ceiling {best.single_stream_tok_s:.0f} tok/s single-stream)."
-            )
-        else:
-            parts.append(
-                f"Single-stream throughput ~{best.single_stream_tok_s:.0f} tok/s, "
-                f"{util_pct:.0f}% VRAM utilized."
-            )
-
-    # --- Why this instance over the runner-up? ---------------------------- #
-    if runner_up is not None and runner_up.single_stream_tok_s > 0:
-        price_delta = (runner_up.price_usd_h - best.price_usd_h) / runner_up.price_usd_h
-        speed_delta = (best.single_stream_tok_s - runner_up.single_stream_tok_s) / max(
-            runner_up.single_stream_tok_s, 1e-6
+    if is_fleet:
+        fb = fleet_best
+        parts.append(
+            f"{fb.replicas}× {best.instance.name} runs the model with {strategy_phrase}."
         )
-        if price_delta > 0.10 and speed_delta > -0.20:
-            parts.append(
-                f"Beats {runner_up.instance.name} by "
-                f"{price_delta * 100:.0f}% on price."
-            )
-        elif speed_delta > 0.20:
-            parts.append(
-                f"Beats {runner_up.instance.name} by "
-                f"{speed_delta * 100:.0f}% on throughput."
-            )
-        elif speed_delta > 0.05:
-            parts.append(
-                f"Slightly faster than {runner_up.instance.name} "
-                f"({speed_delta * 100:.0f}% more tok/s)."
-            )
+        parts.append(
+            f"Each replica serves {fb.effective_capacity} concurrent users at "
+            f"~{fb.estimated_tok_s_per_user:.0f} tok/s/user; "
+            f"fleet of {fb.replicas} replicas covers {args.target_users} users at "
+            f"${fb.fleet_cost_usd_h:.2f}/hr (~{_fmt_monthly(fb.fleet_cost_usd_h)}/month)."
+        )
+        # Fleet-mode runner-up: cheapest alternative fleet config
+        if scaling and len(scaling) > 1:
+            alt = scaling[1]
+            if alt.option.instance.name != best.instance.name:
+                price_delta = (alt.fleet_cost_usd_h - fb.fleet_cost_usd_h) / max(alt.fleet_cost_usd_h, 1e-6)
+                if price_delta > 0.05:
+                    parts.append(
+                        f"Beats {alt.replicas}× {alt.option.instance.name} "
+                        f"by {price_delta * 100:.0f}% on total fleet cost."
+                    )
+    else:
+        parts.append(f"{best.instance.name} runs the model with {strategy_phrase}.")
 
-    # --- Caveats ---------------------------------------------------------- #
+        # Throughput context (single-instance mode)
+        util_pct = 100.0 * best.per_gpu_need_gb / best.instance.vram_gb
+        if best.single_stream_tok_s > 0:
+            if args.users > 1:
+                parts.append(
+                    f"At {args.users} concurrent users, each user gets "
+                    f"~{best.per_user_tok_s_at_users:.0f} tok/s "
+                    f"(ceiling {best.single_stream_tok_s:.0f} tok/s single-stream)."
+                )
+            else:
+                parts.append(
+                    f"Single-stream throughput ~{best.single_stream_tok_s:.0f} tok/s, "
+                    f"{util_pct:.0f}% VRAM utilized."
+                )
+
+        # Why this instance over the runner-up?
+        if runner_up is not None and runner_up.single_stream_tok_s > 0:
+            price_delta = (runner_up.price_usd_h - best.price_usd_h) / runner_up.price_usd_h
+            speed_delta = (best.single_stream_tok_s - runner_up.single_stream_tok_s) / max(
+                runner_up.single_stream_tok_s, 1e-6
+            )
+            if price_delta > 0.10 and speed_delta > -0.20:
+                parts.append(
+                    f"Beats {runner_up.instance.name} by "
+                    f"{price_delta * 100:.0f}% on price."
+                )
+            elif speed_delta > 0.20:
+                parts.append(
+                    f"Beats {runner_up.instance.name} by "
+                    f"{speed_delta * 100:.0f}% on throughput."
+                )
+            elif speed_delta > 0.05:
+                parts.append(
+                    f"Slightly faster than {runner_up.instance.name} "
+                    f"({speed_delta * 100:.0f}% more tok/s)."
+                )
+
+    # --- Caveats (apply to both modes) ------------------------------------ #
+    util_pct = 100.0 * best.per_gpu_need_gb / best.instance.vram_gb
     caveats: list[str] = []
     if best.quant_warning:
         caveats.append(f"⚠ {args.quant} dtype emulated on {best.instance.gpu} "
@@ -1572,7 +1604,7 @@ def _explain_recommendation(
     if util_pct > 80:
         caveats.append(f"⚠ {util_pct:.0f}% VRAM used — limited headroom for "
                        f"longer contexts or higher concurrency")
-    if best.shared_eligible and best.total_gpus == 1:
+    if best.shared_eligible and best.total_gpus == 1 and not is_fleet:
         caveats.append(
             f"could share GPU with up to {TIME_SLICE_REPLICAS} models "
             f"via time-slicing (set shared: true to amortize cost)"
@@ -1618,40 +1650,73 @@ def print_human(
     else:
         mode_lbl = "dedicated GPU"
 
+    # Fleet mode: show fleet-aware banner. Otherwise: single-instance banner.
+    fleet_best = scaling[0] if scaling else None
+    is_fleet_mode = args.target_users is not None and fleet_best is not None
+
     print()
     print(ruler)
-    print(f"  {marker} {C.BOLD}{verdict}: {best.instance.name}{C.RESET} — "
-          f"{best.total_gpus}× NVIDIA {best.instance.gpu}, "
-          f"{best.instance.vram_gb} GB VRAM per GPU · {mode_lbl}")
-    monthly = _fmt_monthly(best.price_usd_h)
-    line    = f"    {C.BOLD}${best.price_usd_h:.2f}/hr{C.RESET}  ·  ~{monthly}/month"
-    if shared_on:
-        eff   = _fmt_monthly(best.price_usd_h / TIME_SLICE_REPLICAS)
-        line += (f"  ·  ~{eff}/month per model "
-                 f"if {TIME_SLICE_REPLICAS} share the GPU")
-    print(line)
-    headroom_tone = C.GREEN if util_pct < 60 else (C.YELLOW if util_pct < 85 else C.RED)
-    print(f"    Utilisation: {headroom_tone}{best.per_gpu_need_gb:.1f} / "
-          f"{best.instance.vram_gb} GB ({util_pct:.0f}%){C.RESET}  "
-          f"— {best.headroom_gb:.1f} GB headroom")
-    if best.single_stream_tok_s > 0:
-        per_user_label = (
-            f"~{best.per_user_tok_s_at_users:.0f} tok/s/user @ {args.users} concurrent"
-            if args.users > 1 else
-            f"~{best.single_stream_tok_s:.0f} tok/s single-stream"
+
+    if is_fleet_mode:
+        # Headline = fleet recommendation, not single-instance
+        fb = fleet_best
+        fleet_verdict = (
+            f"{C.YELLOW}FLEET DOES NOT MEET SLO{C.RESET}" if fb.slo_unmet
+            else (f"{C.GREEN}RECOMMENDED FLEET (SLO-capped){C.RESET}" if fb.slo_capped
+                  else f"{C.GREEN}RECOMMENDED FLEET{C.RESET}")
         )
-        print(f"    Throughput:  {per_user_label} "
-              f"{C.DIM}(ceiling {best.single_stream_tok_s:.0f} tok/s, "
-              f"HBM {best.instance.hbm_bandwidth_tb_s:.2f} TB/s × {best.total_gpus}){C.RESET}")
-    if best.quant_warning:
-        print(f"    {C.YELLOW}⚠ Quant compatibility: {best.quant_warning}{C.RESET}")
-    if best.over_price_ceiling:
-        print(f"    {C.YELLOW}Note: exceeds --max-price ${args.max_price:.2f}/hr. "
-              f"No cheaper option fits.{C.RESET}")
+        fleet_marker = f"{C.YELLOW}⚠{C.RESET}" if fb.slo_unmet else f"{C.GREEN}✓{C.RESET}"
+        print(f"  {fleet_marker} {C.BOLD}{fleet_verdict}: "
+              f"{fb.replicas}× {fb.option.instance.name}{C.RESET} — "
+              f"{fb.option.total_gpus}× NVIDIA {fb.option.instance.gpu} per replica · {mode_lbl}")
+        fleet_monthly = _fmt_monthly(fb.fleet_cost_usd_h)
+        print(f"    {C.BOLD}${fb.fleet_cost_usd_h:.2f}/hr fleet{C.RESET}  ·  "
+              f"~{fleet_monthly}/month  ({C.DIM}${fb.option.price_usd_h:.2f}/hr × "
+              f"{fb.replicas} replicas{C.RESET})")
+        slo_tone = C.GREEN if fb.estimated_tok_s_per_user >= args.target_tok_s else C.YELLOW
+        print(f"    Capacity:    {fb.replicas} × {fb.effective_capacity} concurrent users "
+              f"= {fb.replicas * fb.effective_capacity} total"
+              f"{' (' + C.DIM + 'SLO-capped' + C.RESET + ')' if fb.slo_capped else ''}")
+        print(f"    Throughput:  {slo_tone}~{fb.estimated_tok_s_per_user:.0f} tok/s/user "
+              f"@ {fb.effective_capacity} concurrent per replica{C.RESET} "
+              f"{C.DIM}(SLO {args.target_tok_s:.0f}; ceiling "
+              f"{fb.option.single_stream_tok_s:.0f} tok/s){C.RESET}")
+        if best.quant_warning:
+            print(f"    {C.YELLOW}⚠ Quant compatibility: {best.quant_warning}{C.RESET}")
+    else:
+        # Single-instance banner (the original behaviour)
+        print(f"  {marker} {C.BOLD}{verdict}: {best.instance.name}{C.RESET} — "
+              f"{best.total_gpus}× NVIDIA {best.instance.gpu}, "
+              f"{best.instance.vram_gb} GB VRAM per GPU · {mode_lbl}")
+        monthly = _fmt_monthly(best.price_usd_h)
+        line    = f"    {C.BOLD}${best.price_usd_h:.2f}/hr{C.RESET}  ·  ~{monthly}/month"
+        if shared_on:
+            eff   = _fmt_monthly(best.price_usd_h / TIME_SLICE_REPLICAS)
+            line += (f"  ·  ~{eff}/month per model "
+                     f"if {TIME_SLICE_REPLICAS} share the GPU")
+        print(line)
+        headroom_tone = C.GREEN if util_pct < 60 else (C.YELLOW if util_pct < 85 else C.RED)
+        print(f"    Utilisation: {headroom_tone}{best.per_gpu_need_gb:.1f} / "
+              f"{best.instance.vram_gb} GB ({util_pct:.0f}%){C.RESET}  "
+              f"— {best.headroom_gb:.1f} GB headroom")
+        if best.single_stream_tok_s > 0:
+            per_user_label = (
+                f"~{best.per_user_tok_s_at_users:.0f} tok/s/user @ {args.users} concurrent"
+                if args.users > 1 else
+                f"~{best.single_stream_tok_s:.0f} tok/s single-stream"
+            )
+            print(f"    Throughput:  {per_user_label} "
+                  f"{C.DIM}(ceiling {best.single_stream_tok_s:.0f} tok/s, "
+                  f"HBM {best.instance.hbm_bandwidth_tb_s:.2f} TB/s × {best.total_gpus}){C.RESET}")
+        if best.quant_warning:
+            print(f"    {C.YELLOW}⚠ Quant compatibility: {best.quant_warning}{C.RESET}")
+        if best.over_price_ceiling:
+            print(f"    {C.YELLOW}Note: exceeds --max-price ${args.max_price:.2f}/hr. "
+                  f"No cheaper option fits.{C.RESET}")
     print(ruler)
 
     # -------- 1b. Why this recommendation? ------------------------------- #
-    rationale = _explain_recommendation(best, opts, args, model)
+    rationale = _explain_recommendation(best, opts, args, model, scaling)
     if rationale:
         print()
         print(f"  {C.BOLD}Why:{C.RESET} {rationale}")
@@ -1807,37 +1872,18 @@ def _print_scaling_section(
         f"≥{args.target_tok_s:.0f} tok/s/user SLO, "
         if args.target_tok_s > 0 else ""
     )
-    print(f"  {C.BOLD}FLEET SCALING{C.RESET} — {args.target_users} target users, "
+    print(f"  {C.BOLD}FLEET ALTERNATIVES{C.RESET} — {args.target_users} target users, "
           f"{slo_label}{int(args.utilization * 100)}% util headroom")
     print(ruler)
 
+    # Recommended fleet details (the headline is in the top banner now;
+    # this section is for per-instance detail and alternatives table).
     strat = best_s.option.parallelism_label
     strat_info = f" ({strat})" if strat else ""
-    if best_s.slo_unmet:
-        verdict = f"{C.YELLOW}⚠ SLO NOT MET — see alternatives{C.RESET}"
-    elif best_s.slo_capped:
-        verdict = f"{C.GREEN}✓ RECOMMENDED FLEET (SLO-capped):{C.RESET}"
-    else:
-        verdict = f"{C.GREEN}✓ RECOMMENDED FLEET:{C.RESET}"
-    print(f"\n  {verdict} "
-          f"{C.BOLD}{best_s.replicas}× {best_s.option.instance.name}{C.RESET} "
-          f"({best_s.option.instance.gpu}{strat_info})")
-    print(f"    Max concurrency per instance: {best_s.max_concurrency_per_inst} "
-          f"(VRAM-limited)")
-    cap_note = " — capped by SLO" if best_s.slo_capped else ""
-    print(f"    Effective capacity per instance: {best_s.effective_capacity} sequences"
-          f"{cap_note}")
-    print(f"    Fleet capacity: {best_s.effective_capacity * best_s.replicas} concurrent users")
-    if best_s.estimated_tok_s_per_user > 0:
-        slo_tone = (
-            C.GREEN if best_s.estimated_tok_s_per_user >= args.target_tok_s else C.YELLOW
-        )
-        print(f"    Estimated per-user throughput: "
-              f"{slo_tone}~{best_s.estimated_tok_s_per_user:.0f} tok/s/user{C.RESET}"
-              f" {C.DIM}(SLO {args.target_tok_s:.0f}){C.RESET}")
-    print(f"    Fleet cost: {C.BOLD}${best_s.fleet_cost_usd_h:.2f}/hr{C.RESET}  ·  "
-          f"~{_fmt_monthly(best_s.fleet_cost_usd_h)}/month")
-    print(f"    Total GPUs: {best_s.replicas * best_s.option.total_gpus}")
+    print(f"\n  {C.DIM}Selected: {best_s.replicas}× {best_s.option.instance.name} "
+          f"({best_s.option.instance.gpu}{strat_info}) — "
+          f"max VRAM concurrency {best_s.max_concurrency_per_inst}, "
+          f"total GPUs {best_s.replicas * best_s.option.total_gpus}{C.RESET}")
 
     if len(scaling) > 1:
         print(f"\n  {C.BOLD}Fleet alternatives{C.RESET} "
