@@ -1169,6 +1169,20 @@ def find_options(
         if per_gpu > available:
             continue
 
+        # Host RAM check — the worker pod requests workerMemory ≈ weights+4 GiB
+        # of host RAM (vLLM stages weights through CPU during init). The
+        # instance must have enough host RAM after K8s system reservation
+        # (~2 GiB) and the Ray head process (~2 GiB if it lands on this node).
+        # Use a 4 GiB safety buffer above the workerMemory request.
+        if model is not None:
+            weights_gb_for_check = (
+                model.params * WEIGHT_BYTES[weight_q] / (1024 ** 3)
+            )
+            required_worker_mem_gib = max(8, math.ceil(weights_gb_for_check + 4))
+            host_mem_required_gib = required_worker_mem_gib + 4   # K8s + system overhead
+            if inst.mem_gb < host_mem_required_gib:
+                continue   # instance can't host the worker pod even before scheduling overhead
+
         nodepool, shared_eligible = _classify_nodepool(
             inst, tp, per_gpu, safety_margin,
         )
@@ -1779,11 +1793,30 @@ def print_human(
           f"{total:>6.2f} GB{C.RESET}")
 
     # -------- 5. Alternatives table -------------------------------------- #
-    within_budget = [o for o in opts if not o.over_price_ceiling]
-    over_budget   = [o for o in opts if o.over_price_ceiling]
+    # Dedupe: when multiple instance variants are functionally identical for
+    # inference (same GPU model, same num_gpus, same TP/PP), only show the
+    # cheapest one. Without this, the table fills up with g6e.xlarge,
+    # g6e.2xlarge, g6e.4xlarge etc. that all have 1× L40S and identical
+    # throughput math — they only differ in host vCPU/RAM (already filtered
+    # by the host-mem check in find_options).
+    def _dedupe_key(o: Option) -> tuple:
+        return (o.instance.gpu, o.instance.num_gpus, o.tp_degree, o.pp_degree)
+
+    seen_keys: set[tuple] = set()
+    deduped_opts: list[Option] = []
+    for o in opts:
+        k = _dedupe_key(o)
+        if k in seen_keys:
+            continue
+        seen_keys.add(k)
+        deduped_opts.append(o)
+
+    within_budget = [o for o in deduped_opts if not o.over_price_ceiling]
+    over_budget   = [o for o in deduped_opts if o.over_price_ceiling]
 
     print(f"\n{C.BOLD}Alternatives{C.RESET} "
-          f"(sorted: within budget, in-cluster, lowest $/hr)\n")
+          f"(sorted: within budget, in-cluster, lowest $/hr; "
+          f"{C.DIM}duplicates by GPU+strategy hidden{C.RESET})\n")
     header = (f"  {'INSTANCE':<15} {'GPU':<9} {'STRATEGY':<10} {'USAGE':<12} "
               f"{'FIT':<15}  {'TOK/S':>10}  {'$/HR':>6}  {'MONTHLY':>9}  FLAGS")
     print(f"{C.DIM}{header}{C.RESET}")
@@ -1886,8 +1919,21 @@ def _print_scaling_section(
           f"total GPUs {best_s.replicas * best_s.option.total_gpus}{C.RESET}")
 
     if len(scaling) > 1:
+        # Dedupe by (gpu, num_gpus, tp_degree, pp_degree) — same logic as the
+        # single-instance alternatives table.
+        seen: set[tuple] = set()
+        deduped_scaling: list[ScalingRecommendation] = []
+        for s in scaling:
+            k = (s.option.instance.gpu, s.option.instance.num_gpus,
+                 s.option.tp_degree, s.option.pp_degree)
+            if k in seen:
+                continue
+            seen.add(k)
+            deduped_scaling.append(s)
+
         print(f"\n  {C.BOLD}Fleet alternatives{C.RESET} "
-              f"(sorted by total fleet cost; ⚠ = SLO unmet)\n")
+              f"(sorted by total fleet cost; ⚠ = SLO unmet; "
+              f"{C.DIM}duplicates by GPU+strategy hidden{C.RESET})\n")
         header = (f"    {'INSTANCE':<15} {'GPU':<9} {'STRATEGY':<10} "
                   f"{'CONC/INST':>9}  {'REPLICAS':>8}  {'TOK/S':>6}  "
                   f"{'FLEET $/HR':>10}  {'FLEET/MO':>9}  {'NODEPOOL':<14}")
@@ -1895,7 +1941,7 @@ def _print_scaling_section(
         print(f"{C.DIM}    {'-'*15} {'-'*9} {'-'*10} "
               f"{'-'*9}  {'-'*8}  {'-'*6}  {'-'*10}  {'-'*9}  {'-'*14}{C.RESET}")
 
-        for s in scaling[: args.limit]:
+        for s in deduped_scaling[: args.limit]:
             tone = C.GREEN if s is best_s else (C.YELLOW if s.slo_unmet else "")
             reset = C.RESET if tone else ""
             marker = "→ " if s is best_s else ("⚠ " if s.slo_unmet else "  ")
