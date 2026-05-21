@@ -747,11 +747,11 @@ def estimate_vram(
 # native dtypes (FP8 on Hopper hits very high MBU per NVIDIA spec).
 DECODE_KERNEL_EFFICIENCY_BY_DTYPE = {
     "fp32":  0.70,
-    "fp16":  0.75,
-    "bf16":  0.75,
-    "fp8":   0.80,   # Hopper/Ada native fp8 — high MBU
+    "fp16":  0.65,
+    "bf16":  0.65,   # Calibrated from real bench (A: gemma-3-1b on L4 = 0.65, B: SmolLM3-3B on L40S = 0.67)
+    "fp8":   0.80,   # Hopper/Ada native fp8 — high MBU (not yet measured)
     "int8":  0.65,
-    "int4":  0.55,   # AWQ/GPTQ — dequant overhead reduces effective BW
+    "int4":  0.55,   # Validated: AWQ INT4 gemma-3-27b on L40S measured 0.56
     "gptq4": 0.55,
     "awq4":  0.55,
     "nf4":   0.50,   # bitsandbytes 4-bit, slightly slower kernel
@@ -759,6 +759,34 @@ DECODE_KERNEL_EFFICIENCY_BY_DTYPE = {
 
 # Backwards-compat default (used if dtype not in table).
 DECODE_KERNEL_EFFICIENCY = 0.70
+
+# Multi-GPU parallelism overhead.
+#
+# Tensor parallelism does an all-reduce after every layer. With N layers and
+# TP=k, that's 2(k-1)/k * N synchronization points per fwd pass — significant
+# cost even on fast interconnects. Validated against scenario C:
+#   gemma-3-12b (48 layers) on TP=4 over A100 NVLink → measured 0.45x of
+#   per-GPU bandwidth roofline. v2 was previously treating TP=4 as 1.0x,
+#   over-predicting throughput by 2-3x for multi-GPU dense models.
+#
+# Pipeline parallelism communicates less per step (only the activations
+# crossing a stage boundary, not all-reduces). The cost is the pipeline
+# "bubble" at start/end of each engine step. Much smaller penalty.
+#
+# These are first-order estimates calibrated to one measurement (C) plus
+# vLLM blog guidance. Refine with more benchmarks across TP/PP/interconnect
+# combinations.
+TP_OVERHEAD_NVLINK = {1: 1.00, 2: 0.85, 4: 0.50, 8: 0.35}
+TP_OVERHEAD_PCIE   = {1: 1.00, 2: 0.50, 4: 0.25, 8: 0.15}
+PP_OVERHEAD        = {1: 1.00, 2: 0.95, 4: 0.90, 8: 0.85}
+
+
+def _parallelism_efficiency(tp: int, pp: int, has_nvlink: bool) -> float:
+    """Combined TP + PP overhead multiplier vs the raw bandwidth roofline."""
+    tp_table = TP_OVERHEAD_NVLINK if has_nvlink else TP_OVERHEAD_PCIE
+    tp_eff = tp_table.get(tp, 0.20)
+    pp_eff = PP_OVERHEAD.get(pp, 0.80)
+    return tp_eff * pp_eff
 
 # Concurrency curve: per-user tok/s = single_stream × decay(N).
 #
@@ -771,11 +799,10 @@ DECODE_KERNEL_EFFICIENCY = 0.70
 # still provides amortization even at high concurrency, so degradation is
 # gentler than the naive 1/N model. The formula is continuous at the crossover.
 #
-# B_sat=16 matches observed vLLM behavior on modern GPUs (H100/L40S/A100) where
-# batched decode stays near-flat up to batch 12-20. This is config-dependent
-# (smaller models + quantized weights raise B_sat further) but 16 is a safe
-# default that errs on the side of recognizing typical batched-decode flatness.
-SATURATION_BATCH = 16
+# B_sat=24 calibrated against scenarios A/B/D — measured per-user tok/s holds
+# essentially flat through N=16, very gentle drop through N=32, then degrades
+# above. Was 16 (predicted-was-too-pessimistic at N=32 across all scenarios).
+SATURATION_BATCH = 24
 
 
 def _active_param_bytes(model: ModelSpec, weight_q: str) -> float:
@@ -805,6 +832,8 @@ def single_stream_decode_tok_s(
     total_gpus:  int,
     shared_mode: bool = False,
     kv_q:        str = "fp16",
+    tp_degree:   int = 1,
+    pp_degree:   int = 1,
 ) -> float:
     """Estimated single-user decode tok/s (no concurrency contention).
 
@@ -820,6 +849,11 @@ def single_stream_decode_tok_s(
     kernels — empirically ~50% throughput of the bandwidth-roofline estimate.
     Apply that penalty so SLO checks reflect real-world performance, not the
     paper-spec ceiling.
+
+    Multi-GPU parallelism adds all-reduce or pipeline-bubble overhead that
+    reduces effective throughput vs. raw bandwidth. The TP_OVERHEAD_*  /
+    PP_OVERHEAD tables encode measured penalties (calibrated against TP=4
+    NVLink: 0.45x measured for gemma-3-12b on A100).
     """
     if inst.hbm_bandwidth_tb_s <= 0:
         return 0.0
@@ -830,8 +864,6 @@ def single_stream_decode_tok_s(
     if shared_mode:
         aggregate_hbm_bs /= TIME_SLICE_REPLICAS
     # Pick the kernel-efficiency factor that matches the requested weight dtype.
-    # Quantized formats (AWQ/GPTQ) have measurable dequant overhead, while
-    # native dtypes (BF16/FP8) tend to hit higher MBU.
     efficiency = DECODE_KERNEL_EFFICIENCY_BY_DTYPE.get(
         weight_q, DECODE_KERNEL_EFFICIENCY,
     )
@@ -839,6 +871,9 @@ def single_stream_decode_tok_s(
     # Software-emulation penalty for unsupported dtypes.
     if _quant_compat_warning(inst, weight_q, kv_q) is not None:
         base *= 0.5
+    # Multi-GPU parallelism overhead (all-reduce for TP, pipeline bubble for PP).
+    if tp_degree > 1 or pp_degree > 1:
+        base *= _parallelism_efficiency(tp_degree, pp_degree, inst.has_nvlink)
     return base
 
 
@@ -1084,6 +1119,7 @@ def find_options(
             single_stream = single_stream_decode_tok_s(
                 inst, model, weight_q, total_gpus,
                 shared_mode=shared_mode_active, kv_q=kv_q,
+                tp_degree=tp, pp_degree=pp,
             )
             per_user_at_users = per_user_tok_s(single_stream, max(1, users))
 
