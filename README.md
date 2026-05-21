@@ -160,19 +160,19 @@ The built-in recommender reads model architecture from HuggingFace, estimates VR
 
 ```bash
 # What GPU fits a 4B model?
-./ops/recommend-instance-v2.py google/gemma-3-4b-it
+./ops/recommend-instance.py google/gemma-3-4b-it
 
 # 8B model, 16K context, 8 concurrent users
-./ops/recommend-instance-v2.py meta-llama/Llama-3.1-8B-Instruct --seq 16384 --users 8
+./ops/recommend-instance.py meta-llama/Llama-3.1-8B-Instruct --seq 16384 --users 8
 
 # Quantised 32B — int4 halves VRAM
-./ops/recommend-instance-v2.py Qwen/Qwen2.5-32B-Instruct --quant int4
+./ops/recommend-instance.py Qwen/Qwen2.5-32B-Instruct --quant int4
 
 # 100 users with 25 tok/s SLO — auto-scales to fleet if needed
-./ops/recommend-instance-v2.py Qwen/Qwen2.5-7B-Instruct --users 100 --target-tok-s 25
+./ops/recommend-instance.py Qwen/Qwen2.5-7B-Instruct --users 100 --target-tok-s 25
 
 # Gated model
-HF_TOKEN=hf_... ./ops/recommend-instance-v2.py google/gemma-3-27b-it
+HF_TOKEN=hf_... ./ops/recommend-instance.py google/gemma-3-27b-it
 ```
 
 Key flags: `--quant`, `--kv-quant`, `--seq`, `--users`, `--tp`, `--target-tok-s`, `--max-price`, `--in-cluster-only`, `--json`, `--workload`. Run with `--help` for full documentation.
@@ -205,7 +205,7 @@ spec:
 
 KRO expands this into: RayService (vLLM backend), GPU worker pods, LiteLLM registration Job, CloudWatch Log Group.
 
-**Parallelism** (or let `recommend-instance-v2.py` choose):
+**Parallelism** (or let `recommend-instance.py` choose):
 - `gpuCount: 1` — single GPU (most ≤7B models)
 - `gpuCount: 4, tensorParallelSize: 4` — NVLink node (A100/H100)
 - `gpuCount: 4, pipelineParallelSize: 4` — PCIe node (L4/L40S/A10G)
@@ -291,7 +291,7 @@ Four layers reduce first-inference time from ~7 min to ~60s:
 ## Operational Scripts
 
 ```bash
-./ops/recommend-instance-v2.py <model>       # GPU sizing + fleet scaling
+./ops/recommend-instance.py <model>       # GPU sizing + fleet scaling
 ./ops/test-model.sh <name> "prompt"          # Quick model test
 ./ops/ssm-tunnel.sh                          # Port-forward via SSM
 ./ops/seed-model-cache.py <model>            # Pre-populate S3 weight cache
