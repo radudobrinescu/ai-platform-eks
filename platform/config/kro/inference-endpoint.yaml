@@ -143,8 +143,8 @@ spec:
                         dtype: bfloat16
                         max_model_len: ${string(schema.spec.maxModelLen)}
                         gpu_memory_utilization: 0.9
-                        tensor_parallel_size: "${schema.spec.tensorParallelSize > 0 ? string(schema.spec.tensorParallelSize) : string(schema.spec.gpuCount)}"
-                        pipeline_parallel_size: ${string(schema.spec.pipelineParallelSize)}
+                        tensor_parallel_size: ${schema.spec.tensorParallelSize > 0 ? schema.spec.tensorParallelSize : schema.spec.gpuCount}
+                        pipeline_parallel_size: ${schema.spec.pipelineParallelSize}
                       deployment_config:
                         autoscaling_config:
                           min_replicas: ${string(schema.spec.minReplicas)}
