@@ -1821,9 +1821,15 @@ def print_human(
                 if args.users > 1 else
                 f"~{best.single_stream_tok_s:.0f} tok/s single-stream"
             )
+            # Show effective bandwidth (after parallelism overhead) rather than
+            # raw HBM × GPUs — the latter misleads when TP/PP overhead is high.
+            eff_bw = best.instance.hbm_bandwidth_tb_s * best.tp_degree
+            if best.total_gpus > 1:
+                eff_bw *= _parallelism_efficiency(
+                    best.tp_degree, best.pp_degree, best.instance.has_nvlink)
             print(f"    Throughput:  {per_user_label} "
-                  f"{C.DIM}(ceiling {best.single_stream_tok_s:.0f} tok/s, "
-                  f"HBM {best.instance.hbm_bandwidth_tb_s:.2f} TB/s × {best.total_gpus}){C.RESET}")
+                  f"{C.DIM}({best.instance.gpu}, "
+                  f"{eff_bw:.2f} TB/s effective){C.RESET}")
         if best.quant_warning:
             print(f"    {C.YELLOW}⚠ Quant compatibility: {best.quant_warning}{C.RESET}")
         if best.over_price_ceiling:
@@ -2183,13 +2189,16 @@ def _print_scaling_section(
             marker = "→ " if s is best_s else ("⚠ " if s.slo_unmet else "  ")
             s_strat = s.option.parallelism_label or "1 GPU"
             tok_s_str = f"{s.estimated_tok_s_per_user:.0f}" if s.estimated_tok_s_per_user > 0 else "?"
+            suffix = ""
+            if s.option.quant_warning:
+                suffix = f" {C.YELLOW}⚠ quant{C.RESET}"
             print(f"  {tone}{marker}{s.option.instance.name:<15} "
                   f"{s.option.instance.gpu:<9} {s_strat:<10} "
                   f"{s.effective_capacity:>9}  {s.replicas:>8}  "
                   f"{tok_s_str:>6}  "
                   f"${s.fleet_cost_usd_h:>9.2f}  "
                   f"{_fmt_monthly(s.fleet_cost_usd_h):>9}  "
-                  f"{s.option.nodepool:<14}{reset}")
+                  f"{s.option.nodepool:<14}{suffix}{reset}")
 
 
 def _print_yaml_snippet(model: ModelSpec, vram: VramEstimate, best: Option,
@@ -2197,6 +2206,13 @@ def _print_yaml_snippet(model: ModelSpec, vram: VramEstimate, best: Option,
                         scaling: list[ScalingRecommendation] | None = None) -> None:
     name = model.model_id.split("/")[-1].lower().replace(".", "-").replace("_", "-")
     max_len = args.seq
+
+    # In fleet mode, the YAML must reflect the fleet pick (which may differ
+    # from `best` — the cheapest single-instance fitter). Otherwise the user
+    # copy-pastes a YAML for the wrong instance/parallelism config.
+    if scaling:
+        best = scaling[0].option
+
     # Suggest shared: true only when the instance is truly shared-eligible —
     # meaning TIME_SLICE_REPLICAS copies of the model fit in GPU memory.
     # `shared_eligible` already encodes that check.
