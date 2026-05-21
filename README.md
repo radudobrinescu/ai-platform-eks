@@ -1,23 +1,26 @@
 # AI Platform on EKS
 
-Self-service AI inference platform on Amazon EKS. Teams deploy models by committing a short YAML file — the platform handles GPU provisioning, model serving, API routing, and observability.
+A self-service AI platform that lets teams deploy and serve LLMs on Amazon EKS through GitOps. Commit a short YAML, get a production-ready inference endpoint — the platform handles GPU provisioning, model serving, API routing, team isolation, and observability automatically.
 
-Built on EKS Managed Capabilities (ArgoCD, KRO, ACK), Karpenter, Ray Serve, and vLLM.
+**Core stack:** EKS Managed Capabilities (ArgoCD, KRO, ACK) · Karpenter · Ray Serve · vLLM · LiteLLM · Langfuse
 
-## What You Get
+## What Teams Get
 
-- **Single custom resource** — `InferenceEndpoint` abstracts RayService, GPU scheduling, networking, and LiteLLM registration
-- **GitOps workflow** — commit a YAML, ArgoCD deploys it, model is live
-- **OpenAI-compatible API** — LiteLLM proxies all models behind `/v1/chat/completions`
-- **Chat UI** — Open WebUI for interactive testing
-- **Fast cold starts** — EBS data volume snapshots (0s image pull), SOCI lazy-loading, S3 model weight cache, GPU warm pool
-- **Team onboarding** — `AITeam` resource creates namespace, RBAC, quotas, and scoped API key
-- **LLM observability** — Langfuse tracing
+| Capability | How it works |
+|-----------|-------------|
+| **Deploy any HuggingFace model** | Commit an `InferenceEndpoint` YAML → model is live in ~60s |
+| **OpenAI-compatible API** | LiteLLM proxies all models behind `/v1/chat/completions` |
+| **Chat UI** | Open WebUI for interactive testing |
+| **Team isolation** | `AITeam` resource creates namespace, RBAC, budget, rate limits, scoped API key |
+| **Auto GPU sizing** | Karpenter provisions the right GPU, scales to zero when idle |
+| **Fast cold starts** | EBS snapshots (0s image pull) + S3 weight cache (~15s) + warm pool |
+| **Observability** | Langfuse tracing on every request |
+| **Fine-tuning** *(coming soon)* | `FineTuneJob` resource — same self-service pattern for model customization via Unsloth |
 
 ## How It Works
 
 ```
-git push → ArgoCD syncs → KRO creates RayService + registration Job
+git push → ArgoCD syncs → KRO expands custom resource
          → Karpenter provisions GPU node (Bottlerocket + SOCI)
          → vLLM loads model → LiteLLM registers endpoint
          → model available via API and Open WebUI
@@ -27,157 +30,84 @@ git push → ArgoCD syncs → KRO creates RayService + registration Job
 
 ```
 EKS Cluster
-│
 ├── Managed Capabilities (AWS-hosted)
-│   ├── ArgoCD       ──▶  syncs platform and workloads from Git
-│   ├── KRO          ──▶  expands custom resources into K8s objects
-│   └── ACK          ──▶  manages AWS resources from Kubernetes
+│   ├── ArgoCD       → syncs platform + workloads from Git
+│   ├── KRO          → expands custom resources into K8s objects
+│   └── ACK          → manages AWS resources from Kubernetes
 │
-├── Karpenter
-│   ├── default          ──▶  platform nodes (AL2023, Graviton)
-│   ├── gpu-inference    ──▶  GPU nodes (Bottlerocket + SOCI)
-│   └── gpu-shared       ──▶  GPU time-sliced nodes (4 models per GPU)
+├── Karpenter NodePools
+│   ├── default          → platform nodes (AL2023, Graviton)
+│   ├── gpu-inference    → dedicated GPU nodes (Bottlerocket + SOCI)
+│   └── gpu-shared       → time-sliced GPU nodes (4 models per GPU)
 │
-├── Platform Services (ArgoCD-managed)
-│   ├── GPU Operator     ──▶  NVIDIA device plugin + DCGM metrics
-│   ├── KubeRay          ──▶  Ray cluster lifecycle
-│   ├── LiteLLM          ──▶  OpenAI-compatible API gateway
-│   ├── Open WebUI       ──▶  chat interface
-│   ├── Platform DB      ──▶  shared PostgreSQL (LiteLLM + Langfuse)
-│   └── Langfuse         ──▶  LLM tracing and analytics
+├── Platform Services
+│   ├── GPU Operator     → NVIDIA device plugin + DCGM metrics
+│   ├── KubeRay          → Ray cluster lifecycle
+│   ├── LiteLLM          → OpenAI-compatible API gateway
+│   ├── Open WebUI       → chat interface
+│   ├── Platform DB      → shared PostgreSQL
+│   └── Langfuse         → LLM tracing and analytics
 │
-├── Platform Config (ArgoCD-managed)
-│   ├── KRO definitions  ──▶  InferenceEndpoint, AITeam APIs
-│   ├── RBAC             ──▶  team-developer ClusterRole
-│   └── Ingress          ──▶  ALB routing to services
-│
-└── Workloads (ArgoCD-managed, teams self-serve)
-    ├── InferenceEndpoints (e.g. gemma-4b, smolLM3)
-    └── AITeams (e.g. search-ranking, customer-support)
+└── Workloads (teams self-serve)
+    ├── InferenceEndpoints
+    └── AITeams
 ```
 
-## Prerequisites
+---
 
-- AWS CLI configured with appropriate permissions
-- Terraform >= 1.0
-- kubectl
-- AWS Identity Center configured (required for ArgoCD managed capability)
+## Quick Start
 
-## Deployment
-
-### 1. Configure
+### 1. Deploy Infrastructure
 
 ```bash
 cd terraform/00.global/vars/
 cp example.tfvars your-env.tfvars
-```
+# Edit: set Identity Center ARN, VPC CIDR, gitops_repo_url, capabilities
 
-Edit `your-env.tfvars` — set your Identity Center ARN, VPC CIDR, GitOps repo URL (`gitops_repo_url`), and capabilities.
-
-### 2. Deploy Infrastructure
-
-```bash
-export AWS_REGION=eu-central-1
 cd terraform
+export AWS_REGION=eu-central-1
 make bootstrap ENVIRONMENT=your-env
 make ENVIRONMENT=your-env apply-all
 ```
 
-This creates the VPC, IAM roles, EKS cluster with managed capabilities, Karpenter NodePools, shared PostgreSQL credentials, and all platform secrets (LiteLLM, Langfuse).
+This creates VPC, IAM roles, EKS cluster with managed capabilities, Karpenter NodePools, and all platform secrets. Cluster name: `{resources_prefix}-{ENVIRONMENT}`.
 
-The cluster name follows the pattern `{resources_prefix}-{ENVIRONMENT}` (e.g., `ai-platform-your-env`).
+### 2. (Optional) GPU Image Optimization
 
-### 3. (Optional) Enable ECR Pull-Through Cache
-
-Mirrors Docker Hub images to ECR for ~60% faster GPU node image pulls:
+Enable ECR pull-through cache for faster image pulls:
 
 ```bash
 export TF_VAR_docker_hub_username="your-dockerhub-username"
 export TF_VAR_docker_hub_access_token="dckr_pat_XXXXXXXXXX"
 ```
 
-Without this, images pull directly from Docker Hub (works fine, just slower).
-
-### 3b. GPU Image Optimization (SOCI + EBS Snapshot)
-
-> **Requires Step 3** — these optimizations depend on ECR pull-through cache being configured.
-
-When ECR pull-through cache is enabled (`TF_VAR_docker_hub_username` set), Terraform **automatically** creates both optimization artifacts on `apply`:
-
-1. **SOCI index** in ECR — enables lazy-loading of image layers (~50% faster pulls)
-2. **EBS data volume snapshot** — pre-pulls the 13 GiB Ray LLM image onto an EBS snapshot. New GPU nodes boot with the image already on disk (**0s image pull**)
-
-This is handled by `terraform/30.eks/30.cluster/image-optimization.tf`. Both are triggered by changes to `ray_image_tag` in `locals.tf`.
-
-**Two-apply flow for new clusters:**
-- First `apply`: creates the SOCI index + EBS snapshot (GPU nodes use SOCI-only)
-- Second `apply`: discovers the snapshot by tags, wires it into Karpenter NodeClasses
+With this set, Terraform **automatically** creates a SOCI index + EBS data volume snapshot on `apply`. Two-apply flow for new clusters — second apply wires the snapshot into Karpenter NodeClasses:
 
 ```bash
-# After initial deploy, run a second apply to activate the snapshot:
 make ENVIRONMENT=your-env MODULE=./30.eks/30.cluster apply
 ```
 
-**Manual scripts** (for ad-hoc use outside Terraform):
-```bash
-./ops/create-soci-index.sh <ecr-image-uri>
-./ops/create-data-volume-snapshot.sh --write-tfvars <image>
-```
+### 3. Verify ArgoCD
 
-> **Note:** The AWS SOCI Index Builder (Lambda-based) has a 6 GB compressed image limit. The Ray LLM image is ~13 GB, so indices are created via the ops script instead.
-
-### 4. Bootstrap ArgoCD
-
-ArgoCD is already running (deployed as a managed capability by Terraform). Terraform also created a single bootstrap `Application` that points at `argocd/bootstrap/` in your Git repo — there's no `sed` step. Set `gitops_repo_url` in your tfvars file to your fork's URL; Terraform renders the bootstrap Application with that value.
-
-The bootstrap Application syncs two ApplicationSets:
-
-| ApplicationSet | Creates |
-|-----|---------|
-| `platform` | `platform-config`, `gpu-operator`, `kuberay-operator`, `litellm`, `open-webui`, `langfuse` |
-| `workloads` | `models` (InferenceEndpoint instances), `teams` (AITeam instances) |
-
-Verify everything syncs:
+ArgoCD is deployed as a managed capability — no manual bootstrap needed. Terraform renders a bootstrap Application pointing at `argocd/bootstrap/` with your `gitops_repo_url`.
 
 ```bash
 aws eks update-kubeconfig --region $AWS_REGION --name ai-platform-your-env
-kubectl get applicationsets -n argocd
 kubectl get applications -n argocd
 ```
 
-If you forked this repo, you only need to change:
-- `gitops_repo_url` in your tfvars file
-- The two literal URLs inside `argocd/bootstrap/platform.yaml` and the one in `argocd/bootstrap/workloads.yaml`
-
-| Application | What it syncs |
-|-----------|---------------|
-| `platform-config` | KRO definitions, RBAC, Ingress |
-| `gpu-operator` | NVIDIA GPU Operator (Helm) |
-| `kuberay-operator` | KubeRay Operator (Helm) |
-| `litellm` | LiteLLM proxy + shared PostgreSQL |
-| `open-webui` | Open WebUI chat interface |
-| `langfuse` | Langfuse LLM observability |
-
-### 5. Create HuggingFace Token
-
-Required for gated models (Gemma, Llama, etc.). Create this **before** deploying gated models — without it, GPU workers can't download model weights:
+### 4. Create HuggingFace Token (for gated models)
 
 ```bash
 kubectl create secret generic hf-token -n inference \
   --from-literal=token=hf_YOUR_TOKEN_HERE
 ```
 
-> **Note:** The sample models in `workloads/models/` include Gemma and Llama which are gated. ArgoCD will deploy them automatically on bootstrap, but they won't become ready until this secret exists. Non-gated models (like SmolLM3) work without it.
-
-### 6. Deploy a Model
-
-Copy the template and fill in the model ID:
+### 5. Deploy a Model
 
 ```bash
 cp workloads/models/TEMPLATE.yaml.example workloads/models/my-model.yaml
 ```
-
-Edit `my-model.yaml` — only `spec.model` is required:
 
 ```yaml
 apiVersion: kro.run/v1alpha1
@@ -188,246 +118,100 @@ metadata:
 spec:
   model: "google/gemma-3-4b-it"
   gpuCount: 1
-  minReplicas: 1
-  maxReplicas: 2
 ```
 
 ```bash
 git add workloads/models/my-model.yaml
-git commit -m "feat: Deploy my model"
+git commit -m "feat: deploy gemma-4b"
 git push
-```
-
-Track deployment progress:
-
-```bash
 kubectl get inferenceendpoints -n inference -w
 ```
 
-The `MESSAGE` column shows the current phase:
-- `Waiting for GPU node provisioning and image pull` — Karpenter is provisioning a GPU node
-- `Model is loading onto GPU workers` — vLLM is loading the model
-- `Model is live and serving requests` — ready to use
+### 6. Access Services
 
-First deployment takes ~60s when fully optimized (EBS snapshot + S3 cache + warm pool), ~7 min with ECR cache only, ~14 min without any cache.
+The platform exposes services via an internet-facing ALB restricted by IP allowlist:
 
-### 7. Access Services
-
-The platform runs an **internet-facing ALB restricted by an IP allowlist** at the Security Group level (`alb.ingress.kubernetes.io/inbound-cidrs`). All three services share one ALB via `group.name: ai-platform`; each gets its own HTTP listener port.
+- `http://<alb>:8080` — Open WebUI
+- `http://<alb>:4000` — LiteLLM API
+- `http://<alb>:3000` — Langfuse
 
 ```bash
-kubectl get ingress -n ai-platform ai-platform-litellm \
-  -o jsonpath='{.status.loadBalancer.ingress[0].hostname}{"\n"}'
-# → k8s-aiplatform-<hash>.<region>.elb.amazonaws.com
+# Get ALB hostname
+kubectl get ingress ai-platform-litellm -n ai-platform \
+  -o jsonpath='{.status.loadBalancer.ingress[0].hostname}'
+
+# Or use SSM tunnel (works from anywhere, no public IP needed)
+./ops/ssm-tunnel.sh    # localhost:8080 / :4000 / :3000
 ```
 
-- `http://<alb-host>:8080` — Open WebUI
-- `http://<alb-host>:4000` — LiteLLM API
-- `http://<alb-host>:3000` — Langfuse
+Update the allowlist in `platform/config/ingress.yaml` when your IP changes.
 
-Update the allowlist in `platform/config/ingress.yaml` when your public IP changes:
-
-```yaml
-alb.ingress.kubernetes.io/inbound-cidrs: 203.0.113.42/32  # operator laptop
-```
-
-Commit + push → ArgoCD reconciles the Security Group rule in ~5 s; the ALB itself is not re-provisioned.
-
-**Fallback for unstable public IPs (airport, VPN, etc.):** `./ops/ssm-tunnel.sh` still works — it forwards via SSM through a criticaladdons node. Requires the [Session Manager plugin](https://docs.aws.amazon.com/systems-manager/latest/userguide/session-manager-working-with-install-plugin.html) (`brew install --cask session-manager-plugin`). Local ports stay the same: `localhost:8080 / :4000 / :3000`.
-
-Alternatively, short-lived `kubectl port-forward` for quick API calls:
-
-```bash
-kubectl port-forward svc/litellm 4000:4000 -n ai-platform       # API
-kubectl port-forward svc/open-webui 8080:8080 -n ai-platform     # Chat UI
-```
-
-### 8. Test a Model
-
-```bash
-export LITELLM_KEY=$(kubectl get secret litellm-secrets -n ai-platform \
-  -o jsonpath='{.data.master-key}' | base64 -d)
-export ALB_HOST=$(kubectl get ingress ai-platform-litellm -n ai-platform \
-  -o jsonpath='{.status.loadBalancer.ingress[0].hostname}')
-
-curl http://$ALB_HOST:4000/v1/chat/completions \
-  -H "Content-Type: application/json" \
-  -H "Authorization: Bearer $LITELLM_KEY" \
-  -d '{"model": "gemma-4b", "messages": [{"role": "user", "content": "Hello!"}]}'
-```
-
-Or the convenience wrapper (uses the SSM tunnel path by default):
+### 7. Test
 
 ```bash
 ./ops/test-model.sh gemma-4b "What is Kubernetes?"
 ```
 
-### 9. Enable Langfuse Tracing
+---
 
-Langfuse is deployed automatically as part of the platform. Before opening the UI you need to point Langfuse at the URL the browser will actually use — NextAuth rejects sign-ins where the request `Host` header doesn't match `nextauth.url`.
+## GPU Instance Recommender
 
-For SSM-tunnel access (default), the bundled `http://localhost:3000` already works. For ALB access, edit `platform/services/langfuse/helm-values.yaml` and set `langfuse.nextauth.url` to your ALB hostname:
-
-```yaml
-langfuse:
-  nextauth:
-    url: "http://k8s-aiplatform-<hash>.<region>.elb.amazonaws.com:3000"
-```
-
-Commit + push; ArgoCD restarts the `langfuse-web` pod with the new env. Then create an API key pair in the Langfuse UI and wire LiteLLM to it:
+The built-in recommender reads model architecture from HuggingFace, estimates VRAM, models decode throughput, picks the cheapest GPU with the right parallelism strategy, and emits a ready-to-commit YAML:
 
 ```bash
-kubectl create secret generic langfuse-litellm-keys -n ai-platform \
-  --from-literal=LANGFUSE_PUBLIC_KEY=pk-lf-... \
-  --from-literal=LANGFUSE_SECRET_KEY=sk-lf-...
-kubectl rollout restart deployment litellm -n ai-platform
+# What GPU fits a 4B model?
+./ops/recommend-instance-v2.py google/gemma-3-4b-it
+
+# 8B model, 16K context, 8 concurrent users
+./ops/recommend-instance-v2.py meta-llama/Llama-3.1-8B-Instruct --seq 16384 --users 8
+
+# Quantised 32B — int4 halves VRAM
+./ops/recommend-instance-v2.py Qwen/Qwen2.5-32B-Instruct --quant int4
+
+# 100 users with 25 tok/s SLO — auto-scales to fleet if needed
+./ops/recommend-instance-v2.py Qwen/Qwen2.5-7B-Instruct --users 100 --target-tok-s 25
+
+# Gated model
+HF_TOKEN=hf_... ./ops/recommend-instance-v2.py google/gemma-3-27b-it
 ```
 
-LiteLLM auto-detects the Langfuse keys and starts sending traces.
+Key flags: `--quant`, `--kv-quant`, `--seq`, `--users`, `--tp`, `--target-tok-s`, `--max-price`, `--in-cluster-only`, `--json`, `--workload`. Run with `--help` for full documentation.
 
-## InferenceEndpoint Reference
+---
+
+## Custom Resource Reference
+
+### InferenceEndpoint
 
 ```yaml
 apiVersion: kro.run/v1alpha1
 kind: InferenceEndpoint
 metadata:
-  name: my-model        # Also used as the LiteLLM model name
+  name: my-model
   namespace: inference
 spec:
   model: "org/model-id"           # REQUIRED — HuggingFace model ID
-  gpuCount: 1                     # Total GPUs per worker (TP × PP) — must be 1, 2, 4, or 8
-  tensorParallelSize: 1           # TP degree — splits layers across GPUs (requires NVLink for efficiency)
-  pipelineParallelSize: 1         # PP degree — splits layer groups across GPUs (works on PCIe)
-  shared: false                   # GPU time-slicing — share GPU with other models (default: false)
-  minReplicas: 1                  # Min Ray Serve replicas (default: 1)
-  maxReplicas: 4                  # Max Ray Serve replicas (default: 4)
-  workerMemory: "12Gi"            # Memory per GPU worker (default: 12Gi — fits 3B; the recommender emits a right-sized value per model)
-  workerCpu: "4"                  # CPU per GPU worker (default: 4)
-  maxModelLen: 8192               # Max sequence length (default: 8192)
-  minVramPerGpuGiB: 0             # Min per-GPU VRAM in GiB (Karpenter hint, default: 0 = unconstrained)
-  rayImage: "anyscale/ray-llm:2.54.0-py311-cu128"  # Override if needed
+  gpuCount: 1                     # GPUs per worker (1, 2, 4, or 8)
+  tensorParallelSize: 1           # TP — splits layers across NVLink GPUs
+  pipelineParallelSize: 1         # PP — splits layer groups across PCIe GPUs
+  shared: false                   # Time-slice GPU with up to 4 models
+  minReplicas: 1
+  maxReplicas: 4
+  maxModelLen: 8192               # Max sequence length
+  minVramPerGpuGiB: 0             # Karpenter GPU sizing hint (0 = unconstrained)
+  workerMemory: "12Gi"            # CPU memory per Ray worker
+  workerCpu: "4"
 ```
 
-**Parallelism guidance** (or just let `recommend-instance.py` pick for you):
-- `gpuCount: 1` — model fits on one GPU (most ≤7B models)
-- `gpuCount: 4, tensorParallelSize: 4` — model needs 4 GPUs on an NVLink node (A100/H100)
-- `gpuCount: 4, pipelineParallelSize: 4` — model needs 4 GPUs on PCIe (L4/L40S/A10G)
-- `gpuCount: 8, tensorParallelSize: 4, pipelineParallelSize: 2` — combine TP+PP for very large models
+KRO expands this into: RayService (vLLM backend), GPU worker pods, LiteLLM registration Job, CloudWatch Log Group.
 
-`minVramPerGpuGiB` adds a `nodeAffinity` rule (`karpenter.k8s.aws/instance-gpu-memory > n`) to the Ray worker pod template, so Karpenter is forced to pick a GPU that actually fits the model. Without it, Karpenter optimises purely for `$/hr` and can land on a T4 (16 GB) when the model needs an L4 (24 GB) or larger — which silently OOMs at model-load time. Leave it at `0` for small models that can run on any GPU; `recommend-instance.py` emits a correct conservative value automatically.
+**Parallelism** (or let `recommend-instance-v2.py` choose):
+- `gpuCount: 1` — single GPU (most ≤7B models)
+- `gpuCount: 4, tensorParallelSize: 4` — NVLink node (A100/H100)
+- `gpuCount: 4, pipelineParallelSize: 4` — PCIe node (L4/L40S/A10G)
+- `gpuCount: 8, tensorParallelSize: 4, pipelineParallelSize: 2` — TP×PP
 
-KRO expands this into a RayService (with vLLM backend), GPU worker pods, a LiteLLM registration Job (with validation), and a CloudWatch Log Group (via ACK).
-
-The registration Job validates before deploying:
-- `gpuCount` must be 1, 2, 4, or 8 (vLLM tensor parallelism requirement)
-- Model ID is checked against HuggingFace (404 = immediate failure)
-
-Status fields:
-
-```bash
-kubectl get inferenceendpoints -n inference
-# NAME       READY   MODELSTATUS   MESSAGE                                          ENDPOINT
-# gemma-4b   True    RUNNING       Model is live and serving requests               gemma-4b-serve-svc.inference.svc.cluster.local:8000
-```
-
-## GPU Time-Slicing
-
-By default, each model gets a dedicated GPU node. For smaller models that don't need a full GPU, enable time-slicing to share a single GPU across up to 4 models — reducing GPU node costs by up to 75%.
-
-### How it works
-
-The platform uses two Karpenter NodePools, both open to any NVIDIA-backed AWS GPU instance (G and P families):
-
-| Pool | Eligible instances | Use case |
-|------|--------------------|----------|
-| `gpu-inference` | Any NVIDIA G or P (g4dn, g5, g6, g6e, g7, p4d, p4de, p5, p5e, p5en, …) | Dedicated GPU for a single model |
-| `gpu-shared` | Single-GPU NVIDIA G only (g4dn/g5/g6/g6e/g7 · xlarge–16xlarge) | Time-sliced (4 slices per GPU) for small models |
-
-Both pools use semantic Karpenter requirements (`instance-category In [g, p]` + `instance-gpu-manufacturer In [nvidia]`) rather than enumerating families, so new G/P generations become eligible automatically. Cost blast-radius is bounded by each NodePool's `limits.nvidia.com/gpu` (16 for dedicated, 32 for shared) — adjust these in `terraform/30.eks/30.cluster/karpenter/gpu-*.yaml` if you want to allow more simultaneous P5 nodes or keep a tighter cap.
-
-When `shared: true`, the GPU worker schedules onto a time-sliced node where NVIDIA's device plugin advertises 1 physical GPU as 4 `nvidia.com/gpu` resources. A [NodeOverlay](https://karpenter.sh/docs/concepts/nodeoverlays/) tells Karpenter about this capacity so it provisions 1 node for 4 models instead of 4 separate nodes.
-
-> **Neuron/Trainium:** the platform runs vLLM via `anyscale/ray-llm` (CUDA build), and HuggingFace weights aren't pre-compiled with `neuronx-cc`, so inf2/trn1 instances are intentionally excluded. If you want Neuron support that requires a separate Ray image and ahead-of-time model compilation — out of scope today.
-
-### Will my model fit?
-
-**Use the built-in recommender** — it reads the model architecture from HuggingFace, estimates VRAM, picks the cheapest instance, chooses the right parallelism strategy, and emits a ready-to-commit YAML:
-
-```bash
-# What GPU do I need for a 4B model?
-./ops/recommend-instance.py google/gemma-3-4b-it
-
-# 8B model with 16K context window and 8 concurrent users
-./ops/recommend-instance.py meta-llama/Llama-3.1-8B-Instruct --seq 16384 --users 8
-
-# Quantise to int4 — cuts VRAM requirement in half
-./ops/recommend-instance.py Qwen/Qwen2.5-32B-Instruct --quant int4
-
-# Fleet scaling — how many replicas for 50 concurrent users?
-./ops/recommend-instance.py meta-llama/Llama-3.1-8B-Instruct --target-users 50
-
-# Fleet with conservative headroom (60% utilization)
-./ops/recommend-instance.py Qwen/Qwen2.5-7B-Instruct --target-users 100 --utilization 0.6
-
-# Large model with pinned TP=4 and only in-cluster instances
-./ops/recommend-instance.py meta-llama/Llama-3.1-70B-Instruct --tp 4 --in-cluster-only
-
-# Cap per-instance budget at $5/hr
-./ops/recommend-instance.py Qwen/Qwen2.5-32B-Instruct --quant int4 --max-price 5
-
-# Gated model (Gemma, Llama, etc.)
-HF_TOKEN=hf_... ./ops/recommend-instance.py google/gemma-3-27b-it
-```
-
-The tool:
-- Reads model `config.json` from HuggingFace (GQA head counts, MoE experts, etc.)
-- Estimates VRAM: weights + KV cache + activations + 15% overhead
-- Picks the optimal parallelism strategy per [vLLM docs](https://docs.vllm.ai/en/latest/serving/parallelism_scaling/):
-  - **TP (Tensor Parallelism)** on NVLink instances (A100, H100, H200) — splits layers across GPUs
-  - **PP (Pipeline Parallelism)** on PCIe instances (L4, L40S, A10G) — splits layer groups
-  - Enforces `num_attention_heads % tp == 0` constraint automatically
-- Fetches live pricing from the AWS Pricing API (cached 30 days)
-- Emits a copy-paste YAML with correct `gpuCount`, `tensorParallelSize`, `pipelineParallelSize`, `minVramPerGpuGiB`, `workerMemory`, and replica counts
-
-**Fleet scaling mode** (`--target-users N`) recommends instance type + replica count for multi-worker deployments. It computes VRAM-limited max concurrency per instance, applies a utilization factor for burst headroom, and ranks alternatives by total fleet cost — not single-instance price.
-
-Useful flags:
-- `--region eu-central-1` — override the detected region (default: `$AWS_REGION`)
-- `--max-price 15` — flag single-instance prices above $15/hr (default: $20)
-- `--target-users 50` — fleet scaling mode
-- `--utilization 0.6` — leave 40% burst headroom (default: 0.7)
-- `--quant int4` — weight quantization (fp32, fp16, bf16, int8, fp8, int4, gptq4, awq4, nf4)
-- `--refresh-prices` — bust the pricing cache
-- `--in-cluster-only` — only show instances your Karpenter NodePools can schedule
-- `--json` — machine-readable output for scripting/CI
-- `--verbose` — show pricing API diagnostics
-
-Boto3 is a soft dependency: without it, the tool falls back to the bundled us-east-1 catalog.
-
-**Quick reference** for `gpu-shared` time-slicing eligibility (24 GB VRAM, 4 slices ≈ 6 GB each):
-
-| Model size | Quantization | Shared? |
-|-----------|-------------|---------|
-| ≤ 1B params | FP16 | ✅ Yes |
-| 1-3B params | FP16 | ✅ Yes |
-| 3-4B params | FP16 | ⚠️ Tight — reduce `maxModelLen` |
-| ≥ 7B params | FP16 | ❌ No — use dedicated GPU |
-
-### Deploy a shared model
-
-```yaml
-apiVersion: kro.run/v1alpha1
-kind: InferenceEndpoint
-metadata:
-  name: smollm3-3b
-  namespace: inference
-spec:
-  model: "HuggingFaceTB/SmolLM3-3B"
-  shared: true          # ← shares GPU with other models
-  maxModelLen: 4096     # ← reduce context length to fit in ~6GB VRAM
-```
-
-## AITeam Reference
+### AITeam
 
 ```yaml
 apiVersion: kro.run/v1alpha1
@@ -436,124 +220,129 @@ metadata:
   name: team-search
   namespace: ai-platform
 spec:
-  teamName: search-ranking        # Creates namespace team-search-ranking
-  models: ["gemma-4b", "qwen3-4b"]  # Allowed models (* = all)
-  maxBudget: "50.0"               # USD budget
-  budgetDuration: "30d"           # Reset period
-  rpmLimit: 60                    # Requests per minute
-  tpmLimit: 50000                 # Tokens per minute
+  teamName: search-ranking
+  models: ["gemma-4b", "qwen3-4b"]
+  maxBudget: "50.0"
+  budgetDuration: "30d"
+  rpmLimit: 60
+  tpmLimit: 50000
 ```
 
-KRO creates: namespace, ResourceQuota, NetworkPolicy, ServiceAccount, RoleBinding, LiteLLM team + scoped API key, and a welcome ConfigMap with usage instructions.
+KRO creates: namespace, ResourceQuota, NetworkPolicy, RBAC, LiteLLM team + scoped API key, welcome ConfigMap.
 
-View team welcome info:
+### FineTuneJob *(coming soon)*
+
+```yaml
+apiVersion: kro.run/v1alpha1
+kind: FineTuneJob
+metadata:
+  name: gemma-support-v1
+  namespace: inference
+spec:
+  baseModel: "google/gemma-3-4b-it"
+  dataset: "s3://my-bucket/training-data.jsonl"
+  gpuCount: 1
+  autoDeploy: true              # Deploy as InferenceEndpoint when done
+```
+
+Self-service fine-tuning via Unsloth — same GitOps pattern. Handles validation, QLoRA training, model export to S3, and optional auto-deployment.
+
+---
+
+## GPU Time-Slicing
+
+For models that don't need a full GPU, `shared: true` enables NVIDIA time-slicing — up to 4 models share one physical GPU, reducing costs by ~75%.
+
+| Model size | Shared? |
+|-----------|---------|
+| ≤ 3B (FP16) | Yes |
+| 3-4B (FP16) | Tight — reduce `maxModelLen` |
+| ≥ 7B | No — use dedicated GPU |
+
+```yaml
+spec:
+  model: "HuggingFaceTB/SmolLM3-3B"
+  shared: true
+  maxModelLen: 4096
+```
+
+---
+
+## Cold-Start Optimization
+
+Four layers reduce first-inference time from ~7 min to ~60s:
+
+| Layer | Effect | How |
+|-------|--------|-----|
+| EBS data volume snapshot | 0s image pull | Terraform auto-creates on `ray_image_tag` change |
+| SOCI lazy-loading | ~50% faster pull (fallback) | Terraform auto-creates alongside snapshot |
+| S3 model weight cache | ~15s vs ~60s model load | Sidecar auto-warms after first deploy |
+| GPU warm pool | Skip 90s node provisioning | Placeholder pod in `platform/config/warm-pool/` |
+
+**Pre-seed the cache** before a demo:
 
 ```bash
-kubectl get configmap welcome -n team-search-ranking -o jsonpath='{.data.README\.md}'
+./ops/seed-model-cache.py HuggingFaceTB/SmolLM3-3B
+./ops/seed-model-cache.py list
 ```
+
+---
+
+## Operational Scripts
+
+```bash
+./ops/recommend-instance-v2.py <model>       # GPU sizing + fleet scaling
+./ops/test-model.sh <name> "prompt"          # Quick model test
+./ops/ssm-tunnel.sh                          # Port-forward via SSM
+./ops/seed-model-cache.py <model>            # Pre-populate S3 weight cache
+./ops/scale-down.sh                          # Suspend platform, reclaim GPUs
+./ops/scale-up.sh                            # Restore via ArgoCD sync
+./ops/demo.sh                                # End-to-end demo flow
+```
+
+---
 
 ## Repository Structure
 
 ```
-argocd/                          # ArgoCD bootstrap — the only ArgoCD content in git
-  bootstrap/                     # Synced by the root Application (rendered by Terraform)
-    platform.yaml                #   ApplicationSet: platform-config, gpu-operator, kuberay, litellm, open-webui, langfuse
-    workloads.yaml               #   ApplicationSet: models + teams
-platform/                        # Platform team owns everything here
-  config/                        #   KRO APIs, RBAC, Ingress
-    kro/                         #     InferenceEndpoint + AITeam definitions
-    rbac/                        #     team-developer ClusterRole + team-onboarding SA/ClusterRole
-  services/                      #   Platform service configurations
-    gpu-operator/                #     NVIDIA GPU Operator (Helm values)
-    kuberay/                     #     KubeRay Operator (Helm values)
-    langfuse/                    #     Langfuse (Helm values)
-    litellm/                     #     LiteLLM + shared PostgreSQL (manifests)
-    open-webui/                  #     Open WebUI (manifests)
-workloads/                       # Self-service — teams add YAMLs here
-  models/                        #   InferenceEndpoint instances
-    TEMPLATE.yaml.example        #   Copy this to create a new model
-  teams/                         #   AITeam instances
-ops/                             # Operational scripts
-  recommend-instance.py          #   GPU instance + fleet sizing (TP/PP strategy, scaling)
-  seed-model-cache.py            #   Pre-populate S3 HF weights cache for fast deploys
-  create-data-volume-snapshot.sh #   EBS snapshot with pre-pulled images (fastest cold start)
-  create-soci-index.sh           #   Create SOCI indices for large images
-  ssm-tunnel.sh                  #   SSM port forwarding to platform services
-  test-model.sh                  #   One-shot model testing
-  scale-down.sh                  #   Cost savings: suspend platform
-  scale-up.sh                    #   Restore platform via ArgoCD sync
-  demo.sh                        #   End-to-end demo flow
-terraform/                       # Infrastructure (VPC, IAM, EKS, addons)
+argocd/bootstrap/            # ApplicationSets (platform + workloads)
+platform/
+  config/kro/                # InferenceEndpoint + AITeam definitions
+  config/rbac/               # ClusterRoles
+  config/ingress.yaml        # ALB routing
+  config/warm-pool/          # GPU warm-pool placeholder
+  services/                  # gpu-operator, kuberay, litellm, open-webui, langfuse
+workloads/
+  models/                    # InferenceEndpoint YAMLs (self-service)
+  teams/                     # AITeam YAMLs (self-service)
+ops/                         # Operational scripts
+terraform/                   # Infrastructure modules (VPC → IAM → EKS → Observability)
 ```
 
-## Fast model deployment (cold-start optimization)
+---
 
-First deploys of a model pull ~13 GB of container image and download weights from HuggingFace — typically 5-7 minutes end-to-end. The platform ships four layers of optimization that knock that down to **~60 seconds**:
+## Langfuse Tracing
 
-| Layer | What | Effect | Automated? |
-|-------|------|--------|------------|
-| EBS data volume snapshot | Pre-pulled image baked into EBS | 0s image pull | Yes (Terraform) |
-| SOCI lazy-loading | Stream image layers on demand | ~50% faster pull (fallback) | Yes (Terraform) |
-| S3 model weight cache | Sync weights from S3 instead of HF | ~15s vs ~60s model load | Yes (sidecar auto-warms) |
-| GPU warm pool | Keep one node always provisioned | Skip 90s Karpenter provision | Yes (ArgoCD) |
-
-### HuggingFace weights cache in S3
-
-Terraform creates an S3 bucket `{cluster-name}-model-cache` and an IRSA role scoped to the `inference:inference-worker` ServiceAccount. Every Ray worker pod gets:
-
-- **initContainer** (`hf-cache-download`) — runs `s5cmd` to sync `s3://{bucket}/hf/{model-id}/` to a local `emptyDir` at `/hf-cache` before vLLM starts. Cache miss is silent: vLLM falls back to a live HF download as before.
-- **HF_HOME** env var pointing at the same `emptyDir`, so vLLM reads from wherever the weights ended up.
-- **auto-warm sidecar** (`hf-cache-uploader`) — after waiting 5 minutes for vLLM to finish loading, uploads the populated cache to S3 *if the bucket doesn't already have this model*. Next deploy of the same model hits the cache automatically.
-
-Result: *any model tried before is fast; any new model still works, with a one-time slow first deploy.*
-
-**Manual seed** (pre-populate before a demo):
+Langfuse is deployed automatically. For ALB access, set `langfuse.nextauth.url` in `platform/services/langfuse/helm-values.yaml` to your ALB hostname. Then create API keys in the Langfuse UI and wire them to LiteLLM:
 
 ```bash
-./ops/seed-model-cache.py HuggingFaceTB/SmolLM3-3B
-HF_TOKEN=hf_... ./ops/seed-model-cache.py google/gemma-3-4b-it
-./ops/seed-model-cache.py list         # what's cached
-./ops/seed-model-cache.py purge org/model
+kubectl create secret generic langfuse-litellm-keys -n ai-platform \
+  --from-literal=LANGFUSE_PUBLIC_KEY=pk-lf-... \
+  --from-literal=LANGFUSE_SECRET_KEY=sk-lf-...
+kubectl rollout restart deployment litellm -n ai-platform
 ```
 
-The tool reads the bucket name from the `platform-config` ConfigMap, downloads the model locally via `huggingface-cli` (uses `hf_transfer` for speed), and uploads to `s3://{bucket}/hf/{model}/` via `aws s3 sync`.
-
-### Warm GPU node pool
-
-`platform/config/warm-pool/gpu-shared-warmup.yaml` defines a low-priority (`value: -100`) placeholder Deployment that holds one GPU slice on the `gpu-shared` NodePool. Karpenter keeps the node alive; the Ray LLM image is pre-pulled there. When a `shared: true` InferenceEndpoint arrives, its pod preempts the placeholder and schedules onto the warm node — skipping ~90 s of Karpenter provisioning and ~100 s of image pull. Scale replicas to 0 to disable.
-
-### Expected timeline (SmolLM3-3B on gpu-shared)
-
-| Stage | Cold (no optimization) | Fully optimized |
-|---|---|---|
-| ArgoCD sync | 30 s | 10 s |
-| Karpenter node provisioning | 90 s | **0 s** (warm pool) |
-| Ray LLM image pull | 180 s | **0 s** (EBS snapshot) |
-| Weights → pod | 60 s (HF download) | **~15 s** (S3 cache) |
-| vLLM init + weight load | 45 s | 45 s |
-| LiteLLM register | 10 s | 10 s |
-| **Total from `git push` to working model** | ~7 min | **~60-80 s** |
-
-
-
-Scale down during off-hours to release GPU nodes:
-
-```bash
-./ops/scale-down.sh    # Suspends ArgoCD, scales to 0, reclaims GPU nodes
-./ops/scale-up.sh      # Re-enables ArgoCD auto-sync, reconciles everything
-```
+---
 
 ## Cleanup
 
 ```bash
-kubectl delete inferenceendpoints --all -n inference   # Release GPU nodes
-kubectl get nodes -l workload-type=gpu-inference       # Wait for termination (~5 min)
-kubectl get nodes -l workload-type=gpu-shared          # Wait for shared nodes too
-
-cd terraform
-make ENVIRONMENT=your-env destroy-all
+kubectl delete inferenceendpoints --all -n inference
+cd terraform && make ENVIRONMENT=your-env destroy-all
 ```
+
+---
 
 ## Acknowledgments
 
-The Terraform infrastructure is based on the [Automated Provisioning of Application-Ready Amazon EKS Clusters](https://aws-solutions-library-samples.github.io/compute/automated-provisioning-of-application-ready-amazon-eks-clusters.html) guidance from the AWS Solutions Library, extended with EKS Managed Capabilities (ArgoCD, KRO, ACK), GPU-optimized Karpenter NodePools, and the AI platform layer.
+Infrastructure based on [Automated Provisioning of Application-Ready Amazon EKS Clusters](https://aws-solutions-library-samples.github.io/compute/automated-provisioning-of-application-ready-amazon-eks-clusters.html) from the AWS Solutions Library, extended with EKS Managed Capabilities, GPU-optimized Karpenter NodePools, and the AI platform layer.

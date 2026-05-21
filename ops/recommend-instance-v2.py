@@ -1287,16 +1287,16 @@ DEFAULT_TARGET_TOK_S       = 0.0   # disabled by default — only enforce when u
 
 
 # Workload presets — fill in sensible defaults for --avg-context, --target-tok-s,
-# and (in fleet mode) --target-users when the user asks for one of these labels
-# instead of having to tune individual flags. Users can still override any
-# individual value; the preset only fills fields the user didn't explicitly set.
+# Workload presets fill sensible defaults for --avg-context, --target-tok-s,
+# and --users when the user asks for one of these labels instead of having to
+# tune individual flags. Users can still override any individual value.
 #
 # These are calibrated to typical production loads, not paper-spec scenarios.
 # Fields:
 #   avg_context  : input + output tokens per active sequence at steady state
 #   target_tok_s : per-user decode rate that "feels right" for that workload
 #   users        : default per-instance concurrency target (when --users not set)
-#                  (only applied if --target-users is also unset; i.e., single-instance mode)
+#                  (applied when --users is at its default of 1)
 WORKLOAD_PRESETS = {
     "chat": {
         "avg_context":  1024,   # short turns, ~500 input + ~500 output
@@ -1710,8 +1710,8 @@ def _explain_recommendation(
     util_pct = 100.0 * anchor.per_gpu_need_gb / anchor.instance.vram_gb
     caveats: list[str] = []
     if anchor.quant_warning:
-        caveats.append(f"⚠ {args.quant} dtype emulated on {anchor.instance.gpu} "
-                       f"— real-world throughput will be ~half of estimates")
+        caveats.append(f"⚠ {args.quant} on {anchor.instance.gpu} uses software emulation "
+                       f"(penalty already reflected in tok/s estimates)")
     if util_pct > 80:
         caveats.append(f"⚠ {util_pct:.0f}% VRAM used — limited headroom for "
                        f"longer contexts or higher concurrency")
@@ -1945,7 +1945,7 @@ def print_human(
                 for o in over_budget[:remaining]:
                     _print_table_row(o, C, over=True)
 
-    # -------- 6. Fleet scaling (when --target-users is given) ------------ #
+    # -------- 6. Fleet scaling (when auto-fleet is triggered) ------------ #
     if scaling:
         _print_scaling_section(scaling, args, C)
         if prices is not None and scaling[0] is not None:
@@ -2213,10 +2213,10 @@ def _print_yaml_snippet(model: ModelSpec, vram: VramEstimate, best: Option,
     if scaling:
         best = scaling[0].option
 
-    # Suggest shared: true only when the instance is truly shared-eligible —
-    # meaning TIME_SLICE_REPLICAS copies of the model fit in GPU memory.
-    # `shared_eligible` already encodes that check.
-    shared = best.total_gpus == 1 and best.shared_eligible
+    # Suggest shared: true only in single-instance mode when the model is
+    # shared-eligible. Fleet mode must NOT use shared — throughput estimates
+    # assume dedicated bandwidth, and shared gives 1/4 of that.
+    shared = (not scaling) and best.total_gpus == 1 and best.shared_eligible
     yaml_path  = f"workloads/models/{name}.yaml"
     commit_msg = f"feat: deploy {name}"
 
@@ -2491,8 +2491,6 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--json", action="store_true", help="Emit machine-readable JSON")
     p.add_argument("--verbose", action="store_true",
                    help="Print pricing API fallbacks and other diagnostics to stderr")
-    p.add_argument("--target-users", type=int, default=None,
-                   help=argparse.SUPPRESS)  # hidden; kept for backwards compat — use --users instead
     p.add_argument("--utilization", type=float, default=DEFAULT_UTILIZATION_FACTOR,
                    help=f"Target utilization factor for scaling mode — fraction of max "
                         f"concurrency to plan for (default: {DEFAULT_UTILIZATION_FACTOR}). "
@@ -2516,9 +2514,8 @@ def main(argv: list[str] | None = None) -> int:
     if args.avg_context is not None and args.avg_context < 1:
         sys.exit("error: --avg-context must be >= 1")
 
-    # Backwards compat: --target-users overrides --users for fleet mode.
-    if args.target_users is not None:
-        args.users = args.target_users
+    # Internal fleet-mode flag — set programmatically, not by CLI.
+    args.target_users = None
 
     if args.users < 1:
         sys.exit("error: --users must be >= 1")
@@ -2565,7 +2562,6 @@ def main(argv: list[str] | None = None) -> int:
     # on its own? If yes → single-instance. If no → fleet mode.
     # With --target-tok-s set, also check the SLO capacity.
     scaling: list[ScalingRecommendation] | None = None
-    args.target_users = None  # will be set if fleet mode activates
 
     if best is not None and opts and args.users > 1:
         max_conc = _max_concurrency_for_option(best, vram, args.safety_margin)
