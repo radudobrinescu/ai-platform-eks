@@ -1,0 +1,19 @@
+apiVersion: kro.run/v1alpha1
+kind: AITeam
+metadata:
+  name: dev-team
+  namespace: ai-platform
+spec:
+  budgetDuration: 30d
+  cpuQuota: '4'
+  gpuQuota: 0
+  langfusePublicKey: ''
+  langfuseSecretKey: ''
+  maxBudget: '100.0'
+  memoryQuota: 8Gi
+  models:
+  - smollm3-3b
+  rpmLimit: 60
+  teamName: dev
+  tpmLimit: 100000
+

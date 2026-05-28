@@ -1,0 +1,19 @@
+apiVersion: kro.run/v1alpha1
+kind: AITeam
+metadata:
+  name: data-science
+  namespace: ai-platform
+spec:
+  budgetDuration: 30d
+  cpuQuota: '4'
+  gpuQuota: 0
+  langfusePublicKey: ''
+  langfuseSecretKey: ''
+  maxBudget: '500.0'
+  memoryQuota: 8Gi
+  models:
+  - '*'
+  rpmLimit: 120
+  teamName: data-science
+  tpmLimit: 200000
+
