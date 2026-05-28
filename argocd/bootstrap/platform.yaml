@@ -68,6 +68,11 @@ spec:
             type: directory
             path: platform/services/cluster-dashboard
             tier: platform
+          - name: devops-agent
+            namespace: devops-agent
+            type: directory
+            path: platform/services/devops-agent
+            tier: platform
   template:
     metadata:
       name: '{{.name}}'
