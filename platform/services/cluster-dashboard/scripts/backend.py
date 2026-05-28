@@ -488,6 +488,11 @@ class Handler(http.server.SimpleHTTPRequestHandler):
         self.wfile.write(data)
 
     def do_GET(self) -> None:  # type: ignore[override]
+        # Root → cluster-topology.html (no Apache-style directory listing).
+        if self.path == "/" or self.path == "":
+            self.path = "/cluster-topology.html"
+            return super().do_GET()
+
         if self.path == "/data.json":
             with snapshot_lock:
                 data = json.dumps(snapshot).encode("utf-8")
