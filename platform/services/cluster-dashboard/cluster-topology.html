@@ -261,6 +261,74 @@ body { font-family: var(--font); background: var(--bg); color: var(--text); heig
 .approval-actions button.dismiss:hover { background: var(--red); color: white; }
 .approval-actions button:disabled { opacity: 0.5; cursor: not-allowed; }
 .approvals-empty { padding: 32px 20px; text-align: center; color: var(--text-muted); font-size: 13px; }
+
+/* Richer card sections */
+.approval-section { padding: 12px 0; border-top: 1px solid var(--border); }
+.approval-section:first-of-type { border-top: none; padding-top: 0; }
+.approval-section-title {
+  font-size: 11px; font-weight: 700; letter-spacing: 0.6px;
+  text-transform: uppercase; color: var(--text-muted); margin-bottom: 8px;
+}
+.approval-section-fix {
+  background: var(--accent-soft); border-radius: var(--radius-sm);
+  padding: 14px 16px; margin: 12px 0; border-left: 3px solid var(--accent);
+}
+.approval-section-fix .approval-section-title { color: var(--accent); font-size: 13px; }
+.approval-section-risk {
+  background: var(--amber-soft); border-radius: var(--radius-sm);
+  padding: 12px 14px; margin: 10px 0; border-left: 3px solid var(--amber);
+}
+.approval-section-risk .approval-section-title { color: var(--amber); font-size: 13px; }
+.fix-step { margin-bottom: 12px; }
+.fix-step:last-child { margin-bottom: 0; }
+.fix-step-num {
+  display: inline-block; width: 18px; height: 18px; line-height: 18px;
+  background: var(--accent); color: white; font-size: 10px; font-weight: 700;
+  text-align: center; border-radius: 50%; margin-right: 6px;
+}
+.fix-step-desc { font-size: 13px; color: var(--text); margin-bottom: 6px; font-weight: 600; }
+.fix-step-cmd {
+  background: var(--bg); padding: 8px 10px; border-radius: 4px;
+  font-family: var(--mono); font-size: 11px; line-height: 1.5;
+  white-space: pre-wrap; word-break: break-all; overflow-x: auto;
+  max-height: 220px; color: var(--text); border: 1px solid var(--border-light);
+}
+/* Impact grid */
+.impact-grid { display: grid; gap: 10px; }
+.impact-row {
+  display: grid; grid-template-columns: 110px 1fr; gap: 14px; align-items: start;
+  font-size: 12px;
+}
+.impact-label { color: var(--text-muted); padding-top: 2px; font-weight: 600; }
+.impact-resources, .impact-chips { display: flex; flex-wrap: wrap; gap: 6px; }
+.impact-empty { color: var(--text-muted); font-size: 12px; font-style: italic; }
+.resource-pill {
+  display: inline-flex; gap: 8px; align-items: center;
+  background: var(--surface-hover); border: 1px solid var(--border);
+  border-radius: 4px; padding: 4px 10px; font-size: 11px;
+}
+.resource-pill .resource-kind {
+  font-weight: 700; color: var(--accent); font-family: var(--mono);
+  font-size: 10px; letter-spacing: 0.3px;
+}
+.resource-pill .resource-name { font-family: var(--mono); color: var(--text); }
+.impact-chip {
+  display: inline-flex; gap: 4px; align-items: center;
+  background: var(--accent-soft); color: var(--accent);
+  border-radius: 4px; padding: 3px 8px; font-size: 11px; font-weight: 600;
+}
+.impact-chip.destructive { background: var(--red-soft); color: var(--red); }
+.impact-rev-reversible  { color: var(--green); }
+.impact-rev-destructive { color: var(--red); font-weight: 700; }
+.impact-rev-partial     { color: var(--amber); }
+.impact-rev-unknown     { color: var(--text-muted); }
+.manual-review-banner {
+  margin: 10px 0; padding: 10px 14px; background: var(--amber-soft);
+  border: 1px solid var(--amber); border-radius: var(--radius-sm);
+  color: var(--amber); font-size: 12px; font-weight: 600;
+}
+.approval-trigger { font-family: var(--font); }
+.approval-time    { margin-left: auto; }
 </style>
 </head>
 <body data-theme="dark">
@@ -572,28 +640,146 @@ async function loadApprovals(){
 
 function renderApproval(inv){
   const findings = inv.findings || {};
-  const fix = (inv.fix_commands || []).map(fc => {
-    const desc = fc.description ? '# ' + fc.description + '\n' : '';
-    const cmds = (fc.commands || []).join('\n');
-    return desc + cmds;
-  }).join('\n\n') || '(no commands)';
   const sev = findings.severity || '?';
   const summary = findings.summary || '(no summary)';
+  const risk = findings.risk_assessment || '';
+  const manualReview = !!findings.requires_manual_review;
   const ts = inv.created_at ? new Date(inv.created_at).toLocaleString() : '?';
   const where = inv.resource_namespace ? `${inv.resource_namespace}/${inv.resource_name}` : inv.resource_name;
+  const affected = findings.affected_resources || [];
+  const fixCommands = inv.fix_commands || [];
+  const impact = analyzeImpact(fixCommands);
+
+  const fixStepsHtml = fixCommands.length === 0
+    ? '<div class="impact-empty">No commands proposed.</div>'
+    : fixCommands.map((fc, i) => `
+        <div class="fix-step">
+          <div class="fix-step-desc"><span class="fix-step-num">${i+1}</span>${escapeHtml(fc.description || 'Step ' + (i+1))}</div>
+          <pre class="fix-step-cmd">${escapeHtml((fc.commands || []).join('\n'))}</pre>
+        </div>`).join('');
+
+  const affectedHtml = affected.length === 0
+    ? '<div class="impact-empty">None reported</div>'
+    : affected.map(r => `
+        <span class="resource-pill">
+          <span class="resource-kind">${escapeHtml(r.kind || '?')}</span>
+          <span class="resource-name">${escapeHtml((r.namespace ? r.namespace + '/' : '') + (r.name || '?'))}</span>
+        </span>`).join('');
+
+  const actionsHtml = impact.actions.length === 0
+    ? '<span class="impact-empty">No write operations detected</span>'
+    : impact.actions.map(a => `<span class="impact-chip ${a.cls||''}">${a.icon} ${escapeHtml(a.text)}</span>`).join('');
+
   return `<div class="approval-item" id="approval-${escapeHtml(inv.id)}">
     <div class="approval-meta">
       <span class="sev sev-${escapeHtml(sev)}">${escapeHtml(sev)}</span>
-      <span>${escapeHtml(inv.trigger_kind)} · ${escapeHtml(where)}</span>
-      <span style="margin-left:auto">${escapeHtml(ts)}</span>
+      <span class="approval-trigger">${escapeHtml(inv.trigger_kind)} · ${escapeHtml(where)}</span>
+      <span class="approval-time">${escapeHtml(ts)}</span>
     </div>
-    <div class="approval-summary">${escapeHtml(summary)}</div>
-    <pre class="approval-fix">${escapeHtml(fix)}</pre>
+
+    <div class="approval-section">
+      <div class="approval-section-title">Root cause</div>
+      <div class="approval-summary">${escapeHtml(summary)}</div>
+    </div>
+
+    <div class="approval-section-fix">
+      <div class="approval-section-title">⚙️  Proposed fix</div>
+      ${fixStepsHtml}
+    </div>
+
+    <div class="approval-section">
+      <div class="approval-section-title">📊  Impact analysis</div>
+      <div class="impact-grid">
+        <div class="impact-row">
+          <div class="impact-label">Affects</div>
+          <div class="impact-resources">${affectedHtml}</div>
+        </div>
+        <div class="impact-row">
+          <div class="impact-label">Operations</div>
+          <div class="impact-chips">${actionsHtml}</div>
+        </div>
+        <div class="impact-row">
+          <div class="impact-label">Reversibility</div>
+          <div class="impact-rev-${impact.reversibility.cls}">${impact.reversibility.icon} ${escapeHtml(impact.reversibility.text)}</div>
+        </div>
+        <div class="impact-row">
+          <div class="impact-label">Disruption</div>
+          <div>${escapeHtml(impact.disruption)}</div>
+        </div>
+      </div>
+    </div>
+
+    ${risk ? `<div class="approval-section-risk">
+      <div class="approval-section-title">⚠️  Risk</div>
+      <div class="approval-summary">${escapeHtml(risk)}</div>
+    </div>` : ''}
+
+    ${manualReview ? `<div class="manual-review-banner">⚠️  Flagged for careful manual review — verify the commands above before approving.</div>` : ''}
+
     <div class="approval-actions">
       <button class="approve" onclick="actOn('${escapeHtml(inv.id)}','approve')">✓ Approve &amp; apply</button>
       <button class="dismiss" onclick="actOn('${escapeHtml(inv.id)}','dismiss')">✕ Dismiss</button>
     </div>
   </div>`;
+}
+
+function analyzeImpact(fixCommands){
+  // Parse kubectl verbs from each command, classify reversibility + disruption
+  const verbs = new Set();
+  const cmdMap = {
+    'patch':           { icon: '✏️',  text: 'Patch',          cls: 'reversible',   disrupt: 'rolling' },
+    'apply':           { icon: '📝', text: 'Apply YAML',     cls: 'reversible',   disrupt: 'rolling' },
+    'set':             { icon: '🔧', text: 'Update field',   cls: 'reversible',   disrupt: 'rolling' },
+    'scale':           { icon: '📏', text: 'Scale replicas', cls: 'reversible',   disrupt: 'minimal' },
+    'rollout-restart': { icon: '🔄', text: 'Rolling restart',cls: 'reversible',   disrupt: 'rolling' },
+    'rollout-undo':    { icon: '↩️',  text: 'Rollback',        cls: 'reversible',   disrupt: 'rolling' },
+    'delete':          { icon: '🗑️',  text: 'Delete',          cls: 'destructive',  disrupt: 'variable'},
+    'edit':            { icon: '✏️',  text: 'Edit',            cls: 'reversible',   disrupt: 'rolling' },
+    'label':           { icon: '🏷️',  text: 'Set labels',     cls: 'reversible',   disrupt: 'none' },
+    'annotate':        { icon: '🏷️',  text: 'Set annotations',cls: 'reversible',   disrupt: 'none' },
+    'cordon':          { icon: '🚧', text: 'Cordon node',    cls: 'reversible',   disrupt: 'minimal' },
+    'drain':           { icon: '🚪', text: 'Drain node',     cls: 'partial',      disrupt: 'high' },
+    'taint':           { icon: '🔖', text: 'Taint node',     cls: 'reversible',   disrupt: 'minimal' },
+  };
+  (fixCommands || []).forEach(fc => (fc.commands || []).forEach(cmd => {
+    const m = String(cmd).trim().match(/^kubectl\s+(\S+)(?:\s+(\S+))?/);
+    if(!m) return;
+    let v = m[1];
+    if(v === 'rollout'){
+      const sm = String(cmd).match(/kubectl\s+rollout\s+(\S+)/);
+      v = sm ? `rollout-${sm[1]}` : 'rollout';
+    }
+    verbs.add(v);
+  }));
+
+  const actions = [...verbs].map(v => cmdMap[v] || { icon: '•', text: 'kubectl ' + v, cls: '', disrupt: 'unknown' });
+
+  // Reversibility roll-up
+  let reversibility;
+  const hasDestr = actions.some(a => a.cls === 'destructive');
+  const allRev   = actions.length > 0 && actions.every(a => a.cls === 'reversible');
+  if(actions.length === 0){
+    reversibility = { cls: 'unknown', icon: '❓', text: 'No write operations to apply' };
+  } else if(hasDestr){
+    reversibility = { cls: 'destructive', icon: '⛔', text: 'Includes deletion — recovery may require restoring from backup or git' };
+  } else if(allRev){
+    reversibility = { cls: 'reversible', icon: '✓', text: 'Fully reversible (kubectl rollout undo or re-apply previous spec)' };
+  } else {
+    reversibility = { cls: 'partial', icon: '⚠', text: 'Partially reversible — review each command' };
+  }
+
+  // Disruption roll-up — pick the worst
+  const order = { none: 0, minimal: 1, rolling: 2, variable: 3, high: 4, unknown: 5 };
+  const worst = actions.map(a => a.disrupt).reduce((acc, d) => (order[d] > order[acc] ? d : acc), 'none');
+  const disruptionText = {
+    none:     'None — config-only change, no pod restart',
+    minimal:  'Minimal — replicas adjust gradually',
+    rolling:  'Brief — affected pods restart in a rolling update',
+    variable: 'Variable — depends on which resources are deleted',
+    high:     'High — node workloads will be evicted',
+    unknown:  'Unknown',
+  };
+  return { actions, reversibility, disruption: disruptionText[worst] || 'Unknown' };
 }
 
 async function actOn(id, action){
