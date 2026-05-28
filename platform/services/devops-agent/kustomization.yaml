@@ -25,6 +25,13 @@ resources:
 configMapGenerator:
   - name: devops-agent-scripts
     namespace: devops-agent
+    options:
+      # Keep the name stable (no hash suffix) — the Investigator/Remediator
+      # Job specs built in event_watcher.py mount this by hardcoded name.
+      # Trade-off: pods don't auto-restart on script changes — use
+      # `kubectl rollout restart deployment event-watcher -n devops-agent`
+      # to pick up new scripts.
+      disableNameSuffixHash: true
     files:
       - scripts/event_watcher.py
       - scripts/investigate.sh
