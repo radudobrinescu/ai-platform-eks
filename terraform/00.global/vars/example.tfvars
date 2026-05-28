@@ -65,3 +65,11 @@ gitops_revision = "main"
 # When set, GPU nodes boot with the Ray LLM image already on disk (~0s image pull).
 # When empty (default), nodes fall back to SOCI lazy-loading or full image pull.
 # gpu_data_volume_snapshot_id = "snap-0123456789abcdef0"
+
+# Platform Health Agent (optional) — autonomous incident investigation/remediation.
+# See platform/services/platform-health-agent/README.md for design.
+# Provisions namespace + Kiro API key Secret + DB credentials copy. The agent
+# itself is then deployed by ArgoCD from argocd/bootstrap/platform.yaml.
+# When enabled, ALSO export the API key (do NOT commit to tfvars):
+#   export TF_VAR_kiro_api_key="kr-..."  # get from https://kiro.dev/
+# platform_health_agent_enabled = true
