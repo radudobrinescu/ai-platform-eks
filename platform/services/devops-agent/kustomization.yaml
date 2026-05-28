@@ -20,7 +20,6 @@ resources:
   - namespace.yaml
   - rbac.yaml
   - configmap.yaml
-  - db-init-job.yaml
   - event-watcher.yaml
 
 configMapGenerator:
