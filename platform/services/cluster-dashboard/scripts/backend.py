@@ -191,8 +191,11 @@ def build_remediator_job(investigation_id: str) -> dict:
                                 f"apk add -q curl bash; "
                                 f"export HOME=/tools; "
                                 f"curl -fsSL https://cli.kiro.dev/install | bash; "
-                                f"if [ -f /tools/.local/bin/kiro-cli ]; then mv /tools/.local/bin/kiro-cli /tools/kiro-cli; fi; "
-                                f"chmod +x /tools/kiro-cli; ls -la /tools/",
+                                # Move ALL three binaries (kiro-cli, kiro-cli-chat,
+                                # kiro-cli-term). The launcher forks to kiro-cli-chat.
+                                f"mv /tools/.local/bin/* /tools/ 2>/dev/null || true; "
+                                f"chmod +x /tools/kiro-cli /tools/kiro-cli-chat /tools/kiro-cli-term 2>/dev/null || true; "
+                                f"ls -la /tools/",
                             ],
                             "volumeMounts": [{"name": "tools", "mountPath": "/tools"}],
                             "securityContext": {"runAsUser": 0, "allowPrivilegeEscalation": False,

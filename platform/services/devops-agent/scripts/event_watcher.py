@@ -239,9 +239,11 @@ def _bootstrap_init_containers() -> list[dict]:
                 f"apk add -q curl bash; "
                 f"export HOME=/tools; "
                 f"curl -fsSL https://cli.kiro.dev/install | bash; "
-                # The installer drops kiro-cli at $HOME/.local/bin
-                f"if [ -f /tools/.local/bin/kiro-cli ]; then mv /tools/.local/bin/kiro-cli /tools/kiro-cli; fi; "
-                f"chmod +x /tools/kiro-cli; "
+                # The installer drops THREE binaries (kiro-cli, kiro-cli-chat,
+                # kiro-cli-term) at $HOME/.local/bin/. The launcher (kiro-cli)
+                # forks to kiro-cli-chat which must also be on PATH.
+                f"mv /tools/.local/bin/* /tools/ 2>/dev/null || true; "
+                f"chmod +x /tools/kiro-cli /tools/kiro-cli-chat /tools/kiro-cli-term 2>/dev/null || true; "
                 f"ls -la /tools/",
             ],
             "volumeMounts": [{"name": "tools", "mountPath": "/tools"}],
