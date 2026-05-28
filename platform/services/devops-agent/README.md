@@ -1,4 +1,9 @@
-# DevOps Agent
+# Platform Health Agent
+
+> Internal Kubernetes resources keep the name `devops-agent` for backwards
+> compatibility. The public-facing display name was changed to avoid a clash
+> with AWS's "DevOps Agent" service. Namespace, ServiceAccounts, ClusterRoles,
+> and the postgres database are all still named `devops-agent` / `devops_agent`.
 
 Optional, EKS-native platform service. Watches the cluster for actionable
 incidents (CrashLoopBackOff, OOMKilled, FailedScheduling, NodeNotReady, …),

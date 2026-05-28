@@ -408,7 +408,7 @@ body { font-family: var(--font); background: var(--bg); color: var(--text); heig
     <div class="cluster-id" id="top-cluster">connecting...</div>
     <div class="topbar-spacer"></div>
     <button class="theme-toggle" onclick="toggleTheme()" title="Toggle light/dark mode">◐</button>
-    <button class="approvals-btn" id="approvals-btn" onclick="openApprovals()" style="display:none" title="DevOps agent pending approvals">🔔 <span id="approvals-count">0</span></button>
+    <button class="approvals-btn" id="approvals-btn" onclick="openApprovals()" style="display:none" title="Platform Health Agent — pending approvals">🔔 <span id="approvals-count">0</span></button>
     <div class="live-badge" id="live-badge">Live</div>
   </div>
 
@@ -654,7 +654,7 @@ if(saved)document.body.setAttribute('data-theme',saved);
 <div class="approvals-modal" id="approvals-modal" onclick="if(event.target===this)closeApprovals()">
   <div class="approvals-panel">
     <div class="approvals-header">
-      <h2>DevOps Agent</h2>
+      <h2>Platform Health Agent</h2>
       <div class="approvals-tabs">
         <button class="approvals-tab active" data-tab="pending" onclick="switchTab('pending')">Pending<span class="badge" id="tab-pending-count">0</span></button>
         <button class="approvals-tab" data-tab="history" onclick="switchTab('history')">History</button>
