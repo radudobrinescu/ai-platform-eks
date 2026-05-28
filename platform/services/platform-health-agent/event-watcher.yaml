@@ -112,6 +112,12 @@ spec:
               valueFrom: { configMapKeyRef: { name: platform-health-agent-config, key: TRIGGER_NODENOTREADY } }
             - name: TRIGGER_FAILEDMOUNT
               valueFrom: { configMapKeyRef: { name: platform-health-agent-config, key: TRIGGER_FAILEDMOUNT } }
+            - name: TRIGGER_STUCKRESOURCE
+              valueFrom: { configMapKeyRef: { name: platform-health-agent-config, key: TRIGGER_STUCKRESOURCE } }
+            - name: STUCK_RESOURCE_THRESHOLD_SEC
+              valueFrom: { configMapKeyRef: { name: platform-health-agent-config, key: STUCK_RESOURCE_THRESHOLD_SEC } }
+            - name: STUCK_RESOURCE_POLL_INTERVAL
+              valueFrom: { configMapKeyRef: { name: platform-health-agent-config, key: STUCK_RESOURCE_POLL_INTERVAL } }
             - name: MAX_CONCURRENT_INVESTIGATIONS
               valueFrom: { configMapKeyRef: { name: platform-health-agent-config, key: MAX_CONCURRENT_INVESTIGATIONS } }
             - name: MAX_INVESTIGATIONS_PER_DAY

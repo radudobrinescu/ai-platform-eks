@@ -32,6 +32,7 @@ import uuid
 from datetime import datetime, timezone
 
 import psycopg
+from datetime import datetime, timezone
 from kubernetes import client, config, watch  # type: ignore[import-untyped]
 from kubernetes.client.exceptions import ApiException  # type: ignore[import-untyped]
 
@@ -62,7 +63,14 @@ TRIGGERS = {
     "FailedScheduling": os.environ.get("TRIGGER_FAILEDSCHED","true").lower() == "true",
     "NodeNotReady":     os.environ.get("TRIGGER_NODENOTREADY","true").lower() == "true",
     "FailedMount":      os.environ.get("TRIGGER_FAILEDMOUNT", "true").lower() == "true",
+    "StuckResource":    os.environ.get("TRIGGER_STUCKRESOURCE", "true").lower() == "true",
 }
+
+# Threshold: a custom resource is considered "stuck" if it hasn't reached
+# its healthy state within this many seconds since creation.
+STUCK_RESOURCE_THRESHOLD_SEC = int(os.environ.get("STUCK_RESOURCE_THRESHOLD_SEC", "600"))
+# How often to scan for stuck resources.
+STUCK_RESOURCE_POLL_INTERVAL = int(os.environ.get("STUCK_RESOURCE_POLL_INTERVAL", "60"))
 
 KIRO_MODEL_INVESTIGATE = os.environ.get("KIRO_MODEL_INVESTIGATE", "claude-sonnet-4.6")
 PYTHON_IMAGE = os.environ.get("PYTHON_IMAGE", "python:3.12-slim")
@@ -565,6 +573,149 @@ def reconcile_rolebindings_loop() -> None:
 
 
 # ---------------------------------------------------------------------------
+# Stuck custom-resource watcher — periodic poll, fires when KRO/Ray CRs
+# haven't reached their healthy state within STUCK_RESOURCE_THRESHOLD_SEC.
+# Catches the gap that pod-level triggers miss: KRO reconcile errors,
+# RayService stuck Pending, InferenceEndpoint stuck DEPLOYING, etc.
+# ---------------------------------------------------------------------------
+
+def _resource_age_seconds(obj: dict) -> float:
+    ts = obj.get("metadata", {}).get("creationTimestamp", "")
+    if not ts:
+        return 0.0
+    try:
+        created = datetime.fromisoformat(ts.replace("Z", "+00:00"))
+        return (datetime.now(timezone.utc) - created).total_seconds()
+    except Exception:
+        return 0.0
+
+
+def _is_stuck_inferenceendpoint(ep: dict) -> bool:
+    status = ep.get("status") or {}
+    if status.get("modelStatus") == "ACTIVE" and status.get("ready") == "True":
+        return False
+    return _resource_age_seconds(ep) >= STUCK_RESOURCE_THRESHOLD_SEC
+
+
+def _is_stuck_aiteam(team: dict) -> bool:
+    status = team.get("status") or {}
+    # AITeam reaches active when the namespace + LiteLLM team key Job complete.
+    if status.get("phase") in ("Active", "Ready") or status.get("ready") == "True":
+        return False
+    return _resource_age_seconds(team) >= STUCK_RESOURCE_THRESHOLD_SEC
+
+
+def _is_stuck_rayservice(rs: dict) -> bool:
+    status = rs.get("status") or {}
+    # RayService is healthy when serviceStatus is "Running" and active replicas exist.
+    if status.get("serviceStatus") == "Running":
+        return False
+    return _resource_age_seconds(rs) >= STUCK_RESOURCE_THRESHOLD_SEC
+
+
+def watch_stuck_resources(conn_factory) -> None:
+    """Periodically scan KRO/Ray custom resources; fire StuckResource trigger
+    on those that haven't reached healthy state in time.
+
+    Resources scanned (read-only):
+      - inferenceendpoints.kro.run        (cluster-wide, in `inference` ns)
+      - aiteams.kro.run                   (cluster-wide, in `ai-platform` ns)
+      - rayservices.ray.io                (cluster-wide)
+    """
+    if not TRIGGERS["StuckResource"]:
+        log.info("StuckResource trigger disabled — watcher exiting")
+        return
+    custom = client.CustomObjectsApi()
+    batch_v1 = client.BatchV1Api()
+
+    while not stop_event.is_set():
+        try:
+            conn = conn_factory()
+
+            # --- InferenceEndpoints ---
+            try:
+                eps = custom.list_namespaced_custom_object(
+                    group="kro.run", version="v1alpha1",
+                    namespace="inference", plural="inferenceendpoints",
+                ).get("items", [])
+            except ApiException as e:
+                if e.status != 404:
+                    log.warning("list inferenceendpoints: %s", e)
+                eps = []
+            for ep in eps:
+                if not _is_stuck_inferenceendpoint(ep):
+                    continue
+                payload = {
+                    "kind": "InferenceEndpoint",
+                    "namespace": ep["metadata"].get("namespace", ""),
+                    "name": ep["metadata"]["name"],
+                    "modelStatus": (ep.get("status") or {}).get("modelStatus", "Pending"),
+                    "ready": str((ep.get("status") or {}).get("ready", "False")),
+                    "message": (ep.get("status") or {}).get("message", ""),
+                    "model": (ep.get("spec") or {}).get("model", ""),
+                    "age_seconds": int(_resource_age_seconds(ep)),
+                }
+                spawn_investigation(conn, batch_v1, "StuckResource", payload)
+
+            # --- AITeams ---
+            try:
+                teams = custom.list_namespaced_custom_object(
+                    group="kro.run", version="v1alpha1",
+                    namespace="ai-platform", plural="aiteams",
+                ).get("items", [])
+            except ApiException as e:
+                if e.status != 404:
+                    log.warning("list aiteams: %s", e)
+                teams = []
+            for team in teams:
+                if not _is_stuck_aiteam(team):
+                    continue
+                payload = {
+                    "kind": "AITeam",
+                    "namespace": team["metadata"].get("namespace", ""),
+                    "name": team["metadata"]["name"],
+                    "phase": (team.get("status") or {}).get("phase", "Pending"),
+                    "message": (team.get("status") or {}).get("message", ""),
+                    "age_seconds": int(_resource_age_seconds(team)),
+                }
+                spawn_investigation(conn, batch_v1, "StuckResource", payload)
+
+            # --- RayServices ---
+            try:
+                rs_items = custom.list_cluster_custom_object(
+                    group="ray.io", version="v1", plural="rayservices",
+                ).get("items", [])
+            except ApiException as e:
+                if e.status != 404:
+                    log.warning("list rayservices: %s", e)
+                rs_items = []
+            for rs in rs_items:
+                # Skip RayServices in namespaces the watcher excludes.
+                ns = rs["metadata"].get("namespace", "")
+                if not is_namespace_watched(ns):
+                    continue
+                if not _is_stuck_rayservice(rs):
+                    continue
+                payload = {
+                    "kind": "RayService",
+                    "namespace": ns,
+                    "name": rs["metadata"]["name"],
+                    "serviceStatus": (rs.get("status") or {}).get("serviceStatus", "Pending"),
+                    "message": (rs.get("status") or {}).get("message", ""),
+                    "age_seconds": int(_resource_age_seconds(rs)),
+                }
+                spawn_investigation(conn, batch_v1, "StuckResource", payload)
+
+        except Exception as e:
+            log.warning("stuck-resource scan error: %s", e)
+
+        for _ in range(STUCK_RESOURCE_POLL_INTERVAL):
+            if stop_event.is_set():
+                return
+            time.sleep(1)
+
+
+# ---------------------------------------------------------------------------
 # Health / liveness HTTP server
 # ---------------------------------------------------------------------------
 
@@ -602,10 +753,11 @@ def main() -> int:
     threading.Thread(target=_health_server, daemon=True).start()
 
     threads = [
-        threading.Thread(target=watch_pods,   args=(db_with_retry,), daemon=True, name="pods"),
-        threading.Thread(target=watch_events, args=(db_with_retry,), daemon=True, name="events"),
-        threading.Thread(target=watch_nodes,  args=(db_with_retry,), daemon=True, name="nodes"),
-        threading.Thread(target=reconcile_rolebindings_loop,        daemon=True, name="reconciler"),
+        threading.Thread(target=watch_pods,            args=(db_with_retry,), daemon=True, name="pods"),
+        threading.Thread(target=watch_events,          args=(db_with_retry,), daemon=True, name="events"),
+        threading.Thread(target=watch_nodes,           args=(db_with_retry,), daemon=True, name="nodes"),
+        threading.Thread(target=watch_stuck_resources, args=(db_with_retry,), daemon=True, name="stuck-resources"),
+        threading.Thread(target=reconcile_rolebindings_loop,                  daemon=True, name="reconciler"),
     ]
     for t in threads:
         t.start()
