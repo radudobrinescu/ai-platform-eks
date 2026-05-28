@@ -528,10 +528,14 @@ def reconcile_rolebindings_loop() -> None:
                     role_ref=client.V1RoleRef(
                         api_group="rbac.authorization.k8s.io",
                         kind="ClusterRole", name="devops-agent-writer"),
-                    subjects=[client.V1Subject(
-                        kind="ServiceAccount",
-                        name="devops-agent-writer",
-                        namespace="devops-agent")],
+                    # Plain dict for subjects: kubernetes-client renamed
+                    # V1Subject → RbacV1Subject in v28+. Dict form is
+                    # accepted by the API and version-stable.
+                    subjects=[{
+                        "kind": "ServiceAccount",
+                        "name": "devops-agent-writer",
+                        "namespace": "devops-agent",
+                    }],
                 )
                 rbac.create_namespaced_role_binding(namespace=ns, body=rb)
                 log.info("created writer RoleBinding in %s", ns)
