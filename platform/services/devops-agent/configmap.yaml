@@ -1,0 +1,60 @@
+# Configuration ConfigMap for the DevOps agent.
+#
+# Mounted as env vars on event-watcher and inherited by every
+# Investigator/Remediator Job it spawns. The cluster-dashboard
+# (which hosts the approvals UI) reads APPROVAL_EXPIRY_HOURS via
+# its own ConfigMap or hardcoded default.
+#
+# To change config:
+# - Edit values here, push, ArgoCD applies.
+# - Kustomize rolls the ConfigMap (hash suffix changes), Deployments
+#   pick up new env vars automatically (pod restart).
+# - In-flight Jobs keep the env they were spawned with — no harm.
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: devops-agent-config
+  namespace: devops-agent
+data:
+  # Cluster identity (used in kiro-cli prompts).
+  CLUSTER_NAME: "ai-platform-cnd-demo"
+  AWS_REGION: "eu-central-1"
+
+  # Which namespaces to watch. "*" = all except those in EXCLUDE_NAMESPACES.
+  WATCH_NAMESPACES: "*"
+  EXCLUDE_NAMESPACES: "kube-system,kube-node-lease,kube-public,argocd,external-secrets,gpu-operator,kuberay,amazon-cloudwatch,devops-agent"
+
+  # Per-resource debounce (no re-investigation within this window).
+  DEBOUNCE_WINDOW_SEC: "600"
+
+  # Trigger toggles. "false" disables that signal.
+  TRIGGER_CRASHLOOP: "true"
+  TRIGGER_OOMKILLED: "true"
+  TRIGGER_IMAGEPULL: "true"
+  TRIGGER_FAILEDSCHED: "true"
+  TRIGGER_NODENOTREADY: "true"
+  TRIGGER_FAILEDMOUNT: "true"
+
+  # Concurrency + cost guards.
+  MAX_CONCURRENT_INVESTIGATIONS: "3"
+  MAX_INVESTIGATIONS_PER_DAY: "50"
+  MAX_REMEDIATIONS_PER_DAY: "20"
+
+  # Approval timeout — investigations older than this can't be approved
+  # (enforced by cluster-dashboard's approve handler).
+  APPROVAL_EXPIRY_HOURS: "24"
+
+  # Models. Available list: kiro-cli chat --list-models
+  KIRO_MODEL_INVESTIGATE: "claude-sonnet-4.6"
+  KIRO_MODEL_REMEDIATE: "claude-opus-4.6"
+
+  # Database (no password — that's in platform-db-credentials secret in ai-platform).
+  DB_HOST: "platform-db.ai-platform.svc.cluster.local"
+  DB_PORT: "5432"
+  DB_NAME: "devops_agent"
+
+  # Image pinning. Bumping these forces all components to redeploy.
+  KIRO_CLI_VERSION: "latest"          # kiro.dev installer fetches latest by default
+  KUBECTL_VERSION: "v1.32.5"          # match cluster minor version
+  PYTHON_IMAGE: "python:3.12-slim"

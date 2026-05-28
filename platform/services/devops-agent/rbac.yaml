@@ -1,0 +1,218 @@
+# RBAC for the DevOps agent.
+#
+# THREE distinct identities — strict least-privilege:
+#
+# 1. devops-agent-reader (cluster-wide read)
+#    Used by: Event Watcher, Investigator Jobs.
+#    Binding: ClusterRoleBinding (it watches/reads everywhere).
+#
+# 2. devops-agent-writer (scoped write)
+#    Used by: Remediator Jobs ONLY.
+#    Binding: RoleBinding per allowed namespace.
+#    Allowed namespaces: `inference` (created at install) + each `team-*` namespace.
+#    The `team-*` namespace bindings are reconciled by Event Watcher
+#    (a 5-minute periodic sweep — see scripts/event_watcher.py).
+#
+# 3. devops-agent-spawner (create Jobs in own namespace)
+#    Used by: Slack Handler (to create Remediator Jobs after approval),
+#             Event Watcher (to create Investigator Jobs).
+#    Binding: RoleBinding scoped to `devops-agent` namespace only.
+#
+# What these roles deliberately do NOT grant:
+# - No write access to InferenceEndpoint / AITeam KRO CRs (ArgoCD-managed).
+# - No write access to anything in ai-platform / gpu-operator / kuberay /
+#   argocd / external-secrets / kube-system / amazon-cloudwatch.
+# - No `*` verbs anywhere.
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: devops-agent-reader
+  namespace: devops-agent
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: devops-agent-writer
+  namespace: devops-agent
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: devops-agent-spawner
+  namespace: devops-agent
+---
+# READER — cluster-wide, get/list/watch only.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: devops-agent-reader
+rules:
+  - apiGroups: [""]
+    resources:
+      - pods
+      - pods/log
+      - events
+      - nodes
+      - services
+      - configmaps
+      - persistentvolumeclaims
+      - namespaces
+      - endpoints
+      - serviceaccounts
+    verbs: ["get", "list", "watch"]
+  - apiGroups: ["apps"]
+    resources: ["deployments", "replicasets", "statefulsets", "daemonsets"]
+    verbs: ["get", "list", "watch"]
+  - apiGroups: ["batch"]
+    resources: ["jobs", "cronjobs"]
+    verbs: ["get", "list", "watch"]
+  - apiGroups: ["autoscaling"]
+    resources: ["horizontalpodautoscalers"]
+    verbs: ["get", "list", "watch"]
+  - apiGroups: ["kro.run"]
+    resources: ["inferenceendpoints", "aiteams"]
+    verbs: ["get", "list", "watch"]
+  - apiGroups: ["ray.io"]
+    resources: ["rayservices", "rayclusters"]
+    verbs: ["get", "list", "watch"]
+  - apiGroups: ["events.k8s.io"]
+    resources: ["events"]
+    verbs: ["get", "list", "watch"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: devops-agent-reader
+subjects:
+  - kind: ServiceAccount
+    name: devops-agent-reader
+    namespace: devops-agent
+roleRef:
+  kind: ClusterRole
+  name: devops-agent-reader
+  apiGroup: rbac.authorization.k8s.io
+---
+# WRITER — scoped via RoleBinding (NOT ClusterRoleBinding) to
+# specific namespaces only. The ClusterRole is defined here once;
+# bindings are created per-namespace by the Event Watcher's
+# `namespace_reconciler` (initial set: `inference`, then each
+# `team-*` namespace as it appears).
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: devops-agent-writer
+rules:
+  - apiGroups: [""]
+    resources: ["pods"]
+    verbs: ["delete"]                          # restart by deletion
+  - apiGroups: ["apps"]
+    resources: ["deployments", "statefulsets"]
+    verbs: ["get", "patch", "update"]          # rollout restart, image bump
+  - apiGroups: ["apps"]
+    resources: ["deployments/scale", "statefulsets/scale"]
+    verbs: ["update", "patch"]
+  - apiGroups: [""]
+    resources: ["configmaps"]
+    verbs: ["get", "patch"]
+  - apiGroups: ["autoscaling"]
+    resources: ["horizontalpodautoscalers"]
+    verbs: ["get", "patch"]
+  # Read-only (the remediator may need to inspect during verify).
+  - apiGroups: [""]
+    resources: ["pods", "pods/log", "events", "services", "endpoints"]
+    verbs: ["get", "list", "watch"]
+  - apiGroups: ["apps"]
+    resources: ["deployments", "replicasets", "statefulsets", "daemonsets"]
+    verbs: ["get", "list", "watch"]
+---
+# Initial RoleBinding for the `inference` namespace.
+# RoleBindings for `team-*` namespaces are created at runtime by
+# the Event Watcher's namespace reconciler.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: devops-agent-writer
+  namespace: inference
+  labels:
+    app.kubernetes.io/part-of: devops-agent
+    app.kubernetes.io/managed-by: devops-agent-reconciler
+subjects:
+  - kind: ServiceAccount
+    name: devops-agent-writer
+    namespace: devops-agent
+roleRef:
+  kind: ClusterRole
+  name: devops-agent-writer
+  apiGroup: rbac.authorization.k8s.io
+---
+# SPAWNER — Slack Handler + Event Watcher need to create Jobs
+# in their own namespace, plus manage RoleBindings in `team-*`
+# namespaces (Event Watcher's reconciler).
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: devops-agent-spawner
+  namespace: devops-agent
+rules:
+  - apiGroups: ["batch"]
+    resources: ["jobs"]
+    verbs: ["create", "get", "list", "watch", "delete"]
+  - apiGroups: [""]
+    resources: ["pods", "pods/log"]
+    verbs: ["get", "list", "watch"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: devops-agent-spawner-handler
+  namespace: devops-agent
+subjects:
+  - kind: ServiceAccount
+    name: devops-agent-spawner
+    namespace: devops-agent
+roleRef:
+  kind: Role
+  name: devops-agent-spawner
+  apiGroup: rbac.authorization.k8s.io
+---
+# Event Watcher gets BOTH reader (cluster-wide) and spawner (in own ns).
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: devops-agent-spawner-watcher
+  namespace: devops-agent
+subjects:
+  - kind: ServiceAccount
+    name: devops-agent-reader        # event-watcher uses the reader SA
+    namespace: devops-agent
+roleRef:
+  kind: Role
+  name: devops-agent-spawner
+  apiGroup: rbac.authorization.k8s.io
+---
+# Event Watcher also needs to create/delete RoleBindings cluster-wide
+# (for its team-* namespace reconciler).
+# This is a separate ClusterRole bound only to the reader SA.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: devops-agent-rolebinding-manager
+rules:
+  - apiGroups: ["rbac.authorization.k8s.io"]
+    resources: ["rolebindings"]
+    verbs: ["get", "list", "create", "delete", "watch"]
+    # NOTE: no `update`/`patch` — bindings are immutable from our POV.
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: devops-agent-rolebinding-manager
+subjects:
+  - kind: ServiceAccount
+    name: devops-agent-reader
+    namespace: devops-agent
+roleRef:
+  kind: ClusterRole
+  name: devops-agent-rolebinding-manager
+  apiGroup: rbac.authorization.k8s.io

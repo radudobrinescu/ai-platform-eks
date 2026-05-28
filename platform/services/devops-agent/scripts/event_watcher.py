@@ -1,0 +1,616 @@
+#!/usr/bin/env python3
+"""Event Watcher — the trigger engine.
+
+Long-running Deployment. Responsibilities:
+
+  1. Watch K8s API for actionable signals (Pod CrashLoopBackOff, OOMKilled,
+     ImagePullBackOff, Node NotReady, FailedScheduling/FailedMount events).
+  2. Debounce per (kind, namespace, name) using the postgres `debounce` table.
+  3. Enforce concurrency cap and daily investigation budget.
+  4. INSERT investigation row + spawn an Investigator Job.
+  5. Reconcile per-namespace writer RoleBindings for `team-*` namespaces
+     every 5 minutes.
+
+Single replica. If killed mid-loop, the next start picks up live events;
+historical events are not replayed (informers list-then-watch the current
+state, which captures any persisting bad state at start time).
+
+All env vars are documented in configmap.yaml + the README.
+"""
+
+from __future__ import annotations
+
+import json
+import logging
+import os
+import re
+import signal
+import sys
+import threading
+import time
+import uuid
+from datetime import datetime, timezone
+
+import psycopg
+from kubernetes import client, config, watch  # type: ignore[import-untyped]
+from kubernetes.client.exceptions import ApiException  # type: ignore[import-untyped]
+
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s %(levelname)s %(name)s %(message)s",
+)
+log = logging.getLogger("event-watcher")
+
+# ---------------------------------------------------------------------------
+# Config
+# ---------------------------------------------------------------------------
+
+CLUSTER_NAME = os.environ.get("CLUSTER_NAME", "unknown")
+AWS_REGION = os.environ.get("AWS_REGION", "us-east-1")
+
+WATCH_NAMESPACES = os.environ.get("WATCH_NAMESPACES", "*")
+EXCLUDE_NAMESPACES = set(filter(None, os.environ.get("EXCLUDE_NAMESPACES", "").split(",")))
+
+DEBOUNCE_WINDOW_SEC = int(os.environ.get("DEBOUNCE_WINDOW_SEC", "600"))
+MAX_CONCURRENT = int(os.environ.get("MAX_CONCURRENT_INVESTIGATIONS", "3"))
+MAX_PER_DAY = int(os.environ.get("MAX_INVESTIGATIONS_PER_DAY", "50"))
+
+TRIGGERS = {
+    "CrashLoopBackOff": os.environ.get("TRIGGER_CRASHLOOP", "true").lower() == "true",
+    "OOMKilled":        os.environ.get("TRIGGER_OOMKILLED",  "true").lower() == "true",
+    "ImagePullBackOff": os.environ.get("TRIGGER_IMAGEPULL",  "true").lower() == "true",
+    "FailedScheduling": os.environ.get("TRIGGER_FAILEDSCHED","true").lower() == "true",
+    "NodeNotReady":     os.environ.get("TRIGGER_NODENOTREADY","true").lower() == "true",
+    "FailedMount":      os.environ.get("TRIGGER_FAILEDMOUNT", "true").lower() == "true",
+}
+
+KIRO_MODEL_INVESTIGATE = os.environ.get("KIRO_MODEL_INVESTIGATE", "claude-sonnet-4.6")
+PYTHON_IMAGE = os.environ.get("PYTHON_IMAGE", "python:3.12-slim")
+KUBECTL_VERSION = os.environ.get("KUBECTL_VERSION", "v1.32.5")
+NAMESPACE = "devops-agent"  # our own namespace where Jobs are spawned
+
+ALLOWED_REMEDIATION_NAMESPACES_RE = re.compile(r"^(inference|team-.+)$")
+
+
+# ---------------------------------------------------------------------------
+# Database
+# ---------------------------------------------------------------------------
+
+def db_connect() -> psycopg.Connection:
+    return psycopg.connect(
+        host=os.environ["DB_HOST"],
+        port=int(os.environ.get("DB_PORT", "5432")),
+        dbname=os.environ["DB_NAME"],
+        user=os.environ["DB_USER"],
+        password=os.environ["DB_PASSWORD"],
+        autocommit=True,
+        connect_timeout=10,
+    )
+
+
+def db_with_retry() -> psycopg.Connection:
+    """Reconnect with exponential backoff."""
+    backoff = 1
+    while True:
+        try:
+            conn = db_connect()
+            log.info("postgres connected")
+            return conn
+        except Exception as e:
+            log.warning("postgres connect failed: %s — retry in %ds", e, backoff)
+            time.sleep(backoff)
+            backoff = min(backoff * 2, 60)
+
+
+# ---------------------------------------------------------------------------
+# Debounce / capacity checks
+# ---------------------------------------------------------------------------
+
+def should_throttle(conn: psycopg.Connection, kind: str, namespace: str, name: str) -> str | None:
+    """Return reason string if event should be skipped, else None."""
+    with conn.cursor() as cur:
+        # 1. Per-resource debounce.
+        cur.execute(
+            "SELECT last_seen FROM debounce WHERE resource_kind=%s AND resource_namespace=%s AND resource_name=%s",
+            (kind, namespace, name),
+        )
+        row = cur.fetchone()
+        if row:
+            last_seen: datetime = row[0]
+            if (datetime.now(timezone.utc) - last_seen).total_seconds() < DEBOUNCE_WINDOW_SEC:
+                return "debounce"
+
+        # 2. Concurrency cap.
+        cur.execute("SELECT n FROM active_investigation_count")
+        active = cur.fetchone()[0] or 0  # type: ignore[index]
+        if active >= MAX_CONCURRENT:
+            return f"concurrency_cap({active}/{MAX_CONCURRENT})"
+
+        # 3. Daily budget.
+        cur.execute("SELECT investigations FROM today_counters")
+        today = cur.fetchone()[0] or 0  # type: ignore[index]
+        if today >= MAX_PER_DAY:
+            return f"daily_budget({today}/{MAX_PER_DAY})"
+
+    return None
+
+
+def record_trigger(conn: psycopg.Connection, kind: str, namespace: str, name: str) -> None:
+    with conn.cursor() as cur:
+        cur.execute(
+            """INSERT INTO debounce (resource_kind, resource_namespace, resource_name, last_seen)
+               VALUES (%s, %s, %s, now())
+               ON CONFLICT (resource_kind, resource_namespace, resource_name)
+               DO UPDATE SET last_seen = EXCLUDED.last_seen""",
+            (kind, namespace, name),
+        )
+        cur.execute(
+            """INSERT INTO daily_counters (day, investigations) VALUES (CURRENT_DATE, 1)
+               ON CONFLICT (day) DO UPDATE SET investigations = daily_counters.investigations + 1""",
+        )
+
+
+# ---------------------------------------------------------------------------
+# Investigator Job spec
+# ---------------------------------------------------------------------------
+
+def build_investigator_job(investigation_id: str, event_payload: dict) -> dict:
+    """Construct the batch/v1 Job for an Investigator run.
+
+    Returns a dict ready to pass to BatchV1Api.create_namespaced_job(body=…).
+
+    Design notes:
+    - serviceAccountName: devops-agent-reader → cluster-wide read only.
+    - Two initContainers:
+        a) install-tools  → downloads kubectl + kiro-cli into /tools (emptyDir)
+        b) install-pydeps → pip-installs psycopg into /pydeps (emptyDir)
+      Why two? They run in parallel via initContainers? No — initContainers
+      run sequentially. But each is small and fast (~10–15s combined). Trading
+      a bit of cold-start time for zero custom image ops.
+    - main container: python:3.12-slim, runs investigate.sh.
+    - activeDeadlineSeconds: 600 (10 min hard ceiling).
+    - ttlSecondsAfterFinished: 3600 (Job + Pod garbage-collected after 1h).
+    """
+    job_name = f"investigator-{investigation_id[:8]}"
+    return {
+        "apiVersion": "batch/v1",
+        "kind": "Job",
+        "metadata": {
+            "name": job_name,
+            "namespace": NAMESPACE,
+            "labels": {
+                "app.kubernetes.io/name": "devops-agent-investigator",
+                "app.kubernetes.io/part-of": "devops-agent",
+                "investigation-id": investigation_id,
+            },
+        },
+        "spec": {
+            "ttlSecondsAfterFinished": 3600,
+            "activeDeadlineSeconds": 600,
+            "backoffLimit": 0,                  # don't retry — failures emit Slack DM
+            "template": {
+                "metadata": {
+                    "labels": {
+                        "app.kubernetes.io/name": "devops-agent-investigator",
+                        "investigation-id": investigation_id,
+                    },
+                },
+                "spec": {
+                    "restartPolicy": "Never",
+                    "serviceAccountName": "devops-agent-reader",
+                    "automountServiceAccountToken": True,
+                    "nodeSelector": {"kubernetes.io/arch": "amd64"},
+                    "initContainers": _bootstrap_init_containers(),
+                    "containers": [{
+                        "name": "investigator",
+                        "image": PYTHON_IMAGE,
+                        "command": ["/bin/sh", "/scripts/investigate.sh"],
+                        "env": _agent_env(investigation_id, event_payload),
+                        "volumeMounts": _agent_volume_mounts(),
+                        "resources": {
+                            "requests": {"cpu": "200m", "memory": "256Mi"},
+                            "limits":   {"cpu": "1000m", "memory": "1Gi"},
+                        },
+                        "securityContext": {
+                            "allowPrivilegeEscalation": False,
+                            "runAsNonRoot": True,
+                            "runAsUser": 65532,
+                            "capabilities": {"drop": ["ALL"]},
+                        },
+                    }],
+                    "volumes": _agent_volumes(),
+                },
+            },
+        },
+    }
+
+
+def _bootstrap_init_containers() -> list[dict]:
+    return [
+        {
+            "name": "install-tools",
+            "image": "alpine:3.20",
+            "command": ["/bin/sh", "-c"],
+            "args": [
+                f"set -eu; cd /tools; "
+                f"echo 'fetching kubectl {KUBECTL_VERSION}…'; "
+                f"wget -qO kubectl https://dl.k8s.io/release/{KUBECTL_VERSION}/bin/linux/amd64/kubectl && chmod +x kubectl; "
+                f"echo 'fetching kiro-cli installer…'; "
+                f"apk add -q curl bash; "
+                f"export HOME=/tools; "
+                f"curl -fsSL https://cli.kiro.dev/install | bash; "
+                # The installer drops kiro-cli at $HOME/.local/bin
+                f"if [ -f /tools/.local/bin/kiro-cli ]; then mv /tools/.local/bin/kiro-cli /tools/kiro-cli; fi; "
+                f"chmod +x /tools/kiro-cli; "
+                f"ls -la /tools/",
+            ],
+            "volumeMounts": [{"name": "tools", "mountPath": "/tools"}],
+            "securityContext": {"runAsUser": 0, "allowPrivilegeEscalation": False, "capabilities": {"drop": ["ALL"]}},
+        },
+        {
+            "name": "install-pydeps",
+            "image": PYTHON_IMAGE,
+            "command": ["/bin/sh", "-c"],
+            "args": [
+                "set -eu; "
+                # pre-built wheel target — no compiler, no root needed
+                "pip install --no-cache-dir --target=/pydeps psycopg[binary]==3.2.3",
+            ],
+            "volumeMounts": [{"name": "pydeps", "mountPath": "/pydeps"}],
+            "securityContext": {"runAsNonRoot": True, "runAsUser": 65532, "allowPrivilegeEscalation": False, "capabilities": {"drop": ["ALL"]}},
+        },
+    ]
+
+
+def _agent_env(investigation_id: str, event_payload: dict) -> list[dict]:
+    """Env vars common to Investigator and Remediator containers."""
+    return [
+        {"name": "INVESTIGATION_ID", "value": investigation_id},
+        {"name": "EVENT_PAYLOAD", "value": json.dumps(event_payload)},
+        {"name": "PATH", "value": "/tools:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"},
+        {"name": "PYTHONPATH", "value": "/pydeps"},
+        {"name": "HOME", "value": "/tmp"},
+        # From config ConfigMap.
+        *[{"name": k, "valueFrom": {"configMapKeyRef": {"name": "devops-agent-config", "key": k}}}
+          for k in ["CLUSTER_NAME", "AWS_REGION", "DB_HOST", "DB_PORT", "DB_NAME",
+                    "KIRO_MODEL_INVESTIGATE", "KIRO_MODEL_REMEDIATE"]],
+        # DB credentials reuse the existing platform Postgres credentials.
+        {"name": "DB_USER",      "valueFrom": {"secretKeyRef": {"name": "platform-db-credentials", "key": "username"}}},
+        {"name": "DB_PASSWORD",  "valueFrom": {"secretKeyRef": {"name": "platform-db-credentials", "key": "password"}}},
+        # Only secret needed: kiro-cli API key. Approvals UX is in the cluster-dashboard.
+        {"name": "KIRO_API_KEY", "valueFrom": {"secretKeyRef": {"name": "devops-agent-secrets",   "key": "KIRO_API_KEY"}}},
+    ]
+
+
+def _agent_volume_mounts() -> list[dict]:
+    return [
+        {"name": "scripts", "mountPath": "/scripts", "readOnly": True},
+        {"name": "tools",   "mountPath": "/tools",   "readOnly": True},
+        {"name": "pydeps",  "mountPath": "/pydeps",  "readOnly": True},
+        {"name": "results", "mountPath": "/results"},
+        {"name": "tmp",     "mountPath": "/tmp"},
+    ]
+
+
+def _agent_volumes() -> list[dict]:
+    return [
+        {"name": "scripts", "configMap": {"name": "devops-agent-scripts", "defaultMode": 0o755}},
+        {"name": "tools",   "emptyDir": {}},
+        {"name": "pydeps",  "emptyDir": {}},
+        {"name": "results", "emptyDir": {}},
+        {"name": "tmp",     "emptyDir": {}},
+    ]
+
+
+# ---------------------------------------------------------------------------
+# Trigger detection
+# ---------------------------------------------------------------------------
+
+def is_namespace_watched(ns: str) -> bool:
+    if ns in EXCLUDE_NAMESPACES:
+        return False
+    if WATCH_NAMESPACES == "*":
+        return True
+    return ns in WATCH_NAMESPACES.split(",")
+
+
+def detect_pod_trigger(pod) -> tuple[str, dict] | None:
+    """Inspect a Pod object; return (trigger_kind, payload) if actionable, else None."""
+    if pod.metadata.namespace and not is_namespace_watched(pod.metadata.namespace):
+        return None
+    cs_list = (pod.status.container_statuses or []) if pod.status else []
+    for cs in cs_list:
+        # OOMKilled in the most recent termination
+        last = cs.last_state.terminated if cs.last_state else None
+        if last and last.reason == "OOMKilled" and TRIGGERS["OOMKilled"]:
+            return "OOMKilled", _pod_payload(pod, container=cs.name, detail=str(last))
+        # CrashLoopBackOff / restart count high
+        waiting = cs.state.waiting if cs.state else None
+        if waiting and waiting.reason == "CrashLoopBackOff" and (cs.restart_count or 0) > 3 and TRIGGERS["CrashLoopBackOff"]:
+            return "CrashLoopBackOff", _pod_payload(pod, container=cs.name, detail=waiting.message or "")
+        if waiting and waiting.reason in ("ImagePullBackOff", "ErrImagePull") and TRIGGERS["ImagePullBackOff"]:
+            return "ImagePullBackOff", _pod_payload(pod, container=cs.name, detail=waiting.message or "")
+    return None
+
+
+def _pod_payload(pod, container: str, detail: str) -> dict:
+    return {
+        "kind": "Pod",
+        "namespace": pod.metadata.namespace,
+        "name": pod.metadata.name,
+        "node": pod.spec.node_name,
+        "container": container,
+        "detail": detail,
+        "owner_references": [
+            {"kind": o.kind, "name": o.name} for o in (pod.metadata.owner_references or [])
+        ],
+        "phase": pod.status.phase if pod.status else None,
+    }
+
+
+def detect_event_trigger(event) -> tuple[str, dict] | None:
+    """Inspect a v1.Event for FailedScheduling / FailedMount."""
+    if event.type != "Warning":
+        return None
+    obj = event.involved_object
+    if obj.namespace and not is_namespace_watched(obj.namespace):
+        return None
+    payload = {
+        "kind": obj.kind,
+        "namespace": obj.namespace or "",
+        "name": obj.name,
+        "reason": event.reason,
+        "message": event.message,
+        "count": event.count,
+    }
+    if event.reason == "FailedScheduling" and TRIGGERS["FailedScheduling"]:
+        return "FailedScheduling", payload
+    if event.reason == "FailedMount" and TRIGGERS["FailedMount"]:
+        return "FailedMount", payload
+    return None
+
+
+def detect_node_trigger(node) -> tuple[str, dict] | None:
+    if not TRIGGERS["NodeNotReady"]:
+        return None
+    if not node.status or not node.status.conditions:
+        return None
+    for cond in node.status.conditions:
+        if cond.type == "Ready" and cond.status == "False":
+            return "NodeNotReady", {
+                "kind": "Node",
+                "namespace": "",
+                "name": node.metadata.name,
+                "reason": cond.reason,
+                "message": cond.message,
+            }
+    return None
+
+
+# ---------------------------------------------------------------------------
+# Spawn helpers
+# ---------------------------------------------------------------------------
+
+def spawn_investigation(conn: psycopg.Connection, batch_v1: client.BatchV1Api,
+                        trigger_kind: str, payload: dict) -> None:
+    namespace = payload.get("namespace", "")
+    name = payload["name"]
+    resource_kind = payload["kind"]
+
+    skip = should_throttle(conn, resource_kind, namespace, name)
+    if skip:
+        log.info("skip %s/%s/%s — %s", resource_kind, namespace or "-", name, skip)
+        return
+
+    investigation_id = str(uuid.uuid4())
+    with conn.cursor() as cur:
+        cur.execute(
+            """INSERT INTO investigations
+                  (id, status, trigger_kind, resource_kind, resource_namespace, resource_name, event_payload)
+               VALUES (%s, 'pending', %s, %s, %s, %s, %s)""",
+            (investigation_id, trigger_kind, resource_kind, namespace, name, json.dumps(payload)),
+        )
+
+    job = build_investigator_job(investigation_id, {"trigger_kind": trigger_kind, **payload})
+    try:
+        batch_v1.create_namespaced_job(namespace=NAMESPACE, body=job)
+    except ApiException as e:
+        log.error("Job create failed for %s: %s", investigation_id, e)
+        with conn.cursor() as cur:
+            cur.execute("UPDATE investigations SET status='failed', error_message=%s WHERE id=%s",
+                        (f"Job create failed: {e}", investigation_id))
+        return
+
+    record_trigger(conn, resource_kind, namespace, name)
+    with conn.cursor() as cur:
+        cur.execute("UPDATE investigations SET status='running' WHERE id=%s", (investigation_id,))
+    log.info("spawned investigator %s for %s/%s/%s (kind=%s)",
+             investigation_id, resource_kind, namespace or "-", name, trigger_kind)
+
+
+# ---------------------------------------------------------------------------
+# Watcher loops (one thread each)
+# ---------------------------------------------------------------------------
+
+stop_event = threading.Event()
+
+
+def _stop(*_):
+    log.info("shutdown requested")
+    stop_event.set()
+
+
+def watch_pods(conn_factory) -> None:
+    while not stop_event.is_set():
+        try:
+            conn = conn_factory()
+            v1 = client.CoreV1Api()
+            batch_v1 = client.BatchV1Api()
+            w = watch.Watch()
+            for ev in w.stream(v1.list_pod_for_all_namespaces, timeout_seconds=300):
+                if stop_event.is_set():
+                    w.stop(); break
+                pod = ev["object"]
+                trig = detect_pod_trigger(pod)
+                if trig:
+                    spawn_investigation(conn, batch_v1, trig[0], trig[1])
+        except Exception as e:
+            log.warning("pod watch error: %s — restarting", e)
+            time.sleep(5)
+
+
+def watch_events(conn_factory) -> None:
+    while not stop_event.is_set():
+        try:
+            conn = conn_factory()
+            v1 = client.CoreV1Api()
+            batch_v1 = client.BatchV1Api()
+            w = watch.Watch()
+            for ev in w.stream(v1.list_event_for_all_namespaces, timeout_seconds=300):
+                if stop_event.is_set():
+                    w.stop(); break
+                evt = ev["object"]
+                trig = detect_event_trigger(evt)
+                if trig:
+                    spawn_investigation(conn, batch_v1, trig[0], trig[1])
+        except Exception as e:
+            log.warning("event watch error: %s — restarting", e)
+            time.sleep(5)
+
+
+def watch_nodes(conn_factory) -> None:
+    while not stop_event.is_set():
+        try:
+            conn = conn_factory()
+            v1 = client.CoreV1Api()
+            batch_v1 = client.BatchV1Api()
+            w = watch.Watch()
+            for ev in w.stream(v1.list_node, timeout_seconds=300):
+                if stop_event.is_set():
+                    w.stop(); break
+                trig = detect_node_trigger(ev["object"])
+                if trig:
+                    spawn_investigation(conn, batch_v1, trig[0], trig[1])
+        except Exception as e:
+            log.warning("node watch error: %s — restarting", e)
+            time.sleep(5)
+
+
+# ---------------------------------------------------------------------------
+# Namespace reconciler — keeps writer RoleBindings in sync with team-* ns.
+# ---------------------------------------------------------------------------
+
+def reconcile_rolebindings_loop() -> None:
+    """Every 5 min: ensure a writer RoleBinding exists in every `team-*`
+    namespace and the `inference` namespace."""
+    while not stop_event.is_set():
+        try:
+            v1 = client.CoreV1Api()
+            rbac = client.RbacAuthorizationV1Api()
+
+            namespaces = [n.metadata.name for n in v1.list_namespace().items]
+            allowed = [n for n in namespaces if ALLOWED_REMEDIATION_NAMESPACES_RE.match(n)]
+            log.info("reconciling writer RoleBindings for: %s", ",".join(allowed))
+
+            for ns in allowed:
+                try:
+                    rbac.read_namespaced_role_binding(name="devops-agent-writer", namespace=ns)
+                    continue
+                except ApiException as e:
+                    if e.status != 404:
+                        raise
+                rb = client.V1RoleBinding(
+                    metadata=client.V1ObjectMeta(
+                        name="devops-agent-writer", namespace=ns,
+                        labels={"app.kubernetes.io/managed-by": "devops-agent-reconciler",
+                                "app.kubernetes.io/part-of": "devops-agent"},
+                    ),
+                    role_ref=client.V1RoleRef(
+                        api_group="rbac.authorization.k8s.io",
+                        kind="ClusterRole", name="devops-agent-writer"),
+                    subjects=[client.V1Subject(
+                        kind="ServiceAccount",
+                        name="devops-agent-writer",
+                        namespace="devops-agent")],
+                )
+                rbac.create_namespaced_role_binding(namespace=ns, body=rb)
+                log.info("created writer RoleBinding in %s", ns)
+
+            # Sweep stale bindings: any RoleBinding labeled by us in a namespace
+            # that no longer matches the pattern → delete.
+            try:
+                stale = rbac.list_role_binding_for_all_namespaces(
+                    label_selector="app.kubernetes.io/managed-by=devops-agent-reconciler",
+                ).items
+            except ApiException:
+                stale = []
+            for rb in stale:
+                if rb.metadata.namespace not in allowed:
+                    rbac.delete_namespaced_role_binding(
+                        name=rb.metadata.name, namespace=rb.metadata.namespace)
+                    log.info("removed stale writer RoleBinding from %s", rb.metadata.namespace)
+
+        except Exception as e:
+            log.warning("reconciler error: %s", e)
+
+        for _ in range(300):
+            if stop_event.is_set(): return
+            time.sleep(1)
+
+
+# ---------------------------------------------------------------------------
+# Health / liveness HTTP server
+# ---------------------------------------------------------------------------
+
+def _health_server() -> None:
+    """Tiny HTTP server on :8080 → 200 if K8s API + DB are reachable."""
+    import http.server
+
+    class H(http.server.BaseHTTPRequestHandler):
+        def do_GET(self):
+            try:
+                client.CoreV1Api().list_namespace(limit=1)
+                with db_connect() as c, c.cursor() as cur:
+                    cur.execute("SELECT 1")
+                self.send_response(200); self.end_headers()
+                self.wfile.write(b"ok")
+            except Exception as e:
+                self.send_response(503); self.end_headers()
+                self.wfile.write(str(e).encode())
+
+        def log_message(self, *_): pass
+
+    http.server.HTTPServer(("", 8080), H).serve_forever()
+
+
+# ---------------------------------------------------------------------------
+# Main
+# ---------------------------------------------------------------------------
+
+def main() -> int:
+    config.load_incluster_config()
+
+    signal.signal(signal.SIGTERM, _stop)
+    signal.signal(signal.SIGINT, _stop)
+
+    threading.Thread(target=_health_server, daemon=True).start()
+
+    threads = [
+        threading.Thread(target=watch_pods,   args=(db_with_retry,), daemon=True, name="pods"),
+        threading.Thread(target=watch_events, args=(db_with_retry,), daemon=True, name="events"),
+        threading.Thread(target=watch_nodes,  args=(db_with_retry,), daemon=True, name="nodes"),
+        threading.Thread(target=reconcile_rolebindings_loop,        daemon=True, name="reconciler"),
+    ]
+    for t in threads:
+        t.start()
+    log.info("event-watcher started: cluster=%s region=%s triggers=%s",
+             CLUSTER_NAME, AWS_REGION,
+             ",".join(k for k, v in TRIGGERS.items() if v))
+
+    while not stop_event.is_set():
+        time.sleep(1)
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

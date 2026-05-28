@@ -1,0 +1,35 @@
+# Kustomization for the DevOps agent.
+#
+# ArgoCD auto-detects this file and applies via kustomize. The
+# `configMapGenerator` inlines the entire scripts/ directory into a
+# `devops-agent-scripts` ConfigMap — pods mount it at /scripts.
+#
+# The hash suffix on the generated ConfigMap (default behavior) means
+# any script change → new ConfigMap name → Deployment template change
+# → automatic pod restart.
+#
+# Approvals UX lives in cluster-dashboard, not here. The agent only
+# writes findings to the DB; the dashboard renders + handles
+# Approve/Dismiss button clicks.
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+namespace: devops-agent
+
+resources:
+  - namespace.yaml
+  - rbac.yaml
+  - configmap.yaml
+  - db-init-job.yaml
+  - event-watcher.yaml
+
+configMapGenerator:
+  - name: devops-agent-scripts
+    namespace: devops-agent
+    files:
+      - scripts/event_watcher.py
+      - scripts/investigate.sh
+      - scripts/remediate.sh
+      - scripts/persist_findings.py
+      - scripts/db_init.sh
+      - scripts/ddl.sql

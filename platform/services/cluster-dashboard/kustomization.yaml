@@ -4,6 +4,9 @@ kind: Kustomization
 resources:
   - manifests.yaml
 
+# The HTML doesn't change often → no hash suffix → updated in place.
+# The backend.py changes more often (especially during devops-agent
+# integration) → hash suffix → automatic pod restart on change.
 configMapGenerator:
   - name: cluster-dashboard-html
     namespace: ai-platform
@@ -11,3 +14,9 @@ configMapGenerator:
       disableNameSuffixHash: true
     files:
       - cluster-topology.html
+  - name: cluster-dashboard-backend
+    namespace: ai-platform
+    options:
+      disableNameSuffixHash: true
+    files:
+      - scripts/backend.py

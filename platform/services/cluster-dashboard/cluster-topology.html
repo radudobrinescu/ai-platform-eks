@@ -194,6 +194,73 @@ body { font-family: var(--font); background: var(--bg); color: var(--text); heig
 
 @keyframes pulse { 0%,100%{opacity:1;}50%{opacity:0.3;} }
 @keyframes fadeIn { from{opacity:0;transform:translateY(-3px);}to{opacity:1;transform:translateY(0);} }
+
+/* ─── DevOps Agent approvals UI ─────────────────────────────────────── */
+.approvals-btn {
+  background: var(--surface); border: 1px solid var(--border);
+  border-radius: var(--radius-sm); padding: 5px 10px; cursor: pointer;
+  font-size: 13px; font-weight: 600; color: var(--text);
+  display: flex; align-items: center; gap: 6px; transition: all 0.2s;
+}
+.approvals-btn:hover { background: var(--surface-hover); border-color: var(--accent); }
+.approvals-btn.has-pending { border-color: var(--amber); color: var(--amber); animation: approvals-pulse 2s infinite; }
+@keyframes approvals-pulse {
+  0%,100% { box-shadow: 0 0 0 0 rgba(255,179,64,0); }
+  50%     { box-shadow: 0 0 0 6px rgba(255,179,64,0.15); }
+}
+
+.approvals-modal {
+  position: fixed; inset: 0; background: rgba(0,0,0,0.6);
+  display: none; align-items: flex-start; justify-content: center;
+  z-index: 100; padding-top: 80px;
+}
+.approvals-modal.open { display: flex; }
+.approvals-panel {
+  background: var(--surface); border: 1px solid var(--border);
+  border-radius: var(--radius); width: 760px; max-width: 92vw;
+  max-height: 78vh; overflow: hidden; display: flex; flex-direction: column;
+  box-shadow: 0 20px 60px rgba(0,0,0,0.4);
+}
+.approvals-header {
+  display: flex; align-items: center; justify-content: space-between;
+  padding: 14px 20px; border-bottom: 1px solid var(--border);
+}
+.approvals-header h2 { font-size: 14px; font-weight: 700; letter-spacing: -0.2px; }
+.approvals-close {
+  background: none; border: none; color: var(--text-secondary);
+  font-size: 22px; cursor: pointer; padding: 0 6px; line-height: 1;
+}
+.approvals-close:hover { color: var(--text); }
+
+#approvals-list { overflow: auto; padding: 4px 0; flex: 1; }
+.approval-item { padding: 14px 20px; border-bottom: 1px solid var(--border); animation: fadeIn 0.2s ease; }
+.approval-item:last-child { border-bottom: none; }
+.approval-meta { display: flex; gap: 8px; align-items: center; font-size: 11px; color: var(--text-muted); margin-bottom: 8px; font-family: var(--mono); }
+.approval-meta .sev { font-weight: 700; padding: 2px 6px; border-radius: 3px; font-family: var(--font); }
+.approval-meta .sev-CRITICAL,
+.approval-meta .sev-HIGH    { background: var(--red-soft);   color: var(--red); }
+.approval-meta .sev-MEDIUM  { background: var(--amber-soft); color: var(--amber); }
+.approval-meta .sev-LOW     { background: var(--green-soft); color: var(--green); }
+.approval-summary { font-size: 13px; color: var(--text); margin-bottom: 8px; line-height: 1.5; }
+.approval-fix {
+  background: var(--bg); padding: 8px 10px; border-radius: var(--radius-sm);
+  font-family: var(--mono); font-size: 11px; line-height: 1.5;
+  white-space: pre; overflow-x: auto; max-height: 220px; color: var(--text-secondary);
+  border: 1px solid var(--border);
+}
+.approval-actions { display: flex; gap: 8px; margin-top: 10px; }
+.approval-actions button {
+  border: 1px solid var(--border); border-radius: var(--radius-sm);
+  padding: 6px 14px; font-size: 12px; font-weight: 600; cursor: pointer;
+  background: var(--surface); color: var(--text); transition: all 0.15s;
+  font-family: var(--font);
+}
+.approval-actions button.approve { background: var(--green-soft); color: var(--green); border-color: var(--green); }
+.approval-actions button.approve:hover { background: var(--green); color: white; }
+.approval-actions button.dismiss { background: var(--red-soft); color: var(--red); border-color: var(--red); }
+.approval-actions button.dismiss:hover { background: var(--red); color: white; }
+.approval-actions button:disabled { opacity: 0.5; cursor: not-allowed; }
+.approvals-empty { padding: 32px 20px; text-align: center; color: var(--text-muted); font-size: 13px; }
 </style>
 </head>
 <body data-theme="dark">
@@ -204,6 +271,7 @@ body { font-family: var(--font); background: var(--bg); color: var(--text); heig
     <div class="cluster-id" id="top-cluster">connecting...</div>
     <div class="topbar-spacer"></div>
     <button class="theme-toggle" onclick="toggleTheme()" title="Toggle light/dark mode">◐</button>
+    <button class="approvals-btn" id="approvals-btn" onclick="openApprovals()" style="display:none" title="DevOps agent pending approvals">🔔 <span id="approvals-count">0</span></button>
     <div class="live-badge" id="live-badge">Live</div>
   </div>
 
@@ -396,6 +464,7 @@ async function poll(){
     document.getElementById('s-gpus').textContent=data.nodes.reduce((s,n)=>s+n.gpu,0);
     document.getElementById('s-models').textContent=data.endpoints.length;
     document.getElementById('top-cluster').textContent=`ai-platform · ${data.nodes.length} nodes`;
+    updateApprovalsBadge(data);
     renderAll();
     if(!connected){connected=true;log('mod','Connected to cluster');}
   }catch(e){if(!connected)document.getElementById('top-cluster').textContent='connecting...';}
@@ -442,6 +511,116 @@ if(saved)document.body.setAttribute('data-theme',saved);
   if(savedW)shell.style.gridTemplateColumns=savedW;
 })();
 
+<!-- ─── DevOps Agent approvals modal ──────────────────────────────────── -->
+<div class="approvals-modal" id="approvals-modal" onclick="if(event.target===this)closeApprovals()">
+  <div class="approvals-panel">
+    <div class="approvals-header">
+      <h2>DevOps Agent — Pending Approvals</h2>
+      <button class="approvals-close" onclick="closeApprovals()" title="Close">×</button>
+    </div>
+    <div id="approvals-list"></div>
+  </div>
+</div>
+
+<script>
+// ─── DevOps Agent approvals UI ────────────────────────────────────────
+function escapeHtml(s){
+  return String(s ?? '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+}
+
+function updateApprovalsBadge(data){
+  const btn   = document.getElementById('approvals-btn');
+  const count = document.getElementById('approvals-count');
+  if(!btn || !count) return;
+  if(!data.approvals_available){
+    btn.style.display = 'none';
+    return;
+  }
+  btn.style.display = 'flex';
+  const n = data.approvals_pending || 0;
+  count.textContent = n;
+  btn.classList.toggle('has-pending', n > 0);
+}
+
+async function openApprovals(){
+  document.getElementById('approvals-modal').classList.add('open');
+  await loadApprovals();
+}
+function closeApprovals(){
+  document.getElementById('approvals-modal').classList.remove('open');
+}
+document.addEventListener('keydown', e => { if(e.key === 'Escape') closeApprovals(); });
+
+async function loadApprovals(){
+  const list = document.getElementById('approvals-list');
+  list.innerHTML = '<div class="approvals-empty">Loading…</div>';
+  try{
+    const r = await fetch('/investigations');
+    if(!r.ok) throw new Error('HTTP ' + r.status);
+    const { items } = await r.json();
+    if(!items || !items.length){
+      list.innerHTML = '<div class="approvals-empty">No pending approvals.</div>';
+      return;
+    }
+    list.innerHTML = items.map(renderApproval).join('');
+  }catch(e){
+    list.innerHTML = '<div class="approvals-empty">Failed to load. The agent may be unavailable.<br><span style="font-family:var(--mono);font-size:11px">' + escapeHtml(String(e)) + '</span></div>';
+  }
+}
+
+function renderApproval(inv){
+  const findings = inv.findings || {};
+  const fix = (inv.fix_commands || []).map(fc => {
+    const desc = fc.description ? '# ' + fc.description + '\n' : '';
+    const cmds = (fc.commands || []).join('\n');
+    return desc + cmds;
+  }).join('\n\n') || '(no commands)';
+  const sev = findings.severity || '?';
+  const summary = findings.summary || '(no summary)';
+  const ts = inv.created_at ? new Date(inv.created_at).toLocaleString() : '?';
+  const where = inv.resource_namespace ? `${inv.resource_namespace}/${inv.resource_name}` : inv.resource_name;
+  return `<div class="approval-item" id="approval-${escapeHtml(inv.id)}">
+    <div class="approval-meta">
+      <span class="sev sev-${escapeHtml(sev)}">${escapeHtml(sev)}</span>
+      <span>${escapeHtml(inv.trigger_kind)} · ${escapeHtml(where)}</span>
+      <span style="margin-left:auto">${escapeHtml(ts)}</span>
+    </div>
+    <div class="approval-summary">${escapeHtml(summary)}</div>
+    <pre class="approval-fix">${escapeHtml(fix)}</pre>
+    <div class="approval-actions">
+      <button class="approve" onclick="actOn('${escapeHtml(inv.id)}','approve')">✓ Approve &amp; apply</button>
+      <button class="dismiss" onclick="actOn('${escapeHtml(inv.id)}','dismiss')">✕ Dismiss</button>
+    </div>
+  </div>`;
+}
+
+async function actOn(id, action){
+  const item = document.getElementById('approval-' + id);
+  if(item) item.querySelectorAll('button').forEach(b => b.disabled = true);
+  try{
+    const r = await fetch(`/investigations/${id}/${action}`, { method: 'POST' });
+    const body = await r.json().catch(() => ({}));
+    if(!r.ok){
+      alert(`${action} failed: HTTP ${r.status} — ${body.error || ''}`);
+      if(item) item.querySelectorAll('button').forEach(b => b.disabled = false);
+      return;
+    }
+    if(item){
+      item.style.opacity = '0.4';
+      item.style.pointerEvents = 'none';
+      setTimeout(() => { item.remove(); refreshIfEmpty(); }, 250);
+    }
+  }catch(e){
+    alert(`${action} failed: ${e}`);
+    if(item) item.querySelectorAll('button').forEach(b => b.disabled = false);
+  }
+}
+function refreshIfEmpty(){
+  const list = document.getElementById('approvals-list');
+  if(!list.querySelector('.approval-item')){
+    list.innerHTML = '<div class="approvals-empty">No pending approvals.</div>';
+  }
+}
 </script>
 </body>
 </html>

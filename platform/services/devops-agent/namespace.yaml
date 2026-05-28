@@ -1,0 +1,8 @@
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: devops-agent
+  labels:
+    app.kubernetes.io/part-of: ai-platform
+    app.kubernetes.io/name: devops-agent
+    pod-security.kubernetes.io/enforce: baseline
