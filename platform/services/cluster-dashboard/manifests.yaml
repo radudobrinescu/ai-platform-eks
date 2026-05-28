@@ -221,7 +221,7 @@ metadata:
     alb.ingress.kubernetes.io/target-type: ip
     alb.ingress.kubernetes.io/listen-ports: '[{"HTTP": 9090}]'
     alb.ingress.kubernetes.io/healthcheck-path: /data.json
-    alb.ingress.kubernetes.io/inbound-cidrs: 82.76.116.166/32
+    alb.ingress.kubernetes.io/inbound-cidrs: 82.76.116.154/32
 spec:
   ingressClassName: alb
   rules:
