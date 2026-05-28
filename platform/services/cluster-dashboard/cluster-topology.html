@@ -398,6 +398,16 @@ body { font-family: var(--font); background: var(--bg); color: var(--text); heig
 }
 .history-detail .post-fix-row .ok  { color: var(--green); }
 .history-detail .post-fix-row .bad { color: var(--red); }
+
+.history-delete {
+  position: absolute; top: 8px; right: 12px;
+  background: none; border: none; color: var(--text-muted);
+  font-size: 18px; line-height: 1; cursor: pointer; padding: 4px 6px;
+  border-radius: 4px; transition: all 0.15s; opacity: 0;
+}
+.history-item { position: relative; }
+.history-item:hover .history-delete { opacity: 1; }
+.history-delete:hover { background: var(--red-soft); color: var(--red); }
 </style>
 </head>
 <body data-theme="dark">
@@ -1020,10 +1030,11 @@ function renderHistoryItem(inv){
   ).join('\n\n');
 
   return `<div class="history-item" id="history-${escapeHtml(inv.id)}" onclick="this.classList.toggle('expanded')">
+    <button class="history-delete" title="Delete from history (permanent)" onclick="event.stopPropagation(); deleteHistoryItem('${escapeHtml(inv.id)}')">×</button>
     <div class="history-row1">
       <span class="sev sev-${escapeHtml(sev)}">${escapeHtml(sev)}</span>
       <span class="outcome ${cls}">${escapeHtml(outcome)}</span>
-      <span style="margin-left:auto;font-family:var(--mono);font-size:11px;color:var(--text-muted)">${escapeHtml(tsText)}</span>
+      <span style="margin-left:auto;font-family:var(--mono);font-size:11px;color:var(--text-muted);padding-right:24px">${escapeHtml(tsText)}</span>
     </div>
     <div class="history-row2">${escapeHtml(inv.trigger_kind)} · ${escapeHtml(where)}${inv.approved_by ? ' · approver=' + escapeHtml(inv.approved_by) : ''}</div>
     <div class="history-summary">${escapeHtml(summary)}</div>
@@ -1033,6 +1044,33 @@ function renderHistoryItem(inv){
       ${inv.error_message ? '<div style="font-weight:600;font-size:11px;color:var(--red);margin-top:6px">ERROR</div><pre>' + escapeHtml(inv.error_message) + '</pre>' : ''}
     </div>
   </div>`;
+}
+
+async function deleteHistoryItem(id){
+  if(!confirm('Delete this investigation from history? This is permanent and cannot be undone.')) return;
+  try{
+    const r = await fetch(`/investigations/${id}`, { method: 'DELETE' });
+    const body = await r.json().catch(() => ({}));
+    if(!r.ok){
+      alert(`Delete failed: HTTP ${r.status} — ${body.error || ''}`);
+      return;
+    }
+    const item = document.getElementById('history-' + id);
+    if(item){
+      item.style.transition = 'opacity 0.2s';
+      item.style.opacity = '0';
+      setTimeout(() => {
+        item.remove();
+        // If the list is now empty, show the empty state.
+        const list = document.getElementById('history-list');
+        if(list && !list.querySelector('.history-item')){
+          list.innerHTML = '<div class="approvals-empty">No history yet.</div>';
+        }
+      }, 200);
+    }
+  }catch(e){
+    alert(`Delete failed: ${e}`);
+  }
 }
 </script>
 </body>

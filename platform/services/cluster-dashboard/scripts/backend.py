@@ -522,6 +522,27 @@ def dismiss_investigation(investigation_id: str, approver: str) -> tuple[int, di
         return 500, {"error": str(e)}
 
 
+def delete_investigation(investigation_id: str) -> tuple[int, dict]:
+    """Permanent removal — drops the row from postgres. Used by the History
+    tab's X button to clear UI noise. Won't delete an in-flight investigation
+    (status='running' or 'remediating') because doing so would orphan the
+    spawned Job + leave it without a place to write its result."""
+    if not (HAVE_PSYCOPG and DB_USER and DB_PASSWORD):
+        return 503, {"error": "approvals db unavailable"}
+    try:
+        with DB.connect() as conn, conn.cursor() as cur:
+            cur.execute(
+                "DELETE FROM investigations WHERE id=%s AND status NOT IN ('running','remediating','awaiting_approval')",
+                (investigation_id,),
+            )
+            if cur.rowcount == 0:
+                # Either not found, or in a non-deletable state.
+                return 409, {"error": "not deletable (in-flight or not found)"}
+        return 200, {"ok": True, "investigation_id": investigation_id, "deleted": True}
+    except Exception as e:
+        return 500, {"error": str(e)}
+
+
 # ---------------------------------------------------------------------------
 # HTTP handler
 # ---------------------------------------------------------------------------
@@ -592,6 +613,21 @@ class Handler(http.server.SimpleHTTPRequestHandler):
                 status, body = dismiss_investigation(investigation_id, approver)
             return self._json(status, body)
 
+        self.send_response(404); self.end_headers()
+
+    def do_DELETE(self) -> None:  # type: ignore[override]
+        # DELETE /investigations/<id> — permanently removes the row from postgres.
+        # Used by the dashboard's History tab to clear noise. NOT recoverable.
+        parsed = urlparse(self.path)
+        parts = [p for p in parsed.path.split("/") if p]
+        if len(parts) == 2 and parts[0] == "investigations":
+            investigation_id = parts[1]
+            try:
+                uuid.UUID(investigation_id)
+            except ValueError:
+                return self._json(400, {"error": "invalid investigation id"})
+            status, body = delete_investigation(investigation_id)
+            return self._json(status, body)
         self.send_response(404); self.end_headers()
 
     def log_message(self, format: str, *args: object) -> None:  # type: ignore[override]
