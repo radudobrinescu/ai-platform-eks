@@ -232,7 +232,9 @@ body { font-family: var(--font); background: var(--bg); color: var(--text); heig
 }
 .approvals-close:hover { color: var(--text); }
 
-#approvals-list { overflow: auto; padding: 4px 0; flex: 1; }
+#approvals-list { padding: 4px 0; }
+.approvals-tab-content { display: none; overflow: auto; flex: 1; padding: 4px 0; }
+.approvals-tab-content.active { display: block; }
 .approval-item { padding: 14px 20px; border-bottom: 1px solid var(--border); animation: fadeIn 0.2s ease; }
 .approval-item:last-child { border-bottom: none; }
 .approval-meta { display: flex; gap: 8px; align-items: center; font-size: 11px; color: var(--text-muted); margin-bottom: 8px; font-family: var(--mono); }
@@ -329,6 +331,73 @@ body { font-family: var(--font); background: var(--bg); color: var(--text); heig
 }
 .approval-trigger { font-family: var(--font); }
 .approval-time    { margin-left: auto; }
+
+/* Tabs */
+.approvals-tabs { display: flex; gap: 4px; }
+.approvals-tab {
+  background: none; border: none; padding: 6px 12px; cursor: pointer;
+  font-size: 12px; font-weight: 600; color: var(--text-muted);
+  border-radius: var(--radius-sm); transition: all 0.15s; font-family: var(--font);
+}
+.approvals-tab:hover { background: var(--surface-hover); color: var(--text); }
+.approvals-tab.active { background: var(--accent-soft); color: var(--accent); }
+.approvals-tab .badge {
+  display: inline-block; min-width: 18px; padding: 0 5px; margin-left: 6px;
+  background: var(--accent); color: white; border-radius: 9px;
+  font-size: 10px; font-weight: 700; text-align: center;
+}
+.approvals-tab.active .badge { background: var(--accent); }
+.approvals-tab-content { display: none; }
+.approvals-tab-content.active { display: block; }
+
+/* Post-approve in-place state */
+.approval-remediating {
+  padding: 14px 16px; background: var(--accent-soft); border-radius: var(--radius-sm);
+  border-left: 3px solid var(--accent);
+  font-size: 13px; color: var(--accent); display: flex; align-items: center; gap: 10px;
+}
+.approval-remediating::before {
+  content: ''; width: 14px; height: 14px;
+  border: 2px solid var(--accent); border-top-color: transparent;
+  border-radius: 50%; animation: spin 0.8s linear infinite;
+}
+@keyframes spin { to { transform: rotate(360deg); } }
+
+/* History */
+.history-item {
+  padding: 12px 20px; border-bottom: 1px solid var(--border); cursor: pointer;
+  transition: background 0.1s;
+}
+.history-item:hover { background: var(--surface-hover); }
+.history-item:last-child { border-bottom: none; }
+.history-row1 { display: flex; align-items: center; gap: 10px; font-size: 12px; }
+.history-row1 .outcome {
+  font-weight: 700; padding: 2px 8px; border-radius: 4px; font-size: 11px;
+}
+.outcome-applied  { background: var(--green-soft);  color: var(--green); }
+.outcome-failed   { background: var(--red-soft);    color: var(--red); }
+.outcome-dismissed{ background: rgba(150,150,150,0.12); color: var(--text-muted); }
+.outcome-expired  { background: rgba(150,150,150,0.12); color: var(--text-muted); }
+.outcome-pending  { background: var(--amber-soft);  color: var(--amber); }
+.history-row2 {
+  font-size: 11px; color: var(--text-muted); margin-top: 4px;
+  font-family: var(--mono);
+}
+.history-summary { margin-top: 6px; font-size: 12px; color: var(--text-secondary); }
+.history-detail {
+  margin-top: 10px; padding: 10px; background: var(--bg);
+  border-radius: 4px; font-size: 11px; display: none;
+}
+.history-item.expanded .history-detail { display: block; }
+.history-detail pre {
+  font-family: var(--mono); white-space: pre-wrap; word-break: break-all;
+  background: var(--surface); padding: 6px 8px; border-radius: 3px; margin: 4px 0;
+}
+.history-detail .post-fix-row {
+  display: flex; gap: 8px; margin: 2px 0; font-family: var(--mono); font-size: 10px;
+}
+.history-detail .post-fix-row .ok  { color: var(--green); }
+.history-detail .post-fix-row .bad { color: var(--red); }
 </style>
 </head>
 <body data-theme="dark">
@@ -585,10 +654,15 @@ if(saved)document.body.setAttribute('data-theme',saved);
 <div class="approvals-modal" id="approvals-modal" onclick="if(event.target===this)closeApprovals()">
   <div class="approvals-panel">
     <div class="approvals-header">
-      <h2>DevOps Agent — Pending Approvals</h2>
+      <h2>DevOps Agent</h2>
+      <div class="approvals-tabs">
+        <button class="approvals-tab active" data-tab="pending" onclick="switchTab('pending')">Pending<span class="badge" id="tab-pending-count">0</span></button>
+        <button class="approvals-tab" data-tab="history" onclick="switchTab('history')">History</button>
+      </div>
       <button class="approvals-close" onclick="closeApprovals()" title="Close">×</button>
     </div>
-    <div id="approvals-list"></div>
+    <div id="approvals-list" class="approvals-tab-content active"></div>
+    <div id="history-list" class="approvals-tab-content"></div>
   </div>
 </div>
 
@@ -601,6 +675,7 @@ function escapeHtml(s){
 function updateApprovalsBadge(data){
   const btn   = document.getElementById('approvals-btn');
   const count = document.getElementById('approvals-count');
+  const tabBadge = document.getElementById('tab-pending-count');
   if(!btn || !count) return;
   if(!data.approvals_available){
     btn.style.display = 'none';
@@ -609,6 +684,7 @@ function updateApprovalsBadge(data){
   btn.style.display = 'flex';
   const n = data.approvals_pending || 0;
   count.textContent = n;
+  if(tabBadge) tabBadge.textContent = n;
   btn.classList.toggle('has-pending', n > 0);
 }
 
@@ -793,7 +869,16 @@ async function actOn(id, action){
       if(item) item.querySelectorAll('button').forEach(b => b.disabled = false);
       return;
     }
-    if(item){
+    if(action === 'approve' && item){
+      // Replace the action buttons + risk section with a remediating banner,
+      // then poll until status is terminal.
+      const actions = item.querySelector('.approval-actions');
+      if(actions){
+        actions.outerHTML = `<div class="approval-remediating" id="remediating-${id}">Applying fix… (verifying with kiro-cli; usually completes in 1-2 min)</div>`;
+      }
+      pollUntilDone(id);
+    } else if(item){
+      // Dismiss — fade out
       item.style.opacity = '0.4';
       item.style.pointerEvents = 'none';
       setTimeout(() => { item.remove(); refreshIfEmpty(); }, 250);
@@ -803,11 +888,151 @@ async function actOn(id, action){
     if(item) item.querySelectorAll('button').forEach(b => b.disabled = false);
   }
 }
+
+async function pollUntilDone(id){
+  // Poll /investigations/<id> every 3s until the row reaches a terminal status,
+  // then replace the in-place banner with the outcome (success / failure +
+  // post-fix verification + rollback hint).
+  for(let i = 0; i < 100; i++){            // up to ~5 min
+    await new Promise(r => setTimeout(r, 3000));
+    let inv;
+    try{
+      const r = await fetch(`/investigations/${id}`);
+      if(!r.ok){ continue; }
+      inv = await r.json();
+    }catch(e){ continue; }
+    if(['done','failed','dismissed','expired'].includes(inv.status)){
+      const banner = document.getElementById(`remediating-${id}`);
+      if(!banner) return;
+      banner.outerHTML = renderRemediationOutcome(inv);
+      return;
+    }
+  }
+  // Timeout: leave a notice
+  const banner = document.getElementById(`remediating-${id}`);
+  if(banner){
+    banner.outerHTML = `<div class="approval-remediating" style="background:var(--amber-soft);color:var(--amber);border-left-color:var(--amber)">⏱ Remediation taking longer than expected. Check the History tab.</div>`;
+  }
+}
+
+function renderRemediationOutcome(inv){
+  const result = inv.remediation_result || {};
+  const applied = !!result.applied;
+  const verified = !!result.verification_pass;
+  const err = result.error_summary || inv.error_message;
+  let outcome, cls, body;
+  if(inv.status === 'failed'){
+    outcome = '✕ Remediation FAILED'; cls = 'outcome-failed';
+    body = err ? `<pre>${escapeHtml(err)}</pre>` : '<em>No error message captured.</em>';
+  } else if(applied && verified){
+    outcome = '✓ Fix applied & verified'; cls = 'outcome-applied';
+    body = renderPostFixStatus(result);
+  } else if(applied && !verified){
+    outcome = '⚠ Fix applied but verification failed'; cls = 'outcome-failed';
+    body = renderPostFixStatus(result) + (err ? `<pre>${escapeHtml(err)}</pre>` : '');
+  } else if(!applied){
+    outcome = '✕ Could not apply fix'; cls = 'outcome-failed';
+    body = err ? `<pre>${escapeHtml(err)}</pre>` : '<em>Fix did not apply.</em>';
+  } else {
+    outcome = inv.status; cls = 'outcome-' + inv.status;
+    body = '';
+  }
+  return `<div class="approval-section">
+    <div class="approval-section-title">Outcome <span class="outcome ${cls}" style="margin-left:8px">${escapeHtml(outcome)}</span></div>
+    <div class="history-detail" style="display:block">${body}</div>
+  </div>`;
+}
+
+function renderPostFixStatus(result){
+  const post = result.post_fix_status || [];
+  const rb = result.rollback_commands || [];
+  let html = '';
+  if(post.length){
+    html += '<div style="margin-bottom:6px;font-weight:600;font-size:11px;color:var(--text-muted)">POST-FIX STATUS</div>';
+    html += post.map(r => `<div class="post-fix-row"><span class="${(/ready|running|true/i).test(r.status||'') ? 'ok' : 'bad'}">●</span> ${escapeHtml(r.kind||'?')}/${escapeHtml(r.namespace||'')}/${escapeHtml(r.name||'?')} → ${escapeHtml(r.status||'?')}</div>`).join('');
+  }
+  if(rb.length){
+    html += '<div style="margin:8px 0 4px;font-weight:600;font-size:11px;color:var(--text-muted)">ROLLBACK (if needed)</div>';
+    html += `<pre>${escapeHtml(rb.join('\n'))}</pre>`;
+  }
+  return html || '<em>No post-fix status reported.</em>';
+}
+
 function refreshIfEmpty(){
   const list = document.getElementById('approvals-list');
   if(!list.querySelector('.approval-item')){
     list.innerHTML = '<div class="approvals-empty">No pending approvals.</div>';
   }
+}
+
+// ─── Tab switching ────────────────────────────────────────────────────
+async function switchTab(name){
+  document.querySelectorAll('.approvals-tab').forEach(t => t.classList.toggle('active', t.dataset.tab === name));
+  document.querySelectorAll('.approvals-tab-content').forEach(c => c.classList.remove('active'));
+  if(name === 'pending'){
+    document.getElementById('approvals-list').classList.add('active');
+  } else {
+    const hist = document.getElementById('history-list');
+    hist.classList.add('active');
+    await loadHistory();
+  }
+}
+
+async function loadHistory(){
+  const list = document.getElementById('history-list');
+  list.innerHTML = '<div class="approvals-empty">Loading…</div>';
+  try{
+    const r = await fetch('/investigations/all');
+    if(!r.ok) throw new Error('HTTP ' + r.status);
+    const { items } = await r.json();
+    const past = (items || []).filter(i => i.status !== 'awaiting_approval');
+    if(!past.length){
+      list.innerHTML = '<div class="approvals-empty">No history yet.</div>';
+      return;
+    }
+    list.innerHTML = past.map(renderHistoryItem).join('');
+  }catch(e){
+    list.innerHTML = '<div class="approvals-empty">Failed to load history.</div>';
+  }
+}
+
+function renderHistoryItem(inv){
+  const findings = inv.findings || {};
+  const result = inv.remediation_result || {};
+  const sev = findings.severity || '?';
+  const summary = findings.summary || '';
+  const where = inv.resource_namespace ? `${inv.resource_namespace}/${inv.resource_name}` : inv.resource_name;
+  const ts = inv.completed_at || inv.approved_at || inv.created_at;
+  const tsText = ts ? new Date(ts).toLocaleString() : '';
+  let outcome, cls;
+  if(inv.status === 'done'){
+    if(result.applied && result.verification_pass){ outcome = '✓ Applied'; cls = 'outcome-applied'; }
+    else if(result.applied)                       { outcome = '⚠ Applied (verify failed)'; cls = 'outcome-failed'; }
+    else                                          { outcome = '✕ Apply failed'; cls = 'outcome-failed'; }
+  } else if(inv.status === 'failed')    { outcome = '✕ Failed';    cls = 'outcome-failed'; }
+   else if(inv.status === 'dismissed')   { outcome = 'Dismissed';  cls = 'outcome-dismissed'; }
+   else if(inv.status === 'expired')     { outcome = 'Expired';    cls = 'outcome-expired'; }
+   else if(inv.status === 'remediating') { outcome = 'Remediating…'; cls = 'outcome-pending'; }
+   else                                   { outcome = inv.status;   cls = 'outcome-pending'; }
+
+  const fix = (inv.fix_commands || []).map(fc =>
+    (fc.description ? '# ' + fc.description + '\n' : '') + (fc.commands || []).join('\n')
+  ).join('\n\n');
+
+  return `<div class="history-item" id="history-${escapeHtml(inv.id)}" onclick="this.classList.toggle('expanded')">
+    <div class="history-row1">
+      <span class="sev sev-${escapeHtml(sev)}">${escapeHtml(sev)}</span>
+      <span class="outcome ${cls}">${escapeHtml(outcome)}</span>
+      <span style="margin-left:auto;font-family:var(--mono);font-size:11px;color:var(--text-muted)">${escapeHtml(tsText)}</span>
+    </div>
+    <div class="history-row2">${escapeHtml(inv.trigger_kind)} · ${escapeHtml(where)}${inv.approved_by ? ' · approver=' + escapeHtml(inv.approved_by) : ''}</div>
+    <div class="history-summary">${escapeHtml(summary)}</div>
+    <div class="history-detail">
+      ${fix ? '<div style="font-weight:600;font-size:11px;color:var(--text-muted);margin-bottom:4px">PROPOSED FIX</div><pre>' + escapeHtml(fix) + '</pre>' : ''}
+      ${result.applied !== undefined ? renderPostFixStatus(result) : ''}
+      ${inv.error_message ? '<div style="font-weight:600;font-size:11px;color:var(--red);margin-top:6px">ERROR</div><pre>' + escapeHtml(inv.error_message) + '</pre>' : ''}
+    </div>
+  </div>`;
 }
 </script>
 </body>

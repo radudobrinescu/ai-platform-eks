@@ -29,6 +29,7 @@ import http.client
 import http.server
 import json
 import os
+import re
 import socket
 import ssl
 import sys
@@ -398,6 +399,54 @@ def list_pending_investigations() -> list[dict]:
         return []
 
 
+def list_all_investigations(limit: int = 20) -> list[dict]:
+    """Return recent investigations (any status), newest first.
+    Used by the History tab in the dashboard."""
+    if not (HAVE_PSYCOPG and DB_USER and DB_PASSWORD):
+        return []
+    try:
+        with DB.connect() as conn, conn.cursor(row_factory=psycopg.rows.dict_row) as cur:  # type: ignore[arg-type]
+            cur.execute(
+                """SELECT id, created_at, completed_at, approved_at, status,
+                          trigger_kind, resource_kind, resource_namespace, resource_name,
+                          findings, fix_commands, remediation_result,
+                          approved_by, error_message, out_of_scope
+                     FROM investigations
+                    ORDER BY created_at DESC LIMIT %s""",
+                (limit,),
+            )
+            rows = cur.fetchall() or []
+        out = []
+        for r in rows:
+            r["id"] = str(r["id"])
+            for k in ("created_at", "completed_at", "approved_at"):
+                if r.get(k):
+                    r[k] = r[k].isoformat()
+            out.append(r)
+        return out
+    except Exception:
+        return []
+
+
+def get_investigation_detail(investigation_id: str) -> dict | None:
+    """Return full row for a single investigation. Used for post-approve polling."""
+    if not (HAVE_PSYCOPG and DB_USER and DB_PASSWORD):
+        return None
+    try:
+        with DB.connect() as conn, conn.cursor(row_factory=psycopg.rows.dict_row) as cur:  # type: ignore[arg-type]
+            cur.execute("SELECT * FROM investigations WHERE id = %s", (investigation_id,))
+            r = cur.fetchone()
+        if not r:
+            return None
+        r["id"] = str(r["id"])
+        for k in ("created_at", "completed_at", "approved_at"):
+            if r.get(k):
+                r[k] = r[k].isoformat()
+        return r
+    except Exception:
+        return None
+
+
 def approve_investigation(investigation_id: str, approver: str) -> tuple[int, dict]:
     """Spawn the Remediator Job for the given investigation. Returns
     (HTTP status, response body)."""
@@ -509,6 +558,17 @@ class Handler(http.server.SimpleHTTPRequestHandler):
 
         if self.path == "/investigations":
             return self._json(200, {"items": list_pending_investigations()})
+
+        if self.path == "/investigations/all" or self.path.startswith("/investigations/all?"):
+            return self._json(200, {"items": list_all_investigations(limit=20)})
+
+        # /investigations/<uuid> — for post-approve polling
+        m = re.match(r"^/investigations/([0-9a-f-]{36})$", self.path)
+        if m:
+            inv = get_investigation_detail(m.group(1))
+            if not inv:
+                return self._json(404, {"error": "not found"})
+            return self._json(200, inv)
 
         super().do_GET()
 
