@@ -14,8 +14,8 @@
 apiVersion: v1
 kind: ConfigMap
 metadata:
-  name: devops-agent-config
-  namespace: devops-agent
+  name: platform-health-agent-config
+  namespace: platform-health-agent
 data:
   # Cluster identity (used in kiro-cli prompts).
   CLUSTER_NAME: "ai-platform-cnd-demo"
@@ -23,7 +23,7 @@ data:
 
   # Which namespaces to watch. "*" = all except those in EXCLUDE_NAMESPACES.
   WATCH_NAMESPACES: "*"
-  EXCLUDE_NAMESPACES: "kube-system,kube-node-lease,kube-public,argocd,external-secrets,gpu-operator,kuberay,amazon-cloudwatch,devops-agent"
+  EXCLUDE_NAMESPACES: "kube-system,kube-node-lease,kube-public,argocd,external-secrets,gpu-operator,kuberay,amazon-cloudwatch,platform-health-agent"
 
   # Per-resource debounce (no re-investigation within this window).
   DEBOUNCE_WINDOW_SEC: "600"
@@ -52,7 +52,7 @@ data:
   # Database (no password — that's in platform-db-credentials secret in ai-platform).
   DB_HOST: "platform-db.ai-platform.svc.cluster.local"
   DB_PORT: "5432"
-  DB_NAME: "devops_agent"
+  DB_NAME: "platform_health_agent"
 
   # Image pinning. Bumping these forces all components to redeploy.
   KIRO_CLI_VERSION: "latest"          # kiro.dev installer fetches latest by default

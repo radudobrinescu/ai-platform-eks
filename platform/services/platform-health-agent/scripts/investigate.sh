@@ -13,7 +13,7 @@
 # investigation row is marked status='failed'.
 #
 # Read-only enforcement happens at the K8s RBAC layer
-# (devops-agent-reader has only get/list/watch).
+# (platform-health-agent-reader has only get/list/watch).
 set -eu
 
 [ -n "${INVESTIGATION_ID:-}" ] || { echo "INVESTIGATION_ID not set" >&2; exit 2; }
@@ -88,7 +88,7 @@ Investigation procedure:
 Determine \`out_of_scope\`:
 - TRUE if the only reasonable fix is to modify an InferenceEndpoint or AITeam
   custom resource, OR any resource in: ai-platform, gpu-operator, kuberay,
-  argocd, external-secrets, kube-system, amazon-cloudwatch, devops-agent.
+  argocd, external-secrets, kube-system, amazon-cloudwatch, platform-health-agent.
 - TRUE if the fix requires editing a file under platform/services or workloads/.
 - FALSE if the fix can be applied via kubectl directly to a workload-level
   resource (Deployment, StatefulSet, Pod, ConfigMap, HPA) in 'inference' or a

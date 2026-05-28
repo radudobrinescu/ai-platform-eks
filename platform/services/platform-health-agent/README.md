@@ -1,9 +1,9 @@
 # Platform Health Agent
 
-> Internal Kubernetes resources keep the name `devops-agent` for backwards
+> Internal Kubernetes resources keep the name `platform-health-agent` for backwards
 > compatibility. The public-facing display name was changed to avoid a clash
-> with AWS's "DevOps Agent" service. Namespace, ServiceAccounts, ClusterRoles,
-> and the postgres database are all still named `devops-agent` / `devops_agent`.
+> with AWS's "Platform Health Agent" service. Namespace, ServiceAccounts, ClusterRoles,
+> and the postgres database are all still named `platform-health-agent` / `platform_health_agent`.
 
 Optional, EKS-native platform service. Watches the cluster for actionable
 incidents (CrashLoopBackOff, OOMKilled, FailedScheduling, NodeNotReady, …),
@@ -11,8 +11,8 @@ investigates with `kiro-cli`, surfaces the proposed fix in the existing
 **cluster-dashboard** with `[Approve]` / `[Dismiss]` buttons, and applies
 the fix only after you click Approve.
 
-> See [`docs/DevOps Agent — Architecture Design.md`](../../../docs/DevOps%20Agent%20%E2%80%94%20Architecture%20Design.md)
-> and [`docs/devops-agent-implementation-plan.md`](../../../docs/devops-agent-implementation-plan.md)
+> See [`docs/Platform Health Agent — Architecture Design.md`](../../../docs/DevOps%20Agent%20%E2%80%94%20Architecture%20Design.md)
+> and [`docs/platform-health-agent-implementation-plan.md`](../../../docs/platform-health-agent-implementation-plan.md)
 > for the full design.
 
 ---
@@ -33,9 +33,9 @@ allowlist).
 
 ## Enable / disable
 
-**Enable:** add the `devops-agent` element to [`argocd/bootstrap/platform.yaml`](../../../argocd/bootstrap/platform.yaml). ArgoCD picks it up automatically.
+**Enable:** add the `platform-health-agent` element to [`argocd/bootstrap/platform.yaml`](../../../argocd/bootstrap/platform.yaml). ArgoCD picks it up automatically.
 
-**Disable:** remove the element + push. ArgoCD prunes the `devops-agent` namespace except the manually-created `devops-agent-secrets` Secret. The `devops_agent` postgres database persists (intentional — re-enabling resumes from the same state). The cluster-dashboard's approvals UI gracefully detects the agent is gone and hides the badge.
+**Disable:** remove the element + push. ArgoCD prunes the `platform-health-agent` namespace except the manually-created `platform-health-agent-secrets` Secret. The `platform_health_agent` postgres database persists (intentional — re-enabling resumes from the same state). The cluster-dashboard's approvals UI gracefully detects the agent is gone and hides the badge.
 
 ---
 
@@ -51,13 +51,13 @@ You must complete these BEFORE pushing the ApplicationSet entry, or ArgoCD will 
 ### 2. Create the namespace + secret
 
 ```bash
-kubectl create namespace devops-agent
+kubectl create namespace platform-health-agent
 
-kubectl -n devops-agent create secret generic devops-agent-secrets \
+kubectl -n platform-health-agent create secret generic platform-health-agent-secrets \
   --from-literal=KIRO_API_KEY='kr-xxxxxxxxxxxxxxxxxxxxxxxx'
 
 # Verify:
-kubectl -n devops-agent get secret devops-agent-secrets \
+kubectl -n platform-health-agent get secret platform-health-agent-secrets \
   -o jsonpath='{.data}' | python3 -c "import sys,json; print(list(json.loads(sys.stdin.read()).keys()))"
 # Expected: ['KIRO_API_KEY']
 ```
@@ -69,10 +69,10 @@ That's it. No Slack tokens, no signing secrets, no domain — the only secret is
 Edit `argocd/bootstrap/platform.yaml`, append to the list generator:
 
 ```yaml
-          - name: devops-agent
-            namespace: devops-agent
+          - name: platform-health-agent
+            namespace: platform-health-agent
             type: directory
-            path: platform/services/devops-agent
+            path: platform/services/platform-health-agent
             tier: platform
 ```
 
@@ -81,12 +81,12 @@ Push. ArgoCD picks it up within ~3 min.
 ### 4. Watch the rollout
 
 ```bash
-kubectl get applications -n argocd devops-agent -w
-kubectl get pods -n devops-agent -w
+kubectl get applications -n argocd platform-health-agent -w
+kubectl get pods -n platform-health-agent -w
 ```
 
 Expected:
-1. `devops-agent-db-init-…` Job appears, runs ~10s, completes (PreSync hook).
+1. `platform-health-agent-db-init-…` Job appears, runs ~10s, completes (PreSync hook).
 2. `event-watcher-…` Pod comes up Ready 1/1 within 60s.
 3. cluster-dashboard auto-detects the new database; refresh `http://<alb>:9090` and the topbar shows `🔔 0 pending`.
 
@@ -97,21 +97,21 @@ Expected:
 ```
                         ┌────────────────────────┐
                         │  event-watcher (1)     │
-                        │  Watches K8s API       │ — devops-agent-reader SA
+                        │  Watches K8s API       │ — platform-health-agent-reader SA
                         │  Spawns Investigator   │   (cluster-wide get/list/watch)
                         └────────────┬───────────┘
                                      │ creates Job
                                      ▼
                         ┌────────────────────────┐
                         │ Investigator Job       │
-                        │ kiro-cli + kubectl     │ — devops-agent-reader SA
+                        │ kiro-cli + kubectl     │ — platform-health-agent-reader SA
                         │ → /results/findings.   │   (read-only, RBAC-enforced)
                         │   json                 │
                         └────────────┬───────────┘
                                      │ persist_findings.py investigation
                                      ▼
                         ┌────────────────────────┐
-                        │ devops_agent DB        │ ◄── poll every 2s
+                        │ platform_health_agent DB        │ ◄── poll every 2s
                         │  (on platform-db-0)    │     by cluster-dashboard
                         └────────────────────────┘     backend
                                      ▲
@@ -120,14 +120,14 @@ Expected:
                         ┌────────────┴───────────┐
                         │ cluster-dashboard      │ — cluster-dashboard SA
                         │ topbar approvals UI    │   + create-jobs in
-                        │ POST /investigations/  │     devops-agent ns
+                        │ POST /investigations/  │     platform-health-agent ns
                         │   <id>/approve         │
                         │ Spawns Remediator      │
                         └────────────┬───────────┘
                                      │ creates Job
                                      ▼
                         ┌────────────────────────┐
-                        │ Remediator Job         │ — devops-agent-writer SA
+                        │ Remediator Job         │ — platform-health-agent-writer SA
                         │ kiro-cli + kubectl     │   (RoleBinding scoped to:
                         │ Applies, verifies,     │    `inference` and each
                         │ → /results/result.json │    `team-*` namespace)
@@ -135,7 +135,7 @@ Expected:
                                      │ persist_findings.py remediation
                                      ▼
                         ┌────────────────────────┐
-                        │ devops_agent DB        │
+                        │ platform_health_agent DB        │
                         │ status='done'          │
                         └────────────────────────┘
 ```
@@ -170,25 +170,25 @@ Editing the ConfigMap and pushing triggers a kustomize rehash → automatic pod 
 ```bash
 # All investigations, newest first:
 kubectl exec -n ai-platform platform-db-0 -- \
-  psql -U platform -d devops_agent -c \
+  psql -U platform -d platform_health_agent -c \
   "SELECT id, created_at, status, trigger_kind, resource_namespace, resource_name FROM investigations ORDER BY created_at DESC LIMIT 20"
 
 # Today's counters:
 kubectl exec -n ai-platform platform-db-0 -- \
-  psql -U platform -d devops_agent -c "SELECT * FROM today_counters"
+  psql -U platform -d platform_health_agent -c "SELECT * FROM today_counters"
 
 # Pending approvals (also visible in the dashboard):
 kubectl exec -n ai-platform platform-db-0 -- \
-  psql -U platform -d devops_agent -c \
+  psql -U platform -d platform_health_agent -c \
   "SELECT id, trigger_kind, resource_namespace, resource_name, created_at FROM investigations WHERE status='awaiting_approval'"
 ```
 
 ### Pause without disabling
 
 ```bash
-kubectl scale deployment event-watcher -n devops-agent --replicas=0
+kubectl scale deployment event-watcher -n platform-health-agent --replicas=0
 # Resume:
-kubectl scale deployment event-watcher -n devops-agent --replicas=1
+kubectl scale deployment event-watcher -n platform-health-agent --replicas=1
 ```
 
 ArgoCD will revert this within ~3 min because of `selfHeal: true`. For a longer pause, set all `TRIGGER_*=false` in the ConfigMap and push.
@@ -196,8 +196,8 @@ ArgoCD will revert this within ~3 min because of `selfHeal: true`. For a longer 
 ### Inspect a running investigation
 
 ```bash
-kubectl get jobs -n devops-agent
-kubectl logs -n devops-agent job/investigator-<8-char-hex>
+kubectl get jobs -n platform-health-agent
+kubectl logs -n platform-health-agent job/investigator-<8-char-hex>
 ```
 
 ---
@@ -207,8 +207,8 @@ kubectl logs -n devops-agent job/investigator-<8-char-hex>
 ### "Dashboard topbar doesn't show the approvals badge"
 
 1. `kubectl logs -n ai-platform deploy/cluster-dashboard --tail=50` — should show successful `db_health` polls. If `connection refused` or `database does not exist`, the agent's `db-init` Job didn't run.
-2. `kubectl get jobs -n devops-agent` — check `devops-agent-db-init` completed (`Complete` not `Failed`).
-3. `kubectl logs -n devops-agent deploy/event-watcher --tail=20` — should log `event-watcher started: …`.
+2. `kubectl get jobs -n platform-health-agent` — check `platform-health-agent-db-init` completed (`Complete` not `Failed`).
+3. `kubectl logs -n platform-health-agent deploy/event-watcher --tail=20` — should log `event-watcher started: …`.
 
 ### "The agent investigated something silly"
 
@@ -229,10 +229,10 @@ kubectl logs -n devops-agent job/investigator-<8-char-hex>
 
 ### "Remediator gets 403"
 
-- The target namespace doesn't have a `devops-agent-writer` RoleBinding.
+- The target namespace doesn't have a `platform-health-agent-writer` RoleBinding.
 - The reconciler runs every 5 min for `team-*` namespaces. If you just created a team and clicked Approve before the next sweep, the binding doesn't exist yet.
-- Force a sweep: `kubectl rollout restart deployment event-watcher -n devops-agent`.
-- Check: `kubectl get rolebinding devops-agent-writer -n team-yourteam -o yaml`.
+- Force a sweep: `kubectl rollout restart deployment event-watcher -n platform-health-agent`.
+- Check: `kubectl get rolebinding platform-health-agent-writer -n team-yourteam -o yaml`.
 
 ---
 

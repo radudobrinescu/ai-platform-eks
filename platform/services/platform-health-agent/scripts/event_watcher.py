@@ -67,7 +67,7 @@ TRIGGERS = {
 KIRO_MODEL_INVESTIGATE = os.environ.get("KIRO_MODEL_INVESTIGATE", "claude-sonnet-4.6")
 PYTHON_IMAGE = os.environ.get("PYTHON_IMAGE", "python:3.12-slim")
 KUBECTL_VERSION = os.environ.get("KUBECTL_VERSION", "v1.32.5")
-NAMESPACE = "devops-agent"  # our own namespace where Jobs are spawned
+NAMESPACE = "platform-health-agent"  # our own namespace where Jobs are spawned
 
 ALLOWED_REMEDIATION_NAMESPACES_RE = re.compile(r"^(inference|team-.+)$")
 
@@ -160,7 +160,7 @@ def build_investigator_job(investigation_id: str, event_payload: dict) -> dict:
     Returns a dict ready to pass to BatchV1Api.create_namespaced_job(body=…).
 
     Design notes:
-    - serviceAccountName: devops-agent-reader → cluster-wide read only.
+    - serviceAccountName: platform-health-agent-reader → cluster-wide read only.
     - Two initContainers:
         a) install-tools  → downloads kubectl + kiro-cli into /tools (emptyDir)
         b) install-pydeps → pip-installs psycopg into /pydeps (emptyDir)
@@ -179,8 +179,8 @@ def build_investigator_job(investigation_id: str, event_payload: dict) -> dict:
             "name": job_name,
             "namespace": NAMESPACE,
             "labels": {
-                "app.kubernetes.io/name": "devops-agent-investigator",
-                "app.kubernetes.io/part-of": "devops-agent",
+                "app.kubernetes.io/name": "platform-health-agent-investigator",
+                "app.kubernetes.io/part-of": "platform-health-agent",
                 "investigation-id": investigation_id,
             },
         },
@@ -191,13 +191,13 @@ def build_investigator_job(investigation_id: str, event_payload: dict) -> dict:
             "template": {
                 "metadata": {
                     "labels": {
-                        "app.kubernetes.io/name": "devops-agent-investigator",
+                        "app.kubernetes.io/name": "platform-health-agent-investigator",
                         "investigation-id": investigation_id,
                     },
                 },
                 "spec": {
                     "restartPolicy": "Never",
-                    "serviceAccountName": "devops-agent-reader",
+                    "serviceAccountName": "platform-health-agent-reader",
                     "automountServiceAccountToken": True,
                     "nodeSelector": {"kubernetes.io/arch": "amd64"},
                     "initContainers": _bootstrap_init_containers(),
@@ -273,14 +273,14 @@ def _agent_env(investigation_id: str, event_payload: dict) -> list[dict]:
         {"name": "PYTHONPATH", "value": "/pydeps"},
         {"name": "HOME", "value": "/tmp"},
         # From config ConfigMap.
-        *[{"name": k, "valueFrom": {"configMapKeyRef": {"name": "devops-agent-config", "key": k}}}
+        *[{"name": k, "valueFrom": {"configMapKeyRef": {"name": "platform-health-agent-config", "key": k}}}
           for k in ["CLUSTER_NAME", "AWS_REGION", "DB_HOST", "DB_PORT", "DB_NAME",
                     "KIRO_MODEL_INVESTIGATE", "KIRO_MODEL_REMEDIATE"]],
         # DB credentials reuse the existing platform Postgres credentials.
         {"name": "DB_USER",      "valueFrom": {"secretKeyRef": {"name": "platform-db-credentials", "key": "username"}}},
         {"name": "DB_PASSWORD",  "valueFrom": {"secretKeyRef": {"name": "platform-db-credentials", "key": "password"}}},
         # Only secret needed: kiro-cli API key. Approvals UX is in the cluster-dashboard.
-        {"name": "KIRO_API_KEY", "valueFrom": {"secretKeyRef": {"name": "devops-agent-secrets",   "key": "KIRO_API_KEY"}}},
+        {"name": "KIRO_API_KEY", "valueFrom": {"secretKeyRef": {"name": "platform-health-agent-secrets",   "key": "KIRO_API_KEY"}}},
     ]
 
 
@@ -296,7 +296,7 @@ def _agent_volume_mounts() -> list[dict]:
 
 def _agent_volumes() -> list[dict]:
     return [
-        {"name": "scripts", "configMap": {"name": "devops-agent-scripts", "defaultMode": 0o755}},
+        {"name": "scripts", "configMap": {"name": "platform-health-agent-scripts", "defaultMode": 0o755}},
         {"name": "tools",   "emptyDir": {}},
         {"name": "pydeps",  "emptyDir": {}},
         {"name": "results", "emptyDir": {}},
@@ -516,27 +516,27 @@ def reconcile_rolebindings_loop() -> None:
 
             for ns in allowed:
                 try:
-                    rbac.read_namespaced_role_binding(name="devops-agent-writer", namespace=ns)
+                    rbac.read_namespaced_role_binding(name="platform-health-agent-writer", namespace=ns)
                     continue
                 except ApiException as e:
                     if e.status != 404:
                         raise
                 rb = client.V1RoleBinding(
                     metadata=client.V1ObjectMeta(
-                        name="devops-agent-writer", namespace=ns,
-                        labels={"app.kubernetes.io/managed-by": "devops-agent-reconciler",
-                                "app.kubernetes.io/part-of": "devops-agent"},
+                        name="platform-health-agent-writer", namespace=ns,
+                        labels={"app.kubernetes.io/managed-by": "platform-health-agent-reconciler",
+                                "app.kubernetes.io/part-of": "platform-health-agent"},
                     ),
                     role_ref=client.V1RoleRef(
                         api_group="rbac.authorization.k8s.io",
-                        kind="ClusterRole", name="devops-agent-writer"),
+                        kind="ClusterRole", name="platform-health-agent-writer"),
                     # Plain dict for subjects: kubernetes-client renamed
                     # V1Subject → RbacV1Subject in v28+. Dict form is
                     # accepted by the API and version-stable.
                     subjects=[{
                         "kind": "ServiceAccount",
-                        "name": "devops-agent-writer",
-                        "namespace": "devops-agent",
+                        "name": "platform-health-agent-writer",
+                        "namespace": "platform-health-agent",
                     }],
                 )
                 rbac.create_namespaced_role_binding(namespace=ns, body=rb)
@@ -546,7 +546,7 @@ def reconcile_rolebindings_loop() -> None:
             # that no longer matches the pattern → delete.
             try:
                 stale = rbac.list_role_binding_for_all_namespaces(
-                    label_selector="app.kubernetes.io/managed-by=devops-agent-reconciler",
+                    label_selector="app.kubernetes.io/managed-by=platform-health-agent-reconciler",
                 ).items
             except ApiException:
                 stale = []

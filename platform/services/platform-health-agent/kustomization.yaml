@@ -2,7 +2,7 @@
 #
 # ArgoCD auto-detects this file and applies via kustomize. The
 # `configMapGenerator` inlines the entire scripts/ directory into a
-# `devops-agent-scripts` ConfigMap — pods mount it at /scripts.
+# `platform-health-agent-scripts` ConfigMap — pods mount it at /scripts.
 #
 # The hash suffix on the generated ConfigMap (default behavior) means
 # any script change → new ConfigMap name → Deployment template change
@@ -14,7 +14,7 @@
 apiVersion: kustomize.config.k8s.io/v1beta1
 kind: Kustomization
 
-namespace: devops-agent
+namespace: platform-health-agent
 
 resources:
   - namespace.yaml
@@ -23,13 +23,13 @@ resources:
   - event-watcher.yaml
 
 configMapGenerator:
-  - name: devops-agent-scripts
-    namespace: devops-agent
+  - name: platform-health-agent-scripts
+    namespace: platform-health-agent
     options:
       # Keep the name stable (no hash suffix) — the Investigator/Remediator
       # Job specs built in event_watcher.py mount this by hardcoded name.
       # Trade-off: pods don't auto-restart on script changes — use
-      # `kubectl rollout restart deployment event-watcher -n devops-agent`
+      # `kubectl rollout restart deployment event-watcher -n platform-health-agent`
       # to pick up new scripts.
       disableNameSuffixHash: true
     files:

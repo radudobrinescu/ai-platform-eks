@@ -8,7 +8,7 @@
 #   3. The LLM writes /results/result.json.
 #   4. Hand off to persist_findings.py remediation (writes result back to DB).
 #
-# Write enforcement is RBAC: devops-agent-writer has scoped write access
+# Write enforcement is RBAC: platform-health-agent-writer has scoped write access
 # to inference + team-* namespaces only. Anything else 403s, which we
 # capture as `applied=false` in the result.
 set -eu

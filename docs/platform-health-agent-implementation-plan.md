@@ -1,10 +1,10 @@
-# Autonomous DevOps Agent — Implementation Plan
+# Autonomous Platform Health Agent — Implementation Plan
 
 **Status:** Plan (awaiting approval)
 **Author:** Platform Team
 **Date:** 2026-05-28
-**Companion to:** [DevOps Agent — Architecture Design.md](./DevOps%20Agent%20%E2%80%94%20Architecture%20Design.md)
-**Module path:** `platform/services/devops-agent/`
+**Companion to:** [Platform Health Agent — Architecture Design.md](./DevOps%20Agent%20%E2%80%94%20Architecture%20Design.md)
+**Module path:** `platform/services/platform-health-agent/`
 
 ---
 
@@ -36,23 +36,23 @@ shared ALB at `:9090` with IP allowlist).
 - The kiro-cli prompts in investigate.sh / remediate.sh (no changes needed)
 
 **Files removed in pivot:**
-- `platform/services/devops-agent/slack-handler.yaml`
-- `platform/services/devops-agent/scripts/slack_handler.py`
-- `platform/services/devops-agent/scripts/post_to_slack.py`
+- `platform/services/platform-health-agent/slack-handler.yaml`
+- `platform/services/platform-health-agent/scripts/slack_handler.py`
+- `platform/services/platform-health-agent/scripts/post_to_slack.py`
 
 **Files added in pivot:**
-- `platform/services/devops-agent/scripts/persist_findings.py` (replaces post_to_slack.py)
+- `platform/services/platform-health-agent/scripts/persist_findings.py` (replaces post_to_slack.py)
 - `platform/services/cluster-dashboard/scripts/backend.py` (extracted from inline ConfigMap, extended)
 
 **Files modified in pivot:**
 - `platform/services/cluster-dashboard/manifests.yaml` (psycopg initContainer, jobs RBAC, DB env, image → slim)
 - `platform/services/cluster-dashboard/cluster-topology.html` (topbar badge + approvals modal)
 - `platform/services/cluster-dashboard/kustomization.yaml` (generates backend.py ConfigMap)
-- `platform/services/devops-agent/event_watcher.py` (no Slack env in spawned Job spec)
-- `platform/services/devops-agent/configmap.yaml` (no BOT_DISPLAY_NAME / BOT_ICON_EMOJI)
-- `platform/services/devops-agent/kustomization.yaml` (no slack-handler resource)
-- `platform/services/devops-agent/README.md` (rewritten — no Slack setup)
-- `platform/services/devops-agent/scripts/{investigate,remediate}.sh` (call persist_findings)
+- `platform/services/platform-health-agent/event_watcher.py` (no Slack env in spawned Job spec)
+- `platform/services/platform-health-agent/configmap.yaml` (no BOT_DISPLAY_NAME / BOT_ICON_EMOJI)
+- `platform/services/platform-health-agent/kustomization.yaml` (no slack-handler resource)
+- `platform/services/platform-health-agent/README.md` (rewritten — no Slack setup)
+- `platform/services/platform-health-agent/scripts/{investigate,remediate}.sh` (call persist_findings)
 
 The rest of this document reflects v1 (Slack-based). Sections affected by the pivot
 are §0 (decisions table — see overrides below), §1 (prereqs), §10 (rollout). Other
@@ -73,7 +73,7 @@ These differ from / pin down ambiguities in the architecture doc:
 | D5 | Container image | **No custom image** — `python:3.12-slim` base + initContainer that downloads `kiro-cli` and `kubectl` at pod start |
 | D6 | ArgoCD integration | **Add to existing `argocd/bootstrap/platform.yaml` ApplicationSet** as a new list element. Disable = remove the element + push. |
 | D7 | Slack interaction surface | **DM-based** — bot DMs a single recipient user. No public channel needed for V1. |
-| D8 | State storage | **New PostgreSQL database `devops_agent`** on the existing `platform-db-0` StatefulSet |
+| D8 | State storage | **New PostgreSQL database `platform_health_agent`** on the existing `platform-db-0` StatefulSet |
 | D9 | Notifier | **Single-container shell wrapper** in the Investigator/Remediator Job — kiro-cli runs, then a Python script posts to Slack on the same exit path |
 | D10 | Concurrency cap | **Max 3 concurrent investigations**, semaphore in postgres |
 | D11 | Cost guard | `max_investigations_per_day: 50`, `max_remediations_per_day: 20`, counters in postgres |
@@ -92,7 +92,7 @@ You'll need to complete these once. I can't do them for you.
 ### 1.1 Create the Slack app
 
 1. Go to <https://api.slack.com/apps> → **Create New App** → **From scratch**.
-2. App name: `EKS DevOps Agent`. Workspace: your workspace.
+2. App name: `EKS Platform Health Agent`. Workspace: your workspace.
 3. **OAuth & Permissions** → Bot Token Scopes — add:
    - `chat:write` (post messages)
    - `chat:write.customize` (post as bot with custom name/icon)
@@ -116,7 +116,7 @@ You'll need to complete these once. I can't do them for you.
 After the namespace is created (Step 1 of rollout, see §10), run:
 
 ```bash
-kubectl -n devops-agent create secret generic devops-agent-secrets \
+kubectl -n platform-health-agent create secret generic platform-health-agent-secrets \
   --from-literal=KIRO_API_KEY='kr-…' \
   --from-literal=SLACK_BOT_TOKEN='xoxb-…' \
   --from-literal=SLACK_APP_TOKEN='xapp-…' \
@@ -133,11 +133,11 @@ This secret is excluded from git (it lives only in the cluster, like `hf-token`)
 ```
 EKS Cluster (ai-platform-cnd-demo)
 │
-├── devops-agent namespace
+├── platform-health-agent namespace
 │   │
 │   ├── event-watcher (Deployment, 1 replica)
 │   │     watches Pod/Node/Event API → filters → spawns Job
-│   │     RBAC: devops-agent-reader (cluster-wide get/list/watch)
+│   │     RBAC: platform-health-agent-reader (cluster-wide get/list/watch)
 │   │
 │   ├── slack-handler (Deployment, 1 replica)
 │   │     opens WebSocket to Slack (Socket Mode)
@@ -145,21 +145,21 @@ EKS Cluster (ai-platform-cnd-demo)
 │   │     RBAC: ServiceAccount with create on jobs in this namespace
 │   │
 │   ├── investigator-jobs (ephemeral Jobs, max 3 concurrent)
-│   │     SA: devops-agent-reader (read-only across cluster)
+│   │     SA: platform-health-agent-reader (read-only across cluster)
 │   │     Wraps: kiro-cli investigation prompt → posts findings to Slack
 │   │
 │   ├── remediator-jobs (ephemeral Jobs, created post-approval)
-│   │     SA: devops-agent-writer (scoped: inference + team-* namespaces only)
+│   │     SA: platform-health-agent-writer (scoped: inference + team-* namespaces only)
 │   │     Wraps: kiro-cli remediation prompt → posts result to Slack thread
 │   │
 │   └── db-init (one-time Job, run by ArgoCD on first sync)
-│         creates devops_agent database + schema on platform-db-0
+│         creates platform_health_agent database + schema on platform-db-0
 │
 └── ai-platform namespace (unchanged)
     └── platform-db-0  ← agent connects here for state
 ```
 
-### State stored in postgres (`devops_agent` database):
+### State stored in postgres (`platform_health_agent` database):
 
 | Table | Purpose |
 |-------|---------|
@@ -176,10 +176,10 @@ Schema in §6.
 Following the cluster-dashboard convention — single `manifests.yaml` with inline scripts in ConfigMaps where practical, a few separate files where things get long.
 
 ```
-platform/services/devops-agent/
+platform/services/platform-health-agent/
 ├── README.md                       # operator-facing docs (setup, how it works, troubleshooting)
 ├── kustomization.yaml              # required by ArgoCD directory mode
-├── namespace.yaml                  # devops-agent namespace
+├── namespace.yaml                  # platform-health-agent namespace
 ├── rbac.yaml                       # ServiceAccounts + ClusterRoles + bindings (reader, writer)
 ├── configmap.yaml                  # agent-config + authorized-approvers + scripts
 ├── db-init-job.yaml                # one-time CREATE DATABASE + DDL
@@ -216,7 +216,7 @@ Why not pure inline like cluster-dashboard? Total Python/SQL lines here are ~600
 ```python
 # pseudocode — full file in scripts/event_watcher.py
 1. Connect to in-cluster K8s API via service account token.
-2. Connect to postgres devops_agent DB.
+2. Connect to postgres platform_health_agent DB.
 3. Start two informers:
    - core/v1 Pods (filter: status.containerStatuses.lastTerminationState.reason)
    - core/v1 Events (filter: type=Warning, reason in [FailedScheduling, FailedMount, Failed, BackOff])
@@ -292,7 +292,7 @@ if __name__ == "__main__":
     SocketModeHandler(app, os.environ["SLACK_APP_TOKEN"]).start()
 ```
 
-The Slack Handler does **not** need access to the K8s API except to create Jobs in its own namespace (`batch/v1` create on `jobs.batch` in `devops-agent`). RBAC scoped accordingly.
+The Slack Handler does **not** need access to the K8s API except to create Jobs in its own namespace (`batch/v1` create on `jobs.batch` in `platform-health-agent`). RBAC scoped accordingly.
 
 ### 4.3 Investigator Job (`investigate.sh`)
 
@@ -350,7 +350,7 @@ python3 /scripts/post_to_slack.py investigation "$INVESTIGATION_ID" /results/fin
 ```
 
 **Key safety properties:**
-- `--trust-tools=fs_read,fs_write,execute_bash` lets kiro-cli read files, write its single output file, and run commands. The **RBAC** prevents the kubectl calls from doing anything destructive — `devops-agent-reader` has only `get/list/watch`. So even if the LLM hallucinated `kubectl delete pod foo`, it would 403.
+- `--trust-tools=fs_read,fs_write,execute_bash` lets kiro-cli read files, write its single output file, and run commands. The **RBAC** prevents the kubectl calls from doing anything destructive — `platform-health-agent-reader` has only `get/list/watch`. So even if the LLM hallucinated `kubectl delete pod foo`, it would 403.
 - `out_of_scope=true` short-circuits in the post-to-slack script: instead of an approve button, the user gets a "📌 Out-of-scope, manual fix required" DM with the suggested fix as text only.
 
 ### 4.4 Remediator Job (`remediate.sh`)
@@ -393,12 +393,12 @@ python3 /scripts/post_to_slack.py remediation "$INVESTIGATION_ID" /results/resul
 ```
 
 **Safety properties:**
-- `devops-agent-writer` ClusterRole binds via `RoleBinding` (not `ClusterRoleBinding`) only to `inference` and to a `Role` that's templated per-team-namespace. **Effective scope: `inference` namespace + each `team-*` namespace.**
+- `platform-health-agent-writer` ClusterRole binds via `RoleBinding` (not `ClusterRoleBinding`) only to `inference` and to a `Role` that's templated per-team-namespace. **Effective scope: `inference` namespace + each `team-*` namespace.**
 - Forbidden verbs/resources still 403 even if the LLM tries them.
 
 ### 4.5 PostgreSQL state DB (`db-init-job.yaml`)
 
-A one-time Job that connects to `platform-db-0` as the postgres superuser, runs `CREATE DATABASE devops_agent`, then runs DDL. Idempotent (uses `CREATE TABLE IF NOT EXISTS`).
+A one-time Job that connects to `platform-db-0` as the postgres superuser, runs `CREATE DATABASE platform_health_agent`, then runs DDL. Idempotent (uses `CREATE TABLE IF NOT EXISTS`).
 
 ArgoCD runs this as a `PreSync` hook so it executes before the Deployments come up.
 
@@ -412,7 +412,7 @@ ArgoCD runs this as a `PreSync` hook so it executes before the Deployments come 
 apiVersion: rbac.authorization.k8s.io/v1
 kind: ClusterRole
 metadata:
-  name: devops-agent-reader
+  name: platform-health-agent-reader
 rules:
 - apiGroups: [""]
   resources: ["pods", "pods/log", "events", "nodes", "services", "configmaps",
@@ -435,7 +435,7 @@ rules:
   verbs: ["get", "list", "watch"]
 ```
 
-Bound cluster-wide to `ServiceAccount devops-agent-reader` in `devops-agent` namespace.
+Bound cluster-wide to `ServiceAccount platform-health-agent-reader` in `platform-health-agent` namespace.
 
 ### 5.2 Writer (used by Remediator Jobs ONLY)
 
@@ -443,7 +443,7 @@ Bound cluster-wide to `ServiceAccount devops-agent-reader` in `devops-agent` nam
 apiVersion: rbac.authorization.k8s.io/v1
 kind: ClusterRole
 metadata:
-  name: devops-agent-writer
+  name: platform-health-agent-writer
 rules:
 - apiGroups: [""]
   resources: ["pods"]
@@ -484,7 +484,7 @@ Alternative simpler approach: **list all current `team-*` namespaces at agent bo
   resources: ["jobs"]
   verbs: ["create", "get", "list"]
   resourceNames: []  # any in own namespace
-# scoped to devops-agent namespace via Role+RoleBinding
+# scoped to platform-health-agent namespace via Role+RoleBinding
 ```
 
 ---
@@ -492,7 +492,7 @@ Alternative simpler approach: **list all current `team-*` namespaces at agent bo
 ## 6. Database Schema
 
 ```sql
--- Run by db-init Job inside the new `devops_agent` database.
+-- Run by db-init Job inside the new `platform_health_agent` database.
 
 CREATE TABLE IF NOT EXISTS investigations (
   id                 UUID PRIMARY KEY DEFAULT gen_random_uuid(),
@@ -534,10 +534,10 @@ CREATE TABLE IF NOT EXISTS daily_counters (
 
 **Connection string** (env var on Event Watcher, Slack Handler, all Jobs):
 ```
-postgres://devops_agent:<password>@platform-db.ai-platform.svc.cluster.local:5432/devops_agent
+postgres://platform_health_agent:<password>@platform-db.ai-platform.svc.cluster.local:5432/platform_health_agent
 ```
 
-The `devops_agent` user + password is created by the db-init Job and stored in the `devops-agent-secrets` K8s Secret as `DB_PASSWORD`. The Job uses the existing `platform-db-credentials` (postgres superuser) for the one-time provisioning.
+The `platform_health_agent` user + password is created by the db-init Job and stored in the `platform-health-agent-secrets` K8s Secret as `DB_PASSWORD`. The Job uses the existing `platform-db-credentials` (postgres superuser) for the one-time provisioning.
 
 ---
 
@@ -547,15 +547,15 @@ The `devops_agent` user + password is created by the db-init Job and stored in t
 apiVersion: v1
 kind: ConfigMap
 metadata:
-  name: devops-agent-config
-  namespace: devops-agent
+  name: platform-health-agent-config
+  namespace: platform-health-agent
 data:
   CLUSTER_NAME: "ai-platform-cnd-demo"
   AWS_REGION: "eu-central-1"
 
   # Watch / debounce
   WATCH_NAMESPACES: "*"                          # comma-list or "*"
-  EXCLUDE_NAMESPACES: "kube-system,kube-node-lease,argocd,external-secrets,gpu-operator,kuberay,amazon-cloudwatch,devops-agent"
+  EXCLUDE_NAMESPACES: "kube-system,kube-node-lease,argocd,external-secrets,gpu-operator,kuberay,amazon-cloudwatch,platform-health-agent"
   DEBOUNCE_WINDOW_SEC: "600"
 
   # Triggers (boolean toggle each)
@@ -627,16 +627,16 @@ Rollback: kubectl rollout undo deployment/foo -n team-search
 `argocd/bootstrap/platform.yaml` — add one element under `# --- Platform Services (user-facing) ---`:
 
 ```yaml
-          - name: devops-agent
-            namespace: devops-agent
+          - name: platform-health-agent
+            namespace: platform-health-agent
             type: directory
-            path: platform/services/devops-agent
+            path: platform/services/platform-health-agent
             tier: platform
 ```
 
 Place it after `cluster-dashboard` so it's the last platform service. **No other ArgoCD changes needed** — the existing `templatePatch` handles directory-mode apps automatically, and `CreateNamespace=true + ServerSideApply=true` are already set globally.
 
-**Disable the agent:** delete that block + push. ArgoCD will prune the entire stack (pods, jobs, RBAC, ConfigMap, Secrets — except the manually-created `devops-agent-secrets` which has no owner reference, so it persists; and the postgres `devops_agent` database persists, which is intentional for audit replay if re-enabled).
+**Disable the agent:** delete that block + push. ArgoCD will prune the entire stack (pods, jobs, RBAC, ConfigMap, Secrets — except the manually-created `platform-health-agent-secrets` which has no owner reference, so it persists; and the postgres `platform_health_agent` database persists, which is intentional for audit replay if re-enabled).
 
 ---
 
@@ -646,22 +646,22 @@ Each step has explicit verification before proceeding to the next.
 
 ### Step 1 — Land the manifests (no behaviour change yet)
 
-1. Create branch `feat/devops-agent`.
-2. Add all files under `platform/services/devops-agent/`.
+1. Create branch `feat/platform-health-agent`.
+2. Add all files under `platform/services/platform-health-agent/`.
 3. **Do not yet add the entry to `argocd/bootstrap/platform.yaml`** — this keeps ArgoCD from picking it up.
-4. Open PR. Validate with `kubectl --dry-run=client apply -k platform/services/devops-agent/` locally.
+4. Open PR. Validate with `kubectl --dry-run=client apply -k platform/services/platform-health-agent/` locally.
 
 ### Step 2 — Bootstrap secrets and DB (manual, one-time)
 
 ```bash
 # Namespace
-kubectl create namespace devops-agent
+kubectl create namespace platform-health-agent
 
 # Secret (see §1.3)
-kubectl -n devops-agent create secret generic devops-agent-secrets ...
+kubectl -n platform-health-agent create secret generic platform-health-agent-secrets ...
 
 # Verify
-kubectl -n devops-agent get secret devops-agent-secrets -o jsonpath='{.data}' | base64 -d 2>&1 | head -c 200
+kubectl -n platform-health-agent get secret platform-health-agent-secrets -o jsonpath='{.data}' | base64 -d 2>&1 | head -c 200
 ```
 
 ### Step 3 — Enable in ArgoCD (the one-line switch)
@@ -670,11 +670,11 @@ kubectl -n devops-agent get secret devops-agent-secrets -o jsonpath='{.data}' | 
 2. Push.
 3. Watch:
    ```bash
-   kubectl get applications -n argocd devops-agent -w
-   kubectl get pods -n devops-agent -w
+   kubectl get applications -n argocd platform-health-agent -w
+   kubectl get pods -n platform-health-agent -w
    ```
 4. Expected sequence:
-   - `db-init` Job runs and completes (logs: "database devops_agent created", "DDL applied").
+   - `db-init` Job runs and completes (logs: "database platform_health_agent created", "DDL applied").
    - `event-watcher` and `slack-handler` Deployments come up Ready 1/1.
 
 ### Step 4 — Smoke test (read-only path)
@@ -712,7 +712,7 @@ kubectl -n devops-agent get secret devops-agent-secrets -o jsonpath='{.data}' | 
    ```
 2. Receive DM, **click `Approve`**.
 3. Watch:
-   - `kubectl get jobs -n devops-agent -w` — expect a `remediator-…` Job.
+   - `kubectl get jobs -n platform-health-agent -w` — expect a `remediator-…` Job.
    - DM thread reply within 1-2 min.
 4. Verify the deployment was actually patched:
    ```bash
@@ -759,18 +759,18 @@ Let the agent run during normal cluster activity. Monitor:
 - **Postgres connection loss**: Event Watcher reconnects with exponential backoff up to 60s. Slack Handler same. If postgres is down for longer, both Deployments crash → ArgoCD restarts them; Slack Handler reconnects to Slack on next start.
 - **Slack rate limits**: bot DMs are limited to 1 message/sec. With cap of 50 DMs/day, no risk.
 - **Audit log**: all approvals/dismissals/remediations are in postgres `investigations` table forever. Consider exporting to CloudWatch Logs in V2.
-- **Kill switch**: `kubectl scale deployment event-watcher -n devops-agent --replicas=0` stops new investigations without touching ArgoCD config (ArgoCD will scale it back up within ~3min — for a true kill, comment out the ApplicationSet entry).
+- **Kill switch**: `kubectl scale deployment event-watcher -n platform-health-agent --replicas=0` stops new investigations without touching ArgoCD config (ArgoCD will scale it back up within ~3min — for a true kill, comment out the ApplicationSet entry).
 
 ---
 
 ## 13. README content (operator-facing)
 
-The `README.md` in `platform/services/devops-agent/` will be the operator runbook. Outline:
+The `README.md` in `platform/services/platform-health-agent/` will be the operator runbook. Outline:
 
 1. What this is (1 paragraph).
 2. How to enable / disable.
 3. Required setup (link to §1 of this doc).
-4. How to read the postgres state (`kubectl exec -n ai-platform platform-db-0 -- psql -U devops_agent -d devops_agent -c 'SELECT …'`).
+4. How to read the postgres state (`kubectl exec -n ai-platform platform-db-0 -- psql -U platform_health_agent -d platform_health_agent -c 'SELECT …'`).
 5. Troubleshooting:
    - "I'm not getting any DMs": check Slack Handler logs, verify Socket Mode WS is connected, verify bot was DM'd at least once.
    - "The agent investigated something silly": tune `EXCLUDE_NAMESPACES` or set the relevant `TRIGGER_*=false`.
@@ -801,10 +801,10 @@ Pulled forward from the architecture doc + emerged during this design:
 
 V1 ships when ALL the following are green:
 
-- [ ] All files in `platform/services/devops-agent/` reviewed and committed
+- [ ] All files in `platform/services/platform-health-agent/` reviewed and committed
 - [ ] One-line addition to `argocd/bootstrap/platform.yaml` reviewed
-- [ ] Slack app created with documented scopes; tokens stored in `devops-agent-secrets`
-- [ ] `db-init` Job successfully runs, postgres `devops_agent` DB present with three tables
+- [ ] Slack app created with documented scopes; tokens stored in `platform-health-agent-secrets`
+- [ ] `db-init` Job successfully runs, postgres `platform_health_agent` DB present with three tables
 - [ ] Event Watcher and Slack Handler Deployments healthy 1/1
 - [ ] Smoke test (Step 4) passes: investigation produced, dismissal logged
 - [ ] End-to-end test (Step 5) passes: real fix applied, verified in cluster, threaded reply in Slack

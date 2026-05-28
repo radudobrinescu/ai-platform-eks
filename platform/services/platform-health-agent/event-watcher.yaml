@@ -12,10 +12,10 @@ apiVersion: apps/v1
 kind: Deployment
 metadata:
   name: event-watcher
-  namespace: devops-agent
+  namespace: platform-health-agent
   labels:
     app.kubernetes.io/name: event-watcher
-    app.kubernetes.io/part-of: devops-agent
+    app.kubernetes.io/part-of: platform-health-agent
 spec:
   replicas: 1
   strategy:
@@ -27,9 +27,9 @@ spec:
     metadata:
       labels:
         app.kubernetes.io/name: event-watcher
-        app.kubernetes.io/part-of: devops-agent
+        app.kubernetes.io/part-of: platform-health-agent
     spec:
-      serviceAccountName: devops-agent-reader
+      serviceAccountName: platform-health-agent-reader
       automountServiceAccountToken: true
       nodeSelector:
         kubernetes.io/arch: amd64
@@ -42,11 +42,11 @@ spec:
           command: ["/bin/sh", "/scripts/db_init.sh"]
           env:
             - name: DB_HOST
-              valueFrom: { configMapKeyRef: { name: devops-agent-config, key: DB_HOST } }
+              valueFrom: { configMapKeyRef: { name: platform-health-agent-config, key: DB_HOST } }
             - name: DB_PORT
-              valueFrom: { configMapKeyRef: { name: devops-agent-config, key: DB_PORT } }
+              valueFrom: { configMapKeyRef: { name: platform-health-agent-config, key: DB_PORT } }
             - name: DB_NAME
-              valueFrom: { configMapKeyRef: { name: devops-agent-config, key: DB_NAME } }
+              valueFrom: { configMapKeyRef: { name: platform-health-agent-config, key: DB_NAME } }
             - name: PG_SUPERUSER
               valueFrom: { secretKeyRef: { name: platform-db-credentials, key: username } }
             - name: PG_SUPERPASSWORD
@@ -89,47 +89,47 @@ spec:
               value: /pydeps
             - name: PYTHONUNBUFFERED
               value: "1"
-            # ConfigMap (everything in devops-agent-config)
+            # ConfigMap (everything in platform-health-agent-config)
             - name: CLUSTER_NAME
-              valueFrom: { configMapKeyRef: { name: devops-agent-config, key: CLUSTER_NAME } }
+              valueFrom: { configMapKeyRef: { name: platform-health-agent-config, key: CLUSTER_NAME } }
             - name: AWS_REGION
-              valueFrom: { configMapKeyRef: { name: devops-agent-config, key: AWS_REGION } }
+              valueFrom: { configMapKeyRef: { name: platform-health-agent-config, key: AWS_REGION } }
             - name: WATCH_NAMESPACES
-              valueFrom: { configMapKeyRef: { name: devops-agent-config, key: WATCH_NAMESPACES } }
+              valueFrom: { configMapKeyRef: { name: platform-health-agent-config, key: WATCH_NAMESPACES } }
             - name: EXCLUDE_NAMESPACES
-              valueFrom: { configMapKeyRef: { name: devops-agent-config, key: EXCLUDE_NAMESPACES } }
+              valueFrom: { configMapKeyRef: { name: platform-health-agent-config, key: EXCLUDE_NAMESPACES } }
             - name: DEBOUNCE_WINDOW_SEC
-              valueFrom: { configMapKeyRef: { name: devops-agent-config, key: DEBOUNCE_WINDOW_SEC } }
+              valueFrom: { configMapKeyRef: { name: platform-health-agent-config, key: DEBOUNCE_WINDOW_SEC } }
             - name: TRIGGER_CRASHLOOP
-              valueFrom: { configMapKeyRef: { name: devops-agent-config, key: TRIGGER_CRASHLOOP } }
+              valueFrom: { configMapKeyRef: { name: platform-health-agent-config, key: TRIGGER_CRASHLOOP } }
             - name: TRIGGER_OOMKILLED
-              valueFrom: { configMapKeyRef: { name: devops-agent-config, key: TRIGGER_OOMKILLED } }
+              valueFrom: { configMapKeyRef: { name: platform-health-agent-config, key: TRIGGER_OOMKILLED } }
             - name: TRIGGER_IMAGEPULL
-              valueFrom: { configMapKeyRef: { name: devops-agent-config, key: TRIGGER_IMAGEPULL } }
+              valueFrom: { configMapKeyRef: { name: platform-health-agent-config, key: TRIGGER_IMAGEPULL } }
             - name: TRIGGER_FAILEDSCHED
-              valueFrom: { configMapKeyRef: { name: devops-agent-config, key: TRIGGER_FAILEDSCHED } }
+              valueFrom: { configMapKeyRef: { name: platform-health-agent-config, key: TRIGGER_FAILEDSCHED } }
             - name: TRIGGER_NODENOTREADY
-              valueFrom: { configMapKeyRef: { name: devops-agent-config, key: TRIGGER_NODENOTREADY } }
+              valueFrom: { configMapKeyRef: { name: platform-health-agent-config, key: TRIGGER_NODENOTREADY } }
             - name: TRIGGER_FAILEDMOUNT
-              valueFrom: { configMapKeyRef: { name: devops-agent-config, key: TRIGGER_FAILEDMOUNT } }
+              valueFrom: { configMapKeyRef: { name: platform-health-agent-config, key: TRIGGER_FAILEDMOUNT } }
             - name: MAX_CONCURRENT_INVESTIGATIONS
-              valueFrom: { configMapKeyRef: { name: devops-agent-config, key: MAX_CONCURRENT_INVESTIGATIONS } }
+              valueFrom: { configMapKeyRef: { name: platform-health-agent-config, key: MAX_CONCURRENT_INVESTIGATIONS } }
             - name: MAX_INVESTIGATIONS_PER_DAY
-              valueFrom: { configMapKeyRef: { name: devops-agent-config, key: MAX_INVESTIGATIONS_PER_DAY } }
+              valueFrom: { configMapKeyRef: { name: platform-health-agent-config, key: MAX_INVESTIGATIONS_PER_DAY } }
             - name: KIRO_MODEL_INVESTIGATE
-              valueFrom: { configMapKeyRef: { name: devops-agent-config, key: KIRO_MODEL_INVESTIGATE } }
+              valueFrom: { configMapKeyRef: { name: platform-health-agent-config, key: KIRO_MODEL_INVESTIGATE } }
             - name: KIRO_MODEL_REMEDIATE
-              valueFrom: { configMapKeyRef: { name: devops-agent-config, key: KIRO_MODEL_REMEDIATE } }
+              valueFrom: { configMapKeyRef: { name: platform-health-agent-config, key: KIRO_MODEL_REMEDIATE } }
             - name: PYTHON_IMAGE
-              valueFrom: { configMapKeyRef: { name: devops-agent-config, key: PYTHON_IMAGE } }
+              valueFrom: { configMapKeyRef: { name: platform-health-agent-config, key: PYTHON_IMAGE } }
             - name: KUBECTL_VERSION
-              valueFrom: { configMapKeyRef: { name: devops-agent-config, key: KUBECTL_VERSION } }
+              valueFrom: { configMapKeyRef: { name: platform-health-agent-config, key: KUBECTL_VERSION } }
             - name: DB_HOST
-              valueFrom: { configMapKeyRef: { name: devops-agent-config, key: DB_HOST } }
+              valueFrom: { configMapKeyRef: { name: platform-health-agent-config, key: DB_HOST } }
             - name: DB_PORT
-              valueFrom: { configMapKeyRef: { name: devops-agent-config, key: DB_PORT } }
+              valueFrom: { configMapKeyRef: { name: platform-health-agent-config, key: DB_PORT } }
             - name: DB_NAME
-              valueFrom: { configMapKeyRef: { name: devops-agent-config, key: DB_NAME } }
+              valueFrom: { configMapKeyRef: { name: platform-health-agent-config, key: DB_NAME } }
             # DB credentials reuse the existing platform Postgres credentials.
             - name: DB_USER
               valueFrom: { secretKeyRef: { name: platform-db-credentials, key: username } }
@@ -172,7 +172,7 @@ spec:
       volumes:
         - name: scripts
           configMap:
-            name: devops-agent-scripts
+            name: platform-health-agent-scripts
             defaultMode: 0755
         - name: pydeps
           emptyDir: {}

@@ -195,7 +195,7 @@ body { font-family: var(--font); background: var(--bg); color: var(--text); heig
 @keyframes pulse { 0%,100%{opacity:1;}50%{opacity:0.3;} }
 @keyframes fadeIn { from{opacity:0;transform:translateY(-3px);}to{opacity:1;transform:translateY(0);} }
 
-/* ─── DevOps Agent approvals UI ─────────────────────────────────────── */
+/* ─── Platform Health Agent approvals UI ─────────────────────────────────────── */
 .approvals-btn {
   background: var(--surface); border: 1px solid var(--border);
   border-radius: var(--radius-sm); padding: 5px 10px; cursor: pointer;
@@ -650,7 +650,7 @@ if(saved)document.body.setAttribute('data-theme',saved);
 
 </script>
 
-<!-- ─── DevOps Agent approvals modal ──────────────────────────────────── -->
+<!-- ─── Platform Health Agent approvals modal ──────────────────────────────────── -->
 <div class="approvals-modal" id="approvals-modal" onclick="if(event.target===this)closeApprovals()">
   <div class="approvals-panel">
     <div class="approvals-header">
@@ -667,7 +667,7 @@ if(saved)document.body.setAttribute('data-theme',saved);
 </div>
 
 <script>
-// ─── DevOps Agent approvals UI ────────────────────────────────────────
+// ─── Platform Health Agent approvals UI ────────────────────────────────────────
 function escapeHtml(s){
   return String(s ?? '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 }

@@ -8,16 +8,16 @@ Two responsibilities:
    HTML. Browser polls /data.json — no streaming, no proxying, no auth
    in browser.
 
-2. (New) Surface DevOps Agent approvals from the `devops_agent` postgres
-   database (created by the optional devops-agent platform service):
+2. (New) Surface Platform Health Agent approvals from the `platform_health_agent` postgres
+   database (created by the optional platform-health-agent platform service):
      - GET  /investigations           → list of pending investigations
      - POST /investigations/<id>/approve → spawn Remediator Job in
-                                           devops-agent namespace
+                                           platform-health-agent namespace
      - POST /investigations/<id>/dismiss → mark dismissed (no Job)
    The /data.json payload also includes `approvals_pending` (count) and
    `approvals_available` (boolean) so the topbar can render a badge.
 
-Backwards-compatibility: when the devops_agent DB is unreachable (e.g. the
+Backwards-compatibility: when the platform_health_agent DB is unreachable (e.g. the
 agent is not deployed), all approvals endpoints return 503 and the
 snapshot reports `approvals_available: false` — the existing dashboard
 keeps working unchanged.
@@ -63,11 +63,11 @@ CA_PATH = "/var/run/secrets/kubernetes.io/serviceaccount/ca.crt"
 
 DB_HOST = os.environ.get("DB_HOST", "platform-db.ai-platform.svc.cluster.local")
 DB_PORT = int(os.environ.get("DB_PORT", "5432"))
-DB_NAME = os.environ.get("DB_NAME", "devops_agent")
+DB_NAME = os.environ.get("DB_NAME", "platform_health_agent")
 DB_USER = os.environ.get("DB_USER")
 DB_PASSWORD = os.environ.get("DB_PASSWORD")
 
-DEVOPS_AGENT_NAMESPACE = os.environ.get("DEVOPS_AGENT_NAMESPACE", "devops-agent")
+DEVOPS_AGENT_NAMESPACE = os.environ.get("DEVOPS_AGENT_NAMESPACE", "platform-health-agent")
 APPROVAL_EXPIRY_HOURS = int(os.environ.get("APPROVAL_EXPIRY_HOURS", "24"))
 MAX_REMEDIATIONS_PER_DAY = int(os.environ.get("MAX_REMEDIATIONS_PER_DAY", "20"))
 KIRO_MODEL_REMEDIATE = os.environ.get("KIRO_MODEL_REMEDIATE", "claude-opus-4.6")
@@ -159,8 +159,8 @@ def build_remediator_job(investigation_id: str) -> dict:
             "name": job_name,
             "namespace": DEVOPS_AGENT_NAMESPACE,
             "labels": {
-                "app.kubernetes.io/name": "devops-agent-remediator",
-                "app.kubernetes.io/part-of": "devops-agent",
+                "app.kubernetes.io/name": "platform-health-agent-remediator",
+                "app.kubernetes.io/part-of": "platform-health-agent",
                 "investigation-id": investigation_id,
             },
         },
@@ -171,13 +171,13 @@ def build_remediator_job(investigation_id: str) -> dict:
             "template": {
                 "metadata": {
                     "labels": {
-                        "app.kubernetes.io/name": "devops-agent-remediator",
+                        "app.kubernetes.io/name": "platform-health-agent-remediator",
                         "investigation-id": investigation_id,
                     },
                 },
                 "spec": {
                     "restartPolicy": "Never",
-                    "serviceAccountName": "devops-agent-writer",
+                    "serviceAccountName": "platform-health-agent-writer",
                     "automountServiceAccountToken": True,
                     "nodeSelector": {"kubernetes.io/arch": "amd64"},
                     "initContainers": [
@@ -222,12 +222,12 @@ def build_remediator_job(investigation_id: str) -> dict:
                             {"name": "PATH", "value": "/tools:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"},
                             {"name": "PYTHONPATH", "value": "/pydeps"},
                             {"name": "HOME", "value": "/tmp"},
-                            *[{"name": k, "valueFrom": {"configMapKeyRef": {"name": "devops-agent-config", "key": k}}}
+                            *[{"name": k, "valueFrom": {"configMapKeyRef": {"name": "platform-health-agent-config", "key": k}}}
                               for k in ["CLUSTER_NAME", "AWS_REGION", "DB_HOST", "DB_PORT", "DB_NAME",
                                         "KIRO_MODEL_REMEDIATE"]],
                             {"name": "DB_USER",      "valueFrom": {"secretKeyRef": {"name": "platform-db-credentials", "key": "username"}}},
                             {"name": "DB_PASSWORD",  "valueFrom": {"secretKeyRef": {"name": "platform-db-credentials", "key": "password"}}},
-                            {"name": "KIRO_API_KEY", "valueFrom": {"secretKeyRef": {"name": "devops-agent-secrets",   "key": "KIRO_API_KEY"}}},
+                            {"name": "KIRO_API_KEY", "valueFrom": {"secretKeyRef": {"name": "platform-health-agent-secrets",   "key": "KIRO_API_KEY"}}},
                         ],
                         "volumeMounts": [
                             {"name": "scripts", "mountPath": "/scripts", "readOnly": True},
@@ -248,7 +248,7 @@ def build_remediator_job(investigation_id: str) -> dict:
                         },
                     }],
                     "volumes": [
-                        {"name": "scripts", "configMap": {"name": "devops-agent-scripts", "defaultMode": 0o755}},
+                        {"name": "scripts", "configMap": {"name": "platform-health-agent-scripts", "defaultMode": 0o755}},
                         {"name": "tools",   "emptyDir": {}},
                         {"name": "pydeps",  "emptyDir": {}},
                         {"name": "results", "emptyDir": {}},

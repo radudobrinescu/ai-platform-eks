@@ -1,9 +1,9 @@
-# Autonomous DevOps Agent — Architecture Design
+# Autonomous Platform Health Agent — Architecture Design
 
 **Status:** Draft  
 **Author:** Platform Team  
 **Date:** 2026-05-28  
-**Module path:** `platform/services/devops-agent/`
+**Module path:** `platform/services/platform-health-agent/`
 
 ---
 
@@ -109,7 +109,7 @@ No additional infrastructure (ECS, Step Functions) is required — the entire pi
 apiVersion: v1
 kind: ConfigMap
 metadata:
-  name: devops-agent-config
+  name: platform-health-agent-config
 data:
   watch_namespaces: "*"              # or "production,staging"
   exclude_namespaces: "kube-system,kube-node-lease"
@@ -122,7 +122,7 @@ data:
 
 **Type:** Job (created per incident, `ttlSecondsAfterFinished: 3600`)  
 **Image:** `<ecr>/kiro-agent:latest` (Kiro CLI + kubectl + awscli)  
-**RBAC:** `ServiceAccount: devops-agent-reader` — read-only cluster access  
+**RBAC:** `ServiceAccount: platform-health-agent-reader` — read-only cluster access  
 
 **Execution:**
 ```bash
@@ -191,7 +191,7 @@ min_approval_count: 1  # V2: support multi-approval for CRITICAL
 
 **Type:** Job (created only after Slack approval)  
 **Image:** Same `<ecr>/kiro-agent:latest`  
-**RBAC:** `ServiceAccount: devops-agent-writer` — scoped write access  
+**RBAC:** `ServiceAccount: platform-health-agent-writer` — scoped write access  
 
 **Execution:**
 ```bash
@@ -227,7 +227,7 @@ Two separate ServiceAccounts enforce the principle of least privilege:
 apiVersion: rbac.authorization.k8s.io/v1
 kind: ClusterRole
 metadata:
-  name: devops-agent-reader
+  name: platform-health-agent-reader
 rules:
 - apiGroups: [""]
   resources: ["pods", "pods/log", "events", "nodes", "services",
@@ -249,7 +249,7 @@ rules:
 apiVersion: rbac.authorization.k8s.io/v1
 kind: ClusterRole
 metadata:
-  name: devops-agent-writer
+  name: platform-health-agent-writer
 rules:
 - apiGroups: [""]
   resources: ["pods"]
@@ -325,24 +325,24 @@ All sensitive values stored as Kubernetes `ExternalSecret` (AWS Secrets Manager)
 apiVersion: external-secrets.io/v1beta1
 kind: ExternalSecret
 metadata:
-  name: devops-agent-secrets
+  name: platform-health-agent-secrets
 spec:
   refreshInterval: 1h
   secretStoreRef:
     name: aws-secrets-manager
     kind: ClusterSecretStore
   target:
-    name: devops-agent-secrets
+    name: platform-health-agent-secrets
   data:
   - secretKey: kiro-api-key
     remoteRef:
-      key: /platform/devops-agent/kiro-api-key
+      key: /platform/platform-health-agent/kiro-api-key
   - secretKey: slack-bot-token
     remoteRef:
-      key: /platform/devops-agent/slack-bot-token
+      key: /platform/platform-health-agent/slack-bot-token
   - secretKey: slack-signing-secret
     remoteRef:
-      key: /platform/devops-agent/slack-signing-secret
+      key: /platform/platform-health-agent/slack-signing-secret
 ```
 
 ---
@@ -352,11 +352,11 @@ spec:
 ### Option A: ArgoCD Application toggle (recommended)
 
 ```yaml
-# argocd/apps/devops-agent.yaml
+# argocd/apps/platform-health-agent.yaml
 apiVersion: argoproj.io/v1alpha1
 kind: Application
 metadata:
-  name: devops-agent
+  name: platform-health-agent
   namespace: argocd
   annotations:
     argocd.argoproj.io/sync-wave: "3"
@@ -366,18 +366,18 @@ spec:
   project: platform
   source:
     repoURL: <this-repo>
-    path: platform/services/devops-agent
+    path: platform/services/platform-health-agent
     targetRevision: HEAD
   destination:
     server: https://kubernetes.default.svc
-    namespace: devops-agent
+    namespace: platform-health-agent
   syncPolicy:
     automated:
       prune: true
       selfHeal: true
 ```
 
-To disable: delete or comment out `argocd/apps/devops-agent.yaml` and push.
+To disable: delete or comment out `argocd/apps/platform-health-agent.yaml` and push.
 
 ### Option B: Helm values (if using ApplicationSet)
 
@@ -431,7 +431,7 @@ User Workload          Event Watcher        Investigator         Slack          
 ## 10. File Layout
 
 ```
-platform/services/devops-agent/
+platform/services/platform-health-agent/
 ├── kustomization.yaml
 ├── namespace.yaml
 ├── rbac/
@@ -498,7 +498,7 @@ platform/services/devops-agent/
 | # | Decision | Rationale | Alternative considered |
 |---|----------|-----------|----------------------|
 | 1 | EKS-native (K8s Jobs) over ECS Fargate | Already have EKS; no additional infra; in-cluster kubectl is simpler | ECS + cross-cluster auth |
-| 2 | Kiro CLI headless over DevOps Agent webhook | Full prompt customization; can apply fixes; MCP extensibility | DevOps Agent managed webhooks |
+| 2 | Kiro CLI headless over Platform Health Agent webhook | Full prompt customization; can apply fixes; MCP extensibility | Platform Health Agent managed webhooks |
 | 3 | Slack Block Kit over email/PagerDuty | Interactive approval buttons; team already lives in Slack | Email with approval links |
 | 4 | Separate reader/writer RBAC | Principle of least privilege; write only after human approval | Single broad ServiceAccount |
 | 5 | ExternalSecrets over sealed-secrets | Consistent with existing platform pattern; rotation support | SealedSecrets, SOPS |

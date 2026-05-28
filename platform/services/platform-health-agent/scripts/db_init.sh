@@ -1,9 +1,9 @@
 #!/bin/sh
-# db-init.sh — one-time provisioning of the devops_agent database.
+# db-init.sh — one-time provisioning of the platform_health_agent database.
 #
 # Connects to platform-db-0 as the existing `platform` superuser
 # (credentials from platform-db-credentials), creates the
-# `devops_agent` database if missing, then runs ddl.sql against it.
+# `platform_health_agent` database if missing, then runs ddl.sql against it.
 #
 # Idempotent: re-running is a no-op.
 # Run by: db-init Job (ArgoCD PreSync hook on every sync).
@@ -14,7 +14,7 @@ PG_HOST="${DB_HOST:?DB_HOST not set}"
 PG_PORT="${DB_PORT:-5432}"
 PG_USER="${PG_SUPERUSER:?PG_SUPERUSER not set}"
 PG_PASS="${PG_SUPERPASSWORD:?PG_SUPERPASSWORD not set}"
-TARGET_DB="${DB_NAME:-devops_agent}"
+TARGET_DB="${DB_NAME:-platform_health_agent}"
 
 export PGPASSWORD="$PG_PASS"
 

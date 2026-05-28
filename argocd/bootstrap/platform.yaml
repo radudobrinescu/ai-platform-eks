@@ -68,10 +68,10 @@ spec:
             type: directory
             path: platform/services/cluster-dashboard
             tier: platform
-          - name: devops-agent
-            namespace: devops-agent
+          - name: platform-health-agent
+            namespace: platform-health-agent
             type: directory
-            path: platform/services/devops-agent
+            path: platform/services/platform-health-agent
             tier: platform
   template:
     metadata:

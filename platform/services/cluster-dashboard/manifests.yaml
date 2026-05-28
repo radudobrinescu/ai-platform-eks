@@ -1,12 +1,12 @@
 # Cluster Dashboard manifests.
 #
-# Two roles in V2 (after devops-agent integration):
+# Two roles in V2 (after platform-health-agent integration):
 #   1. Cluster topology view (existing): polls K8s for nodes/pods/InferenceEndpoints.
-#   2. DevOps Agent approvals UI (new):  reads pending investigations from
-#      the `devops_agent` postgres database; on click, creates a Remediator
-#      Job in the `devops-agent` namespace.
+#   2. Platform Health Agent approvals UI (new):  reads pending investigations from
+#      the `platform_health_agent` postgres database; on click, creates a Remediator
+#      Job in the `platform-health-agent` namespace.
 #
-# Backwards-compatibility: when the devops-agent service is not deployed,
+# Backwards-compatibility: when the platform-health-agent service is not deployed,
 # the database doesn't exist and the approvals UI auto-disables — the
 # topology view keeps working unchanged.
 #
@@ -46,14 +46,14 @@ roleRef:
   name: cluster-dashboard
   apiGroup: rbac.authorization.k8s.io
 ---
-# New: scoped Job-creation rights in the devops-agent namespace.
+# New: scoped Job-creation rights in the platform-health-agent namespace.
 # Used by the approvals UI to spawn Remediator Jobs after [Approve] click.
-# Bound only inside the devops-agent namespace — cannot create Jobs anywhere else.
+# Bound only inside the platform-health-agent namespace — cannot create Jobs anywhere else.
 apiVersion: rbac.authorization.k8s.io/v1
 kind: Role
 metadata:
   name: cluster-dashboard-approvals
-  namespace: devops-agent
+  namespace: platform-health-agent
 rules:
   - apiGroups: ["batch"]
     resources: ["jobs"]
@@ -63,7 +63,7 @@ apiVersion: rbac.authorization.k8s.io/v1
 kind: RoleBinding
 metadata:
   name: cluster-dashboard-approvals
-  namespace: devops-agent
+  namespace: platform-health-agent
 subjects:
   - kind: ServiceAccount
     name: cluster-dashboard
@@ -125,7 +125,7 @@ spec:
               value: /pydeps
             - name: PYTHONUNBUFFERED
               value: "1"
-            # devops-agent integration. These are SAFE to set even when the
+            # platform-health-agent integration. These are SAFE to set even when the
             # agent is not deployed — backend gracefully reports
             # `approvals_available: false` if the DB is unreachable.
             - name: DB_HOST
@@ -133,13 +133,13 @@ spec:
             - name: DB_PORT
               value: "5432"
             - name: DB_NAME
-              value: devops_agent
+              value: platform_health_agent
             - name: DB_USER
               valueFrom: { secretKeyRef: { name: platform-db-credentials, key: username } }
             - name: DB_PASSWORD
               valueFrom: { secretKeyRef: { name: platform-db-credentials, key: password } }
             - name: DEVOPS_AGENT_NAMESPACE
-              value: devops-agent
+              value: platform-health-agent
             - name: APPROVAL_EXPIRY_HOURS
               value: "24"
             - name: MAX_REMEDIATIONS_PER_DAY

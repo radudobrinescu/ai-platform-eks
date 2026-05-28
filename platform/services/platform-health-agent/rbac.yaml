@@ -2,21 +2,21 @@
 #
 # THREE distinct identities — strict least-privilege:
 #
-# 1. devops-agent-reader (cluster-wide read)
+# 1. platform-health-agent-reader (cluster-wide read)
 #    Used by: Event Watcher, Investigator Jobs.
 #    Binding: ClusterRoleBinding (it watches/reads everywhere).
 #
-# 2. devops-agent-writer (scoped write)
+# 2. platform-health-agent-writer (scoped write)
 #    Used by: Remediator Jobs ONLY.
 #    Binding: RoleBinding per allowed namespace.
 #    Allowed namespaces: `inference` (created at install) + each `team-*` namespace.
 #    The `team-*` namespace bindings are reconciled by Event Watcher
 #    (a 5-minute periodic sweep — see scripts/event_watcher.py).
 #
-# 3. devops-agent-spawner (create Jobs in own namespace)
+# 3. platform-health-agent-spawner (create Jobs in own namespace)
 #    Used by: Slack Handler (to create Remediator Jobs after approval),
 #             Event Watcher (to create Investigator Jobs).
-#    Binding: RoleBinding scoped to `devops-agent` namespace only.
+#    Binding: RoleBinding scoped to `platform-health-agent` namespace only.
 #
 # What these roles deliberately do NOT grant:
 # - No write access to InferenceEndpoint / AITeam KRO CRs (ArgoCD-managed).
@@ -27,26 +27,26 @@
 apiVersion: v1
 kind: ServiceAccount
 metadata:
-  name: devops-agent-reader
-  namespace: devops-agent
+  name: platform-health-agent-reader
+  namespace: platform-health-agent
 ---
 apiVersion: v1
 kind: ServiceAccount
 metadata:
-  name: devops-agent-writer
-  namespace: devops-agent
+  name: platform-health-agent-writer
+  namespace: platform-health-agent
 ---
 apiVersion: v1
 kind: ServiceAccount
 metadata:
-  name: devops-agent-spawner
-  namespace: devops-agent
+  name: platform-health-agent-spawner
+  namespace: platform-health-agent
 ---
 # READER — cluster-wide, get/list/watch only.
 apiVersion: rbac.authorization.k8s.io/v1
 kind: ClusterRole
 metadata:
-  name: devops-agent-reader
+  name: platform-health-agent-reader
 rules:
   - apiGroups: [""]
     resources:
@@ -83,14 +83,14 @@ rules:
 apiVersion: rbac.authorization.k8s.io/v1
 kind: ClusterRoleBinding
 metadata:
-  name: devops-agent-reader
+  name: platform-health-agent-reader
 subjects:
   - kind: ServiceAccount
-    name: devops-agent-reader
-    namespace: devops-agent
+    name: platform-health-agent-reader
+    namespace: platform-health-agent
 roleRef:
   kind: ClusterRole
-  name: devops-agent-reader
+  name: platform-health-agent-reader
   apiGroup: rbac.authorization.k8s.io
 ---
 # WRITER — scoped via RoleBinding (NOT ClusterRoleBinding) to
@@ -101,7 +101,7 @@ roleRef:
 apiVersion: rbac.authorization.k8s.io/v1
 kind: ClusterRole
 metadata:
-  name: devops-agent-writer
+  name: platform-health-agent-writer
 rules:
   - apiGroups: [""]
     resources: ["pods"]
@@ -132,18 +132,18 @@ rules:
 apiVersion: rbac.authorization.k8s.io/v1
 kind: RoleBinding
 metadata:
-  name: devops-agent-writer
+  name: platform-health-agent-writer
   namespace: inference
   labels:
-    app.kubernetes.io/part-of: devops-agent
-    app.kubernetes.io/managed-by: devops-agent-reconciler
+    app.kubernetes.io/part-of: platform-health-agent
+    app.kubernetes.io/managed-by: platform-health-agent-reconciler
 subjects:
   - kind: ServiceAccount
-    name: devops-agent-writer
-    namespace: devops-agent
+    name: platform-health-agent-writer
+    namespace: platform-health-agent
 roleRef:
   kind: ClusterRole
-  name: devops-agent-writer
+  name: platform-health-agent-writer
   apiGroup: rbac.authorization.k8s.io
 ---
 # SPAWNER — Slack Handler + Event Watcher need to create Jobs
@@ -152,8 +152,8 @@ roleRef:
 apiVersion: rbac.authorization.k8s.io/v1
 kind: Role
 metadata:
-  name: devops-agent-spawner
-  namespace: devops-agent
+  name: platform-health-agent-spawner
+  namespace: platform-health-agent
 rules:
   - apiGroups: ["batch"]
     resources: ["jobs"]
@@ -165,30 +165,30 @@ rules:
 apiVersion: rbac.authorization.k8s.io/v1
 kind: RoleBinding
 metadata:
-  name: devops-agent-spawner-handler
-  namespace: devops-agent
+  name: platform-health-agent-spawner-handler
+  namespace: platform-health-agent
 subjects:
   - kind: ServiceAccount
-    name: devops-agent-spawner
-    namespace: devops-agent
+    name: platform-health-agent-spawner
+    namespace: platform-health-agent
 roleRef:
   kind: Role
-  name: devops-agent-spawner
+  name: platform-health-agent-spawner
   apiGroup: rbac.authorization.k8s.io
 ---
 # Event Watcher gets BOTH reader (cluster-wide) and spawner (in own ns).
 apiVersion: rbac.authorization.k8s.io/v1
 kind: RoleBinding
 metadata:
-  name: devops-agent-spawner-watcher
-  namespace: devops-agent
+  name: platform-health-agent-spawner-watcher
+  namespace: platform-health-agent
 subjects:
   - kind: ServiceAccount
-    name: devops-agent-reader        # event-watcher uses the reader SA
-    namespace: devops-agent
+    name: platform-health-agent-reader        # event-watcher uses the reader SA
+    namespace: platform-health-agent
 roleRef:
   kind: Role
-  name: devops-agent-spawner
+  name: platform-health-agent-spawner
   apiGroup: rbac.authorization.k8s.io
 ---
 # Event Watcher also needs to create/delete RoleBindings cluster-wide
@@ -197,30 +197,30 @@ roleRef:
 apiVersion: rbac.authorization.k8s.io/v1
 kind: ClusterRole
 metadata:
-  name: devops-agent-rolebinding-manager
+  name: platform-health-agent-rolebinding-manager
 rules:
   - apiGroups: ["rbac.authorization.k8s.io"]
     resources: ["rolebindings"]
     verbs: ["get", "list", "create", "delete", "watch"]
     # NOTE: no `update`/`patch` — bindings are immutable from our POV.
   # K8s RBAC privilege-escalation rule: to create a RoleBinding granting
-  # `devops-agent-writer`, the creator must EITHER hold all those write
+  # `platform-health-agent-writer`, the creator must EITHER hold all those write
   # permissions itself OR have explicit `bind` permission on that
   # ClusterRole. We use the latter — surgical, no permission expansion.
   - apiGroups: ["rbac.authorization.k8s.io"]
     resources: ["clusterroles"]
     verbs: ["bind"]
-    resourceNames: ["devops-agent-writer"]
+    resourceNames: ["platform-health-agent-writer"]
 ---
 apiVersion: rbac.authorization.k8s.io/v1
 kind: ClusterRoleBinding
 metadata:
-  name: devops-agent-rolebinding-manager
+  name: platform-health-agent-rolebinding-manager
 subjects:
   - kind: ServiceAccount
-    name: devops-agent-reader
-    namespace: devops-agent
+    name: platform-health-agent-reader
+    namespace: platform-health-agent
 roleRef:
   kind: ClusterRole
-  name: devops-agent-rolebinding-manager
+  name: platform-health-agent-rolebinding-manager
   apiGroup: rbac.authorization.k8s.io
