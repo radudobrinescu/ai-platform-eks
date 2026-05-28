@@ -590,19 +590,33 @@ def _resource_age_seconds(obj: dict) -> float:
         return 0.0
 
 
-def _is_stuck_inferenceendpoint(ep: dict) -> bool:
-    status = ep.get("status") or {}
-    if status.get("modelStatus") == "ACTIVE" and status.get("ready") == "True":
-        return False
-    return _resource_age_seconds(ep) >= STUCK_RESOURCE_THRESHOLD_SEC
-
-
 def _is_stuck_aiteam(team: dict) -> bool:
     status = team.get("status") or {}
-    # AITeam reaches active when the namespace + LiteLLM team key Job complete.
-    if status.get("phase") in ("Active", "Ready") or status.get("ready") == "True":
+    # KRO AITeam reports `state: ACTIVE` plus a Ready condition when healthy.
+    # The older heuristic (`phase` / `ready` boolean) does not match KRO's
+    # actual schema and produced false positives on every healthy team.
+    if status.get("state") == "ACTIVE":
         return False
+    for c in (status.get("conditions") or []):
+        if c.get("type") == "Ready" and c.get("status") == "True":
+            return False
     return _resource_age_seconds(team) >= STUCK_RESOURCE_THRESHOLD_SEC
+
+
+def _is_stuck_inferenceendpoint(ep: dict) -> bool:
+    status = ep.get("status") or {}
+    # Healthy when the IE reports `ACTIVE` modelStatus AND a Ready condition.
+    # The IE optimistically reports modelStatus=ACTIVE before vLLM finishes
+    # loading the actual model, so we ALSO require Ready=True from conditions.
+    healthy_ms = status.get("modelStatus") == "ACTIVE"
+    healthy_cond = False
+    for c in (status.get("conditions") or []):
+        if c.get("type") == "Ready" and c.get("status") == "True":
+            healthy_cond = True
+            break
+    if healthy_ms and healthy_cond:
+        return False
+    return _resource_age_seconds(ep) >= STUCK_RESOURCE_THRESHOLD_SEC
 
 
 def _is_stuck_rayservice(rs: dict) -> bool:

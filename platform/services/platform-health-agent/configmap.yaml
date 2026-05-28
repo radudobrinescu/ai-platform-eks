@@ -39,7 +39,7 @@ data:
 
   # Stuck-resource scanner — polls KRO/Ray CRs (InferenceEndpoint, AITeam,
   # RayService). Fires when any has been in non-healthy state for this long.
-  STUCK_RESOURCE_THRESHOLD_SEC: "600"
+  STUCK_RESOURCE_THRESHOLD_SEC: "300"
   STUCK_RESOURCE_POLL_INTERVAL: "60"
 
   # Concurrency + cost guards.
