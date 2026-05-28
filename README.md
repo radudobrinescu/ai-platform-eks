@@ -1,8 +1,8 @@
 # AI Platform on EKS
 
-A self-service AI platform that lets teams deploy and serve LLMs on Amazon EKS through GitOps. Commit a short YAML, get a production-ready inference endpoint — the platform handles GPU provisioning, model serving, API routing, team isolation, and observability automatically.
+A self-service AI platform that lets teams deploy and serve LLMs on Amazon EKS through GitOps. Commit a short YAML, get a production-ready inference endpoint — the platform handles GPU provisioning, model serving, API routing, team isolation, observability, and **autonomous incident response**.
 
-**Core stack:** EKS Managed Capabilities (ArgoCD, KRO, ACK) · Karpenter · Ray Serve · vLLM · LiteLLM · Langfuse
+**Core stack:** EKS Managed Capabilities (ArgoCD, KRO, ACK) · Karpenter · Ray Serve · vLLM · LiteLLM · Langfuse · Platform Health Agent
 
 ## What Teams Get
 
@@ -15,7 +15,9 @@ A self-service AI platform that lets teams deploy and serve LLMs on Amazon EKS t
 | **Auto GPU sizing** | Karpenter provisions the right GPU, scales to zero when idle |
 | **Fast cold starts** | EBS snapshots (0s image pull) + S3 weight cache (~15s) + warm pool |
 | **Observability** | Langfuse tracing on every request |
-| **Fine-tuning** *(coming soon)* | `FineTuneJob` resource — same self-service pattern for model customization via Unsloth |
+| **Cluster topology dashboard** | Live view of nodes, pods, models, and pending platform-health approvals |
+| **Autonomous incident response** | Platform Health Agent watches the cluster, investigates failures with kiro-cli, proposes a fix, applies after one-click approval |
+| **Fine-tuning** *(coming soon)* | `FineTuneJob` resource — same self-service pattern via Unsloth |
 
 ## How It Works
 
@@ -41,12 +43,14 @@ EKS Cluster
 │   └── gpu-shared       → time-sliced GPU nodes (4 models per GPU)
 │
 ├── Platform Services
-│   ├── GPU Operator     → NVIDIA device plugin + DCGM metrics
-│   ├── KubeRay          → Ray cluster lifecycle
-│   ├── LiteLLM          → OpenAI-compatible API gateway
-│   ├── Open WebUI       → chat interface
-│   ├── Platform DB      → shared PostgreSQL
-│   └── Langfuse         → LLM tracing and analytics
+│   ├── GPU Operator         → NVIDIA device plugin + DCGM metrics
+│   ├── KubeRay              → Ray cluster lifecycle
+│   ├── LiteLLM              → OpenAI-compatible API gateway
+│   ├── Open WebUI           → chat interface
+│   ├── Platform DB          → shared PostgreSQL (litellm, langfuse, platform_health_agent)
+│   ├── Langfuse             → LLM tracing and analytics
+│   ├── Cluster Dashboard    → topology view + Platform Health Agent approvals UI
+│   └── Platform Health Agent → autonomous incident investigation/remediation
 │
 └── Workloads (teams self-serve)
     ├── InferenceEndpoints
@@ -81,13 +85,23 @@ export TF_VAR_docker_hub_username="your-dockerhub-username"
 export TF_VAR_docker_hub_access_token="dckr_pat_XXXXXXXXXX"
 ```
 
-With this set, Terraform **automatically** creates a SOCI index + EBS data volume snapshot on `apply`. Two-apply flow for new clusters — second apply wires the snapshot into Karpenter NodeClasses:
+Terraform automatically creates a SOCI index + EBS data volume snapshot on `apply`. Two-apply flow for new clusters — second apply wires the snapshot into Karpenter NodeClasses.
+
+### 3. (Optional) Enable the Platform Health Agent
+
+The agent is opt-in. To turn it on:
 
 ```bash
-make ENVIRONMENT=your-env MODULE=./30.eks/30.cluster apply
+# In your tfvars:
+platform_health_agent_enabled = true
+
+# In your shell, before terraform apply:
+export TF_VAR_kiro_api_key="kr-..."   # get from https://kiro.dev/
 ```
 
-### 3. Verify ArgoCD
+Terraform provisions the agent's namespace, the Kiro API key Secret, and a copy of `platform-db-credentials`. ArgoCD then deploys the agent itself from `platform/services/platform-health-agent/`. See [`platform/services/platform-health-agent/README.md`](platform/services/platform-health-agent/README.md) for design and operation.
+
+### 4. Verify ArgoCD
 
 ArgoCD is deployed as a managed capability — no manual bootstrap needed. Terraform renders a bootstrap Application pointing at `argocd/bootstrap/` with your `gitops_repo_url`.
 
@@ -96,14 +110,14 @@ aws eks update-kubeconfig --region $AWS_REGION --name ai-platform-your-env
 kubectl get applications -n argocd
 ```
 
-### 4. Create HuggingFace Token (for gated models)
+### 5. Create HuggingFace Token (for gated models)
 
 ```bash
 kubectl create secret generic hf-token -n inference \
   --from-literal=token=hf_YOUR_TOKEN_HERE
 ```
 
-### 5. Deploy a Model
+### 6. Deploy a Model
 
 ```bash
 cp workloads/models/TEMPLATE.yaml.example workloads/models/my-model.yaml
@@ -127,13 +141,14 @@ git push
 kubectl get inferenceendpoints -n inference -w
 ```
 
-### 6. Access Services
+### 7. Access Services
 
 The platform exposes services via an internet-facing ALB restricted by IP allowlist:
 
-- `http://<alb>:8080` — Open WebUI
-- `http://<alb>:4000` — LiteLLM API
-- `http://<alb>:3000` — Langfuse
+- `http://<alb>:8080` — Open WebUI (chat with models)
+- `http://<alb>:4000` — LiteLLM API (OpenAI-compatible)
+- `http://<alb>:3000` — Langfuse (tracing)
+- `http://<alb>:9090` — Cluster Dashboard (live topology + Platform Health Agent approvals)
 
 ```bash
 # Get ALB hostname
@@ -141,16 +156,29 @@ kubectl get ingress ai-platform-litellm -n ai-platform \
   -o jsonpath='{.status.loadBalancer.ingress[0].hostname}'
 
 # Or use SSM tunnel (works from anywhere, no public IP needed)
-./ops/ssm-tunnel.sh    # localhost:8080 / :4000 / :3000
+./ops/ssm-tunnel.sh    # localhost:8080 / :4000 / :3000 / :9090
 ```
 
-Update the allowlist in `platform/config/ingress.yaml` when your IP changes.
+Update the allowlist in `platform/config/ingress.yaml` (and `platform/services/cluster-dashboard/manifests.yaml`) when your IP changes.
 
-### 7. Test
+### 8. Test
 
 ```bash
 ./ops/test-model.sh gemma-4b "What is Kubernetes?"
 ```
+
+---
+
+## Cluster Dashboard
+
+`http://<alb>:9090` shows a live (2s polling) view of the cluster:
+
+- **Cluster topology** — nodes, pods, GPU allocation, deployed models, recent activity
+- **🔔 Approvals badge** in the topbar — appears when the Platform Health Agent has investigations awaiting approval
+- **Pending tab** — proposed fixes with severity, root cause, fix commands, impact analysis (parses kubectl verbs to predict reversibility/disruption), risk
+- **History tab** — last 20 investigations with outcome chips (✓ Applied / ⚠ Verify failed / ✕ Failed / Dismissed). Each row expands to show full proposed fix, post-fix status, rollback commands, error messages. Includes an `×` button to permanently delete a row from the audit trail.
+
+The dashboard is the primary operator UX. No external messaging system (Slack, email) required.
 
 ---
 
@@ -249,6 +277,34 @@ Self-service fine-tuning via Unsloth — same GitOps pattern. Handles validation
 
 ---
 
+## Platform Health Agent
+
+Optional opt-in service that turns the cluster into a self-watching system. When pods crash, models fail to deploy, or KRO custom resources get stuck, the agent investigates with `kiro-cli` and DMs you a proposed `kubectl` fix in the cluster-dashboard's approvals UI. Click `Approve` and the fix applies; click `Dismiss` and it's logged but does nothing. Out-of-scope fixes (anything that requires editing git) are auto-flagged as text-only diagnoses.
+
+**What triggers an investigation** (configurable in `platform/services/platform-health-agent/configmap.yaml`):
+
+| Trigger | Detection |
+|---------|-----------|
+| `CrashLoopBackOff` | Pod restart count > 3 |
+| `OOMKilled` | Container terminated with `OOMKilled` reason |
+| `ImagePullBackOff` | Pod waiting for image > 60s |
+| `FailedScheduling` | Pod unschedulable > 120s |
+| `NodeNotReady` | Node `Ready=False` > 60s |
+| `FailedMount` | Volume mount event `Warning/FailedMount` |
+| `StuckResource` | InferenceEndpoint, AITeam, or RayService not reaching healthy state in 5 min |
+
+**Safety boundaries:**
+- Investigator pods run with **read-only** RBAC (cluster-wide `get/list/watch` only)
+- Remediator pods run with **scoped write** RBAC — `RoleBinding`s in `inference` and `team-*` namespaces only
+- Anything outside that scope returns 403 even if the LLM hallucinates a destructive command
+- Daily caps: 50 investigations, 20 remediations
+- Concurrency cap: 3 active investigations cluster-wide
+- 24h approval expiry; rejected approvals never apply
+
+See [`platform/services/platform-health-agent/README.md`](platform/services/platform-health-agent/README.md) for full design and [`docs/Platform Health Agent — Architecture Design.md`](docs/Platform%20Health%20Agent%20%E2%80%94%20Architecture%20Design.md) for the original design doc.
+
+---
+
 ## GPU Time-Slicing
 
 For models that don't need a full GPU, `shared: true` enables NVIDIA time-slicing — up to 4 models share one physical GPU, reducing costs by ~75%.
@@ -291,7 +347,7 @@ Four layers reduce first-inference time from ~7 min to ~60s:
 ## Operational Scripts
 
 ```bash
-./ops/recommend-instance.py <model>       # GPU sizing + fleet scaling
+./ops/recommend-instance.py <model>          # GPU sizing + fleet scaling
 ./ops/test-model.sh <name> "prompt"          # Quick model test
 ./ops/ssm-tunnel.sh                          # Port-forward via SSM
 ./ops/seed-model-cache.py <model>            # Pre-populate S3 weight cache
@@ -305,18 +361,25 @@ Four layers reduce first-inference time from ~7 min to ~60s:
 ## Repository Structure
 
 ```
-argocd/bootstrap/            # ApplicationSets (platform + workloads)
+argocd/bootstrap/                # ApplicationSets (platform + workloads)
 platform/
-  config/kro/                # InferenceEndpoint + AITeam definitions
-  config/rbac/               # ClusterRoles
-  config/ingress.yaml        # ALB routing
-  config/warm-pool/          # GPU warm-pool placeholder
-  services/                  # gpu-operator, kuberay, litellm, open-webui, langfuse
+  config/kro/                    # InferenceEndpoint + AITeam definitions
+  config/rbac/                   # ClusterRoles
+  config/ingress.yaml            # ALB routing
+  config/warm-pool/              # GPU warm-pool placeholder
+  services/                      # gpu-operator, kuberay, litellm, open-webui,
+                                 # langfuse, cluster-dashboard, platform-health-agent
 workloads/
-  models/                    # InferenceEndpoint YAMLs (self-service)
-  teams/                     # AITeam YAMLs (self-service)
-ops/                         # Operational scripts
-terraform/                   # Infrastructure modules (VPC → IAM → EKS → Observability)
+  models/                        # InferenceEndpoint YAMLs (self-service)
+  teams/                         # AITeam YAMLs (self-service)
+ops/                             # Operational scripts
+terraform/                       # Infrastructure modules (VPC → IAM → EKS → Observability)
+docs/
+  Platform Health Agent — Architecture Design.md
+  platform-health-agent-implementation-plan.md
+  platform-review-2026-05-28.md  # Latest cluster review
+  conference-demo.md             # Step-by-step demo runbook
+  fine-tuning-implementation-plan-v2.md
 ```
 
 ---
@@ -345,4 +408,4 @@ cd terraform && make ENVIRONMENT=your-env destroy-all
 
 ## Acknowledgments
 
-Infrastructure based on [Automated Provisioning of Application-Ready Amazon EKS Clusters](https://aws-solutions-library-samples.github.io/compute/automated-provisioning-of-application-ready-amazon-eks-clusters.html) from the AWS Solutions Library, extended with EKS Managed Capabilities, GPU-optimized Karpenter NodePools, and the AI platform layer.
+Infrastructure based on [Automated Provisioning of Application-Ready Amazon EKS Clusters](https://aws-solutions-library-samples.github.io/compute/automated-provisioning-of-application-ready-amazon-eks-clusters.html) from the AWS Solutions Library, extended with EKS Managed Capabilities, GPU-optimized Karpenter NodePools, the AI platform layer, and the Platform Health Agent.
