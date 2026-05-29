@@ -263,8 +263,11 @@ def _bootstrap_init_containers() -> list[dict]:
             "command": ["/bin/sh", "-c"],
             "args": [
                 "set -eu; "
-                # pre-built wheel target — no compiler, no root needed
-                "pip install --no-cache-dir --target=/pydeps psycopg[binary]==3.2.3",
+                # psycopg for the wrapper's DB writes; awslabs.eks-mcp-server
+                # for kiro-cli's MCP tool surface (replaces raw kubectl).
+                "pip install --no-cache-dir --target=/pydeps "
+                "  psycopg[binary]==3.2.3 "
+                "  awslabs.eks-mcp-server",
             ],
             "volumeMounts": [{"name": "pydeps", "mountPath": "/pydeps"}],
             "securityContext": {"runAsNonRoot": True, "runAsUser": 65532, "allowPrivilegeEscalation": False, "capabilities": {"drop": ["ALL"]}},

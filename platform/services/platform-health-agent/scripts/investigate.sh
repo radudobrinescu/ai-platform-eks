@@ -1,25 +1,25 @@
 #!/bin/sh
-# investigate.sh — wrapper script run by Investigator Job pods.
+# investigate.sh — wrapper for Investigator Job pods.
 #
 # Flow:
-#   1. Build the investigation prompt from EVENT_PAYLOAD env var.
-#   2. Invoke kiro-cli chat --no-interactive with read-only tool set.
-#      The LLM is instructed to write its findings to /results/findings.json.
-#   3. Validate the output is well-formed JSON.
-#   4. Hand off to persist_findings.py (writes findings to investigations
-#      table; cluster-dashboard renders the approvals UI from there).
-#
-# On any failure: persist_findings.py error … is invoked; the
-# investigation row is marked status='failed'.
-#
-# Read-only enforcement happens at the K8s RBAC layer
-# (platform-health-agent-reader has only get/list/watch).
+#   1. Set up MCP config so kiro-cli loads the awslabs.eks-mcp-server
+#      with read-only flags (--allow-sensitive-data-access only).
+#   2. Configure KUBECONFIG so the MCP server authenticates as the pod's
+#      ServiceAccount (--auth-mode=kubeconfig).
+#   3. Invoke kiro-cli chat --no-interactive --trust-all-tools.
+#      Trust-all is safe here because:
+#        - MCP server runs without --allow-write (rejects all mutations)
+#        - K8s RBAC on the SA is get/list/watch only (rejects writes anyway)
+#      Defense in depth: 3 layers (kiro trust + MCP server flag + RBAC).
+#   4. The LLM writes findings as JSON to /results/findings.json.
+#   5. persist_findings.py writes the row to postgres; cluster-dashboard
+#      renders it in the Pending tab.
 set -eu
 
 [ -n "${INVESTIGATION_ID:-}" ] || { echo "INVESTIGATION_ID not set" >&2; exit 2; }
 [ -n "${EVENT_PAYLOAD:-}"   ] || { echo "EVENT_PAYLOAD not set"   >&2; exit 2; }
 
-mkdir -p /results
+mkdir -p /results "$HOME/.kiro"
 LOG=/results/kiro-stdout.log
 
 post_error() {
@@ -29,7 +29,10 @@ post_error() {
     exit 1
 }
 
-# Setup kubeconfig for in-cluster access (kiro-cli will shell out to kubectl).
+# ─── Kubeconfig from in-cluster SA token ──────────────────────────────
+# The MCP server (eks-mcp-server with --auth-mode=kubeconfig) reads this
+# to talk to the API server. Same path is also used by any kubectl
+# fallback the LLM might attempt.
 export KUBECONFIG=/tmp/kubeconfig
 KUBE_TOKEN=$(cat /var/run/secrets/kubernetes.io/serviceaccount/token)
 KUBE_CA=/var/run/secrets/kubernetes.io/serviceaccount/ca.crt
@@ -52,9 +55,25 @@ users:
   user: { token: ${KUBE_TOKEN} }
 EOF
 
-# Build the prompt. We do NOT trust env interpolation into the prompt body
-# beyond the controlled variables — the LLM is instructed to read EVENT_PAYLOAD
-# from a file rather than receive it inline (limits prompt-injection surface).
+# ─── MCP config: read-only EKS server ─────────────────────────────────
+# /pydeps is on PYTHONPATH already (env var in the Job spec). The
+# eks-mcp-server binary needs PYTHONPATH set to find its package, which
+# it inherits from the kiro-cli process.
+cat > "$HOME/.kiro/mcp.json" <<'EOF'
+{
+  "mcpServers": {
+    "eks": {
+      "command": "/pydeps/bin/awslabs.eks-mcp-server",
+      "args": [
+        "--auth-mode", "kubeconfig",
+        "--allow-sensitive-data-access"
+      ]
+    }
+  }
+}
+EOF
+
+# ─── Prompt ───────────────────────────────────────────────────────────
 echo "$EVENT_PAYLOAD" > /tmp/event.json
 ALLOWED_NS_PATTERN='^(inference|team-.+)$'
 
@@ -65,34 +84,44 @@ You are an autonomous EKS incident investigator running inside cluster
 An automated event watcher detected a problem and dispatched you to investigate.
 The triggering event is in /tmp/event.json — read it first.
 
-Use kubectl (already configured for in-cluster read-only access; see KUBECONFIG)
-to gather context. Read-only operations only: get, describe, logs, top.
-Do NOT attempt: delete, patch, edit, apply, scale, rollout, exec, port-forward.
-Any write attempt will be rejected by RBAC and will count as a failed investigation.
+The "eks" MCP server is loaded and gives you these read-only tools:
+  - list_k8s_resources(kind, api_version, namespace?, label_selector?, field_selector?)
+  - manage_k8s_resource(operation="read", kind, api_version, name, namespace?)
+  - get_pod_logs(cluster_name, namespace, pod_name, container_name?, tail_lines?, previous?)
+  - get_k8s_events(cluster_name, kind, name, namespace?)
+  - get_eks_vpc_config(cluster_name)
+  - get_eks_insights(cluster_name, category?)
+  - get_eks_metrics_guidance(resource_type)
+  - get_cloudwatch_logs(resource_type, cluster_name, log_type, ...) [if AWS creds available]
+  - get_cloudwatch_metrics(...) [if AWS creds available]
+  - search_eks_troubleshoot_guide(query)
+  - list_api_versions(cluster_name)
+
+The cluster_name for tool calls is "${CLUSTER_NAME}".
 
 Investigation procedure:
-1. Read /tmp/event.json. Identify the affected resource: kind, namespace, name.
-2. \`kubectl describe\` the affected resource and walk its owner chain
-   (Pod → ReplicaSet → Deployment, or Pod → RayCluster → RayService, etc.).
-3. \`kubectl logs --tail=100 --all-containers=true\` on the affected pod (or sibling pods if the affected pod is gone).
-4. \`kubectl get events -n <namespace> --sort-by=.lastTimestamp | tail -50\` for the affected namespace.
-5. If the resource is a Pod, check its node:
-   \`kubectl describe node <node-name>\` — look at conditions, capacity, allocatable.
-6. Check resource quotas: \`kubectl get resourcequota -n <namespace>\`.
-7. If the resource lives in 'inference' or matches '${ALLOWED_NS_PATTERN}',
-   inspect parent KRO custom resources:
-     - \`kubectl get inferenceendpoint -n inference -o yaml <name>\` (if applicable)
-     - \`kubectl get aiteam -n ai-platform -o yaml\` (find owning team)
-   Read these for context only — do NOT propose modifying them.
+1. Read /tmp/event.json → identify the affected resource (kind, namespace, name).
+2. Use list_k8s_resources / manage_k8s_resource(operation="read") to inspect
+   the affected resource AND its owner chain (Pod → ReplicaSet → Deployment,
+   or Pod → RayCluster → RayService, etc.).
+3. Use get_pod_logs to read the last 100 lines from each container.
+4. Use get_k8s_events to fetch warning events on the affected resource.
+5. If the affected resource is a Pod, list_k8s_resources(kind="Node", api_version="v1")
+   for the node it's running on; check its conditions.
+6. If the resource is in 'inference' or matches '${ALLOWED_NS_PATTERN}', also
+   inspect the parent KRO custom resources (kind="InferenceEndpoint",
+   api_version="kro.run/v1alpha1" — or kind="AITeam"). Read for context only.
+7. Optionally: search_eks_troubleshoot_guide for known patterns matching
+   the symptom.
 
 Determine \`out_of_scope\`:
 - TRUE if the only reasonable fix is to modify an InferenceEndpoint or AITeam
   custom resource, OR any resource in: ai-platform, gpu-operator, kuberay,
   argocd, external-secrets, kube-system, amazon-cloudwatch, platform-health-agent.
 - TRUE if the fix requires editing a file under platform/services or workloads/.
-- FALSE if the fix can be applied via kubectl directly to a workload-level
-  resource (Deployment, StatefulSet, Pod, ConfigMap, HPA) in 'inference' or a
-  'team-*' namespace.
+- FALSE if the fix can be applied via apply_yaml or manage_k8s_resource(operation="patch")
+  to a workload-level resource (Deployment, StatefulSet, Pod, ConfigMap, HPA)
+  in 'inference' or a 'team-*' namespace.
 
 Write a SINGLE JSON object to /results/findings.json with EXACTLY these keys:
 {
@@ -110,32 +139,33 @@ Write a SINGLE JSON object to /results/findings.json with EXACTLY these keys:
   "out_of_scope":           true | false
 }
 
-If you cannot determine root cause confidently, emit the file with
-severity="LOW", fix_commands=[], requires_manual_review=true,
-and explain the uncertainty in the summary.
+For \`fix_commands\`, write kubectl-style commands as strings (these are the
+human-readable form the dashboard renders). The Remediator will translate
+them into MCP apply_yaml / manage_k8s_resource(operation="patch") calls.
 
-Do NOT print the JSON to stdout — only WRITE the file.
+If you cannot determine root cause confidently, emit the file with
+severity="LOW", fix_commands=[], requires_manual_review=true, and explain the
+uncertainty in the summary.
+
 Do NOT modify any resources. Do NOT exit until /results/findings.json exists.
 EOF
 
-# Run kiro-cli. Trust set: fs_read, fs_write, execute_bash (kubectl).
+# ─── Invoke kiro-cli ──────────────────────────────────────────────────
 echo "[investigate] running kiro-cli model=${KIRO_MODEL_INVESTIGATE}…"
 if ! /tools/kiro-cli chat --no-interactive \
         --model "${KIRO_MODEL_INVESTIGATE}" \
-        --trust-tools=fs_read,fs_write,execute_bash \
+        --trust-all-tools \
         "$(cat /tmp/prompt.txt)" > "$LOG" 2>&1; then
     post_error "kiro-cli exited non-zero. tail of log:
 $(tail -20 "$LOG" | sed 's/[\\r\\n]/ /g; s/\"/\\\\\"/g')"
 fi
 
-# Validate the file.
 [ -s /results/findings.json ] || post_error "kiro-cli did not produce /results/findings.json"
 if ! python3 -c 'import json,sys; json.load(open("/results/findings.json"))'; then
     post_error "/results/findings.json is not valid JSON. tail of log:
 $(tail -10 "$LOG")"
 fi
 
-# Persist findings to the DB. Cluster-dashboard renders the approvals UI from there.
 echo "[investigate] persisting findings…"
 python3 /scripts/persist_findings.py investigation "$INVESTIGATION_ID" /results/findings.json
 echo "[investigate] done."

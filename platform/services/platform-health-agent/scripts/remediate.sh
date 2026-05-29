@@ -1,21 +1,19 @@
 #!/bin/sh
-# remediate.sh — wrapper script run by Remediator Job pods.
+# remediate.sh — wrapper for Remediator Job pods.
 #
-# Flow:
-#   1. Pull approved fix_commands + approval metadata from postgres.
-#   2. Invoke kiro-cli chat --no-interactive with write tool set.
-#      The LLM applies the fix via kubectl, waits, verifies.
-#   3. The LLM writes /results/result.json.
-#   4. Hand off to persist_findings.py remediation (writes result back to DB).
+# Same flow as investigate.sh but with the MCP server in WRITE mode:
+#   --allow-write  enables apply_yaml + manage_k8s_resource(create/replace/patch/delete)
+#   --allow-sensitive-data-access  keeps log/event reads available for verification
 #
-# Write enforcement is RBAC: platform-health-agent-writer has scoped write access
-# to inference + team-* namespaces only. Anything else 403s, which we
-# capture as `applied=false` in the result.
+# K8s RBAC is the actual safety boundary: the platform-health-agent-writer
+# SA has RoleBindings only in `inference` and `team-*` namespaces. Anything
+# outside that scope returns 403 — even if the LLM hallucinates a write to
+# kube-system or argocd, the API server rejects it.
 set -eu
 
 [ -n "${INVESTIGATION_ID:-}" ] || { echo "INVESTIGATION_ID not set" >&2; exit 2; }
 
-mkdir -p /results
+mkdir -p /results "$HOME/.kiro"
 LOG=/results/kiro-stdout.log
 
 post_error() {
@@ -25,7 +23,7 @@ post_error() {
     exit 1
 }
 
-# Pull fix_commands + approval metadata from postgres.
+# Pull approved fix_commands + audit metadata from postgres.
 python3 - <<'PY' > /tmp/context.json
 import json, os, sys
 import psycopg
@@ -51,7 +49,7 @@ PY
 APPROVED_BY=$(python3 -c 'import json; print(json.load(open("/tmp/context.json")).get("approved_by",""))')
 APPROVED_AT=$(python3 -c 'import json; print(json.load(open("/tmp/context.json")).get("approved_at",""))')
 
-# Setup kubeconfig (Remediator pod uses the writer SA).
+# Kubeconfig (writer SA's token).
 export KUBECONFIG=/tmp/kubeconfig
 KUBE_TOKEN=$(cat /var/run/secrets/kubernetes.io/serviceaccount/token)
 KUBE_CA=/var/run/secrets/kubernetes.io/serviceaccount/ca.crt
@@ -73,6 +71,22 @@ users:
   user: { token: ${KUBE_TOKEN} }
 EOF
 
+# MCP config: WRITE mode.
+cat > "$HOME/.kiro/mcp.json" <<'EOF'
+{
+  "mcpServers": {
+    "eks": {
+      "command": "/pydeps/bin/awslabs.eks-mcp-server",
+      "args": [
+        "--auth-mode", "kubeconfig",
+        "--allow-sensitive-data-access",
+        "--allow-write"
+      ]
+    }
+  }
+}
+EOF
+
 cat > /tmp/prompt.txt <<EOF
 You are an autonomous EKS remediator running inside cluster "${CLUSTER_NAME}"
 in region "${AWS_REGION}".
@@ -85,23 +99,37 @@ Approval audit:
   Approved at:    ${APPROVED_AT}
   Investigation:  ${INVESTIGATION_ID}
 
+The "eks" MCP server is loaded with WRITE access. Use these tools:
+  - manage_k8s_resource(operation="patch"|"replace"|"create"|"delete"|"read", ...)
+  - apply_yaml(yaml_path, cluster_name="${CLUSTER_NAME}", namespace, force=true)
+  - get_pod_logs / get_k8s_events / list_k8s_resources (for verification)
+
 Write enforcement: your kubectl SA only has write access to namespaces matching
-'^(inference|team-.+)\$'. Any other write WILL fail with 403.
+'^(inference|team-.+)\$'. Any other write WILL fail with 403 from the API
+server — that's the actual safety boundary, not the LLM.
 
 Procedure:
-1. Read /tmp/context.json. Note the fix_commands list — each item has
-   {description, commands[]}.
-2. Apply each command in order. Capture stdout/stderr.
-3. After ALL commands have been attempted (continue past individual failures),
-   sleep 30 seconds.
-4. Verify the affected resources reached a healthy state:
-   - For Pods: phase==Running and all conditions True
-   - For Deployments: status.availableReplicas == status.replicas
-   - For StatefulSets: status.readyReplicas == status.replicas
-5. Do NOT attempt additional remediation beyond what was approved.
-6. Compose rollback_commands: best-effort kubectl commands to undo each
-   applied change (e.g. \`kubectl rollout undo deployment/foo -n bar\` for a
-   rollout restart, or restoring a previous image tag).
+1. Read /tmp/context.json. Note fix_commands — each item has {description, commands[]}.
+2. Translate each kubectl command into the equivalent MCP call:
+     - kubectl patch deployment X -n Y --type=json -p '[…]'
+       → manage_k8s_resource(operation="patch", kind="Deployment", api_version="apps/v1",
+                             name="X", namespace="Y", body={…})
+     - kubectl rollout restart deployment X -n Y
+       → manage_k8s_resource(operation="patch", ..., body adds restartedAt annotation)
+     - kubectl apply -f file.yaml
+       → write the YAML to a file via fs_write, then apply_yaml(yaml_path, namespace, ...)
+     - kubectl scale deployment X -n Y --replicas=N
+       → manage_k8s_resource(operation="patch", ..., body={"spec":{"replicas":N}})
+     - kubectl delete pod X -n Y
+       → manage_k8s_resource(operation="delete", kind="Pod", api_version="v1", name="X", namespace="Y")
+3. Apply each command in order. Continue past individual failures.
+4. Sleep 30 seconds (use \`fs_write\` to write a sleep-marker, no other way available).
+5. Verify the affected resources reached a healthy state:
+     - For Pods: status.phase=Running and containerStatuses[*].ready=true
+     - For Deployments: status.availableReplicas == status.replicas
+     - For StatefulSets: status.readyReplicas == status.replicas
+   Use list_k8s_resources or manage_k8s_resource(operation="read") to check.
+6. Compose rollback_commands as kubectl-style strings (human-readable).
 
 Write a SINGLE JSON object to /results/result.json with EXACTLY these keys:
 {
@@ -114,14 +142,13 @@ Write a SINGLE JSON object to /results/result.json with EXACTLY these keys:
   "error_summary":     null | "short failure description"
 }
 
-Do NOT print the JSON to stdout — only WRITE the file.
 Do NOT exit until /results/result.json exists.
 EOF
 
 echo "[remediate] running kiro-cli model=${KIRO_MODEL_REMEDIATE}…"
 if ! /tools/kiro-cli chat --no-interactive \
         --model "${KIRO_MODEL_REMEDIATE}" \
-        --trust-tools=fs_read,fs_write,execute_bash \
+        --trust-all-tools \
         "$(cat /tmp/prompt.txt)" > "$LOG" 2>&1; then
     post_error "kiro-cli exited non-zero during remediation. tail:
 $(tail -20 "$LOG" | sed 's/[\\r\\n]/ /g; s/\"/\\\\\"/g')"
