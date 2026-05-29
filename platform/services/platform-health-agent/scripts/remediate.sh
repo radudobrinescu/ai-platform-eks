@@ -149,7 +149,7 @@ echo "[remediate] running kiro-cli model=${KIRO_MODEL_REMEDIATE}…"
 if ! /tools/kiro-cli chat --no-interactive \
         --model "${KIRO_MODEL_REMEDIATE}" \
         --trust-all-tools \
-        "$(cat /tmp/prompt.txt)" > "$LOG" 2>&1; then
+        "$(cat /tmp/prompt.txt)" 2>&1 | tee "$LOG"; then
     post_error "kiro-cli exited non-zero during remediation. tail:
 $(tail -20 "$LOG" | sed 's/[\\r\\n]/ /g; s/\"/\\\\\"/g')"
 fi

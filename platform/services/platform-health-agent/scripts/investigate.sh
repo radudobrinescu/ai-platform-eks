@@ -152,10 +152,13 @@ EOF
 
 # ─── Invoke kiro-cli ──────────────────────────────────────────────────
 echo "[investigate] running kiro-cli model=${KIRO_MODEL_INVESTIGATE}…"
+# Tee to both the kept file (for post-mortem) AND container stdout
+# (so kubectl logs shows the full tool-call history even after the
+# pod terminates and is GC'd).
 if ! /tools/kiro-cli chat --no-interactive \
         --model "${KIRO_MODEL_INVESTIGATE}" \
         --trust-all-tools \
-        "$(cat /tmp/prompt.txt)" > "$LOG" 2>&1; then
+        "$(cat /tmp/prompt.txt)" 2>&1 | tee "$LOG"; then
     post_error "kiro-cli exited non-zero. tail of log:
 $(tail -20 "$LOG" | sed 's/[\\r\\n]/ /g; s/\"/\\\\\"/g')"
 fi
