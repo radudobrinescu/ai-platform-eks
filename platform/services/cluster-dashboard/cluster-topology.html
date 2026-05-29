@@ -701,9 +701,26 @@ function updateApprovalsBadge(data){
 async function openApprovals(){
   document.getElementById('approvals-modal').classList.add('open');
   await loadApprovals();
+  // Auto-refresh the Pending list every 5s while the modal is open.
+  // Stops automatically when modal closes or tab switches to History.
+  if(window._approvalsRefreshTimer) clearInterval(window._approvalsRefreshTimer);
+  window._approvalsRefreshTimer = setInterval(() => {
+    const pendingActive = document.querySelector('.approvals-tab[data-tab="pending"]')?.classList.contains('active');
+    const modalOpen = document.getElementById('approvals-modal')?.classList.contains('open');
+    if(modalOpen && pendingActive){
+      loadApprovals();
+    } else {
+      clearInterval(window._approvalsRefreshTimer);
+      window._approvalsRefreshTimer = null;
+    }
+  }, 5000);
 }
 function closeApprovals(){
   document.getElementById('approvals-modal').classList.remove('open');
+  if(window._approvalsRefreshTimer){
+    clearInterval(window._approvalsRefreshTimer);
+    window._approvalsRefreshTimer = null;
+  }
 }
 document.addEventListener('keydown', e => { if(e.key === 'Escape') closeApprovals(); });
 
@@ -875,6 +892,18 @@ async function actOn(id, action){
     const r = await fetch(`/investigations/${id}/${action}`, { method: 'POST' });
     const body = await r.json().catch(() => ({}));
     if(!r.ok){
+      // 409 means the row was mutated server-side (auto-dismissed by the
+      // out-of-scope path, expired, already approved, etc.). Silently
+      // remove the stale row from the UI and refresh the list.
+      if(r.status === 409){
+        if(item){
+          item.style.opacity = '0.4';
+          item.style.pointerEvents = 'none';
+          setTimeout(() => { item.remove(); refreshIfEmpty(); }, 200);
+        }
+        setTimeout(() => loadApprovals(), 300);
+        return;
+      }
       alert(`${action} failed: HTTP ${r.status} — ${body.error || ''}`);
       if(item) item.querySelectorAll('button').forEach(b => b.disabled = false);
       return;
