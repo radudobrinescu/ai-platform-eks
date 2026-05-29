@@ -328,21 +328,54 @@ def is_namespace_watched(ns: str) -> bool:
 
 
 def detect_pod_trigger(pod) -> tuple[str, dict] | None:
-    """Inspect a Pod object; return (trigger_kind, payload) if actionable, else None."""
+    """Inspect a Pod object; return (trigger_kind, payload) if actionable, else None.
+
+    Checks BOTH initContainerStatuses and containerStatuses — init container
+    failures (exit code != 0 with retries) manifest as Pending pods with
+    initContainerStatuses[*].state.waiting.reason == 'CrashLoopBackOff' or
+    state.terminated.reason == 'Error' with restartCount > 3.
+    """
     if pod.metadata.namespace and not is_namespace_watched(pod.metadata.namespace):
         return None
-    cs_list = (pod.status.container_statuses or []) if pod.status else []
-    for cs in cs_list:
-        # OOMKilled in the most recent termination
-        last = cs.last_state.terminated if cs.last_state else None
-        if last and last.reason == "OOMKilled" and TRIGGERS["OOMKilled"]:
-            return "OOMKilled", _pod_payload(pod, container=cs.name, detail=str(last))
-        # CrashLoopBackOff / restart count high
-        waiting = cs.state.waiting if cs.state else None
-        if waiting and waiting.reason == "CrashLoopBackOff" and (cs.restart_count or 0) > 3 and TRIGGERS["CrashLoopBackOff"]:
-            return "CrashLoopBackOff", _pod_payload(pod, container=cs.name, detail=waiting.message or "")
-        if waiting and waiting.reason in ("ImagePullBackOff", "ErrImagePull") and TRIGGERS["ImagePullBackOff"]:
-            return "ImagePullBackOff", _pod_payload(pod, container=cs.name, detail=waiting.message or "")
+    if not pod.status:
+        return None
+
+    init_cs_list = pod.status.init_container_statuses or []
+    main_cs_list = pod.status.container_statuses or []
+
+    # Iterate init containers first — if an init container is failing, the
+    # main containers will be PodInitializing (which is NOT a trigger).
+    for cs_list, kind_label in ((init_cs_list, "init"), (main_cs_list, "main")):
+        for cs in cs_list:
+            # OOMKilled (most recent termination)
+            last = cs.last_state.terminated if cs.last_state else None
+            if last and last.reason == "OOMKilled" and TRIGGERS["OOMKilled"]:
+                return "OOMKilled", _pod_payload(pod, container=f"{cs.name} ({kind_label})", detail=str(last))
+            # Init containers: also check current-state.terminated for non-zero exits
+            # with high restart count (kubelet retries init containers but state may be
+            # terminated rather than waiting/CrashLoopBackOff between retries).
+            if kind_label == "init":
+                term = cs.state.terminated if cs.state else None
+                if (term and term.exit_code != 0 and (cs.restart_count or 0) > 3
+                        and TRIGGERS["CrashLoopBackOff"]):
+                    return "CrashLoopBackOff", _pod_payload(
+                        pod, container=f"{cs.name} (init)",
+                        detail=f"init container exit {term.exit_code} (reason={term.reason}); restarts={cs.restart_count}",
+                    )
+            # Common: state.waiting checks (CrashLoopBackOff / ImagePullBackOff)
+            waiting = cs.state.waiting if cs.state else None
+            if (waiting and waiting.reason == "CrashLoopBackOff"
+                    and (cs.restart_count or 0) > 3 and TRIGGERS["CrashLoopBackOff"]):
+                return "CrashLoopBackOff", _pod_payload(
+                    pod, container=f"{cs.name} ({kind_label})",
+                    detail=waiting.message or "",
+                )
+            if (waiting and waiting.reason in ("ImagePullBackOff", "ErrImagePull")
+                    and TRIGGERS["ImagePullBackOff"]):
+                return "ImagePullBackOff", _pod_payload(
+                    pod, container=f"{cs.name} ({kind_label})",
+                    detail=waiting.message or "",
+                )
     return None
 
 
