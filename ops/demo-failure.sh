@@ -474,7 +474,8 @@ show_status() {
   echo
   echo "recent investigations:"
   kubectl exec -n "$PG_NS" "$PG_POD" -c postgres -- psql -U platform -d "$PG_DB" -c \
-    "SELECT created_at::text(0), status, trigger_kind, resource_kind, resource_namespace, resource_name
+    "SELECT to_char(created_at, 'YYYY-MM-DD HH24:MI:SS') AS created,
+            status, trigger_kind, resource_kind, resource_namespace, resource_name
      FROM investigations
      WHERE created_at > now() - interval '15 minutes'
      ORDER BY created_at DESC LIMIT 8" 2>&1 | head -15
