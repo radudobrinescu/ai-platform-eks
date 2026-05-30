@@ -5,9 +5,11 @@
 # Copy-paste commands section by section. NOT meant to run end-to-end.
 #
 # Prerequisites:
-#   - Cluster running with gemma-4b and smollm3-3b deployed
-#   - llama32-1b NOT deployed (removed before demo for live deployment)
-#   - Teams onboarded (search-ranking, customer-support)
+#   - Cluster running with the shipped catalog model qwen3-3b deployed
+#     (workloads/models/catalog/qwen3-3b.yaml) + claude-sonnet-4-6 (Bedrock)
+#   - llama32-1b NOT deployed (added live during the demo in Part 4)
+#   - Teams onboarded (dev-team, data-science — workloads/teams/)
+#   - AWS_REGION exported (defaults to your kubeconfig / aws cli region)
 #   - Port-forwards active:
 #       kubectl port-forward svc/litellm 4000:4000 -n ai-platform &
 #       kubectl port-forward svc/open-webui 8080:8080 -n ai-platform &
@@ -62,7 +64,7 @@ kubectl get inferenceendpoints -n inference \
   -o custom-columns=NAME:.metadata.name,READY:.status.ready,STATUS:.status.modelStatus,ENDPOINT:.status.endpoint
 
 # Show what a model definition looks like
-cat workloads/models/gemma-4b.yaml
+cat workloads/models/catalog/qwen3-3b.yaml
 
 # "6 lines of YAML. KRO expands this into a RayService with vLLM,
 #  GPU worker pods, a LiteLLM registration Job, and a CloudWatch
@@ -86,7 +88,7 @@ curl -s http://localhost:4000/v1/models \
 # "All models are behind an OpenAI-compatible API. Any tool that
 #  speaks OpenAI can use them — Open WebUI, LangChain, your own code."
 
-# → Open WebUI (localhost:8080): show the model list, chat with gemma-4b
+# → Open WebUI (localhost:8080): show the model list, chat with qwen3-3b
 # "This is the same API — Open WebUI just calls LiteLLM under the hood."
 
 # Show GPU nodes powering the models
@@ -131,7 +133,8 @@ kubectl get inferenceendpoints -n inference \
 # Verify CloudWatch log group was created by ACK
 kubectl get loggroups -n inference
 aws logs describe-log-groups \
-  --log-group-name-prefix /ai-platform/models/llama32-1b --region eu-central-1 \
+  --log-group-name-prefix /ai-platform/models/llama32-1b \
+  --region "${AWS_REGION:-$(aws configure get region)}" \
   --query 'logGroups[].logGroupName'
 
 # Once RUNNING:
@@ -144,47 +147,47 @@ aws logs describe-log-groups \
 # ─────────────────────────────────────────────────────────────────────────────
 
 # Show a team definition
-cat workloads/teams/search-ranking.yaml
+cat workloads/teams/dev-team.yaml
 
 # "One YAML creates: namespace, RBAC, resource quotas, network policy,
 #  and a scoped LiteLLM API key with budget and rate limits."
 
 # Show what KRO created
 kubectl get ns | grep team
-kubectl get resourcequota -n team-search-ranking
-kubectl get networkpolicy -n team-search-ranking
+kubectl get resourcequota -n team-dev
+kubectl get networkpolicy -n team-dev
 
-# Get team API keys
-SEARCH_KEY=$(kubectl get secret search-ranking-api-key -n team-search-ranking \
+# Get team API keys (data-science: models ['*']; dev-team: scoped to [qwen3-3b])
+DS_KEY=$(kubectl get secret data-science-api-key -n team-data-science \
   -o jsonpath='{.data.api-key}' | base64 -d)
-SUPPORT_KEY=$(kubectl get secret customer-support-api-key -n team-customer-support \
+DEV_KEY=$(kubectl get secret dev-api-key -n team-dev \
   -o jsonpath='{.data.api-key}' | base64 -d)
 
-# Search team calls gemma-4b — ALLOWED (in their model list)
+# Dev team calls qwen3-3b — ALLOWED (in their model list)
 echo ""
-echo ">>> Search team → gemma-4b (ALLOWED)"
+echo ">>> Dev team → qwen3-3b (ALLOWED)"
 curl -s http://localhost:4000/v1/chat/completions \
   -H "Content-Type: application/json" \
-  -H "Authorization: Bearer $SEARCH_KEY" \
-  -d '{"model": "gemma-4b", "messages": [{"role": "user", "content": "What is EKS? One sentence."}]}' \
+  -H "Authorization: Bearer $DEV_KEY" \
+  -d '{"model": "qwen3-3b", "messages": [{"role": "user", "content": "What is EKS? One sentence."}]}' \
   | jq -r '.choices[0].message.content'
 
-# Support team calls gemma-4b — ALLOWED
+# Data-science team calls claude-sonnet-4-6 — ALLOWED (models: '*')
 echo ""
-echo ">>> Support team → gemma-4b (ALLOWED)"
+echo ">>> Data-science team → claude-sonnet-4-6 (ALLOWED)"
 curl -s http://localhost:4000/v1/chat/completions \
   -H "Content-Type: application/json" \
-  -H "Authorization: Bearer $SUPPORT_KEY" \
-  -d '{"model": "gemma-4b", "messages": [{"role": "user", "content": "What is Kubernetes? One sentence."}]}' \
+  -H "Authorization: Bearer $DS_KEY" \
+  -d '{"model": "claude-sonnet-4-6", "messages": [{"role": "user", "content": "What is Kubernetes? One sentence."}]}' \
   | jq -r '.choices[0].message.content'
 
-# Support team tries smollm3-3b — BLOCKED (not in their model list)
+# Dev team tries claude-sonnet-4-6 — BLOCKED (not in their model list)
 echo ""
-echo ">>> Support team → smollm3-3b (BLOCKED)"
+echo ">>> Dev team → claude-sonnet-4-6 (BLOCKED)"
 curl -s http://localhost:4000/v1/chat/completions \
   -H "Content-Type: application/json" \
-  -H "Authorization: Bearer $SUPPORT_KEY" \
-  -d '{"model": "smollm3-3b", "messages": [{"role": "user", "content": "Hello"}]}' \
+  -H "Authorization: Bearer $DEV_KEY" \
+  -d '{"model": "claude-sonnet-4-6", "messages": [{"role": "user", "content": "Hello"}]}' \
   | jq -r '.error.message'
 
 

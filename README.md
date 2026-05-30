@@ -8,16 +8,19 @@ A self-service AI platform that lets teams deploy and serve LLMs on Amazon EKS t
 
 | Capability | How it works |
 |-----------|-------------|
+| **Frontier model out of the box** | Amazon Bedrock **Claude Sonnet 4.6** behind the same API — zero GPUs on day one (`enable_bedrock`) |
 | **Deploy any HuggingFace model** | Commit an `InferenceEndpoint` YAML → model is live in ~60s |
+| **Preconfigured small model** | Qwen2.5-3B-Instruct (ungated) ships in the catalog and serves on first boot |
 | **OpenAI-compatible API** | LiteLLM proxies all models behind `/v1/chat/completions` |
 | **Chat UI** | Open WebUI for interactive testing |
 | **Team isolation** | `AITeam` resource creates namespace, RBAC, budget, rate limits, scoped API key |
 | **Auto GPU sizing** | Karpenter provisions the right GPU, scales to zero when idle |
 | **Fast cold starts** | EBS snapshots (0s image pull) + S3 weight cache (~15s) + warm pool |
-| **Observability** | Langfuse tracing on every request |
+| **Observability on first boot** | Langfuse tracing live on the first request — keys provisioned by Terraform, no manual setup |
+| **Fine-tuning** | `FineTuneJob` resource — self-service QLoRA via Unsloth, `autoDeploy` to a live endpoint |
+| **Model comparison** | `ops/compare-models.py` runs an eval set through several models → side-by-side Langfuse dataset run + cost crossover |
 | **Cluster topology dashboard** | Live view of nodes, pods, models, and pending platform-health approvals |
 | **Autonomous incident response** | Platform Health Agent watches the cluster, investigates failures with kiro-cli, proposes a fix, applies after one-click approval |
-| **Fine-tuning** *(coming soon)* | `FineTuneJob` resource — same self-service pattern via Unsloth |
 
 ## How It Works
 
@@ -60,6 +63,11 @@ EKS Cluster
 ---
 
 ## Quick Start
+
+> **Turnkey path:** the [quickstart guide](docs/quickstart.md) walks the whole
+> journey — provision → use Sonnet with zero GPUs → fine-tune → prove it with a
+> Langfuse comparison — using the thin `./platformctl` wrapper. The steps below
+> are the underlying commands.
 
 ### 1. Deploy Infrastructure
 
@@ -164,8 +172,54 @@ Update the allowlist in `platform/config/ingress.yaml` (and `platform/services/c
 ### 8. Test
 
 ```bash
-./ops/test-model.sh gemma-4b "What is Kubernetes?"
+# qwen3-3b ships in the default catalog; or use the model you deployed above.
+./ops/test-model.sh qwen3-3b "What is Kubernetes?"
 ```
+
+---
+
+## Fine-tuning
+
+Self-service QLoRA via Unsloth, same `git push` loop. Upload a dataset, commit a
+`FineTuneJob`, and (with `autoDeploy: true`) the tuned model becomes a live
+LiteLLM endpoint. Enabled by `enable_fine_tuning` (default on).
+
+```bash
+DATASETS_BUCKET=$(kubectl get cm platform-config -n inference -o jsonpath='{.data.trainingDatasetsBucket}')
+aws s3 cp support-transcripts.jsonl s3://$DATASETS_BUCKET/
+
+cp workloads/fine-tuning/TEMPLATE.yaml.example workloads/fine-tuning/qwen3-support-tuned.yaml
+# edit: dataset=s3://$DATASETS_BUCKET/support-transcripts.jsonl, autoDeploy: true
+git add workloads/fine-tuning/qwen3-support-tuned.yaml && git commit -m "feat: support-voice tune" && git push
+kubectl get finetunejobs -n inference -w
+```
+
+Full guide: [docs/fine-tuning-getting-started.md](docs/fine-tuning-getting-started.md).
+
+## The money demo — compare models
+
+Run the same eval set through Sonnet, the base small model, and the fine-tuned
+small model, and let Langfuse show that a small fine-tuned model can match a
+large commercial one at a fraction of the cost.
+
+```bash
+./ops/compare-models.py \
+  --dataset ops/sample-data/support-eval.jsonl \
+  --models claude-sonnet-4-6,qwen3-3b,qwen3-support-tuned \
+  --langfuse-dataset support-voice-eval \
+  --self-hosted-model qwen3-support-tuned --self-hosted-hf-id Qwen/Qwen2.5-3B-Instruct
+```
+
+Every call is traced (cost/latency/tokens) and tagged as a Langfuse **dataset
+run**, so you compare runs side by side; configure an LLM-as-judge evaluator for
+voice/policy/helpfulness scoring. The script prints the **cost crossover** — the
+daily request volume above which the self-hosted tuned model is cheaper than
+Sonnet (reusing `recommend-instance.py`'s pricing model). See
+[docs/quickstart.md](docs/quickstart.md) and
+[docs/platform-evolution-plan.md](docs/platform-evolution-plan.md).
+
+`./ops/compare-models.py --preflight` checks connectivity and Bedrock model
+access, printing the exact fix if Sonnet isn't enabled in your account.
 
 ---
 
@@ -219,6 +273,10 @@ metadata:
   namespace: inference
 spec:
   model: "org/model-id"           # REQUIRED — HuggingFace model ID
+  modelSource: ""                 # Optional — S3 prefix of a fine-tuned model (relative to the
+                                  # model-cache bucket). When set, the init container syncs from
+                                  # there and vLLM loads the local path instead of pulling `model`
+                                  # from HF. Set automatically by FineTuneJob autoDeploy.
   gpuCount: 1                     # GPUs per worker (1, 2, 4, or 8)
   tensorParallelSize: 1           # TP — shards each layer's weights across GPUs (prefers NVLink)
   pipelineParallelSize: 1         # PP — assigns layer groups to pipeline stages (works on any interconnect)
@@ -249,7 +307,7 @@ metadata:
   namespace: ai-platform
 spec:
   teamName: search-ranking
-  models: ["gemma-4b", "qwen3-4b"]
+  models: ["qwen3-3b", "claude-sonnet-4-6"]
   maxBudget: "50.0"
   budgetDuration: "30d"
   rpmLimit: 60
@@ -258,17 +316,17 @@ spec:
 
 KRO creates: namespace, ResourceQuota, NetworkPolicy, RBAC, LiteLLM team + scoped API key, welcome ConfigMap.
 
-### FineTuneJob *(coming soon)*
+### FineTuneJob
 
 ```yaml
 apiVersion: kro.run/v1alpha1
 kind: FineTuneJob
 metadata:
-  name: gemma-support-v1
+  name: qwen3-support-tuned
   namespace: inference
 spec:
-  baseModel: "google/gemma-3-4b-it"
-  dataset: "s3://my-bucket/training-data.jsonl"
+  baseModel: "unsloth/Qwen2.5-3B-Instruct-bnb-4bit"   # default (ungated showcase base)
+  dataset: "s3://<cluster>-training-datasets/training-data.jsonl"
   gpuCount: 1
   autoDeploy: true              # Deploy as InferenceEndpoint when done
 ```
@@ -279,7 +337,7 @@ Self-service fine-tuning via Unsloth — same GitOps pattern. Handles validation
 
 ## Platform Health Agent
 
-Optional opt-in service that turns the cluster into a self-watching system. When pods crash, models fail to deploy, or KRO custom resources get stuck, the agent investigates with `kiro-cli` and DMs you a proposed `kubectl` fix in the cluster-dashboard's approvals UI. Click `Approve` and the fix applies; click `Dismiss` and it's logged but does nothing. Out-of-scope fixes (anything that requires editing git) are auto-flagged as text-only diagnoses.
+Optional opt-in service that turns the cluster into a self-watching system. When pods crash, models fail to deploy, or KRO custom resources get stuck, the agent investigates with `kiro-cli` and surfaces a proposed `kubectl` fix in the cluster-dashboard's approvals UI. Click `Approve` and the fix applies; click `Dismiss` and it's logged but does nothing. Out-of-scope fixes (anything that requires editing git) are auto-flagged as text-only diagnoses.
 
 **What triggers an investigation** (configurable in `platform/services/platform-health-agent/configmap.yaml`):
 
@@ -301,7 +359,7 @@ Optional opt-in service that turns the cluster into a self-watching system. When
 - Concurrency cap: 3 active investigations cluster-wide
 - 24h approval expiry; rejected approvals never apply
 
-See [`platform/services/platform-health-agent/README.md`](platform/services/platform-health-agent/README.md) for full design and [`docs/Platform Health Agent — Architecture Design.md`](docs/Platform%20Health%20Agent%20%E2%80%94%20Architecture%20Design.md) for the original design doc.
+See [`platform/services/platform-health-agent/README.md`](platform/services/platform-health-agent/README.md) for full design and [`docs/platform-health-agent-architecture-design.md`](docs/platform-health-agent-architecture-design.md) for the original design doc.
 
 ---
 
@@ -348,12 +406,15 @@ Four layers reduce first-inference time from ~7 min to ~60s:
 
 ```bash
 ./ops/recommend-instance.py <model>          # GPU sizing + fleet scaling
+./ops/compare-models.py --dataset <jsonl> --models a,b,c   # 3-way Langfuse comparison + cost crossover
 ./ops/test-model.sh <name> "prompt"          # Quick model test
-./ops/ssm-tunnel.sh                          # Port-forward via SSM
+./ops/ssm-tunnel.sh                          # Port-forward via SSM (WebUI/LiteLLM/Langfuse/Dashboard)
 ./ops/seed-model-cache.py <model>            # Pre-populate S3 weight cache
 ./ops/scale-down.sh                          # Suspend platform, reclaim GPUs
 ./ops/scale-up.sh                            # Restore via ArgoCD sync
-./ops/demo.sh                                # End-to-end demo flow
+./ops/demo.sh                                # Copy-paste demo runbook (section by section)
+./ops/demo-failure.sh <scenario>             # Trigger a Platform Health Agent failure demo
+./platformctl up|status|tunnel|preflight|compare|down      # Turnkey wrapper over make + ops
 ```
 
 ---
@@ -363,7 +424,7 @@ Four layers reduce first-inference time from ~7 min to ~60s:
 ```
 argocd/bootstrap/                # ApplicationSets (platform + workloads)
 platform/
-  config/kro/                    # InferenceEndpoint + AITeam definitions
+  config/kro/                    # InferenceEndpoint + AITeam + FineTuneJob definitions
   config/rbac/                   # ClusterRoles
   config/ingress.yaml            # ALB routing
   config/warm-pool/              # GPU warm-pool placeholder
@@ -372,28 +433,35 @@ platform/
 workloads/
   models/                        # InferenceEndpoint YAMLs (self-service)
   teams/                         # AITeam YAMLs (self-service)
+  fine-tuning/                   # FineTuneJob YAMLs (self-service)
 ops/                             # Operational scripts
 terraform/                       # Infrastructure modules (VPC → IAM → EKS → Observability)
 docs/
-  Platform Health Agent — Architecture Design.md
+  quickstart.md                            # Turnkey path: provision → Sonnet → fine-tune → compare
+  fine-tuning-getting-started.md           # Self-service QLoRA guide
+  platform-evolution-plan.md               # Turnkey platform design (P1–P6)
+  fine-tuning-implementation-plan-v2.md    # Fine-tuning design
+  platform-health-agent-architecture-design.md
   platform-health-agent-implementation-plan.md
-  platform-review-2026-05-28.md  # Latest cluster review
-  conference-demo.md             # Step-by-step demo runbook
-  fine-tuning-implementation-plan-v2.md
 ```
 
 ---
 
 ## Langfuse Tracing
 
-Langfuse is deployed automatically. For ALB access, set `langfuse.nextauth.url` in `platform/services/langfuse/helm-values.yaml` to your ALB hostname. Then create API keys in the Langfuse UI and wire them to LiteLLM:
+Tracing is **live on the first model call — no manual setup**. Terraform
+(`terraform/30.eks/30.cluster/langfuse-init.tf`) generates the project key pair,
+provisions the org/project/admin user via Langfuse's headless init, and writes
+the `langfuse-litellm-keys` Secret that LiteLLM's callback consumes.
 
-```bash
-kubectl create secret generic langfuse-litellm-keys -n ai-platform \
-  --from-literal=LANGFUSE_PUBLIC_KEY=pk-lf-... \
-  --from-literal=LANGFUSE_SECRET_KEY=sk-lf-...
-kubectl rollout restart deployment litellm -n ai-platform
-```
+For ALB or custom-domain access, set the `langfuse_nextauth_url` tfvar (default
+`http://localhost:3000`, which works with `./ops/ssm-tunnel.sh`) — e.g.
+`http://k8s-aiplatform-<hash>.<region>.elb.amazonaws.com:3000` or
+`https://langfuse.<your-domain>`. Do **not** hand-edit the git-tracked
+`helm-values.yaml`; the value is injected via the `langfuse-init` Secret.
+
+Sign in at that URL with `langfuse_init_user_email` and the admin password from
+`terraform output -raw langfuse_admin_password`.
 
 ---
 

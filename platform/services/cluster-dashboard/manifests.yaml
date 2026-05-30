@@ -138,7 +138,7 @@ spec:
               valueFrom: { secretKeyRef: { name: platform-db-credentials, key: username } }
             - name: DB_PASSWORD
               valueFrom: { secretKeyRef: { name: platform-db-credentials, key: password } }
-            - name: DEVOPS_AGENT_NAMESPACE
+            - name: PLATFORM_HEALTH_AGENT_NAMESPACE
               value: platform-health-agent
             - name: APPROVAL_EXPIRY_HOURS
               value: "24"
@@ -219,7 +219,9 @@ metadata:
     alb.ingress.kubernetes.io/target-type: ip
     alb.ingress.kubernetes.io/listen-ports: '[{"HTTP": 9090}]'
     alb.ingress.kubernetes.io/healthcheck-path: /data.json
-    alb.ingress.kubernetes.io/inbound-cidrs: 212.93.153.21/32
+    # PLACEHOLDER inbound-cidrs (RFC 5737 doc range, routes nowhere) — set to your
+    # operator CIDR. Must stay IDENTICAL to platform/config/ingress.yaml (shared ALB).
+    alb.ingress.kubernetes.io/inbound-cidrs: 203.0.113.0/24
 spec:
   ingressClassName: alb
   rules:

@@ -3,7 +3,7 @@
 **Status:** Ready for implementation (95 % confidence)
 **Author:** Platform Team
 **Date:** 2026-05-21
-**Supersedes:** `docs/fine-tuning-implementation-plan.md` (May 2025 draft)
+**Supersedes:** an earlier May 2025 draft (removed)
 
 ---
 
@@ -982,7 +982,7 @@ metadata:
   namespace: inference
 spec:
   baseModel: "unsloth/llama-3.1-8b-unsloth-bnb-4bit"   # REQUIRED — Unsloth pre-quant or HF model
-  dataset: "s3://ai-platform-cnd-demo-training-datasets/example.jsonl"  # REQUIRED
+  dataset: "s3://<cluster>-training-datasets/example.jsonl"  # REQUIRED
   # autoDeploy: true              # auto-create InferenceEndpoint after training
 
   # Training hyperparameters (defaults shown)
@@ -1117,7 +1117,7 @@ metadata:
   namespace: inference
 spec:
   baseModel: "unsloth/llama-3.1-8b-unsloth-bnb-4bit"
-  dataset: "s3://ai-platform-cnd-demo-training-datasets/support-tickets-v1.jsonl"
+  dataset: "s3://<cluster>-training-datasets/support-tickets-v1.jsonl"
   epochs: 2
   loraRank: 32
   autoDeploy: true

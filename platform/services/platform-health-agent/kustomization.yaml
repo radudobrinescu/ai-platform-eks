@@ -1,4 +1,4 @@
-# Kustomization for the DevOps agent.
+# Kustomization for the Platform Health Agent.
 #
 # ArgoCD auto-detects this file and applies via kustomize. The
 # `configMapGenerator` inlines the entire scripts/ directory into a

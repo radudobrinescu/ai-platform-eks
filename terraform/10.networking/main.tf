@@ -170,6 +170,14 @@ module "endpoints" {
       service             = "logs"
       private_dns_enabled = true
       subnet_ids          = module.vpc.private_subnets
+    },
+    # Bedrock runtime — lets LiteLLM reach Bedrock models (e.g. Claude Sonnet)
+    # without egress to the public Bedrock endpoint. Only relevant on private
+    # clusters; public clusters use the default public endpoint (no entry needed).
+    bedrock-runtime = {
+      service             = "bedrock-runtime"
+      private_dns_enabled = true
+      subnet_ids          = module.vpc.private_subnets
     }
   }
 }

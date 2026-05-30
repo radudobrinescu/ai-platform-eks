@@ -3,7 +3,7 @@
 **Status:** Plan (awaiting approval)
 **Author:** Platform Team
 **Date:** 2026-05-28
-**Companion to:** [Platform Health Agent — Architecture Design.md](./DevOps%20Agent%20%E2%80%94%20Architecture%20Design.md)
+**Companion to:** [platform-health-agent-architecture-design.md](./platform-health-agent-architecture-design.md)
 **Module path:** `platform/services/platform-health-agent/`
 
 ---
@@ -131,7 +131,7 @@ This secret is excluded from git (it lives only in the cluster, like `hf-token`)
 ## 2. Architecture (As Built)
 
 ```
-EKS Cluster (ai-platform-cnd-demo)
+EKS Cluster (<your-cluster>)
 │
 ├── platform-health-agent namespace
 │   │
@@ -550,8 +550,8 @@ metadata:
   name: platform-health-agent-config
   namespace: platform-health-agent
 data:
-  CLUSTER_NAME: "ai-platform-cnd-demo"
-  AWS_REGION: "eu-central-1"
+  CLUSTER_NAME: "ai-platform"
+  AWS_REGION: "us-east-1"
 
   # Watch / debounce
   WATCH_NAMESPACES: "*"                          # comma-list or "*"

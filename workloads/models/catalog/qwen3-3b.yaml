@@ -1,0 +1,28 @@
+# Preconfigured small model — Qwen2.5-3B-Instruct (the cheap self-hosted contender).
+#
+# Shipped with the platform so a self-hosted model is serving out of the box,
+# next to Bedrock's Claude Sonnet 4.6. This is the BASE small model in the
+# money-demo: cheap and fast but off-voice until fine-tuned — the arc
+# "base small (mediocre) → fine-tuned small (matches Sonnet) → at a fraction
+# of the cost" is the sale.
+#
+# Why Qwen2.5-3B-Instruct:
+#   - Ungated + Apache-2.0 → serves on first boot with NO HuggingFace token.
+#   - Strong instruction-following → good base for tone/style fine-tuning.
+#   - 3B at bf16 (~6 GiB weights) fits comfortably on the cheapest GPUs (T4/L4).
+#
+# The endpoint name `qwen3-3b` is the alias clients call via LiteLLM and the
+# `--models` value for ops/compare-models.py.
+apiVersion: kro.run/v1alpha1
+kind: InferenceEndpoint
+metadata:
+  name: qwen3-3b
+  namespace: inference
+spec:
+  model: "Qwen/Qwen2.5-3B-Instruct"
+  gpuCount: 1
+  minReplicas: 1
+  maxReplicas: 2
+  workerMemory: "12Gi"   # default — fits a 3B model
+  maxModelLen: 8192
+  minVramPerGpuGiB: 0    # any GPU — Karpenter picks the cheapest fit (e.g. T4)

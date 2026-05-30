@@ -15,6 +15,12 @@ spec:
       labels:
         app: litellm
     spec:
+      # ServiceAccount carries the Bedrock IRSA role when enable_bedrock=true
+      # (annotation injected by Terraform). Without it, this is a plain SA with
+      # no AWS access — equivalent to `default`, so non-Bedrock installs are
+      # unaffected. The EKS Pod Identity webhook injects AWS_REGION here when
+      # the role annotation is present, which the Bedrock model config reads.
+      serviceAccountName: litellm
       containers:
         - name: litellm
           image: litellm/litellm:v1.81.9-stable.patch.1
@@ -34,6 +40,17 @@ spec:
                   key: litellm-url
             - name: STORE_MODEL_IN_DB
               value: "True"
+            # Region for the Bedrock provider. Sourced from a Terraform-managed
+            # ConfigMap (created with the cluster) so it's never hardcoded in git.
+            # optional:true keeps LiteLLM bootable on installs where the ConfigMap
+            # isn't present (non-Terraform/dev) — Bedrock calls would then 4xx,
+            # but self-hosted models are unaffected.
+            - name: AWS_REGION
+              valueFrom:
+                configMapKeyRef:
+                  name: litellm-env
+                  key: AWS_REGION
+                  optional: true
             - name: LITELLM_CALLBACKS
               value: "langfuse"
             - name: LANGFUSE_HOST
@@ -84,10 +101,24 @@ metadata:
   namespace: ai-platform
 data:
   config.yaml: |
-    # Models are registered dynamically via the LiteLLM API (POST /model/new).
-    # KRO InferenceEndpoint definitions include a registration Job that
-    # auto-registers models when deployed — no manual config needed.
-    model_list: []
+    # Two model sources merge at runtime:
+    #   1. Static models declared here (committed to git) — e.g. Bedrock, which
+    #      has nothing to deploy/scale, so it needs no InferenceEndpoint or Job.
+    #   2. Self-hosted models registered dynamically via the LiteLLM API
+    #      (POST /model/new) by each InferenceEndpoint's registration Job.
+    # LiteLLM merges this model_list with DB-registered models (STORE_MODEL_IN_DB=True).
+    model_list:
+      # Amazon Bedrock — Claude Sonnet 4.6 (the frontier commercial baseline).
+      # Static endpoint: zero GPUs, no InferenceEndpoint. Auth comes from the
+      # `litellm` ServiceAccount's IRSA role (terraform: enable_bedrock=true) —
+      # no static keys. The `us.` prefix selects the cross-region inference
+      # profile. Verify the exact model ID + region availability in the Bedrock
+      # console; it's a one-line edit. Requires Bedrock model access enabled
+      # in-account (a one-time console toggle) — compare-models.py preflights it.
+      - model_name: claude-sonnet-4-6
+        litellm_params:
+          model: bedrock/us.anthropic.claude-sonnet-4-6-v1:0
+          aws_region_name: os.environ/AWS_REGION
     general_settings:
       master_key: os.environ/LITELLM_MASTER_KEY
 ---

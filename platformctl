@@ -1,0 +1,132 @@
+#!/usr/bin/env bash
+# platformctl — thin turnkey wrapper over the existing `make` + `ops/` flow.
+#
+# Deliberately NOT a provisioning platform: every command shells out to tools
+# that already exist (terraform/Makefile, ops/*.sh, ops/*.py). It just removes
+# the "which command in what order" friction so a teammate can stand up the
+# platform and reach the model comparison without hand-editing manifests.
+#
+# Usage:
+#   ./platformctl up        [ENV]      Provision everything (make bootstrap + apply-all)
+#   ./platformctl status    [ENV]      Show cluster / ArgoCD / model health
+#   ./platformctl tunnel               Port-forward WebUI/LiteLLM/Langfuse (ops/ssm-tunnel.sh)
+#   ./platformctl preflight            Check Bedrock + model access (ops/compare-models.py --preflight)
+#   ./platformctl compare   [ARGS...]  Run the model comparison (ops/compare-models.py)
+#   ./platformctl test MODEL "PROMPT"  Quick single-model test (ops/test-model.sh)
+#   ./platformctl down      [ENV]      Tear down (make destroy-all) — asks to confirm
+#
+# ENV defaults to $PLATFORM_ENV or "dev". Region from your AWS config / $AWS_REGION.
+set -euo pipefail
+
+REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+TF_DIR="${REPO_ROOT}/terraform"
+OPS_DIR="${REPO_ROOT}/ops"
+ENVIRONMENT="${PLATFORM_ENV:-dev}"
+
+c_bold=$'\033[1m'; c_dim=$'\033[2m'; c_grn=$'\033[32m'; c_red=$'\033[31m'; c_rst=$'\033[0m'
+[ -t 1 ] || { c_bold=""; c_dim=""; c_grn=""; c_red=""; c_rst=""; }
+
+log()  { echo "${c_bold}==>${c_rst} $*"; }
+warn() { echo "${c_red}!${c_rst} $*" >&2; }
+die()  { warn "$*"; exit 1; }
+
+need() { command -v "$1" >/dev/null 2>&1 || die "missing required tool: $1"; }
+
+# Print the leading comment block (everything from line 2 up to the first
+# non-comment line), stripped of the leading "# ".
+usage() { sed -n '2,/^[^#]/p' "${BASH_SOURCE[0]}" | grep '^#' | sed 's/^# \{0,1\}//'; }
+
+# ---- commands -------------------------------------------------------------- #
+
+cmd_up() {
+  local env="${1:-$ENVIRONMENT}"
+  need terraform; need aws; need make
+  local var_file="${TF_DIR}/00.global/vars/${env}.tfvars"
+  [ -f "$var_file" ] || die "no tfvars for env '${env}': ${var_file}
+  Copy 00.global/vars/example.tfvars and set your Identity Center ARN + gitops_repo_url."
+  log "Provisioning environment '${env}' (this takes a while — EKS + add-ons)"
+  log "1/2 bootstrap state backend (S3 + DynamoDB)"
+  make -C "$TF_DIR" bootstrap ENVIRONMENT="$env"
+  log "2/2 apply all modules in order"
+  make -C "$TF_DIR" apply-all ENVIRONMENT="$env"
+  echo
+  log "${c_grn}Done.${c_rst} Next:"
+  echo "  ./platformctl status ${env}      # watch the platform come up"
+  echo "  ./platformctl tunnel             # reach the UIs locally"
+  echo "  ./platformctl preflight          # confirm Bedrock + models answer"
+}
+
+cmd_status() {
+  local env="${1:-$ENVIRONMENT}"
+  need kubectl
+  log "ArgoCD applications"
+  kubectl get applications -n argocd 2>/dev/null \
+    || warn "cannot reach the cluster — run: aws eks update-kubeconfig --name <cluster>"
+  echo
+  log "Platform pods (ai-platform ns)"
+  kubectl get pods -n ai-platform 2>/dev/null || true
+  echo
+  log "Inference endpoints (models)"
+  kubectl get inferenceendpoints -n inference 2>/dev/null || true
+  echo
+  log "Fine-tune jobs"
+  kubectl get finetunejobs -n inference 2>/dev/null || echo "  (none / CRD not installed yet)"
+}
+
+cmd_tunnel() {
+  exec "${OPS_DIR}/ssm-tunnel.sh"
+}
+
+cmd_preflight() {
+  need python3
+  log "Preflighting LiteLLM + model access (incl. Bedrock)"
+  exec python3 "${OPS_DIR}/compare-models.py" --preflight "$@"
+}
+
+cmd_compare() {
+  need python3
+  if [ "$#" -eq 0 ]; then
+    log "Running the default support-voice comparison (sample dataset)"
+    exec python3 "${OPS_DIR}/compare-models.py" \
+      --dataset "${OPS_DIR}/sample-data/support-eval.jsonl" \
+      --langfuse-dataset support-voice-eval \
+      --self-hosted-model qwen3-3b \
+      --self-hosted-hf-id Qwen/Qwen2.5-3B-Instruct
+  else
+    exec python3 "${OPS_DIR}/compare-models.py" "$@"
+  fi
+}
+
+cmd_test() {
+  [ "$#" -ge 2 ] || die "usage: platformctl test MODEL \"PROMPT\""
+  exec "${OPS_DIR}/test-model.sh" "$@"
+}
+
+cmd_down() {
+  local env="${1:-$ENVIRONMENT}"
+  need terraform; need make
+  warn "This will DESTROY all infrastructure for env '${env}'."
+  read -r -p "Type the environment name to confirm: " confirm
+  [ "$confirm" = "$env" ] || die "confirmation mismatch — aborted."
+  make -C "$TF_DIR" destroy-all ENVIRONMENT="$env"
+}
+
+# ---- dispatch -------------------------------------------------------------- #
+
+main() {
+  local cmd="${1:-}"; shift || true
+  case "$cmd" in
+    up)        cmd_up "$@" ;;
+    status)    cmd_status "$@" ;;
+    tunnel)    cmd_tunnel "$@" ;;
+    preflight) cmd_preflight "$@" ;;
+    compare)   cmd_compare "$@" ;;
+    test)      cmd_test "$@" ;;
+    down)      cmd_down "$@" ;;
+    ""|-h|--help|help) usage ;;
+    *) die "unknown command: ${cmd}
+$(usage)" ;;
+  esac
+}
+
+main "$@"

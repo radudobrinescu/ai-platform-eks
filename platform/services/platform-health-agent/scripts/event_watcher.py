@@ -230,7 +230,7 @@ def build_investigator_job(investigation_id: str, event_payload: dict) -> dict:
         "spec": {
             "ttlSecondsAfterFinished": 3600,
             "activeDeadlineSeconds": 600,
-            "backoffLimit": 0,                  # don't retry — failures emit Slack DM
+            "backoffLimit": 0,                  # don't retry — surface the failure in the dashboard
             "template": {
                 "metadata": {
                     "labels": {

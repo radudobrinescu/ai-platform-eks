@@ -1,4 +1,4 @@
-# RBAC for the DevOps agent.
+# RBAC for the Platform Health Agent.
 #
 # THREE distinct identities — strict least-privilege:
 #
@@ -14,7 +14,7 @@
 #    (a 5-minute periodic sweep — see scripts/event_watcher.py).
 #
 # 3. platform-health-agent-spawner (create Jobs in own namespace)
-#    Used by: Slack Handler (to create Remediator Jobs after approval),
+#    Used by: cluster-dashboard backend (to create Remediator Jobs after approval),
 #             Event Watcher (to create Investigator Jobs).
 #    Binding: RoleBinding scoped to `platform-health-agent` namespace only.
 #
@@ -146,7 +146,7 @@ roleRef:
   name: platform-health-agent-writer
   apiGroup: rbac.authorization.k8s.io
 ---
-# SPAWNER — Slack Handler + Event Watcher need to create Jobs
+# SPAWNER — cluster-dashboard backend + Event Watcher need to create Jobs
 # in their own namespace, plus manage RoleBindings in `team-*`
 # namespaces (Event Watcher's reconciler).
 apiVersion: rbac.authorization.k8s.io/v1

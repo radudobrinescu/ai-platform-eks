@@ -67,7 +67,7 @@ DB_NAME = os.environ.get("DB_NAME", "platform_health_agent")
 DB_USER = os.environ.get("DB_USER")
 DB_PASSWORD = os.environ.get("DB_PASSWORD")
 
-DEVOPS_AGENT_NAMESPACE = os.environ.get("DEVOPS_AGENT_NAMESPACE", "platform-health-agent")
+PLATFORM_HEALTH_AGENT_NAMESPACE = os.environ.get("PLATFORM_HEALTH_AGENT_NAMESPACE", "platform-health-agent")
 APPROVAL_EXPIRY_HOURS = int(os.environ.get("APPROVAL_EXPIRY_HOURS", "24"))
 MAX_REMEDIATIONS_PER_DAY = int(os.environ.get("MAX_REMEDIATIONS_PER_DAY", "20"))
 KIRO_MODEL_REMEDIATE = os.environ.get("KIRO_MODEL_REMEDIATE", "claude-opus-4.6")
@@ -157,7 +157,7 @@ def build_remediator_job(investigation_id: str) -> dict:
         "kind": "Job",
         "metadata": {
             "name": job_name,
-            "namespace": DEVOPS_AGENT_NAMESPACE,
+            "namespace": PLATFORM_HEALTH_AGENT_NAMESPACE,
             "labels": {
                 "app.kubernetes.io/name": "platform-health-agent-remediator",
                 "app.kubernetes.io/part-of": "platform-health-agent",
@@ -480,7 +480,7 @@ def approve_investigation(investigation_id: str, approver: str) -> tuple[int, di
                 # Spawn the Job.
                 job = build_remediator_job(investigation_id)
                 status, body = k8s_post(
-                    f"/apis/batch/v1/namespaces/{DEVOPS_AGENT_NAMESPACE}/jobs", job)
+                    f"/apis/batch/v1/namespaces/{PLATFORM_HEALTH_AGENT_NAMESPACE}/jobs", job)
                 if status not in (200, 201, 202):
                     return 502, {"error": "job create failed",
                                  "status": status,

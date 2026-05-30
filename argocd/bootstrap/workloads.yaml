@@ -1,9 +1,12 @@
 # Workloads — ArgoCD ApplicationSet for self-service workloads.
 #
-# - models: syncs workloads/models/ → creates InferenceEndpoint CRs.
-#           Teams add a YAML here to deploy a model.
-# - teams:  syncs workloads/teams/ → creates AITeam CRs.
-#           Platform team adds a YAML here to onboard a new team.
+# - models:      syncs workloads/models/ → creates InferenceEndpoint CRs.
+#                Teams add a YAML here to deploy a model. Recurses into
+#                catalog/ for platform-shipped default models.
+# - teams:       syncs workloads/teams/ → creates AITeam CRs.
+#                Platform team adds a YAML here to onboard a new team.
+# - fine-tuning: syncs workloads/fine-tuning/ → creates FineTuneJob CRs.
+#                Users add a YAML here to fine-tune a model.
 #
 # Forking = change the literal URL below + the two URLs in
 # argocd/bootstrap/platform.yaml, and set var.gitops_repo_url in Terraform.
@@ -22,6 +25,8 @@ spec:
             path: workloads/models
           - name: teams
             path: workloads/teams
+          - name: fine-tuning
+            path: workloads/fine-tuning
   template:
     metadata:
       name: '{{.name}}'
@@ -35,6 +40,11 @@ spec:
         repoURL: https://github.com/radudobrinescu/ai-platform-eks.git
         targetRevision: main
         path: '{{.path}}'
+        # Recurse so platform-shipped models in workloads/models/catalog/ are
+        # synced alongside user-added models in workloads/models/. Harmless for
+        # the flat teams/ dir; ArgoCD ignores non-manifest files (.example, .gitkeep).
+        directory:
+          recurse: true
       destination:
         name: local-cluster
         namespace: argocd

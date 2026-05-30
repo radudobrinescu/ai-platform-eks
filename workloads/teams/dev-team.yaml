@@ -12,7 +12,7 @@ spec:
   maxBudget: '100.0'
   memoryQuota: 8Gi
   models:
-  - smollm3-3b
+  - qwen3-3b
   rpmLimit: 60
   teamName: dev
   tpmLimit: 100000

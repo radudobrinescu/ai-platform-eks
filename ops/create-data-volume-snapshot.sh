@@ -23,7 +23,7 @@
 #
 # Examples:
 #   # Using ECR pull-through cache URI:
-#   ./ops/create-data-volume-snapshot.sh 802019299867.dkr.ecr.eu-central-1.amazonaws.com/docker-hub/anyscale/ray-llm:2.54.0-py311-cu128
+#   ./ops/create-data-volume-snapshot.sh <account-id>.dkr.ecr.<region>.amazonaws.com/docker-hub/anyscale/ray-llm:2.54.0-py311-cu128
 #
 #   # Short form (auto-prefixes with account ECR pull-through cache):
 #   ./ops/create-data-volume-snapshot.sh anyscale/ray-llm:2.54.0-py311-cu128

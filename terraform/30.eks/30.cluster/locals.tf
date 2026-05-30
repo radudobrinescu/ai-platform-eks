@@ -10,6 +10,13 @@ locals {
   ray_image_tag = "2.54.0-py311-cu128"
   ray_image     = "anyscale/ray-llm:${local.ray_image_tag}"
 
+  # Unsloth fine-tuning trainer image. Built from
+  # platform/services/unsloth-trainer/Dockerfile and pushed to a private ECR
+  # repo by unsloth-image.tf. Bump the tag to rebuild + re-push. Surfaced to KRO
+  # via the platform-config ConfigMap (unslothImage) so FineTuneJob reads it.
+  unsloth_image_tag = "0.1.0"
+  unsloth_image     = local.enable_fine_tuning ? "${aws_ecr_repository.unsloth_trainer[0].repository_url}:${local.unsloth_image_tag}" : ""
+
   # HuggingFace model-weights cache.
   # S3 bucket is populated by ops/seed-model-cache.py (manual) or by the Ray
   # worker's sidecar after first successful load (automatic). The initContainer

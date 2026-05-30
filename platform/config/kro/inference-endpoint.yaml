@@ -8,6 +8,7 @@ spec:
     kind: InferenceEndpoint
     spec:
       model:                "string"                    # HuggingFace model ID (e.g. google/gemma-3-4b-it)
+      modelSource:          "string  | default="        # S3 prefix (relative to model-cache bucket) for a fine-tuned model; when set, the init container syncs from here and vLLM loads the local path instead of downloading `model` from HF
       gpuCount:             "integer | default=1"       # Total GPUs per worker (must equal tensorParallelSize × pipelineParallelSize)
       tensorParallelSize:   "integer | default=0"       # TP degree — splits layers across GPUs (0 = use gpuCount, backward-compat)
       pipelineParallelSize: "integer | default=1"       # PP degree — splits layer groups across GPUs (prefer on PCIe/non-NVLink)
@@ -77,15 +78,21 @@ spec:
                       fi
 
                       # --- Validate model exists on HuggingFace ---
-                      echo "Checking model $MODEL_ID on HuggingFace..."
-                      HTTP_CODE=$(curl -s -o /dev/null -w '%{http_code}' "https://huggingface.co/api/models/$MODEL_ID")
-                      if [ "$HTTP_CODE" = "404" ]; then
-                        echo "ERROR: Model '$MODEL_ID' not found on HuggingFace. Check the model ID."
-                        exit 1
-                      elif [ "$HTTP_CODE" != "200" ]; then
-                        echo "WARNING: Could not verify model on HuggingFace (HTTP $HTTP_CODE). Proceeding anyway."
+                      # Skip for fine-tuned models (modelSource set): MODEL_ID is
+                      # a local alias, not a HF repo, so the lookup would 404.
+                      if [ -n "$MODEL_SOURCE" ]; then
+                        echo "Fine-tuned model (source $MODEL_SOURCE) — skipping HuggingFace check."
                       else
-                        echo "✓ Model verified on HuggingFace"
+                        echo "Checking model $MODEL_ID on HuggingFace..."
+                        HTTP_CODE=$(curl -s -o /dev/null -w '%{http_code}' "https://huggingface.co/api/models/$MODEL_ID")
+                        if [ "$HTTP_CODE" = "404" ]; then
+                          echo "ERROR: Model '$MODEL_ID' not found on HuggingFace. Check the model ID."
+                          exit 1
+                        elif [ "$HTTP_CODE" != "200" ]; then
+                          echo "WARNING: Could not verify model on HuggingFace (HTTP $HTTP_CODE). Proceeding anyway."
+                        else
+                          echo "✓ Model verified on HuggingFace"
+                        fi
                       fi
 
                       # --- Wait for LiteLLM and register ---
@@ -112,6 +119,8 @@ spec:
                       value: ${schema.metadata.name}
                     - name: MODEL_ID
                       value: ${schema.spec.model}
+                    - name: MODEL_SOURCE
+                      value: ${schema.spec.modelSource}
                     - name: NAMESPACE
                       value: ${schema.metadata.namespace}
                     - name: GPU_COUNT
@@ -139,6 +148,10 @@ spec:
                   llm_configs:
                     - model_loading_config:
                         model_id: ${schema.spec.model}
+                        # Fine-tuned models load from the local dir the init
+                        # container synced; standard models resolve `model_id`
+                        # from the HF cache / live download.
+                        model_source: "${schema.spec.modelSource != '' ? '/hf-cache/finetuned' : schema.spec.model}"
                       engine_kwargs:
                         dtype: bfloat16
                         max_model_len: ${string(schema.spec.maxModelLen)}
@@ -245,6 +258,10 @@ spec:
                         env:
                           - name: MODEL_ID
                             value: ${schema.spec.model}
+                          # Fine-tuned models set this to an S3 prefix; standard
+                          # HF models leave it empty (original behavior).
+                          - name: MODEL_SOURCE
+                            value: ${schema.spec.modelSource}
                           - name: CACHE_BUCKET
                             value: ${platformConfig.data.?modelCacheBucket.orValue("")}
                           - name: AWS_REGION
@@ -258,21 +275,42 @@ spec:
                               echo "modelCacheBucket not configured — vLLM will download from HF at runtime."
                               exit 0
                             fi
-                            PREFIX="hf/$MODEL_ID"
-                            LOCAL="/hf-cache/hub/models--$(echo "$MODEL_ID" | sed 's#/#--#g')"
-                            echo "Probing s3://$CACHE_BUCKET/$PREFIX/ ..."
-                            if /s5cmd ls "s3://$CACHE_BUCKET/$PREFIX/" >/dev/null 2>&1; then
-                              echo "Cache hit — syncing to $LOCAL"
+                            if [ -n "$MODEL_SOURCE" ]; then
+                              # --- Fine-tuned model: sync the explicit S3 prefix to a
+                              # fixed local dir that vLLM loads directly (no HF). The
+                              # weights are guaranteed present (the training Job uploaded
+                              # them before creating this endpoint), so a miss is fatal. ---
+                              # NB: strip trailing slash with sed, NOT shell ${VAR%/} —
+                              # KRO interprets any ${...} in this block as a CEL
+                              # expression (see the $MODEL_ID / $(...) style above).
+                              PREFIX=$(echo "$MODEL_SOURCE" | sed 's#/*$##')
+                              LOCAL="/hf-cache/finetuned"
+                              echo "Fine-tuned model — syncing s3://$CACHE_BUCKET/$PREFIX/ to $LOCAL"
                               mkdir -p "$LOCAL"
                               if /s5cmd sync "s3://$CACHE_BUCKET/$PREFIX/*" "$LOCAL/"; then
-                                echo "Cache populated from S3 in $(date -u +%T)"
+                                echo "Fine-tuned weights populated in $(date -u +%T)"
                               else
-                                echo "Partial sync — wiping local cache so vLLM falls back to HF."
-                                rm -rf "$LOCAL"
+                                echo "ERROR: failed to sync fine-tuned weights from s3://$CACHE_BUCKET/$PREFIX/"
+                                exit 1
                               fi
                             else
-                              echo "Cache miss for $MODEL_ID — vLLM will download from HF."
-                              echo "  (A sidecar will auto-warm the cache after vLLM finishes loading.)"
+                              # --- Standard HF model: original cache-or-fallback behavior. ---
+                              PREFIX="hf/$MODEL_ID"
+                              LOCAL="/hf-cache/hub/models--$(echo "$MODEL_ID" | sed 's#/#--#g')"
+                              echo "Probing s3://$CACHE_BUCKET/$PREFIX/ ..."
+                              if /s5cmd ls "s3://$CACHE_BUCKET/$PREFIX/" >/dev/null 2>&1; then
+                                echo "Cache hit — syncing to $LOCAL"
+                                mkdir -p "$LOCAL"
+                                if /s5cmd sync "s3://$CACHE_BUCKET/$PREFIX/*" "$LOCAL/"; then
+                                  echo "Cache populated from S3 in $(date -u +%T)"
+                                else
+                                  echo "Partial sync — wiping local cache so vLLM falls back to HF."
+                                  rm -rf "$LOCAL"
+                                fi
+                              else
+                                echo "Cache miss for $MODEL_ID — vLLM will download from HF."
+                                echo "  (A sidecar will auto-warm the cache after vLLM finishes loading.)"
+                              fi
                             fi
                             # Ensure the worker pod's `ray` user (uid 1000)
                             # can write into /hf-cache/hub on cache miss. The

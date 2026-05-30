@@ -1,0 +1,41 @@
+# FineTuneJob Template — copy, rename, set `dataset` (and optionally `baseModel`).
+# Everything else has sensible defaults. After committing, ArgoCD syncs and KRO
+# expands this into a validation Job + a GPU training Job. Track with:
+#   kubectl get finetunejobs -n inference -w
+#   kubectl logs -n inference job/<name>-train -f
+apiVersion: kro.run/v1alpha1
+kind: FineTuneJob
+metadata:
+  name: my-fine-tune              # becomes the LiteLLM alias when autoDeploy=true
+  namespace: inference
+spec:
+  # REQUIRED — training data. Either an S3 object or a HuggingFace dataset:
+  #   s3://<cluster>-training-datasets/support-tickets.jsonl
+  #   HuggingFace:yahma/alpaca-cleaned
+  dataset: "s3://CHANGE-ME-training-datasets/example.jsonl"
+
+  # Base model. Default is the platform's showcase small model (ungated).
+  # baseModel: "unsloth/Qwen2.5-3B-Instruct-bnb-4bit"
+
+  # autoDeploy: true              # create an InferenceEndpoint after training
+
+  # --- Training hyperparameters (defaults shown) ---
+  # method: qlora                 # qlora (default) | lora | full
+  # loraRank: 16                  # 8 | 16 | 32 | 64 | 128
+  # epochs: 1
+  # batchSize: 2
+  # maxSeqLength: 2048
+  # datasetFormat: auto           # auto | alpaca | sharegpt | chatml | completion | raw
+
+  # --- Resources (run ops/recommend-instance.py to size larger base models) ---
+  # gpuCount: 1                   # V1 supports 1
+  # minVramPerGpuGiB: 24
+  # timeoutHours: 6
+  # shared: false                 # true = time-sliced GPU (small models only)
+
+  # --- Output ---
+  # outputFormat: safetensors     # safetensors (vLLM-ready) | gguf-q4_k_m | gguf-q8_0 | lora-only
+  # pushToHub: ""                 # optional HuggingFace repo to also push to
+
+  # --- Optional integrations ---
+  # wandbProject: my-experiments  # requires a wandb-api-key Secret in the inference ns

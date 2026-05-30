@@ -7,23 +7,42 @@
 # and referenced here via secretKeyRef — no secrets stored in git.
 
 langfuse:
+  # --- Tracing on first boot (turnkey) ---
+  # The langfuse-init Secret (Terraform-generated, ai-platform ns) carries the
+  # headless-initialization env vars (LANGFUSE_INIT_ORG/PROJECT/USER + project
+  # keys) plus NEXTAUTH_URL. On first boot Langfuse creates the org, project,
+  # API keys, and admin user — and LiteLLM is handed the SAME keys
+  # (langfuse-litellm-keys), so the very first model call is traced with no UI
+  # clicks. See terraform/30.eks/30.cluster/langfuse-init.tf.
+  #
+  # additionalEnvFrom pulls every LANGFUSE_INIT_* key (none collide with the
+  # chart's own env). NEXTAUTH_URL is set via additionalEnv below instead of
+  # here, because the chart renders its own NEXTAUTH_URL and `env` entries
+  # appended later win over earlier ones — `envFrom` would be shadowed.
+  additionalEnvFrom:
+    - secretRef:
+        name: langfuse-init
+  additionalEnv:
+    # Browser-facing URL — Terraform-controlled (var.langfuse_nextauth_url),
+    # surfaced through the langfuse-init Secret. Appended after the chart's own
+    # NEXTAUTH_URL so this value wins; no manual post-install edit of this file.
+    - name: NEXTAUTH_URL
+      valueFrom:
+        secretKeyRef:
+          name: langfuse-init
+          key: NEXTAUTH_URL
+
   salt:
     secretKeyRef:
       name: langfuse-secrets
       key: salt
 
   nextauth:
-    # URL of the Langfuse web deployment as seen by the BROWSER. NextAuth
-    # validates the Host header of every sign-in request against this URL,
-    # so it must match exactly what the user types into their browser.
-    #
-    # Default `http://localhost:3000` works out of the box with the SSM
-    # tunnel workflow (`./ops/ssm-tunnel.sh`).
-    #
-    # When accessing Langfuse through the ALB, edit this to the ALB
-    # hostname after the first ArgoCD sync, for example:
-    #   url: "http://k8s-aiplatform-<hash>.<region>.elb.amazonaws.com:3000"
-    # Behind a real domain + cert it would be `https://langfuse.<your-domain>`.
+    # Fallback only. The effective browser-facing URL comes from the
+    # langfuse-init Secret via additionalEnv above (NextAuth validates the
+    # sign-in Host header against it). This localhost default keeps the chart
+    # renderable and works with the SSM tunnel (./ops/ssm-tunnel.sh) when no
+    # langfuse-init Secret is present.
     url: "http://localhost:3000"
     secret:
       secretKeyRef:

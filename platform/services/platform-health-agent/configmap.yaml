@@ -1,4 +1,4 @@
-# Configuration ConfigMap for the DevOps agent.
+# Configuration ConfigMap for the Platform Health Agent.
 #
 # Mounted as env vars on event-watcher and inherited by every
 # Investigator/Remediator Job it spawns. The cluster-dashboard
@@ -17,9 +17,12 @@ metadata:
   name: platform-health-agent-config
   namespace: platform-health-agent
 data:
-  # Cluster identity (used in kiro-cli prompts).
-  CLUSTER_NAME: "ai-platform-cnd-demo"
-  AWS_REGION: "eu-central-1"
+  # Cluster identity (used in kiro-cli prompts + EKS MCP AWS-API tool calls).
+  # SET THESE to your cluster: CLUSTER_NAME is <resources_prefix>-<environment>
+  # (see terraform locals), AWS_REGION is the cluster's region. Wrong values
+  # cause the agent's AWS tool calls to fail.
+  CLUSTER_NAME: "ai-platform"
+  AWS_REGION: "us-east-1"
 
   # Which namespaces to watch. "*" = all except those in EXCLUDE_NAMESPACES.
   WATCH_NAMESPACES: "*"

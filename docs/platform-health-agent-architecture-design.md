@@ -182,7 +182,7 @@ kiro-cli chat --no-interactive --trust-tools=read,grep --require-mcp-startup \
 ```yaml
 # ConfigMap
 authorized_approvers:
-  - rdobrine
+  - platform-admin
   - platform-oncall    # Slack user group
 min_approval_count: 1  # V2: support multi-approval for CRITICAL
 ```
@@ -388,7 +388,7 @@ platform:
     enabled: true
     slackChannel: "ops-incidents"
     watchNamespaces: ["production", "staging"]
-    authorizedApprovers: ["rdobrine", "platform-oncall"]
+    authorizedApprovers: ["platform-admin", "platform-oncall"]
 ```
 
 ---

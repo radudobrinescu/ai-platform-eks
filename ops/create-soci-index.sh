@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Build and push a SOCI index for an ECR image using a temporary EC2 instance.
 # Usage: ./ops/create-soci-index.sh <ecr-image-uri>
-# Example: ./ops/create-soci-index.sh 802019299867.dkr.ecr.eu-central-1.amazonaws.com/docker-hub/anyscale/ray-llm:2.54.0-py311-cu128
+# Example: ./ops/create-soci-index.sh <account-id>.dkr.ecr.<region>.amazonaws.com/docker-hub/anyscale/ray-llm:2.54.0-py311-cu128
 set -euo pipefail
 
 IMAGE="${1:?Usage: $0 <ecr-image-uri>}"

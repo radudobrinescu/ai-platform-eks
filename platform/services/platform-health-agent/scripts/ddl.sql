@@ -1,4 +1,4 @@
--- DevOps Agent state schema.
+-- Platform Health Agent state schema.
 -- Applied by db-init Job (PreSync hook) on first deploy.
 -- Idempotent — uses CREATE … IF NOT EXISTS.
 
@@ -12,7 +12,7 @@ CREATE TABLE IF NOT EXISTS investigations (
     status             TEXT NOT NULL CHECK (status IN (
                           'pending',           -- row exists, Job not yet spawned
                           'running',           -- Investigator Job is active
-                          'awaiting_approval', -- findings posted to Slack, waiting for click
+                          'awaiting_approval', -- findings awaiting approval in the dashboard
                           'remediating',       -- approved, Remediator Job is active
                           'done',              -- remediation completed (success or failure)
                           'dismissed',         -- user clicked Dismiss
@@ -27,10 +27,7 @@ CREATE TABLE IF NOT EXISTS investigations (
     findings           JSONB,                  -- written by Investigator
     fix_commands       JSONB,                  -- extracted from findings.fix_commands
     out_of_scope       BOOLEAN NOT NULL DEFAULT false,
-    slack_message_ts   TEXT,                   -- top-level DM message id
-    slack_thread_ts    TEXT,                   -- thread root for replies
-    slack_channel_id   TEXT,                   -- DM channel id (D…)
-    approved_by        TEXT,                   -- Slack user id (U…) of approver
+    approved_by        TEXT,                   -- user id of the approver (from the dashboard)
     approved_at        TIMESTAMPTZ,
     remediation_result JSONB,                  -- written by Remediator
     completed_at       TIMESTAMPTZ,
@@ -51,7 +48,7 @@ CREATE TABLE IF NOT EXISTS debounce (
 
 -- Daily cost / concurrency counters.
 -- One row per day. Incremented by Event Watcher (investigations) and
--- Slack Handler (remediations). Both watcher + handler check the
+-- the cluster-dashboard backend (remediations). Both check the
 -- counter before acting; if exceeded, action is suppressed.
 CREATE TABLE IF NOT EXISTS daily_counters (
     day            DATE PRIMARY KEY,

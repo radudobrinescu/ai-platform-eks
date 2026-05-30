@@ -7,7 +7,7 @@ metadata:
   namespace: ai-platform
 spec:
   teamName: example
-  models: ["smollm3-3b"]       # Models this team can access (* = all)
+  models: ["qwen3-3b"]         # Models this team can access (* = all)
   maxBudget: "100.0"           # Monthly budget in USD
   budgetDuration: "30d"        # Budget reset period
   rpmLimit: 60                 # Requests per minute

@@ -29,7 +29,26 @@ output "next_steps" {
 
     4. Get LiteLLM master key:
        kubectl get secret litellm-secrets -n ai-platform -o jsonpath='{.data.master-key}' | base64 -d
+
+    5. Langfuse tracing is live on first boot — no key setup needed.
+       Sign in at ${var.langfuse_nextauth_url}
+         user: ${var.langfuse_init_user_email}
+         pass: terraform output -raw langfuse_admin_password
+
+    6. Try the frontier model with zero GPUs (Bedrock Claude Sonnet 4.6):
+       requires Bedrock model access enabled in-account; see ops/compare-models.py --preflight
   EOT
+}
+
+output "langfuse_admin_email" {
+  description = "Email of the Langfuse admin user created on first boot"
+  value       = local.capabilities.gitops ? var.langfuse_init_user_email : null
+}
+
+output "langfuse_admin_password" {
+  description = "Password for the Langfuse admin user (generated). Sign in at the langfuse_nextauth_url."
+  value       = local.capabilities.gitops ? random_password.langfuse_init_user[0].result : null
+  sensitive   = true
 }
 
 output "cluster_endpoint" {

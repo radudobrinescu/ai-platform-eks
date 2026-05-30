@@ -154,6 +154,9 @@ resource "kubernetes_config_map" "platform_config" {
     region           = local.region
     rayImage         = var.docker_hub_username != "" ? "${data.aws_caller_identity.current.account_id}.dkr.ecr.${local.region}.amazonaws.com/docker-hub/${local.ray_image}" : local.ray_image
     modelCacheBucket = local.capabilities.gitops ? aws_s3_bucket.model_cache[0].bucket : ""
+    # Fine-tuning (empty string when disabled — KRO falls back via .orValue()).
+    unslothImage           = local.unsloth_image
+    trainingDatasetsBucket = local.enable_fine_tuning ? aws_s3_bucket.training_datasets[0].bucket : ""
   }
 
   depends_on = [kubernetes_namespace.inference]

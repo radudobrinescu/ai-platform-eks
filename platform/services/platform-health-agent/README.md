@@ -11,7 +11,7 @@ investigates with `kiro-cli`, surfaces the proposed fix in the existing
 **cluster-dashboard** with `[Approve]` / `[Dismiss]` buttons, and applies
 the fix only after you click Approve.
 
-> See [`docs/Platform Health Agent — Architecture Design.md`](../../../docs/DevOps%20Agent%20%E2%80%94%20Architecture%20Design.md)
+> See [`docs/platform-health-agent-architecture-design.md`](../../../docs/platform-health-agent-architecture-design.md)
 > and [`docs/platform-health-agent-implementation-plan.md`](../../../docs/platform-health-agent-implementation-plan.md)
 > for the full design.
 
