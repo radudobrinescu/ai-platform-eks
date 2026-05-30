@@ -25,4 +25,10 @@ spec:
   maxReplicas: 2
   workerMemory: "12Gi"   # default — fits a 3B model
   maxModelLen: 8192
-  minVramPerGpuGiB: 0    # any GPU — Karpenter picks the cheapest fit (e.g. T4)
+  # Time-slice the GPU: up to 4 models share one physical GPU (gpu-shared
+  # NodePool). 3B@bf16 needs ~7 GiB/copy, so 4 copies (~28 GiB) only fit on a
+  # 48 GiB L40S — pin the VRAM floor so Karpenter picks g6e, not a 24 GiB L4
+  # (which would make the model shared-INeligible). Verified with
+  # ops/recommend-instance.py (shared_eligible=True only on L40S/48 GiB).
+  shared: true
+  minVramPerGpuGiB: 48

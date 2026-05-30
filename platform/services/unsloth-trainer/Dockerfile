@@ -13,7 +13,7 @@ FROM nvcr.io/nvidia/pytorch:24.10-py3
 # Unsloth + TRL pinned. transformers/peft/accelerate are constrained by Unsloth
 # itself — don't override them or QLoRA breaks in subtle ways.
 RUN pip install --no-cache-dir \
-        "unsloth==2026.05.0" \
+        "unsloth==2026.5.8" \
         "trl==0.21.0" \
         "datasets>=2.14.0" \
         "wandb>=0.16.0" \
