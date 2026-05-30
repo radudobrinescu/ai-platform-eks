@@ -702,17 +702,21 @@ async function openApprovals(){
   document.getElementById('approvals-modal').classList.add('open');
   await loadApprovals();
   // Auto-refresh the Pending list every 5s while the modal is open.
-  // Stops automatically when modal closes or tab switches to History.
+  // SKIP if any "Applying fix…" banner is present — would clobber it
+  // and leave the pollUntilDone() target without a DOM element.
   if(window._approvalsRefreshTimer) clearInterval(window._approvalsRefreshTimer);
   window._approvalsRefreshTimer = setInterval(() => {
     const pendingActive = document.querySelector('.approvals-tab[data-tab="pending"]')?.classList.contains('active');
     const modalOpen = document.getElementById('approvals-modal')?.classList.contains('open');
-    if(modalOpen && pendingActive){
+    const hasInflight = document.querySelector('.approval-remediating') !== null;
+    if(modalOpen && pendingActive && !hasInflight){
       loadApprovals();
-    } else {
+    } else if(!modalOpen) {
       clearInterval(window._approvalsRefreshTimer);
       window._approvalsRefreshTimer = null;
     }
+    // If there's an inflight banner, skip silently — pollUntilDone()
+    // will handle UI updates for that row.
   }, 5000);
 }
 function closeApprovals(){

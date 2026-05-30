@@ -79,6 +79,28 @@ NAMESPACE = "platform-health-agent"  # our own namespace where Jobs are spawned
 
 ALLOWED_REMEDIATION_NAMESPACES_RE = re.compile(r"^(inference|team-.+)$")
 
+# ─── ReplicaSet name pattern: <deployment-name>-<6-10 hex hash> ────────────
+_RS_HASH_RE = re.compile(r"-[a-f0-9]{6,10}$")
+
+
+def _owner_root(pod) -> tuple[str, str]:
+    """Walk pod -> ReplicaSet -> Deployment to find the top-level controller.
+
+    Used as the debounce/dedup key so all pods of the same Deployment
+    (different replica hashes) share one investigation.
+    Falls back to (Pod, pod_name) for orphan pods.
+    """
+    refs = pod.metadata.owner_references or []
+    for ref in refs:
+        if ref.kind == "ReplicaSet":
+            # Most ReplicaSets are owned by a Deployment; the RS name is
+            # <deployment-name>-<hash>. Strip the hash.
+            dep_name = _RS_HASH_RE.sub("", ref.name)
+            return ("Deployment", dep_name)
+        if ref.kind in ("StatefulSet", "DaemonSet", "Job"):
+            return (ref.kind, ref.name)
+    return ("Pod", pod.metadata.name)
+
 
 # ---------------------------------------------------------------------------
 # Database
@@ -117,6 +139,19 @@ def db_with_retry() -> psycopg.Connection:
 def should_throttle(conn: psycopg.Connection, kind: str, namespace: str, name: str) -> str | None:
     """Return reason string if event should be skipped, else None."""
     with conn.cursor() as cur:
+        # 0. In-flight dedup: refuse to spawn a duplicate for the same resource.
+        # This guards against debounce expiry or restart-induced gaps.
+        cur.execute(
+            """SELECT id FROM investigations
+                WHERE resource_kind=%s AND resource_namespace=%s AND resource_name=%s
+                  AND status IN ('running','awaiting_approval','remediating')
+                LIMIT 1""",
+            (kind, namespace, name),
+        )
+        active = cur.fetchone()
+        if active:
+            return f"already_in_flight({active[0]})"
+
         # 1. Per-resource debounce.
         cur.execute(
             "SELECT last_seen FROM debounce WHERE resource_kind=%s AND resource_namespace=%s AND resource_name=%s",
@@ -380,10 +415,19 @@ def detect_pod_trigger(pod) -> tuple[str, dict] | None:
 
 
 def _pod_payload(pod, container: str, detail: str) -> dict:
+    """Build the trigger payload.
+
+    kind/name point at the OWNER (Deployment/StatefulSet/etc.), not the Pod.
+    This is the debounce/dedup key — all pods of the same Deployment share
+    one investigation. The actual pod name + container are kept as context
+    so the investigator can read the right logs.
+    """
+    owner_kind, owner_name = _owner_root(pod)
     return {
-        "kind": "Pod",
+        "kind": owner_kind,
         "namespace": pod.metadata.namespace,
-        "name": pod.metadata.name,
+        "name": owner_name,
+        "pod_name": pod.metadata.name,
         "node": pod.spec.node_name,
         "container": container,
         "detail": detail,
