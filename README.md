@@ -8,7 +8,7 @@ A self-service AI platform that lets teams deploy and serve LLMs on Amazon EKS t
 
 | Capability | How it works |
 |-----------|-------------|
-| **Frontier model out of the box** | Amazon Bedrock **Claude Sonnet 4.6** behind the same API — zero GPUs on day one (`enable_bedrock`) |
+| **Frontier model out of the box** | Amazon Bedrock **Claude Opus 4.8** behind the same API — zero GPUs on day one (`enable_bedrock`) |
 | **Deploy any HuggingFace model** | Commit an `InferenceEndpoint` YAML → model is live in ~60s |
 | **Preconfigured small model** | Qwen2.5-3B-Instruct (ungated) ships in the catalog and serves on first boot |
 | **OpenAI-compatible API** | LiteLLM proxies all models behind `/v1/chat/completions` |
@@ -205,7 +205,7 @@ large commercial one at a fraction of the cost.
 ```bash
 ./ops/compare-models.py \
   --dataset ops/sample-data/support-eval.jsonl \
-  --models claude-sonnet-4-6,qwen3-3b,qwen3-support-tuned \
+  --models claude-opus-4-8,qwen3-3b,qwen3-support-tuned \
   --langfuse-dataset support-voice-eval \
   --self-hosted-model qwen3-support-tuned --self-hosted-hf-id Qwen/Qwen2.5-3B-Instruct
 ```
@@ -307,7 +307,7 @@ metadata:
   namespace: ai-platform
 spec:
   teamName: search-ranking
-  models: ["qwen3-3b", "claude-sonnet-4-6"]
+  models: ["qwen3-3b", "claude-opus-4-8"]
   maxBudget: "50.0"
   budgetDuration: "30d"
   rpmLimit: 60

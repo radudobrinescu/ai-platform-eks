@@ -42,12 +42,12 @@ Examples:
   # Full 3-way comparison.
   ./ops/compare-models.py \
       --dataset support-eval.jsonl \
-      --models claude-sonnet-4-6,qwen3-3b,qwen3-support-tuned \
+      --models claude-opus-4-8,qwen3-3b,qwen3-support-tuned \
       --langfuse-dataset support-voice-eval
 
   # Add a cost crossover for the self-hosted model (needs HF model id of the base).
   ./ops/compare-models.py --dataset support-eval.jsonl \
-      --models claude-sonnet-4-6,qwen3-3b \
+      --models claude-opus-4-8,qwen3-3b \
       --self-hosted-model qwen3-3b --self-hosted-hf-id Qwen/Qwen2.5-3B-Instruct
 
 Connection: by default talks to LiteLLM + Langfuse on localhost (the
@@ -79,7 +79,7 @@ from typing import Any
 
 DEFAULT_LITELLM_URL = os.environ.get("LITELLM_URL", "http://localhost:4000")
 DEFAULT_LANGFUSE_URL = os.environ.get("LANGFUSE_URL", "http://localhost:3000")
-DEFAULT_MODELS = "claude-sonnet-4-6,qwen3-3b"
+DEFAULT_MODELS = "claude-opus-4-8,qwen3-3b"
 REQUEST_TIMEOUT_SEC = 120
 # Approximate hours/month an always-on GPU node runs (matches recommend-instance.py).
 HOURS_PER_MONTH = 730.0
@@ -626,8 +626,8 @@ def parse_args(argv: list[str] | None) -> argparse.Namespace:
                    help="Which --models alias is the self-hosted contender (for cost crossover).")
     p.add_argument("--self-hosted-hf-id", default=None,
                    help="HuggingFace id of the self-hosted base model (drives the GPU price lookup).")
-    p.add_argument("--sonnet-model", default="claude-sonnet-4-6",
-                   help="Which alias is the Bedrock/Sonnet baseline (default: claude-sonnet-4-6).")
+    p.add_argument("--sonnet-model", default="claude-opus-4-8",
+                   help="Which alias is the Bedrock/Sonnet baseline (default: claude-opus-4-8).")
     p.add_argument("--sonnet-cost-per-req", type=float, default=None,
                    help="Override Sonnet $/req for the crossover (else estimated from tokens).")
     p.add_argument("--region", default=None,

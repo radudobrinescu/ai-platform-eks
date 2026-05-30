@@ -6,7 +6,7 @@
 #
 # Prerequisites:
 #   - Cluster running with the shipped catalog model qwen3-3b deployed
-#     (workloads/models/catalog/qwen3-3b.yaml) + claude-sonnet-4-6 (Bedrock)
+#     (workloads/models/catalog/qwen3-3b.yaml) + claude-opus-4-8 (Bedrock)
 #   - llama32-1b NOT deployed (added live during the demo in Part 4)
 #   - Teams onboarded (dev-team, data-science — workloads/teams/)
 #   - AWS_REGION exported (defaults to your kubeconfig / aws cli region)
@@ -172,22 +172,22 @@ curl -s http://localhost:4000/v1/chat/completions \
   -d '{"model": "qwen3-3b", "messages": [{"role": "user", "content": "What is EKS? One sentence."}]}' \
   | jq -r '.choices[0].message.content'
 
-# Data-science team calls claude-sonnet-4-6 — ALLOWED (models: '*')
+# Data-science team calls claude-opus-4-8 — ALLOWED (models: '*')
 echo ""
-echo ">>> Data-science team → claude-sonnet-4-6 (ALLOWED)"
+echo ">>> Data-science team → claude-opus-4-8 (ALLOWED)"
 curl -s http://localhost:4000/v1/chat/completions \
   -H "Content-Type: application/json" \
   -H "Authorization: Bearer $DS_KEY" \
-  -d '{"model": "claude-sonnet-4-6", "messages": [{"role": "user", "content": "What is Kubernetes? One sentence."}]}' \
+  -d '{"model": "claude-opus-4-8", "messages": [{"role": "user", "content": "What is Kubernetes? One sentence."}]}' \
   | jq -r '.choices[0].message.content'
 
-# Dev team tries claude-sonnet-4-6 — BLOCKED (not in their model list)
+# Dev team tries claude-opus-4-8 — BLOCKED (not in their model list)
 echo ""
-echo ">>> Dev team → claude-sonnet-4-6 (BLOCKED)"
+echo ">>> Dev team → claude-opus-4-8 (BLOCKED)"
 curl -s http://localhost:4000/v1/chat/completions \
   -H "Content-Type: application/json" \
   -H "Authorization: Bearer $DEV_KEY" \
-  -d '{"model": "claude-sonnet-4-6", "messages": [{"role": "user", "content": "Hello"}]}' \
+  -d '{"model": "claude-opus-4-8", "messages": [{"role": "user", "content": "Hello"}]}' \
   | jq -r '.error.message'
 
 

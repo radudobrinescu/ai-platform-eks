@@ -9,7 +9,7 @@ anything here is deployed by default.
 |------|--------------------------|------------|
 | [qwen3-3b.yaml](qwen3-3b.yaml) | `qwen3-3b` | Qwen2.5-3B-Instruct — ungated small model, the cheap self-hosted contender |
 
-Bedrock's `claude-sonnet-4-6` (the frontier contender) is *not* here — it's a
+Bedrock's `claude-opus-4-8` (the frontier contender) is *not* here — it's a
 static entry in the LiteLLM config (`platform/services/litellm/litellm.yaml`),
 since Bedrock models have nothing to deploy or scale.
 
@@ -18,7 +18,7 @@ variant is added:
 
 | Contender | Source | Role |
 |-----------|--------|------|
-| `claude-sonnet-4-6` | Bedrock (LiteLLM config) | expensive generalist baseline |
+| `claude-opus-4-8` | Bedrock (LiteLLM config) | expensive generalist baseline |
 | `qwen3-3b` | this catalog | cheap base small model (off-voice) |
 | `qwen3-support-tuned` | a `FineTuneJob` with `autoDeploy: true` | the punchline — cheap *and* on-voice |
 

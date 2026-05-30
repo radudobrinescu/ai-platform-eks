@@ -228,8 +228,8 @@ A single chart `kra` with values that expose everything above:
 ```yaml
 llm:
   backend: bedrock                      # bedrock | bedrock-agentcore | openai | anthropic | kiro | self-hosted
-  investigateModel: anthropic.claude-sonnet-4-6
-  remediateModel: anthropic.claude-opus-4-x
+  investigateModel: anthropic.claude-sonnet-4-5
+  remediateModel: anthropic.claude-opus-4-8
   bedrock: { region: "", privateLink: false }
 autonomy:
   mode: approve                          # observe | approve | auto

@@ -85,9 +85,9 @@ LiteLLM supports `bedrock/` models natively. Because Bedrock models are static (
 data:
   config.yaml: |
     model_list:
-      - model_name: claude-sonnet-4-6            # the alias clients call
+      - model_name: claude-opus-4-8            # the alias clients call
         litellm_params:
-          model: bedrock/us.anthropic.claude-sonnet-4-6-v1:0   # us. = cross-region inference profile; verify exact id in the Bedrock console
+          model: bedrock/global.anthropic.claude-opus-4-8   # global. = region-agnostic cross-region inference profile; verify exact id in the Bedrock console
           aws_region_name: os.environ/AWS_REGION
     general_settings:
       master_key: os.environ/LITELLM_MASTER_KEY
@@ -130,7 +130,7 @@ Then add `serviceAccountName: litellm` to the Deployment and annotate the SA wit
 
 **A3. Enablement** — one tfvar `enable_bedrock = true` (gates the IAM role) and a documented prerequisite: the account must have **Bedrock model access enabled** for the Sonnet model (a one-time console toggle, or `platformctl` checks it and tells the user). Networking: SMB uses the public Bedrock endpoint (default); add a `bedrock-runtime` VPC endpoint only for private clusters (one entry in `10.networking`).
 
-> **Outcome:** `claude-sonnet-4-6` shows up in the same `/v1/chat/completions` API, Open WebUI dropdown, and Langfuse traces as every other model — governed by the same `AITeam` budgets and keys. A business can use the platform with **zero GPUs** on day one.
+> **Outcome:** `claude-opus-4-8` shows up in the same `/v1/chat/completions` API, Open WebUI dropdown, and Langfuse traces as every other model — governed by the same `AITeam` budgets and keys. A business can use the platform with **zero GPUs** on day one.
 
 ### B. Langfuse observability on first boot — secret + env vars, no clicks
 
@@ -163,7 +163,7 @@ This is the only new component, and it's intentionally tiny. There's no built-in
 ```
 compare-models.py \
   --dataset support-eval.jsonl \
-  --models claude-sonnet-4-6,qwen3-3b,qwen3-support-tuned \
+  --models claude-opus-4-8,qwen3-3b,qwen3-support-tuned \
   --langfuse-dataset support-voice-eval
 ```
 
@@ -224,7 +224,7 @@ Small, independently shippable phases. Acceptance criteria are concrete.
 
 | Phase | Deliverable | Acceptance test |
 |---|---|---|
-| **P1. Bedrock as a model** | LiteLLM `litellm` SA + Bedrock IRSA; Sonnet in `litellm-config`; `enable_bedrock` tfvar | `curl /v1/chat/completions -d '{"model":"claude-sonnet-4-6",...}'` returns a Bedrock reply; a trace appears in Langfuse |
+| **P1. Bedrock as a model** | LiteLLM `litellm` SA + Bedrock IRSA; Sonnet in `litellm-config`; `enable_bedrock` tfvar | `curl /v1/chat/completions -d '{"model":"claude-opus-4-8",...}'` returns a Bedrock reply; a trace appears in Langfuse |
 | **P2. Langfuse on first boot** | Terraform-generated Langfuse project keys; `LANGFUSE_INIT_*` in Langfuse + `langfuse-litellm-keys` in LiteLLM; `nextauth.url` tfvar | Fresh install → first model call is traced with cost/latency, **no manual key creation** |
 | **P3. Preconfigured small model** | `workloads/models/catalog/qwen3-3b.yaml` (ungated); deployed by default or one-command | `qwen3-3b` serves via LiteLLM after install |
 | **P4. Fine-tuning GA** | Execute v2 plan P0–P9 (base = Qwen2.5-3B) | v2 sign-off checklist passes; a tuned model autoDeploys and answers via LiteLLM |

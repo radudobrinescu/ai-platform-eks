@@ -34,7 +34,7 @@ The turnkey defaults (no edits needed) are:
 
 | tfvar | default | what it gives you |
 |-------|---------|-------------------|
-| `enable_bedrock` | `true` | Claude Sonnet 4.6 via LiteLLM, zero GPUs |
+| `enable_bedrock` | `true` | Claude Opus 4.8 via LiteLLM, zero GPUs |
 | `enable_fine_tuning` | `true` | `FineTuneJob` + Unsloth trainer image |
 | `langfuse_nextauth_url` | `http://localhost:3000` | works with the SSM tunnel |
 | `langfuse_init_user_email` | `admin@ai-platform.local` | Langfuse admin login |
@@ -65,13 +65,13 @@ default model catalog from git.
 ./platformctl preflight       # confirm Bedrock + models answer; clear fix if not
 ```
 
-Chat against **Claude Sonnet 4.6** in Open WebUI (http://localhost:8080) or:
+Chat against **Claude Opus 4.8** in Open WebUI (http://localhost:8080) or:
 
 ```bash
 LITELLM_KEY=$(kubectl get secret litellm-secrets -n ai-platform -o jsonpath='{.data.master-key}' | base64 -d)
 curl -s http://localhost:4000/v1/chat/completions \
   -H "Authorization: Bearer $LITELLM_KEY" -H "Content-Type: application/json" \
-  -d '{"model":"claude-sonnet-4-6","messages":[{"role":"user","content":"Hello!"}]}'
+  -d '{"model":"claude-opus-4-8","messages":[{"role":"user","content":"Hello!"}]}'
 ```
 
 **Langfuse tracing is already live** — open http://localhost:3000 (sign in with
@@ -107,7 +107,7 @@ dataset run:
 ```bash
 ./platformctl compare \
   --dataset ops/sample-data/support-eval.jsonl \
-  --models claude-sonnet-4-6,qwen3-3b,qwen3-support-tuned \
+  --models claude-opus-4-8,qwen3-3b,qwen3-support-tuned \
   --langfuse-dataset support-voice-eval \
   --self-hosted-model qwen3-support-tuned \
   --self-hosted-hf-id Qwen/Qwen2.5-3B-Instruct
@@ -115,7 +115,7 @@ dataset run:
 
 Then in Langfuse: open the `support-voice-eval` dataset → compare the runs
 side-by-side. Cost and latency are on every trace. Configure an **LLM-as-judge**
-evaluator (judge = `claude-sonnet-4-6`) on a voice/policy/helpfulness rubric, and
+evaluator (judge = `claude-opus-4-8`) on a voice/policy/helpfulness rubric, and
 use the side-by-side view for human preference. The script also prints the
 **cost crossover** — the daily request volume above which the self-hosted tuned
 model is cheaper per request than Sonnet.
