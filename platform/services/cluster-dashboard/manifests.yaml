@@ -219,9 +219,9 @@ metadata:
     alb.ingress.kubernetes.io/target-type: ip
     alb.ingress.kubernetes.io/listen-ports: '[{"HTTP": 9090}]'
     alb.ingress.kubernetes.io/healthcheck-path: /data.json
-    # PLACEHOLDER inbound-cidrs (RFC 5737 doc range, routes nowhere) — set to your
-    # operator CIDR. Must stay IDENTICAL to platform/config/ingress.yaml (shared ALB).
-    alb.ingress.kubernetes.io/inbound-cidrs: 203.0.113.0/24
+    # inbound-cidrs: operator allowlist. Must stay IDENTICAL to
+    # platform/config/ingress.yaml (shared ALB group "ai-platform").
+    alb.ingress.kubernetes.io/inbound-cidrs: 212.93.153.21/32
 spec:
   ingressClassName: alb
   rules:

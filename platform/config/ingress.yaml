@@ -10,10 +10,10 @@
 # access path (ops/ssm-tunnel.sh). The SSM tunnel remains available as a
 # fallback for networks without a stable public IP.
 #
-# INBOUND-CIDRS: PLACEHOLDER — 203.0.113.0/24 is the RFC 5737 documentation
-# range and routes nowhere, so the platform is unreachable until you set this
-# to your own operator/office CIDR(s). The ALB security group drops everything
-# else. Update all four occurrences (here x3 + cluster-dashboard) together.
+# INBOUND-CIDRS: operator allowlist. The ALB security group drops everything
+# not in this list. Set this to your own operator/office CIDR(s); a fresh
+# install should treat the value below as a placeholder to replace. Update all
+# four occurrences (here x3 + cluster-dashboard) together.
 apiVersion: networking.k8s.io/v1
 kind: Ingress
 metadata:
@@ -25,7 +25,7 @@ metadata:
     alb.ingress.kubernetes.io/target-type: ip
     alb.ingress.kubernetes.io/listen-ports: '[{"HTTP": 4000}]'
     alb.ingress.kubernetes.io/healthcheck-path: /health/liveliness
-    alb.ingress.kubernetes.io/inbound-cidrs: 203.0.113.0/24
+    alb.ingress.kubernetes.io/inbound-cidrs: 212.93.153.21/32
 spec:
   ingressClassName: alb
   rules:
@@ -50,7 +50,7 @@ metadata:
     alb.ingress.kubernetes.io/target-type: ip
     alb.ingress.kubernetes.io/listen-ports: '[{"HTTP": 8080}]'
     alb.ingress.kubernetes.io/healthcheck-path: /health
-    alb.ingress.kubernetes.io/inbound-cidrs: 203.0.113.0/24
+    alb.ingress.kubernetes.io/inbound-cidrs: 212.93.153.21/32
 spec:
   ingressClassName: alb
   rules:
@@ -75,7 +75,7 @@ metadata:
     alb.ingress.kubernetes.io/target-type: ip
     alb.ingress.kubernetes.io/listen-ports: '[{"HTTP": 3000}]'
     alb.ingress.kubernetes.io/healthcheck-path: /api/public/health
-    alb.ingress.kubernetes.io/inbound-cidrs: 203.0.113.0/24
+    alb.ingress.kubernetes.io/inbound-cidrs: 212.93.153.21/32
 spec:
   ingressClassName: alb
   rules:
