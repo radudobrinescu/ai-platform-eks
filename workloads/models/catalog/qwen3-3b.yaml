@@ -26,9 +26,11 @@ spec:
   workerMemory: "12Gi"   # default — fits a 3B model
   maxModelLen: 8192
   # Time-slice the GPU: up to 4 models share one physical GPU (gpu-shared
-  # NodePool). 3B@bf16 needs ~7 GiB/copy, so 4 copies (~28 GiB) only fit on a
-  # 48 GiB L40S — pin the VRAM floor so Karpenter picks g6e, not a 24 GiB L4
-  # (which would make the model shared-INeligible). Verified with
-  # ops/recommend-instance.py (shared_eligible=True only on L40S/48 GiB).
+  # NodePool). 3B@bf16 needs ~7 GiB/copy, so 4 copies (~28 GiB) only fit on an
+  # L40S — pin the VRAM floor so Karpenter picks g6e, not a 24 GiB L4.
+  # NOTE: AWS advertises the L40S as "48 GB" but Karpenter's
+  # instance-gpu-memory label reports the real 45776 MiB (~44.7 GiB). The floor
+  # is matched with `Gt (N*1024-1)`, so use 44 (→ >45055 MiB): L40S 45776 fits,
+  # L4 22888 is excluded. Setting 45+ would be unsatisfiable on any single GPU.
   shared: true
-  minVramPerGpuGiB: 48
+  minVramPerGpuGiB: 44

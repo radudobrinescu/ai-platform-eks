@@ -12,13 +12,16 @@ FROM nvcr.io/nvidia/pytorch:24.10-py3
 
 # Unsloth + TRL pinned. transformers/peft/accelerate are constrained by Unsloth
 # itself — don't override them or QLoRA breaks in subtle ways.
+# Note: no `pip cache purge` — it exits non-zero under --no-cache-dir (cache is
+# already disabled, nothing to purge). The pyarrow/torch-tensorrt "conflict"
+# warnings against the NVIDIA base are benign: Unsloth pulls its own torch and
+# the QLoRA path doesn't use cudf/torch-tensorrt.
 RUN pip install --no-cache-dir \
         "unsloth==2026.5.8" \
         "trl==0.21.0" \
         "datasets>=2.14.0" \
         "wandb>=0.16.0" \
-        "huggingface_hub[hf_transfer]>=0.20.0" \
-    && pip cache purge
+        "huggingface_hub[hf_transfer]>=0.20.0"
 
 # s5cmd for fast S3 transfers (same tool the InferenceEndpoint init-container uses).
 ARG S5CMD_VERSION=2.3.0
