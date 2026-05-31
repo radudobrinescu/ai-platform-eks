@@ -378,8 +378,11 @@ spec:
                               - "${string(schema.spec.minVramPerGpuGiB > 0 ? (schema.spec.minVramPerGpuGiB * 1024) - 1 : 0)}"
               initContainers:
                 # Gate on validation success — no GPU node provisioned if it fails.
+                # Reuse the trainer image (bundles kubectl + a shell) so the node
+                # pulls a single image; bitnami/kubectl tags were removed from
+                # Docker Hub and 404 on pull.
                 - name: wait-validation
-                  image: bitnami/kubectl:1.30.5
+                  image: "${schema.spec.unslothImage != '' ? schema.spec.unslothImage : platformconfig.data.?unslothImage.orValue('')}"
                   command: ["sh", "-c"]
                   args:
                     - |
