@@ -1,0 +1,16 @@
+apiVersion: kro.run/v1alpha1
+kind: FineTuneJob
+metadata:
+  name: qwen3-support-tuned
+  namespace: inference
+spec:
+  dataset: "s3://ai-platform-cnd-demo-training-datasets/support-train.jsonl"
+  baseModel: "unsloth/Qwen2.5-3B-Instruct-bnb-4bit"
+  datasetFormat: alpaca
+  method: qlora
+  epochs: 3
+  batchSize: 2
+  maxSeqLength: 1024
+  autoDeploy: true
+  minVramPerGpuGiB: 24
+  timeoutHours: 2
