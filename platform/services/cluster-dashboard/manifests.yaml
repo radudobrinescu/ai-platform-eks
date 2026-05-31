@@ -32,6 +32,10 @@ rules:
   - apiGroups: ["kro.run"]
     resources: ["inferenceendpoints"]
     verbs: ["list"]
+  # Read the shared ALB ingress to discover its hostname for the Quick Links panel.
+  - apiGroups: ["networking.k8s.io"]
+    resources: ["ingresses"]
+    verbs: ["get", "list"]
 ---
 apiVersion: rbac.authorization.k8s.io/v1
 kind: ClusterRoleBinding
@@ -150,6 +154,17 @@ spec:
               value: "python:3.12-slim"
             - name: KUBECTL_VERSION
               value: "v1.32.5"
+            # Quick Links panel. The ALB-fronted UIs (Open WebUI / LiteLLM /
+            # Langfuse) are discovered at runtime from the ingress hostname; only
+            # ArgoCD's URL must be injected, from the Terraform-managed
+            # cluster-dashboard-links ConfigMap (the EKS capability server_url).
+            # optional: true → dashboard still works (ArgoCD link hidden) if unset.
+            - name: ARGOCD_URL
+              valueFrom:
+                configMapKeyRef:
+                  name: cluster-dashboard-links
+                  key: argocdUrl
+                  optional: true
           volumeMounts:
             - name: backend-script
               mountPath: /app

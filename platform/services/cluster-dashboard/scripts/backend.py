@@ -74,6 +74,19 @@ KIRO_MODEL_REMEDIATE = os.environ.get("KIRO_MODEL_REMEDIATE", "claude-opus-4.6")
 PYTHON_IMAGE = os.environ.get("PYTHON_IMAGE", "python:3.12-slim")
 KUBECTL_VERSION = os.environ.get("KUBECTL_VERSION", "v1.32.5")
 
+# Quick links — centralised entry points to the platform's web UIs, surfaced in
+# the dashboard so users don't have to hunt for per-cluster hostnames.
+#
+# All of LiteLLM / Open WebUI / Langfuse / the dashboard share one internet-
+# facing ALB (the `ai-platform` ingress group), differing only by port — so we
+# discover the ALB hostname at runtime from the ingress status and append the
+# known ports. ArgoCD is an EKS-managed capability with its own endpoint, so its
+# URL can't be derived from the ALB; Terraform passes it in via ARGOCD_URL.
+ARGOCD_URL = os.environ.get("ARGOCD_URL", "")
+# Namespace + ingress name the ALB-fronted services live behind.
+LINKS_INGRESS_NAMESPACE = os.environ.get("LINKS_INGRESS_NAMESPACE", "ai-platform")
+LINKS_INGRESS_NAME = os.environ.get("LINKS_INGRESS_NAME", "ai-platform-litellm")
+
 
 # ---------------------------------------------------------------------------
 # Kubernetes API client (existing logic, preserved as-is)
@@ -269,8 +282,43 @@ def build_remediator_job(investigation_id: str) -> dict:
 
 snapshot = {"nodes": [], "pods": [], "endpoints": [],
             "approvals_available": False, "approvals_pending": 0,
-            "ts": 0}
+            "links": [], "ts": 0}
 snapshot_lock = threading.Lock()
+
+
+def _alb_hostname() -> str:
+    """Discover the shared ALB hostname from the ingress status (empty until the
+    AWS Load Balancer Controller provisions it)."""
+    try:
+        ing = k8s_get(
+            f"/apis/networking.k8s.io/v1/namespaces/"
+            f"{LINKS_INGRESS_NAMESPACE}/ingresses/{LINKS_INGRESS_NAME}"
+        )
+        return ((ing.get("status", {}).get("loadBalancer", {})
+                 .get("ingress", [{}]) or [{}])[0].get("hostname", "")) or ""
+    except Exception:
+        return ""
+
+
+def _build_links() -> list:
+    """Quick links to the platform's web UIs. The ALB-fronted services share one
+    hostname and differ by port; ArgoCD is an EKS capability with its own URL
+    (ARGOCD_URL from Terraform). Links with no resolvable URL are omitted."""
+    alb = _alb_hostname()
+    links = []
+    if alb:
+        links += [
+            {"label": "Open WebUI", "url": f"http://{alb}:8080",
+             "desc": "Chat with models", "icon": "💬"},
+            {"label": "LiteLLM Admin", "url": f"http://{alb}:4000/ui",
+             "desc": "API gateway + keys + usage", "icon": "🔑"},
+            {"label": "Langfuse", "url": f"http://{alb}:3000",
+             "desc": "Traces, evals, cost", "icon": "📊"},
+        ]
+    if ARGOCD_URL:
+        links.append({"label": "ArgoCD", "url": ARGOCD_URL,
+                      "desc": "GitOps sync status", "icon": "🚢"})
+    return links
 
 
 def _build_k8s_snapshot() -> dict:
@@ -357,6 +405,7 @@ def _build_k8s_snapshot() -> dict:
         "nodes": nodes, "pods": pods, "endpoints": endpoints,
         "approvals_available": approvals_available,
         "approvals_pending": approvals_pending,
+        "links": _build_links(),
         "ts": time.time(),
     }
 
