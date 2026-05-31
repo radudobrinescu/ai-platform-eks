@@ -10,7 +10,7 @@ A self-service AI platform that lets teams deploy and serve LLMs on Amazon EKS t
 |-----------|-------------|
 | **Frontier model out of the box** | Amazon Bedrock **Claude Opus 4.8** behind the same API — zero GPUs on day one (`enable_bedrock`) |
 | **Deploy any HuggingFace model** | Commit an `InferenceEndpoint` YAML → model is live in ~60s |
-| **Preconfigured small model** | Qwen2.5-3B-Instruct (ungated) ships in the catalog and serves on first boot |
+| **Self-hosted small model** | Drop an `InferenceEndpoint` in `workloads/models/catalog/` to stand a cheap GPU model next to Bedrock — the money-demo's self-hosted contender |
 | **OpenAI-compatible API** | LiteLLM proxies all models behind `/v1/chat/completions` |
 | **Chat UI** | Open WebUI for interactive testing |
 | **Team isolation** | `AITeam` resource creates namespace, RBAC, budget, rate limits, scoped API key |
