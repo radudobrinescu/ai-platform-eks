@@ -251,16 +251,29 @@ resource "aws_iam_role_policy" "inference_worker_s3_cache" {
     Version = "2012-10-17"
     Statement = [
       {
+        # HF weight cache: full read/write (the auto-warm sidecar populates it).
+        Sid      = "HfCacheReadWrite"
         Effect   = "Allow"
         Action   = ["s3:GetObject", "s3:PutObject", "s3:DeleteObject"]
         Resource = "${aws_s3_bucket.model_cache[0].arn}/hf/*"
       },
       {
+        # Fine-tuned models: READ-only. The serving worker's modelSource init
+        # container syncs weights from fine-tuned/{name}/{ts}/; only the
+        # fine-tuning-worker role writes here (kept separate to bound blast radius).
+        Sid      = "FineTunedReadOnly"
+        Effect   = "Allow"
+        Action   = ["s3:GetObject"]
+        Resource = "${aws_s3_bucket.model_cache[0].arn}/fine-tuned/*"
+      },
+      {
+        # ListBucket for both prefixes — s5cmd sync of "prefix/*" needs List.
+        Sid      = "ListModelCache"
         Effect   = "Allow"
         Action   = "s3:ListBucket"
         Resource = aws_s3_bucket.model_cache[0].arn
         Condition = {
-          StringLike = { "s3:prefix" = ["hf/*", ""] }
+          StringLike = { "s3:prefix" = ["hf/*", "fine-tuned/*", ""] }
         }
       },
     ]
