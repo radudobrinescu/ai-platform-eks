@@ -133,7 +133,7 @@ spec:
             - name: STALE_INVESTIGATION_MINUTES
               value: "15"
             - name: KIRO_MODEL_REMEDIATE
-              value: "claude-opus-4.6"
+              value: "claude-opus-4.8"
             - name: PYTHON_IMAGE
               value: "python:3.12-slim"
             - name: KUBECTL_VERSION

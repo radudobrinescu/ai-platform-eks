@@ -58,8 +58,8 @@ data:
   APPROVAL_EXPIRY_HOURS: "24"
 
   # Models. Available list: kiro-cli chat --list-models
-  KIRO_MODEL_INVESTIGATE: "claude-sonnet-4.6"
-  KIRO_MODEL_REMEDIATE: "claude-opus-4.6"
+  KIRO_MODEL_INVESTIGATE: "claude-opus-4.8"
+  KIRO_MODEL_REMEDIATE: "claude-opus-4.8"
 
   # Database (no password — that's in platform-db-credentials secret in ai-platform).
   DB_HOST: "platform-db.ai-platform.svc.cluster.local"
