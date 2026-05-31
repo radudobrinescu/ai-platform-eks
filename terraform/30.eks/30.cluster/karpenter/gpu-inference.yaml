@@ -25,7 +25,7 @@ spec:
   blockDeviceMappings:
     - deviceName: /dev/xvdb
       ebs:
-        volumeSize: 200Gi
+        volumeSize: ${gpu_volume_size}Gi
         volumeType: gp3
         encrypted: true
         throughput: 500

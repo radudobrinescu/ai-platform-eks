@@ -46,18 +46,36 @@ resource "null_resource" "soci_index" {
 }
 
 ################################################################################
-# EBS Data Volume Snapshot — pre-pulled image for instant cold starts
+# EBS Data Volume Snapshot — pre-pulled images for instant cold starts
+#
+# Bakes the large GPU images onto the Bottlerocket data volume so new GPU nodes
+# boot with them already on disk (0s pull). This is the primary mechanism for
+# large images — SOCI lazy-pull is only the fallback (and the Bottlerocket SOCI
+# snapshotter is unreliable on multi-GB-layer images). We bake BOTH:
+#   - the Ray LLM serving image (always), and
+#   - the Unsloth trainer image (when fine-tuning is enabled), so FineTuneJob
+#     training pods never lazy-pull the ~14.5 GiB trainer.
+# The volume is sized to hold both unpacked (the trainer expands well beyond its
+# compressed size); 300 GiB leaves headroom.
 ################################################################################
+locals {
+  # Images to bake. Unsloth trainer is included only when fine-tuning is enabled.
+  snapshot_images = local.enable_fine_tuning ? "${local.ray_ecr_image} ${local.unsloth_image}" : local.ray_ecr_image
+  # Bigger volume when baking the extra ~14.5 GiB trainer image.
+  snapshot_volume_gib = local.enable_fine_tuning ? 300 : 200
+}
+
 resource "null_resource" "gpu_data_volume_snapshot" {
   count = local.run_image_optimization ? 1 : 0
 
   triggers = {
-    ray_image    = local.ray_ecr_image
-    cluster_name = local.cluster_name
+    ray_image     = local.ray_ecr_image
+    unsloth_image = local.enable_fine_tuning ? local.unsloth_image : ""
+    cluster_name  = local.cluster_name
   }
 
   provisioner "local-exec" {
-    command     = "${path.module}/../../../ops/create-data-volume-snapshot.sh -r ${local.region} -n ${local.cluster_name} ${local.ray_ecr_image}"
+    command     = "${path.module}/../../../ops/create-data-volume-snapshot.sh -r ${local.region} -n ${local.cluster_name} -s ${local.snapshot_volume_gib} ${local.snapshot_images}"
     interpreter = ["bash", "-c"]
     environment = {
       AWS_REGION = local.region
@@ -66,6 +84,8 @@ resource "null_resource" "gpu_data_volume_snapshot" {
 
   depends_on = [
     null_resource.soci_index,
+    null_resource.unsloth_soci_index,
+    null_resource.unsloth_image,
     module.eks,
     module.karpenter,
     helm_release.karpenter
