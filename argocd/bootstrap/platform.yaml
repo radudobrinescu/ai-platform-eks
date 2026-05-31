@@ -126,7 +126,7 @@ spec:
     {{- /* Fork point: set your repo URL + branch ONCE here (used by both the */ -}}
     {{- /* directory source and the Helm $values source below). Mirror the same */ -}}
     {{- /* value in argocd/bootstrap/workloads.yaml. */ -}}
-    {{- $repo := "https://github.com/YOUR-ORG/YOUR-REPO.git" }}
+    {{- $repo := "https://github.com/radudobrinescu/ai-platform-eks.git" }}
     {{- $rev := "main" }}
     spec:
       {{- if eq .type "directory" }}

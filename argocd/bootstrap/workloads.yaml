@@ -40,7 +40,7 @@ spec:
       project: default
       source:
         # Fork point: set your repo URL + branch here (mirror platform.yaml).
-        repoURL: https://github.com/YOUR-ORG/YOUR-REPO.git
+        repoURL: https://github.com/radudobrinescu/ai-platform-eks.git
         targetRevision: main
         path: '{{.path}}'
         # Recurse so platform-shipped models in workloads/models/catalog/ are
