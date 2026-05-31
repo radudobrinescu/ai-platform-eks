@@ -145,16 +145,13 @@ Write a SINGLE JSON object to /results/result.json with EXACTLY these keys:
 Do NOT exit until /results/result.json exists.
 EOF
 
-echo "[remediate] running kiro-cli model=${KIRO_MODEL_REMEDIATE}…"
-if ! /tools/kiro-cli chat --no-interactive \
-        --model "${KIRO_MODEL_REMEDIATE}" \
-        --trust-all-tools \
-        "$(cat /tmp/prompt.txt)" 2>&1 | tee "$LOG"; then
-    post_error "kiro-cli exited non-zero during remediation. tail:
+# Invoke kiro-cli with retry + 'auto' fallback (see kiro_run.sh) to ride out
+# transient kiro-cli startup failures.
+. /scripts/kiro_run.sh
+if ! run_kiro remediate "${KIRO_MODEL_REMEDIATE}" /results/result.json /tmp/prompt.txt "$LOG"; then
+    post_error "remediator did not produce /results/result.json (after retries + auto fallback). tail:
 $(tail -20 "$LOG" | sed 's/[\\r\\n]/ /g; s/\"/\\\\\"/g')"
 fi
-
-[ -s /results/result.json ] || post_error "remediator did not produce /results/result.json"
 if ! python3 -c 'import json,sys; json.load(open("/results/result.json"))'; then
     post_error "/results/result.json is not valid JSON. tail:
 $(tail -10 "$LOG")"
