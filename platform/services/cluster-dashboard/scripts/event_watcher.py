@@ -893,8 +893,10 @@ def main() -> int:
     # platform_health_agent_enabled=true) and restarting this Deployment.
     if not PHA_ENABLED:
         log.warning("Platform Health Agent DISABLED — no KIRO_API_KEY present. "
-                    "Watcher idling (no investigations). Set platform_health_agent_enabled=true "
-                    "+ TF_VAR_kiro_api_key and restart this deployment to enable.")
+                    "Watcher idling (no investigations). To enable: create the "
+                    "platform-health-agent-secrets Secret in ai-platform with a "
+                    "KIRO_API_KEY, then restart this deployment "
+                    "(kubectl rollout restart deployment event-watcher -n ai-platform).")
         while not stop_event.is_set():
             time.sleep(1)
         return 0
