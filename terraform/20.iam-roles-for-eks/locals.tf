@@ -9,24 +9,14 @@ locals {
   )
   name = "${var.shared_config.resources_prefix}-${terraform.workspace}"
   # The below IAM roles represent the default Kubernetes user-facing roles as documented in https://kubernetes.io/docs/reference/access-authn-authz/rbac/#user-facing-roles
-  #  and as supported by Amazon EKS Cluster Access Management 
+  #  and as supported by Amazon EKS Cluster Access Management.
+  # Each role's in-cluster permissions are granted by the EKS access-policy
+  # association in 30.cluster/main.tf (access_entries), not by attached IAM
+  # policies — these roles only need a trust policy to be assumable.
   iam_roles = {
-    # cluster admin resources with wildcard permissions to any cluster resources 
-    EKSClusterAdmin = {
-      role_name         = "EKSClusterAdmin"
-      attached_policies = []
-    },
-    EKSAdmin = {
-      role_name         = "EKSAdmin"
-      attached_policies = []
-    },
-    EKSEdit = {
-      role_name         = "EKSEdit"
-      attached_policies = []
-    },
-    EKSView = {
-      role_name         = "EKSView"
-      attached_policies = []
-    },
+    EKSClusterAdmin = { role_name = "EKSClusterAdmin" },
+    EKSAdmin        = { role_name = "EKSAdmin" },
+    EKSEdit         = { role_name = "EKSEdit" },
+    EKSView         = { role_name = "EKSView" },
   }
 }

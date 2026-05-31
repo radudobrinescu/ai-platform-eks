@@ -1,7 +1,7 @@
 ################################################################################
 # Bedrock as a model — LiteLLM ServiceAccount + IRSA
 #
-# LiteLLM serves Bedrock models (e.g. Claude Sonnet 4.6) natively. Because
+# LiteLLM serves Bedrock models (e.g. Claude Opus 4.8) natively. Because
 # Bedrock models are static (nothing to deploy/scale), they go straight into the
 # LiteLLM config (platform/services/litellm/litellm.yaml) — no InferenceEndpoint,
 # no registration Job. The only infra needed is AWS credentials for the LiteLLM

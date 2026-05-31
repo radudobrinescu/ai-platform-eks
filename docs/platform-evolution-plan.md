@@ -11,12 +11,12 @@
 
 Turn this reference architecture into a **self-contained, turnkey AI platform** a business can stand up on its own AWS account and get value from on day one:
 
-1. **Access to AI models out of the box** — a frontier commercial model (**Amazon Bedrock — Claude Sonnet 4.6**) and a small open-source model (**Qwen2.5-3B-Instruct**, ungated), both behind one OpenAI-compatible API.
+1. **Access to AI models out of the box** — a frontier commercial model (**Amazon Bedrock — Claude Opus 4.8**) and a small open-source model (**Qwen2.5-3B-Instruct**, ungated), both behind one OpenAI-compatible API.
 2. **Observability out of the box** — **Langfuse** tracing live on the first request, no manual setup.
 3. **Fine-tune and deploy** — run a `FineTuneJob` on your own data, deploy the result as a normal model.
-4. **The proof** — a **comparison** that runs the *same* task through Sonnet, the base small model, and the **fine-tuned** small model, and shows in Langfuse that **a small fine-tuned model can match or beat a large commercial one on a narrow task, at a fraction of the cost.**
+4. **The proof** — a **comparison** that runs the *same* task through Opus 4.8, the base small model, and the **fine-tuned** small model, and shows in Langfuse that **a small fine-tuned model can match or beat a large commercial one on a narrow task, at a fraction of the cost.**
 
-**Showcase use case:** *customer-support replies in a company's voice* — fine-tune the small model on a company's support transcripts, then compare reply quality (Langfuse LLM-as-judge + human side-by-side) and cost/latency (objective, from Langfuse) against Sonnet.
+**Showcase use case:** *customer-support replies in a company's voice* — fine-tune the small model on a company's support transcripts, then compare reply quality (Langfuse LLM-as-judge + human side-by-side) and cost/latency (objective, from Langfuse) against Opus 4.8.
 
 **The headline of the whole design:** almost none of this is new code. Bedrock is a few lines in an existing ConfigMap plus one IAM role. Langfuse-on-first-boot is a Terraform secret + env vars. Fine-tuning is the already-validated [v2 plan](./fine-tuning-implementation-plan-v2.md). The only genuinely new piece is a **single comparison script** that leans on Langfuse's built-in Datasets/Evaluations. That is the entire build.
 
@@ -26,17 +26,17 @@ Turn this reference architecture into a **self-contained, turnkey AI platform** 
 
 The platform exists to make one argument, concretely and reproducibly:
 
-> A business has support transcripts. In ~30 minutes it fine-tunes a 3B model on them, deploys it next to Claude Sonnet, runs both (plus the un-tuned 3B) over a held-out set of real questions, and watches Langfuse show: **the fine-tuned 3B answers in the company's voice as well as Sonnet (judged), while costing ~20× less per request and responding faster.**
+> A business has support transcripts. In ~30 minutes it fine-tunes a 3B model on them, deploys it next to Claude Opus 4.8, runs both (plus the un-tuned 3B) over a held-out set of real questions, and watches Langfuse show: **the fine-tuned 3B answers in the company's voice as well as Opus (judged), while costing ~20× less per request and responding faster.**
 
 Three contenders, one API, one trace view:
 
 | Contender | What it shows |
 |---|---|
-| **Sonnet 4.6** (Bedrock) | The expensive generalist baseline — great quality, high per-request cost |
+| **Opus 4.8** (Bedrock) | The expensive generalist baseline — great quality, high per-request cost |
 | **Qwen2.5-3B base** (self-hosted) | The cheap generalist — fast/cheap but off-voice, often wrong on policy |
 | **Qwen2.5-3B fine-tuned** (self-hosted) | The punchline — cheap *and* on-voice/on-policy after fine-tuning |
 
-The base model matters to the narrative: base small = mediocre → fine-tuned small = matches Sonnet → at a fraction of the cost. That arc is the sale.
+The base model matters to the narrative: base small = mediocre → fine-tuned small = matches Opus → at a fraction of the cost. That arc is the sale.
 
 ---
 
@@ -63,7 +63,7 @@ The point of this table is how little is new.
 | Langfuse (tracing, **Datasets, Evaluations, human annotation**) | 🟢 deployed | 0 — *use built-ins* |
 | GPU autoscaling, cold-start opt, time-slicing | 🟢 exists | 0 |
 | Fine-tuning (`FineTuneJob`, QLoRA, autoDeploy) | 🟠 designed ([v2](./fine-tuning-implementation-plan-v2.md)) | ship as-is |
-| **Bedrock (Sonnet) as a model** | 🔴 missing | **~1 IAM role + ~6 lines of config** |
+| **Bedrock (Opus 4.8) as a model** | 🔴 missing | **~1 IAM role + ~6 lines of config** |
 | **Langfuse tracing on first boot** (no manual keys) | 🟠 manual today | **Terraform secret + env vars** |
 | **Preconfigured small model** (Qwen2.5-3B) | 🔴 missing | a catalog YAML |
 | **Model comparison** | 🔴 missing | **one script** (`ops/compare-models.py`) |
@@ -75,7 +75,7 @@ Five small things. No new CRDs beyond the already-planned `FineTuneJob`. No new 
 
 ## 4. The building blocks
 
-### A. Bedrock (Sonnet 4.6) as a model — config, not code
+### A. Bedrock (Opus 4.8) as a model — config, not code
 
 LiteLLM supports `bedrock/` models natively. Because Bedrock models are static (nothing to deploy/scale), they don't need the `InferenceEndpoint` machinery or a registration Job — **they go straight into the LiteLLM config**, version-controlled in git.
 
@@ -128,7 +128,7 @@ resource "aws_iam_role_policy" "litellm_bedrock" {
 
 Then add `serviceAccountName: litellm` to the Deployment and annotate the SA with the role ARN (and ensure `AWS_REGION` is in the pod env).
 
-**A3. Enablement** — one tfvar `enable_bedrock = true` (gates the IAM role) and a documented prerequisite: the account must have **Bedrock model access enabled** for the Sonnet model (a one-time console toggle, or `platformctl` checks it and tells the user). Networking: SMB uses the public Bedrock endpoint (default); add a `bedrock-runtime` VPC endpoint only for private clusters (one entry in `10.networking`).
+**A3. Enablement** — one tfvar `enable_bedrock = true` (gates the IAM role) and a documented prerequisite: the account must have **Bedrock model access enabled** for the Opus model (a one-time console toggle, or `platformctl` checks it and tells the user). Networking: SMB uses the public Bedrock endpoint (default); add a `bedrock-runtime` VPC endpoint only for private clusters (one entry in `10.networking`).
 
 > **Outcome:** `claude-opus-4-8` shows up in the same `/v1/chat/completions` API, Open WebUI dropdown, and Langfuse traces as every other model — governed by the same `AITeam` budgets and keys. A business can use the platform with **zero GPUs** on day one.
 
@@ -173,7 +173,7 @@ What it does — and what it deliberately leans on Langfuse for:
 2. **Run** each prompt through each model **via LiteLLM** (one OpenAI-compatible endpoint, one key). Because LiteLLM's Langfuse callback is on, every call is automatically traced with **cost, latency, and tokens** — we log nothing extra for the objective metrics.
 3. **Tag** each model's pass as a Langfuse **Dataset Run** (e.g., run name = model alias), so Langfuse renders the **side-by-side comparison table** natively.
 4. **Quality scoring** — *use Langfuse's built-in evaluators*, don't build one:
-   - **LLM-as-judge** evaluators configured in the Langfuse UI (judge = Sonnet via the same LiteLLM endpoint) score each reply on a rubric (voice match, policy correctness, helpfulness). Configured once in the UI; runs automatically on the dataset runs.
+   - **LLM-as-judge** evaluators configured in the Langfuse UI (judge = Opus 4.8 via the same LiteLLM endpoint) score each reply on a rubric (voice match, policy correctness, helpfulness). Configured once in the UI; runs automatically on the dataset runs.
    - **Human annotation** — Langfuse's side-by-side view lets a reviewer score/prefer outputs. This is the honest answer for a *style* task where automated metrics are soft.
 5. **Output** — the script prints a summary table (avg judge score, avg cost/req, p50 latency per model) and the Langfuse dataset-run URL. The cost crossover ("above ~N req/day the tuned 3B is cheaper") is computed by reusing **`recommend-instance.py`**'s pricing/throughput data — no new cost system.
 
@@ -193,7 +193,7 @@ What it does — and what it deliberately leans on Langfuse for:
 - **Objective axis (hard numbers, automatic):** cost per request and latency — straight from Langfuse traces. This axis alone often closes the deal (~20× cost gap).
 - **Quality axis (judged):** Langfuse **LLM-as-judge** on a rubric (voice/brand match, policy correctness, helpfulness) + **human side-by-side** preference on a sample. We state plainly that quality is *judged*, not measured — and the rubric + human check is the standard, credible way to do that.
 
-**Expected result (the thesis):** the fine-tuned 3B matches Sonnet on voice/policy (judged), beats the base 3B clearly, and wins decisively on cost/latency. If on some sub-categories Sonnet still wins, that's a *feature* of the demo — it shows where to keep using the frontier model (and the platform serves both from one API, so a business can route accordingly).
+**Expected result (the thesis):** the fine-tuned 3B matches Opus 4.8 on voice/policy (judged), beats the base 3B clearly, and wins decisively on cost/latency. If on some sub-categories Opus still wins, that's a *feature* of the demo — it shows where to keep using the frontier model (and the platform serves both from one API, so a business can route accordingly).
 
 ---
 
@@ -201,17 +201,17 @@ What it does — and what it deliberately leans on Langfuse for:
 
 ```
 1. Provision        platformctl up        → cluster + platform; Langfuse tracing live;
-                                             Sonnet (Bedrock) + Qwen2.5-3B available
+                                             Opus 4.8 (Bedrock) + Qwen2.5-3B available
 2. Use immediately  chat in Open WebUI / curl /v1/chat/completions
-                                             → works against Sonnet with zero GPUs
+                                             → works against Opus 4.8 with zero GPUs
 3. Bring your data  upload support transcripts to the datasets bucket
 4. Fine-tune        commit a FineTuneJob YAML (base=Qwen2.5-3B, autoDeploy=true)
                                              → ~30 min later, qwen3-support-tuned is live
-5. Compare          ops/compare-models.py --models sonnet,qwen-base,qwen-tuned
+5. Compare          ops/compare-models.py --models claude-opus-4-8,qwen3-3b,qwen3-support-tuned
                                              → Langfuse dataset run with the 3-way table
 6. Decide           read the cost/quality crossover; route prod traffic accordingly
                                              (cheap tuned model for the common case,
-                                              Sonnet for the hard tail) — all one API
+                                              Opus 4.8 for the hard tail) — all one API
 ```
 
 Every step works standalone; the value compounds.
@@ -224,7 +224,7 @@ Small, independently shippable phases. Acceptance criteria are concrete.
 
 | Phase | Deliverable | Acceptance test |
 |---|---|---|
-| **P1. Bedrock as a model** | LiteLLM `litellm` SA + Bedrock IRSA; Sonnet in `litellm-config`; `enable_bedrock` tfvar | `curl /v1/chat/completions -d '{"model":"claude-opus-4-8",...}'` returns a Bedrock reply; a trace appears in Langfuse |
+| **P1. Bedrock as a model** | LiteLLM `litellm` SA + Bedrock IRSA; Opus 4.8 in `litellm-config`; `enable_bedrock` tfvar | `curl /v1/chat/completions -d '{"model":"claude-opus-4-8",...}'` returns a Bedrock reply; a trace appears in Langfuse |
 | **P2. Langfuse on first boot** | Terraform-generated Langfuse project keys; `LANGFUSE_INIT_*` in Langfuse + `langfuse-litellm-keys` in LiteLLM; `nextauth.url` tfvar | Fresh install → first model call is traced with cost/latency, **no manual key creation** |
 | **P3. Preconfigured small model** | `workloads/models/catalog/qwen3-3b.yaml` (ungated); deployed by default or one-command | `qwen3-3b` serves via LiteLLM after install |
 | **P4. Fine-tuning GA** | Execute v2 plan P0–P9 (base = Qwen2.5-3B) | v2 sign-off checklist passes; a tuned model autoDeploys and answers via LiteLLM |
@@ -254,8 +254,8 @@ The standalone self-healing agent product remains tracked separately in [`self-h
 
 | Risk | Likelihood | Impact | Mitigation |
 |---|---|---|---|
-| Bedrock model access not enabled in the account → Sonnet calls 403 | Med | Med | One-time console enablement documented; `platformctl`/`compare-models.py` preflight-checks and prints the exact fix |
-| "Small model wins" doesn't hold for the chosen task | Med | High | Showcase task is narrow (support voice) — fine-tuning's sweet spot; the **cost/latency** win is guaranteed regardless; show per-category results so the honest "Sonnet wins the hard tail" case is a routing feature, not a failure |
+| Bedrock model access not enabled in the account → Opus calls 403 | Med | Med | One-time console enablement documented; `platformctl`/`compare-models.py` preflight-checks and prints the exact fix |
+| "Small model wins" doesn't hold for the chosen task | Med | High | Showcase task is narrow (support voice) — fine-tuning's sweet spot; the **cost/latency** win is guaranteed regardless; show per-category results so the honest "Opus wins the hard tail" case is a routing feature, not a failure |
 | Quality is subjective (style task) → demo feels hand-wavy | Med | Med | Lean on Langfuse LLM-as-judge **rubric** + human side-by-side (standard, credible); keep cost/latency as the hard objective axis |
 | Langfuse headless init varies by chart version | Low | Med | Pin the Langfuse chart version; verify `LANGFUSE_INIT_*` support; fallback is a tiny one-shot bootstrap Job (still no manual clicks) |
 | Cost comparison is apples-to-oranges (per-request vs GPU-hours) | Med | Med | Frame honestly as a **crossover** ("cheaper above ~N req/day"); compute with `recommend-instance.py`'s existing pricing/throughput model |
