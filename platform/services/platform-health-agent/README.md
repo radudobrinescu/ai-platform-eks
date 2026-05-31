@@ -33,40 +33,68 @@ allowlist).
 
 ## Enable / disable
 
-**Enable:** add the `platform-health-agent` element to [`argocd/bootstrap/platform.yaml`](../../../argocd/bootstrap/platform.yaml). ArgoCD picks it up automatically.
+This service is **off by default**. It needs two things, in order:
 
-**Disable:** remove the element + push. ArgoCD prunes the `platform-health-agent` namespace except the manually-created `platform-health-agent-secrets` Secret. The `platform_health_agent` postgres database persists (intentional — re-enabling resumes from the same state). The cluster-dashboard's approvals UI gracefully detects the agent is gone and hides the badge.
+1. **Terraform prerequisites** — set `platform_health_agent_enabled = true` in your
+   tfvars and `export TF_VAR_kiro_api_key="kr-..."`, then re-apply `30.cluster`.
+   This provisions the `platform-health-agent` namespace, the
+   `platform-health-agent-secrets` Secret (your Kiro key), and a copy of
+   `platform-db-credentials` (the DB password is Terraform-generated, so this is
+   the only reliable way to get it into the namespace).
+2. **GitOps element** — add the `platform-health-agent` element back to the list
+   generator in [`argocd/bootstrap/platform.yaml`](../../../argocd/bootstrap/platform.yaml)
+   (it ships commented-out / omitted so a default deploy stays green) and push.
+   ArgoCD picks it up within ~3 min.
+
+> Why both? The ApplicationSet element is what makes ArgoCD deploy the workload;
+> the Terraform prerequisites are what let its pods actually start. If you add the
+> element without the tfvar, the app sits permanently **Degraded** (no
+> `platform-db-credentials` secret in the namespace → `CreateContainerConfigError`).
+
+**Disable:** remove the element + push (ArgoCD prunes the namespace except the
+TF-managed secrets), and set `platform_health_agent_enabled = false`. The
+`platform_health_agent` postgres database persists (intentional — re-enabling
+resumes from the same state). The cluster-dashboard's approvals UI gracefully
+detects the agent is gone and hides the badge.
 
 ---
 
 ## One-time setup (before first sync)
 
-You must complete these BEFORE pushing the ApplicationSet entry, or ArgoCD will sync but the pods will CrashLoopBackOff waiting for the secret.
+Complete the Terraform prerequisites BEFORE adding the ApplicationSet entry, or
+ArgoCD will sync but the pods will be stuck (no `platform-db-credentials` secret
+in the namespace → `CreateContainerConfigError`).
 
 ### 1. Get the Kiro API key
 
 1. <https://kiro.dev/> → log in → API keys → create a key with headless-mode scope.
 2. Copy the key value (one-time view).
 
-### 2. Create the namespace + secret
+### 2. Provision the namespace + secrets (Terraform)
+
+Setting the tfvar provisions everything the pods need — the namespace, the Kiro
+key Secret (`platform-health-agent-secrets`), and a copy of the
+Terraform-generated `platform-db-credentials`:
 
 ```bash
-kubectl create namespace platform-health-agent
+# in your tfvars:
+#   platform_health_agent_enabled = true
+export TF_VAR_kiro_api_key='kr-xxxxxxxxxxxxxxxxxxxxxxxx'
+make -C terraform ENVIRONMENT=dev MODULE=./30.eks/30.cluster apply
 
-kubectl -n platform-health-agent create secret generic platform-health-agent-secrets \
-  --from-literal=KIRO_API_KEY='kr-xxxxxxxxxxxxxxxxxxxxxxxx'
-
-# Verify:
+# Verify the Kiro secret landed:
 kubectl -n platform-health-agent get secret platform-health-agent-secrets \
   -o jsonpath='{.data}' | python3 -c "import sys,json; print(list(json.loads(sys.stdin.read()).keys()))"
 # Expected: ['KIRO_API_KEY']
 ```
 
-That's it. No Slack tokens, no signing secrets, no domain — the only secret is the Kiro API key.
+No Slack tokens, no signing secrets, no domain — the only secret you supply is
+the Kiro API key (the DB credentials are generated and copied for you).
 
 ### 3. Add the ApplicationSet entry
 
-Edit `argocd/bootstrap/platform.yaml`, append to the list generator:
+Edit `argocd/bootstrap/platform.yaml`, append to the list generator (it's omitted
+by default so a fresh deploy stays green):
 
 ```yaml
           - name: platform-health-agent

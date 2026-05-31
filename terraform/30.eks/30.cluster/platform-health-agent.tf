@@ -18,9 +18,14 @@
 # Enable:  set true in tfvars AND export TF_VAR_kiro_api_key="kr-..." before
 #          running terraform apply.
 #
-# When enabled, the agent's ArgoCD Application (declared in
-# argocd/bootstrap/platform.yaml) will sync within ~3 min of next ArgoCD
-# poll and the event-watcher pod will come up Ready 1/1.
+# Two-step enable (the agent is OFF by default end-to-end):
+#   1. This file (tfvar=true) provisions the namespace + both secrets.
+#   2. Add the `platform-health-agent` element back to the list generator in
+#      argocd/bootstrap/platform.yaml so ArgoCD actually deploys the workload.
+# The element is omitted from that ApplicationSet by default ON PURPOSE: adding
+# it without these secrets leaves a permanently-Degraded app (the event-watcher
+# pod can't resolve platform-db-credentials). With both in place the pod comes
+# up Ready 1/1 within ~3 min of the next ArgoCD poll. See the agent's README.
 ################################################################################
 
 locals {
