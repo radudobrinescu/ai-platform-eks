@@ -51,8 +51,8 @@ spec:
                   name: litellm-env
                   key: AWS_REGION
                   optional: true
-            - name: LITELLM_CALLBACKS
-              value: "langfuse"
+            # Langfuse callback is enabled via litellm_settings.success_callback
+            # in the config (not an env var). These provide the credentials it uses.
             - name: LANGFUSE_HOST
               value: "http://langfuse-web.ai-platform.svc.cluster.local:3000"
             - name: LANGFUSE_PUBLIC_KEY
@@ -120,6 +120,12 @@ data:
         litellm_params:
           model: bedrock/global.anthropic.claude-opus-4-8
           aws_region_name: os.environ/AWS_REGION
+    litellm_settings:
+      # Register the Langfuse callback HERE — this is the only place LiteLLM
+      # reads it. (There is no LITELLM_CALLBACKS env var; setting one is a no-op.)
+      # With langfuse listed, LiteLLM picks up LANGFUSE_PUBLIC_KEY / SECRET_KEY /
+      # HOST from the env wired in the Deployment and traces every request.
+      success_callback: ["langfuse"]
     general_settings:
       master_key: os.environ/LITELLM_MASTER_KEY
 ---
