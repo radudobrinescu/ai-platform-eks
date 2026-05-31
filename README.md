@@ -15,7 +15,7 @@ A self-service AI platform that lets teams deploy and serve LLMs on Amazon EKS t
 | **Chat UI** | Open WebUI for interactive testing |
 | **Team isolation** | `AITeam` resource creates namespace, RBAC, budget, rate limits, scoped API key |
 | **Auto GPU sizing** | Karpenter provisions the right GPU, scales to zero when idle |
-| **Fast cold starts** | EBS snapshots (0s image pull) + S3 weight cache (~15s) + warm pool |
+| **Fast cold starts** | EBS snapshots (0s image pull) + S3 weight cache (~15s) |
 | **Observability on first boot** | Langfuse tracing live on the first request — keys provisioned by Terraform, no manual setup |
 | **Fine-tuning** | `FineTuneJob` resource — self-service QLoRA via Unsloth, `autoDeploy` to a live endpoint |
 | **Model comparison** | `ops/compare-models.py` runs an eval set through several models → side-by-side Langfuse dataset run + cost crossover |
@@ -391,7 +391,7 @@ Four layers reduce first-inference time from ~7 min to ~60s:
 | EBS data volume snapshot | 0s image pull | Terraform auto-creates on `ray_image_tag` change |
 | SOCI lazy-loading | ~50% faster pull (fallback) | Terraform auto-creates alongside snapshot |
 | S3 model weight cache | ~15s vs ~60s model load | Sidecar auto-warms after first deploy |
-| GPU warm pool | Skip 90s node provisioning | Placeholder pod in `platform/config/warm-pool/` |
+| GPU node pre-warm | Skip ~90s node provisioning | On demand before a demo: `./ops/prepare-demo.sh` |
 
 **Pre-seed the cache** before a demo:
 
@@ -427,7 +427,6 @@ platform/
   config/kro/                    # InferenceEndpoint + AITeam + FineTuneJob definitions
   config/rbac/                   # ClusterRoles
   config/ingress.yaml            # ALB routing
-  config/warm-pool/              # GPU warm-pool placeholder
   services/                      # gpu-operator, kuberay, litellm, open-webui,
                                  # langfuse, cluster-dashboard, platform-health-agent
 workloads/

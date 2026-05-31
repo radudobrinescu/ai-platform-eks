@@ -26,11 +26,6 @@ echo -n "  LiteLLM: "
 kubectl wait --for=condition=available deploy/litellm -n ai-platform --timeout=180s 2>/dev/null && echo "✓" || echo "⏳"
 echo -n "  Open WebUI: "
 kubectl wait --for=condition=available deploy/open-webui -n ai-platform --timeout=180s 2>/dev/null && echo "✓" || echo "⏳"
-echo -n "  Warm-pool (L4 GPU node): "
-# Karpenter has to provision a fresh g6.xlarge and pull the Ray LLM image,
-# so the timeout here is intentionally generous. On a warm cluster the
-# Deployment is Available almost instantly.
-kubectl wait --for=condition=available deploy/gpu-shared-warmup -n ai-platform --timeout=300s 2>/dev/null && echo "✓" || echo "⏳ (check 'kubectl get pods -n ai-platform -l app=gpu-shared-warmup')"
 
 echo ""
 echo "=== Scale up complete ==="
