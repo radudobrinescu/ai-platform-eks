@@ -16,7 +16,9 @@ configMapGenerator:
       - cluster-topology.html
   - name: cluster-dashboard-backend
     namespace: ai-platform
-    options:
-      disableNameSuffixHash: true
+    # Hash suffix ENABLED (kustomize default): backend.py is loaded once at
+    # process start, so a content change must produce a new ConfigMap name →
+    # new Deployment template → automatic pod restart. Without this the pod
+    # keeps running stale code (e.g. a route the freshly-served HTML calls 404s).
     files:
       - scripts/backend.py
