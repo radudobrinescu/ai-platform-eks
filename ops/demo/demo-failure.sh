@@ -8,12 +8,12 @@
 #   3. Optionally waits for the investigation to land
 #
 # Usage:
-#   ./ops/demo-failure.sh                  # interactive menu
-#   ./ops/demo-failure.sh oom              # apply scenario directly
-#   ./ops/demo-failure.sh oom --wait       # apply + wait for awaiting_approval
-#   ./ops/demo-failure.sh list             # list scenarios
-#   ./ops/demo-failure.sh cleanup          # remove the demo namespace + all scenarios
-#   ./ops/demo-failure.sh status           # show current investigations
+#   ./ops/demo/demo-failure.sh                  # interactive menu
+#   ./ops/demo/demo-failure.sh oom              # apply scenario directly
+#   ./ops/demo/demo-failure.sh oom --wait       # apply + wait for awaiting_approval
+#   ./ops/demo/demo-failure.sh list             # list scenarios
+#   ./ops/demo/demo-failure.sh cleanup          # remove the demo namespace + all scenarios
+#   ./ops/demo/demo-failure.sh status           # show current investigations
 #
 # Requires: kubectl context set on the EKS cluster.
 
@@ -365,7 +365,7 @@ EOF
 apply_oos() {
   hdr "Out-of-scope — break a pod the agent CAN'T fix (governance demo)"
   warn "this targets ai-platform/cluster-dashboard. Recoverable, but the dashboard"
-  warn "will be temporarily broken. Cleanup with: ./ops/demo-failure.sh cleanup-oos"
+  warn "will be temporarily broken. Cleanup with: ./ops/demo/demo-failure.sh cleanup-oos"
   read -p "Proceed? [y/N] " -n 1 -r; echo
   [[ "${REPLY:-}" =~ ^[Yy]$ ]] || { log "aborted"; return; }
   log "snapshotting current image for restore"
@@ -389,7 +389,7 @@ What this demonstrates:
   - Even if approved, the kubectl patch would 403 from the API server
   - Defense in depth: out_of_scope heuristic + RBAC + namespace pattern
 
-Cleanup: ./ops/demo-failure.sh cleanup-oos
+Cleanup: ./ops/demo/demo-failure.sh cleanup-oos
 ${C_RST}
 EOF
 }
@@ -438,7 +438,7 @@ in the dashboard:
   - Outcome: ✕ Could not apply fix
   - error_summary references the 403
 
-Cleanup: ./ops/demo-failure.sh cleanup
+Cleanup: ./ops/demo/demo-failure.sh cleanup
 (this removes the synthetic investigation row)
 ${C_RST}
 EOF

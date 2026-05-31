@@ -19,11 +19,11 @@
 #      (gpu-shared = 300s) and a real model preempts onto it within that grace.
 #
 # Usage:
-#   ./ops/prepare-demo.sh            # warm a node, then release the placeholder
-#   ./ops/prepare-demo.sh --keep     # leave the placeholder running (pins the
+#   ./ops/demo/prepare-demo.sh            # warm a node, then release the placeholder
+#   ./ops/demo/prepare-demo.sh --keep     # leave the placeholder running (pins the
 #                                    # node until you run --teardown)
-#   ./ops/prepare-demo.sh --teardown # remove the placeholder now
-#   ./ops/prepare-demo.sh --timeout 600
+#   ./ops/demo/prepare-demo.sh --teardown # remove the placeholder now
+#   ./ops/demo/prepare-demo.sh --timeout 600
 #
 # Env:
 #   NAMESPACE        placeholder namespace      (default: ai-platform)
@@ -98,7 +98,7 @@ metadata:
     app.kubernetes.io/component: demo-warmup
   annotations:
     ai-platform/purpose: |
-      Ephemeral, demo-only GPU node pre-warm created by ops/prepare-demo.sh.
+      Ephemeral, demo-only GPU node pre-warm created by ops/demo/prepare-demo.sh.
       NOT managed by ArgoCD. Safe to delete anytime.
 spec:
   replicas: 1
@@ -164,7 +164,7 @@ fi
 # ---- release (default) or keep --------------------------------------------- #
 if [ "$KEEP" -eq 1 ]; then
   log "Leaving the placeholder running (--keep). Free the node for a real model with:"
-  echo "    ./ops/prepare-demo.sh --teardown"
+  echo "    ./ops/demo/prepare-demo.sh --teardown"
 else
   teardown
 fi
