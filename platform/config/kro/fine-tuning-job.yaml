@@ -41,8 +41,12 @@ spec:
 
     status:
       # The training Job is the source of truth for phase.
+      # NOTE: KRO status CEL may only reference resource outputs, never the
+      # instance `schema` — so we surface the training Job name (which is
+      # `<name>-train`) and the model-cache bucket. The full timestamped output
+      # prefix (fine-tuned/<name>/<ts>/) is logged by train.py at upload time.
       phase: "${trainingjob.status.?succeeded.orValue(0) > 0 ? 'Completed' : (trainingjob.status.?active.orValue(0) > 0 ? 'Training' : (trainingjob.status.?failed.orValue(0) > 0 ? 'Failed' : 'Pending'))}"
-      outputPath: "s3://${platformconfig.data.?modelCacheBucket.orValue('')}/fine-tuned/${schema.metadata.name}/"
+      modelCacheBucket: "${platformconfig.data.?modelCacheBucket.orValue('')}"
       jobName: "${trainingjob.metadata.name}"
 
   resources:
