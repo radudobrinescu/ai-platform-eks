@@ -148,6 +148,10 @@ spec:
               value: "24"
             - name: MAX_REMEDIATIONS_PER_DAY
               value: "20"
+            # An investigation Job has a 10-min hard deadline. Past this many minutes
+            # an in-flight row is treated as stuck and becomes dismissable in the UI.
+            - name: STALE_INVESTIGATION_MINUTES
+              value: "15"
             - name: KIRO_MODEL_REMEDIATE
               value: "claude-opus-4.6"
             - name: PYTHON_IMAGE

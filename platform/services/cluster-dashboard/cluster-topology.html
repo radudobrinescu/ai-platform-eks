@@ -78,9 +78,10 @@ body { font-family: var(--font); background: var(--bg); color: var(--text); heig
 /* Sidebar */
 .sidebar {
   position: relative;
-  padding: 16px 12px; overflow-y: auto;
+  padding: 16px 12px; overflow-y: auto; overflow-x: hidden;
   background: var(--surface); border-right: 1px solid var(--border);
   display: flex; flex-direction: column; gap: 12px;
+  min-height: 0;   /* allow the sidebar to scroll instead of growing the grid track */
 }
 .sidebar-resizer {
   position: absolute; top: 0; right: -2px; bottom: 0; width: 4px;
@@ -91,6 +92,7 @@ body { font-family: var(--font); background: var(--bg); color: var(--text); heig
 .card {
   background: rgba(255,255,255,0.02); border: 1px solid var(--border);
   border-radius: var(--radius); padding: 16px;
+  flex-shrink: 0;   /* hold natural height; the sidebar scrolls instead of cards overlapping */
 }
 .card-title {
   font-size: 10px; font-weight: 700; text-transform: uppercase;
@@ -380,6 +382,8 @@ body { font-family: var(--font); background: var(--bg); color: var(--text); heig
 }
 .history-item:hover { background: var(--surface-hover); }
 .history-item:last-child { border-bottom: none; }
+/* In-flight (running / remediating) rows stand out from terminal history. */
+.history-item.in-flight { border-left: 2px solid var(--accent); }
 .history-row1 { display: flex; align-items: center; gap: 10px; font-size: 12px; }
 .history-row1 .outcome {
   font-weight: 700; padding: 2px 8px; border-radius: 4px; font-size: 11px;
@@ -389,6 +393,7 @@ body { font-family: var(--font); background: var(--bg); color: var(--text); heig
 .outcome-dismissed{ background: rgba(150,150,150,0.12); color: var(--text-muted); }
 .outcome-expired  { background: rgba(150,150,150,0.12); color: var(--text-muted); }
 .outcome-pending  { background: var(--amber-soft);  color: var(--amber); }
+.outcome-running  { background: var(--accent-soft); color: var(--accent); }
 .history-row2 {
   font-size: 11px; color: var(--text-muted); margin-top: 4px;
   font-family: var(--mono);
@@ -418,6 +423,18 @@ body { font-family: var(--font); background: var(--bg); color: var(--text); heig
 .history-item { position: relative; }
 .history-item:hover .history-delete { opacity: 1; }
 .history-delete:hover { background: var(--red-soft); color: var(--red); }
+
+/* Dismiss button for stale (stuck) in-flight investigations — always visible,
+   unlike the hover-only delete ×, so the user notices a stuck investigation. */
+.history-dismiss-stale {
+  position: absolute; top: 8px; right: 12px;
+  background: var(--surface); border: 1px solid var(--border);
+  color: var(--text-secondary); font-family: var(--font);
+  font-size: 11px; font-weight: 600; line-height: 1;
+  padding: 5px 9px; border-radius: var(--radius-sm);
+  cursor: pointer; transition: all 0.15s; z-index: 1;
+}
+.history-dismiss-stale:hover { background: var(--red-soft); color: var(--red); border-color: var(--red); }
 
 .history-toolbar {
   display: flex; align-items: center; justify-content: flex-end;
@@ -457,7 +474,7 @@ body { font-family: var(--font); background: var(--bg); color: var(--text); heig
       <div class="card-title">Inference Endpoints</div>
       <div id="sidebar-models"><div class="model-empty">No models deployed</div></div>
     </div>
-    <div class="card" style="flex:1;min-height:0;">
+    <div class="card">
       <div class="card-title">Activity</div>
       <div class="event-list" id="event-log"><div class="ev"><span class="ev-time">--:--</span> waiting...</div></div>
     </div>
@@ -1156,15 +1173,32 @@ function renderHistoryItem(inv){
   } else if(inv.status === 'failed')    { outcome = '✕ Failed';    cls = 'outcome-failed'; }
    else if(inv.status === 'dismissed')   { outcome = 'Dismissed';  cls = 'outcome-dismissed'; }
    else if(inv.status === 'expired')     { outcome = 'Expired';    cls = 'outcome-expired'; }
-   else if(inv.status === 'remediating') { outcome = 'Remediating…'; cls = 'outcome-pending'; }
+   else if(inv.status === 'remediating') { outcome = '⟳ Applying fix…'; cls = 'outcome-running'; }
+   else if(inv.status === 'running' || inv.status === 'pending'){
+     outcome = '⟳ Event observed, running investigation…'; cls = 'outcome-running';
+   }
    else                                   { outcome = inv.status;   cls = 'outcome-pending'; }
 
   const fix = (inv.fix_commands || []).map(fc =>
     (fc.description ? '# ' + fc.description + '\n' : '') + (fc.commands || []).join('\n')
   ).join('\n\n');
 
-  return `<div class="history-item" id="history-${escapeHtml(inv.id)}" onclick="this.classList.toggle('expanded')">
-    <button class="history-delete" title="Delete from history (permanent)" onclick="event.stopPropagation(); deleteHistoryItem('${escapeHtml(inv.id)}')">×</button>
+  // Corner control:
+  //  - terminal rows  → permanent delete (×)
+  //  - in-flight rows → no control while fresh (a live investigation can't be
+  //    dropped); once stale (Job died without a result) a Dismiss button appears.
+  const inFlight = ['pending','running','remediating'].includes(inv.status);
+  let cornerCtrl;
+  if(!inFlight){
+    cornerCtrl = `<button class="history-delete" title="Delete from history (permanent)" onclick="event.stopPropagation(); deleteHistoryItem('${escapeHtml(inv.id)}')">×</button>`;
+  } else if(inv.stale){
+    cornerCtrl = `<button class="history-dismiss-stale" title="This investigation has been running too long and is likely stuck — dismiss it" onclick="event.stopPropagation(); dismissStale('${escapeHtml(inv.id)}')">✕ Dismiss</button>`;
+  } else {
+    cornerCtrl = '';
+  }
+
+  return `<div class="history-item${inFlight ? ' in-flight' : ''}" id="history-${escapeHtml(inv.id)}" onclick="this.classList.toggle('expanded')">
+    ${cornerCtrl}
     <div class="history-row1">
       <span class="sev sev-${escapeHtml(sev)}">${escapeHtml(sev)}</span>
       <span class="outcome ${cls}">${escapeHtml(outcome)}</span>
@@ -1178,6 +1212,29 @@ function renderHistoryItem(inv){
       ${inv.error_message ? '<div style="font-weight:600;font-size:11px;color:var(--red);margin-top:6px">ERROR</div><pre>' + escapeHtml(inv.error_message) + '</pre>' : ''}
     </div>
   </div>`;
+}
+
+async function dismissStale(id){
+  // Stale in-flight investigation (Job died without writing a result). POST the
+  // existing /dismiss endpoint — the backend only honours it past the staleness
+  // threshold, so a genuinely active investigation can't be cleared here.
+  if(!confirm('This investigation has been running far longer than expected and is likely stuck. Dismiss it?')) return;
+  try{
+    const r = await fetch(`/investigations/${id}/dismiss`, { method: 'POST' });
+    const body = await r.json().catch(() => ({}));
+    if(!r.ok){
+      if(r.status === 409){
+        // Raced with the Job finishing, or no longer stale — just refresh.
+        await loadHistory();
+        return;
+      }
+      alert(`Dismiss failed: HTTP ${r.status} — ${body.error || ''}`);
+      return;
+    }
+    await loadHistory();
+  }catch(e){
+    alert(`Dismiss failed: ${e}`);
+  }
 }
 
 async function deleteHistoryItem(id){

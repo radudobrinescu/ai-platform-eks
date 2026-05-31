@@ -69,6 +69,11 @@ DB_PASSWORD = os.environ.get("DB_PASSWORD")
 
 PLATFORM_HEALTH_AGENT_NAMESPACE = os.environ.get("PLATFORM_HEALTH_AGENT_NAMESPACE", "platform-health-agent")
 APPROVAL_EXPIRY_HOURS = int(os.environ.get("APPROVAL_EXPIRY_HOURS", "24"))
+# An investigation Job has a 10-min hard deadline (activeDeadlineSeconds=600). If a
+# row is still 'running'/'remediating' well past that, the Job died without writing
+# its result and the row is stuck. Past this age it becomes dismissable from the
+# History tab so users can clear the noise. Must comfortably exceed the Job deadline.
+STALE_INVESTIGATION_MINUTES = int(os.environ.get("STALE_INVESTIGATION_MINUTES", "15"))
 MAX_REMEDIATIONS_PER_DAY = int(os.environ.get("MAX_REMEDIATIONS_PER_DAY", "20"))
 KIRO_MODEL_REMEDIATE = os.environ.get("KIRO_MODEL_REMEDIATE", "claude-opus-4.6")
 PYTHON_IMAGE = os.environ.get("PYTHON_IMAGE", "python:3.12-slim")
@@ -469,8 +474,14 @@ def list_all_investigations(limit: int = 20) -> list[dict]:
             )
             rows = cur.fetchall() or []
         out = []
+        stale_cutoff = time.time() - STALE_INVESTIGATION_MINUTES * 60
         for r in rows:
             r["id"] = str(r["id"])
+            # An in-flight row whose Job should long since have finished is stuck —
+            # flag it so the UI can offer a Dismiss action (see dismiss_investigation).
+            in_flight = r["status"] in ("pending", "running", "remediating")
+            created = r.get("created_at")
+            r["stale"] = bool(in_flight and created and created.timestamp() < stale_cutoff)
             for k in ("created_at", "completed_at", "approved_at"):
                 if r.get(k):
                     r[k] = r[k].isoformat()
@@ -554,21 +565,38 @@ def approve_investigation(investigation_id: str, approver: str) -> tuple[int, di
 
 
 def dismiss_investigation(investigation_id: str, approver: str) -> tuple[int, dict]:
+    """Mark an investigation dismissed. Two paths:
+      - 'awaiting_approval' rows: the user declined the proposed fix (normal case).
+      - stale in-flight rows ('pending'/'running'/'remediating' older than
+        STALE_INVESTIGATION_MINUTES): the Job died without writing a result, so
+        the row is stuck — let the user clear it. Fresh in-flight rows are kept,
+        so we never dismiss a genuinely active investigation."""
     if not (HAVE_PSYCOPG and DB_USER and DB_PASSWORD):
         return 503, {"error": "approvals db unavailable"}
     try:
-        with DB.connect() as conn, conn.cursor() as cur:
+        with DB.connect() as conn, conn.cursor(row_factory=psycopg.rows.dict_row) as cur:  # type: ignore[arg-type]
+            cur.execute("SELECT status, created_at FROM investigations WHERE id=%s", (investigation_id,))
+            inv = cur.fetchone()
+            if not inv:
+                return 404, {"error": "not found"}
+            status = inv["status"]
+            if status == "awaiting_approval":
+                pass  # always dismissable
+            elif status in ("pending", "running", "remediating"):
+                age_min = (time.time() - inv["created_at"].timestamp()) / 60
+                if age_min < STALE_INVESTIGATION_MINUTES:
+                    return 409, {"error": "investigation still in progress"}
+            else:
+                return 409, {"error": f"status is {status}, cannot dismiss"}
             cur.execute(
                 """UPDATE investigations
                       SET status='dismissed',
                           approved_by=%s,
                           approved_at=now(),
                           completed_at=now()
-                    WHERE id=%s AND status='awaiting_approval'""",
+                    WHERE id=%s""",
                 (approver, investigation_id),
             )
-            if cur.rowcount == 0:
-                return 409, {"error": "not awaiting approval"}
         return 200, {"ok": True, "investigation_id": investigation_id, "status": "dismissed"}
     except Exception as e:
         return 500, {"error": str(e)}
