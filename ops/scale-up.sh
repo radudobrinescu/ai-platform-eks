@@ -18,6 +18,17 @@ for app in $(kubectl get applications -n argocd -o jsonpath='{.items[*].metadata
 done
 echo ""
 
+# Restore workloads ArgoCD selfHeal will NOT bring back. ArgoCD only reconciles
+# the .spec.replicas field when the rendered manifest declares it; the Langfuse
+# MinIO subchart (langfuse-s3) renders NO replicas, so after scale-down zeroed
+# it, selfHeal leaves it at 0 forever. A dead MinIO silently breaks Langfuse
+# trace ingestion (every upload 500s). Explicitly scale it back here.
+# (langfuse-web/worker and the StatefulSets DO render replicas, so selfHeal
+# restores those on its own — no need to list them.)
+echo "Restoring components ArgoCD can't self-heal (replicas omitted in chart)..."
+kubectl scale deploy langfuse-s3 -n ai-platform --replicas=1 2>/dev/null && echo "  ✓ langfuse-s3 (MinIO blob store)" || true
+echo ""
+
 # Wait for key services to come up
 echo "Waiting for ArgoCD to reconcile..."
 echo -n "  platform-db: "
