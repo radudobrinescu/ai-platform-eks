@@ -33,7 +33,7 @@ resource "null_resource" "soci_index" {
     # exists whenever run_image_optimization is true (local.need_soci_builder).
     # The builder pushes the SOCI index back to ECR, which the read-only EKS node
     # role can't do (would 403 and abort the apply).
-    command     = "${path.module}/../../../ops/create-soci-index.sh -p ${aws_iam_instance_profile.soci_builder[0].name} ${local.ray_ecr_image}"
+    command     = "${path.module}/../../../ops/create-soci-index.sh -p ${aws_iam_instance_profile.soci_builder[0].name} -n ${local.cluster_name} -r ${local.region} ${local.ray_ecr_image}"
     interpreter = ["bash", "-c"]
     # Best-effort: SOCI is a cold-start optimization, not load-bearing. A
     # transient builder failure must degrade to lazy-pull, not abort the apply.
@@ -45,7 +45,11 @@ resource "null_resource" "soci_index" {
 
   depends_on = [
     aws_ecr_pull_through_cache_rule.docker_hub,
-    module.eks
+    module.eks,
+    # Ensure the host kubeconfig points at THIS cluster before the script runs.
+    # The script resolves networking hermetically via -n/-r, but this keeps any
+    # kubectl fallback (ad-hoc invocations) pointed at the right cluster too.
+    null_resource.update_kubeconfig,
   ]
 }
 
@@ -98,7 +102,10 @@ resource "null_resource" "gpu_data_volume_snapshot" {
     null_resource.unsloth_image,
     module.eks,
     module.karpenter,
-    helm_release.karpenter
+    helm_release.karpenter,
+    # create-data-volume-snapshot.sh drives kubectl (schedules a puller pod);
+    # the kubeconfig must already point at this cluster.
+    null_resource.update_kubeconfig,
   ]
 }
 

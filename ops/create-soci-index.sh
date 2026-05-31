@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Build and push a SOCI index for an ECR image using a temporary EC2 instance.
-# Usage: ./ops/create-soci-index.sh [-p <instance-profile>] <ecr-image-uri>
+# Usage: ./ops/create-soci-index.sh [-p <instance-profile>] [-n <cluster>] [-r <region>] <ecr-image-uri>
 # Example: ./ops/create-soci-index.sh <account-id>.dkr.ecr.<region>.amazonaws.com/docker-hub/anyscale/ray-llm:2.54.0-py311-cu128
 #
 # The temp instance must run under an instance profile that can BOTH pull and
@@ -9,20 +9,32 @@
 # profile (Terraform provisions `<cluster>-soci-builder` for this); without -p we
 # fall back to the first running node's profile (read-only — push will fail
 # unless that role was granted ECR write).
+#
+# Networking + cluster name resolve HERMETICALLY from AWS APIs (no kubectl): the
+# subnet is found by the `karpenter.sh/discovery=<cluster>` tag, matching
+# create-data-volume-snapshot.sh. This avoids racing the host kubeconfig during a
+# `terraform apply` on a brand-new cluster (where the host context may still
+# point elsewhere). Pass -n/-r explicitly from Terraform; both fall back to the
+# kubeconfig / AWS_REGION / the image URI when omitted (manual ad-hoc use).
 set -euo pipefail
 
 INSTANCE_PROFILE=""
-while getopts "p:h" opt; do
+CLUSTER_NAME=""
+REGION=""
+while getopts "p:n:r:h" opt; do
   case "$opt" in
     p) INSTANCE_PROFILE="$OPTARG" ;;
+    n) CLUSTER_NAME="$OPTARG" ;;
+    r) REGION="$OPTARG" ;;
     h) grep '^#' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
     *) echo "Unknown option" >&2; exit 1 ;;
   esac
 done
 shift $((OPTIND - 1))
 
-IMAGE="${1:?Usage: $0 [-p <instance-profile>] <ecr-image-uri>}"
-REGION=$(echo "$IMAGE" | grep -oE '[a-z]+-[a-z]+-[0-9]+')
+IMAGE="${1:?Usage: $0 [-p <instance-profile>] [-n <cluster>] [-r <region>] <ecr-image-uri>}"
+# REGION precedence: -r flag > AWS_REGION env > parsed from the ECR image URI.
+REGION="${REGION:-${AWS_REGION:-$(echo "$IMAGE" | grep -oE '[a-z]+-[a-z]+-[0-9]+')}}"
 ACCOUNT=$(echo "$IMAGE" | grep -oE '^[0-9]+')
 
 # Self-protect: if the target image isn't in ECR yet, there's nothing to index.
@@ -44,7 +56,15 @@ if echo "$IMAGE" | grep -qE '\.dkr\.ecr\.'; then
   fi
 fi
 
-CLUSTER_NAME=$(kubectl config view --minify -o jsonpath='{.clusters[0].name}' | awk -F/ '{print $NF}')
+# Cluster name: -n flag wins; otherwise fall back to the host kubeconfig (ad-hoc
+# use). From Terraform we always pass -n so we never read the host context.
+if [ -z "$CLUSTER_NAME" ]; then
+  CLUSTER_NAME=$(kubectl config view --minify -o jsonpath='{.clusters[0].name}' 2>/dev/null | awk -F/ '{print $NF}')
+fi
+if [ -z "$CLUSTER_NAME" ]; then
+  echo "Error: cannot determine cluster name. Pass -n <cluster>." >&2
+  exit 1
+fi
 
 # Default to the running node's instance profile only if -p wasn't supplied.
 # NOTE: the node profile has ECR read but NOT push — prefer -p <push-capable>.
@@ -54,10 +74,17 @@ if [ -z "$INSTANCE_PROFILE" ]; then
     --query "Reservations[0].Instances[0].IamInstanceProfile.Arn" --output text | awk -F/ '{print $NF}')
   echo "⚠ No -p given; using node profile '$INSTANCE_PROFILE' (ECR read-only — 'soci push' may 403)." >&2
 fi
-SUBNET=$(kubectl get node -l role=system -o jsonpath='{.items[0].metadata.labels.topology\.kubernetes\.io/zone}' | \
-  xargs -I{} aws ec2 describe-subnets --region "$REGION" \
-    --filters "Name=tag:Name,Values=*${CLUSTER_NAME}*private*" "Name=availability-zone,Values={}" \
-    --query "Subnets[0].SubnetId" --output text)
+
+# Subnet: resolved hermetically via the Karpenter discovery tag (no kubectl), the
+# same way create-data-volume-snapshot.sh does — robust on a fresh-cluster apply.
+SUBNET=$(aws ec2 describe-subnets --region "$REGION" \
+  --filters "Name=tag:karpenter.sh/discovery,Values=$CLUSTER_NAME" \
+  --query "Subnets[0].SubnetId" --output text)
+if [ -z "$SUBNET" ] || [ "$SUBNET" = "None" ]; then
+  echo "Error: no subnet found with tag karpenter.sh/discovery=$CLUSTER_NAME in $REGION." >&2
+  exit 1
+fi
+
 SG=$(aws eks describe-cluster --name "$CLUSTER_NAME" --region "$REGION" \
   --query "cluster.resourcesVpcConfig.clusterSecurityGroupId" --output text)
 

@@ -87,7 +87,7 @@ resource "null_resource" "unsloth_soci_index" {
   }
 
   provisioner "local-exec" {
-    command     = "${path.module}/../../../ops/create-soci-index.sh -p ${aws_iam_instance_profile.soci_builder[0].name} ${aws_ecr_repository.unsloth_trainer[0].repository_url}:${local.unsloth_image_tag}"
+    command     = "${path.module}/../../../ops/create-soci-index.sh -p ${aws_iam_instance_profile.soci_builder[0].name} -n ${local.cluster_name} -r ${local.region} ${aws_ecr_repository.unsloth_trainer[0].repository_url}:${local.unsloth_image_tag}"
     interpreter = ["bash", "-c"]
     on_failure  = continue
     environment = {
@@ -98,6 +98,7 @@ resource "null_resource" "unsloth_soci_index" {
   depends_on = [
     null_resource.unsloth_image,
     aws_iam_instance_profile.soci_builder,
+    null_resource.update_kubeconfig,
   ]
 }
 
