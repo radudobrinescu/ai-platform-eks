@@ -2,14 +2,26 @@
 
 > Internal Kubernetes resources keep the name `platform-health-agent` for backwards
 > compatibility. The public-facing display name was changed to avoid a clash
-> with AWS's "Platform Health Agent" service. Namespace, ServiceAccounts, ClusterRoles,
+> with AWS's "Platform Health Agent" service. The ServiceAccounts, ClusterRoles,
 > and the postgres database are all still named `platform-health-agent` / `platform_health_agent`.
 
-Optional, EKS-native platform service. Watches the cluster for actionable
+> **Packaging:** the agent ships as a **component of the cluster-dashboard app**,
+> not as a standalone service. Its manifests live alongside the dashboard's
+> (`platform/services/cluster-dashboard/pha-*.yaml`, wired via that directory's
+> `kustomization.yaml`) and **everything runs in the `ai-platform` namespace** —
+> no dedicated namespace, no separate ArgoCD Application.
+
+EKS-native platform capability. Watches the cluster for actionable
 incidents (CrashLoopBackOff, OOMKilled, FailedScheduling, NodeNotReady, …),
 investigates with `kiro-cli`, surfaces the proposed fix in the existing
 **cluster-dashboard** with `[Approve]` / `[Dismiss]` buttons, and applies
 the fix only after you click Approve.
+
+The agent's `event-watcher` Deployment is **always synced** with the dashboard,
+but **idles gracefully** until a Kiro API key is present: with no key it boots,
+serves a healthy endpoint, and watches nothing (no investigations, no Jobs), so a
+default cluster stays green. Creating the key Secret (one `kubectl` command,
+below) activates it — no Terraform, no GitOps change.
 
 > See [`docs/platform-health-agent-architecture-design.md`](../../../docs/platform-health-agent-architecture-design.md)
 > and [`docs/platform-health-agent-implementation-plan.md`](../../../docs/platform-health-agent-implementation-plan.md)
@@ -33,90 +45,71 @@ allowlist).
 
 ## Enable / disable
 
-This service is **off by default**. It needs two things, in order:
+The agent's manifests are **always deployed** (they're part of the always-synced
+cluster-dashboard app). What gates it is a single Secret holding your Kiro API
+key — exactly like the `hf-token` Secret for gated HuggingFace models, it's an
+external credential you create with `kubectl`, not Terraform.
 
-1. **Terraform prerequisites** — set `platform_health_agent_enabled = true` in your
-   tfvars and `export TF_VAR_kiro_api_key="kr-..."`, then re-apply `30.cluster`.
-   This provisions the `platform-health-agent` namespace, the
-   `platform-health-agent-secrets` Secret (your Kiro key), and a copy of
-   `platform-db-credentials` (the DB password is Terraform-generated, so this is
-   the only reliable way to get it into the namespace).
-2. **GitOps element** — add the `platform-health-agent` element back to the list
-   generator in [`argocd/bootstrap/platform.yaml`](../../../argocd/bootstrap/platform.yaml)
-   (it ships commented-out / omitted so a default deploy stays green) and push.
-   ArgoCD picks it up within ~3 min.
+**Enable** — create the Secret + restart the watcher to pick it up:
 
-> Why both? The ApplicationSet element is what makes ArgoCD deploy the workload;
-> the Terraform prerequisites are what let its pods actually start. If you add the
-> element without the tfvar, the app sits permanently **Degraded** (no
-> `platform-db-credentials` secret in the namespace → `CreateContainerConfigError`).
+```bash
+kubectl create secret generic platform-health-agent-secrets \
+  -n ai-platform --from-literal=KIRO_API_KEY='kr-xxxxxxxxxxxxxxxxxxxxxxxx'
+kubectl rollout restart deployment event-watcher -n ai-platform
+```
 
-**Disable:** remove the element + push (ArgoCD prunes the namespace except the
-TF-managed secrets), and set `platform_health_agent_enabled = false`. The
-`platform_health_agent` postgres database persists (intentional — re-enabling
-resumes from the same state). The cluster-dashboard's approvals UI gracefully
-detects the agent is gone and hides the badge.
+The event-watcher reads `KIRO_API_KEY` (mounted `optional: true`); present → it
+activates and begins investigating; absent → it idles. The DB credentials it
+needs (`platform-db-credentials`) already exist in `ai-platform`, so the pod
+never CrashLoops either way. No `terraform apply`, no tfvar, no ApplicationSet
+edit.
+
+**Disable** — delete the Secret + restart:
+
+```bash
+kubectl delete secret platform-health-agent-secrets -n ai-platform
+kubectl rollout restart deployment event-watcher -n ai-platform
+```
+
+It returns to idle. The `platform_health_agent` postgres database persists
+(intentional — re-enabling resumes from the same state), and the dashboard's
+approvals UI hides the badge once no investigations are pending.
 
 ---
 
-## One-time setup (before first sync)
-
-Complete the Terraform prerequisites BEFORE adding the ApplicationSet entry, or
-ArgoCD will sync but the pods will be stuck (no `platform-db-credentials` secret
-in the namespace → `CreateContainerConfigError`).
+## One-time setup
 
 ### 1. Get the Kiro API key
 
 1. <https://kiro.dev/> → log in → API keys → create a key with headless-mode scope.
 2. Copy the key value (one-time view).
 
-### 2. Provision the namespace + secrets (Terraform)
-
-Setting the tfvar provisions everything the pods need — the namespace, the Kiro
-key Secret (`platform-health-agent-secrets`), and a copy of the
-Terraform-generated `platform-db-credentials`:
+### 2. Create the Secret + activate the watcher
 
 ```bash
-# in your tfvars:
-#   platform_health_agent_enabled = true
-export TF_VAR_kiro_api_key='kr-xxxxxxxxxxxxxxxxxxxxxxxx'
-make -C terraform ENVIRONMENT=dev MODULE=./30.eks/30.cluster apply
+kubectl create secret generic platform-health-agent-secrets \
+  -n ai-platform --from-literal=KIRO_API_KEY='kr-xxxxxxxxxxxxxxxxxxxxxxxx'
+kubectl rollout restart deployment event-watcher -n ai-platform
 
-# Verify the Kiro secret landed:
-kubectl -n platform-health-agent get secret platform-health-agent-secrets \
+# Verify the Secret landed:
+kubectl -n ai-platform get secret platform-health-agent-secrets \
   -o jsonpath='{.data}' | python3 -c "import sys,json; print(list(json.loads(sys.stdin.read()).keys()))"
 # Expected: ['KIRO_API_KEY']
+
+kubectl get pods -n ai-platform -l app.kubernetes.io/name=event-watcher -w
 ```
 
 No Slack tokens, no signing secrets, no domain — the only secret you supply is
-the Kiro API key (the DB credentials are generated and copied for you).
-
-### 3. Add the ApplicationSet entry
-
-Edit `argocd/bootstrap/platform.yaml`, append to the list generator (it's omitted
-by default so a fresh deploy stays green):
-
-```yaml
-          - name: platform-health-agent
-            namespace: platform-health-agent
-            type: directory
-            path: platform/services/platform-health-agent
-            tier: platform
-```
-
-Push. ArgoCD picks it up within ~3 min.
-
-### 4. Watch the rollout
-
-```bash
-kubectl get applications -n argocd platform-health-agent -w
-kubectl get pods -n platform-health-agent -w
-```
+the Kiro API key (the DB credentials already live in `ai-platform`).
 
 Expected:
-1. `platform-health-agent-db-init-…` Job appears, runs ~10s, completes (PreSync hook).
-2. `event-watcher-…` Pod comes up Ready 1/1 within 60s.
-3. cluster-dashboard auto-detects the new database; refresh `http://<alb>:9090` and the topbar shows `🔔 0 pending`.
+1. `event-watcher-…` Pod comes up Ready 1/1 within 60s and logs
+   `event-watcher started: …` (instead of the `Platform Health Agent DISABLED` idle line).
+2. cluster-dashboard auto-detects investigations; refresh `http://<alb>:9090` and the topbar shows `🔔 0 pending`.
+
+> **Tip:** to keep the key out of shell history / make it reproducible, you can
+> store it in AWS Secrets Manager and sync it with an `ExternalSecret` (the
+> External Secrets Operator is installed) instead of `kubectl create secret`.
 
 ---
 
@@ -148,7 +141,7 @@ Expected:
                         ┌────────────┴───────────┐
                         │ cluster-dashboard      │ — cluster-dashboard SA
                         │ topbar approvals UI    │   + create-jobs in
-                        │ POST /investigations/  │     platform-health-agent ns
+                        │ POST /investigations/  │     ai-platform ns
                         │   <id>/approve         │
                         │ Spawns Remediator      │
                         └────────────┬───────────┘
@@ -172,7 +165,7 @@ Expected:
 
 ## Configuration
 
-All knobs are in [`configmap.yaml`](./configmap.yaml). Most useful:
+All knobs are in [`pha-config.yaml`](./pha-config.yaml). Most useful:
 
 | Key | Effect |
 |-----|--------|
@@ -214,9 +207,9 @@ kubectl exec -n ai-platform platform-db-0 -- \
 ### Pause without disabling
 
 ```bash
-kubectl scale deployment event-watcher -n platform-health-agent --replicas=0
+kubectl scale deployment event-watcher -n ai-platform --replicas=0
 # Resume:
-kubectl scale deployment event-watcher -n platform-health-agent --replicas=1
+kubectl scale deployment event-watcher -n ai-platform --replicas=1
 ```
 
 ArgoCD will revert this within ~3 min because of `selfHeal: true`. For a longer pause, set all `TRIGGER_*=false` in the ConfigMap and push.
@@ -224,8 +217,8 @@ ArgoCD will revert this within ~3 min because of `selfHeal: true`. For a longer 
 ### Inspect a running investigation
 
 ```bash
-kubectl get jobs -n platform-health-agent
-kubectl logs -n platform-health-agent job/investigator-<8-char-hex>
+kubectl get jobs -n ai-platform
+kubectl logs -n ai-platform job/investigator-<8-char-hex>
 ```
 
 ---
@@ -234,9 +227,9 @@ kubectl logs -n platform-health-agent job/investigator-<8-char-hex>
 
 ### "Dashboard topbar doesn't show the approvals badge"
 
-1. `kubectl logs -n ai-platform deploy/cluster-dashboard --tail=50` — should show successful `db_health` polls. If `connection refused` or `database does not exist`, the agent's `db-init` Job didn't run.
-2. `kubectl get jobs -n platform-health-agent` — check `platform-health-agent-db-init` completed (`Complete` not `Failed`).
-3. `kubectl logs -n platform-health-agent deploy/event-watcher --tail=20` — should log `event-watcher started: …`.
+1. `kubectl logs -n ai-platform deploy/cluster-dashboard --tail=50` — should show successful `db_health` polls. If `connection refused` or `database does not exist`, the watcher's `db-init` initContainer didn't run.
+2. `kubectl logs -n ai-platform deploy/event-watcher -c db-init` — the DB-provisioning initContainer; check it completed without error.
+3. `kubectl logs -n ai-platform deploy/event-watcher --tail=20` — should log `event-watcher started: …`. If it logs `Platform Health Agent DISABLED — no KIRO_API_KEY`, the agent is idle (no Kiro key — see Enable / disable).
 
 ### "The agent investigated something silly"
 
@@ -259,7 +252,7 @@ kubectl logs -n platform-health-agent job/investigator-<8-char-hex>
 
 - The target namespace doesn't have a `platform-health-agent-writer` RoleBinding.
 - The reconciler runs every 5 min for `team-*` namespaces. If you just created a team and clicked Approve before the next sweep, the binding doesn't exist yet.
-- Force a sweep: `kubectl rollout restart deployment event-watcher -n platform-health-agent`.
+- Force a sweep: `kubectl rollout restart deployment event-watcher -n ai-platform`.
 - Check: `kubectl get rolebinding platform-health-agent-writer -n team-yourteam -o yaml`.
 
 ---

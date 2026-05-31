@@ -75,9 +75,40 @@ STUCK_RESOURCE_POLL_INTERVAL = int(os.environ.get("STUCK_RESOURCE_POLL_INTERVAL"
 KIRO_MODEL_INVESTIGATE = os.environ.get("KIRO_MODEL_INVESTIGATE", "claude-sonnet-4.6")
 PYTHON_IMAGE = os.environ.get("PYTHON_IMAGE", "python:3.12-slim")
 KUBECTL_VERSION = os.environ.get("KUBECTL_VERSION", "v1.32.5")
-NAMESPACE = "platform-health-agent"  # our own namespace where Jobs are spawned
+NAMESPACE = "ai-platform"  # where the watcher runs and Investigator/Remediator Jobs are spawned
+
+# PHA is "enabled" only when a Kiro API key is present. Terraform provisions the
+# platform-health-agent-secrets Secret (mounted here, optional) ONLY when
+# platform_health_agent_enabled=true. Without it the watcher idles gracefully —
+# it boots, serves a healthy endpoint, watches nothing and spawns no Jobs — so
+# the always-synced cluster-dashboard app stays Healthy on clusters that never
+# opted in. See main().
+KIRO_API_KEY = os.environ.get("KIRO_API_KEY", "")
+PHA_ENABLED = bool(KIRO_API_KEY.strip())
+
+# Marker label on PHA's own workloads (event-watcher Deployment + the
+# Investigator/Remediator Jobs it spawns). Now that they share the ai-platform
+# namespace with the platform services we DO watch (litellm, langfuse, …), the
+# watcher must skip its own pods/Jobs to avoid investigating itself.
+PHA_PART_OF = "platform-health-agent"
+# Events carry no labels — fall back to PHA's deterministic resource names.
+_OWN_NAME_RE = re.compile(r"^(investigator-[0-9a-f]{8}|remediator-[0-9a-f]{8}|event-watcher-)")
 
 ALLOWED_REMEDIATION_NAMESPACES_RE = re.compile(r"^(inference|team-.+)$")
+
+
+def _is_own_workload(namespace: str | None, name: str | None, labels: dict | None) -> bool:
+    """True if the resource is one of PHA's own pods/Jobs (event-watcher or a
+    spawned Investigator/Remediator). Prevents self-investigation now that PHA
+    shares the ai-platform namespace with the workloads it watches.
+
+    Pods carry labels (reliable); Events don't, so we fall back to the
+    deterministic name prefixes for PHA's own resources."""
+    if namespace != NAMESPACE:
+        return False
+    if labels and labels.get("app.kubernetes.io/part-of") == PHA_PART_OF:
+        return True
+    return bool(_OWN_NAME_RE.match(name or ""))
 
 # ─── ReplicaSet name pattern: <deployment-name>-<6-10 hex hash> ────────────
 _RS_HASH_RE = re.compile(r"-[a-f0-9]{6,10}$")
@@ -372,6 +403,10 @@ def detect_pod_trigger(pod) -> tuple[str, dict] | None:
     """
     if pod.metadata.namespace and not is_namespace_watched(pod.metadata.namespace):
         return None
+    # Skip PHA's own pods (event-watcher + spawned Investigator/Remediator Jobs)
+    # so the agent never investigates itself now that it lives in ai-platform.
+    if _is_own_workload(pod.metadata.namespace, pod.metadata.name, pod.metadata.labels):
+        return None
     if not pod.status:
         return None
 
@@ -444,6 +479,9 @@ def detect_event_trigger(event) -> tuple[str, dict] | None:
         return None
     obj = event.involved_object
     if obj.namespace and not is_namespace_watched(obj.namespace):
+        return None
+    # Skip events about PHA's own workloads (no labels on events → name match).
+    if _is_own_workload(obj.namespace, obj.name, None):
         return None
     payload = {
         "kind": obj.kind,
@@ -624,7 +662,7 @@ def reconcile_rolebindings_loop() -> None:
                     subjects=[{
                         "kind": "ServiceAccount",
                         "name": "platform-health-agent-writer",
-                        "namespace": "platform-health-agent",
+                        "namespace": NAMESPACE,
                     }],
                 )
                 rbac.create_namespaced_role_binding(namespace=ns, body=rb)
@@ -844,7 +882,22 @@ def main() -> int:
     signal.signal(signal.SIGTERM, _stop)
     signal.signal(signal.SIGINT, _stop)
 
+    # Health server starts unconditionally so the Deployment is Ready/Healthy
+    # even when PHA is disabled — that's what keeps the always-synced
+    # cluster-dashboard app green on clusters that never opted in.
     threading.Thread(target=_health_server, daemon=True).start()
+
+    # Graceful idle: no Kiro API key → the agent is disabled. Don't watch, don't
+    # spawn Jobs (the spawned Jobs require KIRO_API_KEY and would fail anyway).
+    # Just idle until SIGTERM. Enable by provisioning the key (Terraform
+    # platform_health_agent_enabled=true) and restarting this Deployment.
+    if not PHA_ENABLED:
+        log.warning("Platform Health Agent DISABLED — no KIRO_API_KEY present. "
+                    "Watcher idling (no investigations). Set platform_health_agent_enabled=true "
+                    "+ TF_VAR_kiro_api_key and restart this deployment to enable.")
+        while not stop_event.is_set():
+            time.sleep(1)
+        return 0
 
     threads = [
         threading.Thread(target=watch_pods,            args=(db_with_retry,), daemon=True, name="pods"),

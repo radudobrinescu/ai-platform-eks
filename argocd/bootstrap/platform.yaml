@@ -7,8 +7,9 @@
 #   - Helm multi-source (gpu-operator, kuberay-operator, langfuse):
 #       chart pulled from upstream, values file pulled from this repo.
 #
-# The optional platform-health-agent is NOT listed (opt-in — see the note by
-# cluster-dashboard below and its README).
+# The Platform Health Agent is NOT a separate app — it ships as a component of
+# cluster-dashboard (see the note by that element below). It's always synced but
+# idles unless a Kiro API key is provisioned (Terraform, opt-in).
 #
 # FORKING THE PLATFORM — three coordinated settings (ArgoCD ApplicationSet
 # generators can't read a Terraform variable, so the repo URL lives in git, not
@@ -70,19 +71,18 @@ spec:
             chartVersion: "1.5.20"
             valuesPath: platform/services/langfuse/helm-values.yaml
             tier: platform
+          # cluster-dashboard ALSO ships the Platform Health Agent as a component
+          # (platform/services/cluster-dashboard/pha-*.yaml) — no separate app or
+          # namespace. The agent is always synced but idles gracefully unless a
+          # Kiro API key Secret is present (Terraform provisions it only when
+          # platform_health_agent_enabled=true). Enable = set the tfvar (+
+          # TF_VAR_kiro_api_key), apply, restart the event-watcher Deployment.
+          # See platform/services/cluster-dashboard/PLATFORM-HEALTH-AGENT.md.
           - name: cluster-dashboard
             namespace: ai-platform
             type: directory
             path: platform/services/cluster-dashboard
             tier: platform
-          # NOTE: platform-health-agent is intentionally NOT listed here. It is
-          # an OPT-IN service: its namespace + secrets are provisioned by
-          # Terraform only when platform_health_agent_enabled=true (default
-          # false). Listing it unconditionally would leave a permanently
-          # Degraded app on a default deploy (no platform-db-credentials secret
-          # in its namespace). To enable: set the tfvar (+ TF_VAR_kiro_api_key),
-          # apply, then add the element back here. See
-          # platform/services/platform-health-agent/README.md (Enable / disable).
           # Keeps LiteLLM's model registry in sync with InferenceEndpoints
           # (deregisters a model on IE deletion via a finalizer). Lives in the
           # `inference` namespace alongside the endpoints it watches.

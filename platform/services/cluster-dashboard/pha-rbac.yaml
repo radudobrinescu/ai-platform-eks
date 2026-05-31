@@ -1,5 +1,8 @@
 # RBAC for the Platform Health Agent.
 #
+# The agent ships as a component of the cluster-dashboard app — all identities
+# live in the `ai-platform` namespace (same as the watcher + the Jobs it spawns).
+#
 # THREE distinct identities — strict least-privilege:
 #
 # 1. platform-health-agent-reader (cluster-wide read)
@@ -12,35 +15,38 @@
 #    Allowed namespaces: `inference` (created at install) + each `team-*` namespace.
 #    The `team-*` namespace bindings are reconciled by Event Watcher
 #    (a 5-minute periodic sweep — see scripts/event_watcher.py).
+#    NOTE: deliberately NOT bound in `ai-platform` — the agent never remediates
+#    platform services, only inference/team workloads.
 #
-# 3. platform-health-agent-spawner (create Jobs in own namespace)
+# 3. platform-health-agent-spawner (create Jobs in ai-platform)
 #    Used by: cluster-dashboard backend (to create Remediator Jobs after approval),
 #             Event Watcher (to create Investigator Jobs).
-#    Binding: RoleBinding scoped to `platform-health-agent` namespace only.
+#    Binding: RoleBinding scoped to the `ai-platform` namespace only.
 #
 # What these roles deliberately do NOT grant:
 # - No write access to InferenceEndpoint / AITeam KRO CRs (ArgoCD-managed).
 # - No write access to anything in ai-platform / gpu-operator / kuberay /
-#   argocd / external-secrets / kube-system / amazon-cloudwatch.
+#   argocd / external-secrets / kube-system / amazon-cloudwatch (the writer
+#   ClusterRole is only ever bound in inference + team-* namespaces).
 # - No `*` verbs anywhere.
 ---
 apiVersion: v1
 kind: ServiceAccount
 metadata:
   name: platform-health-agent-reader
-  namespace: platform-health-agent
+  namespace: ai-platform
 ---
 apiVersion: v1
 kind: ServiceAccount
 metadata:
   name: platform-health-agent-writer
-  namespace: platform-health-agent
+  namespace: ai-platform
 ---
 apiVersion: v1
 kind: ServiceAccount
 metadata:
   name: platform-health-agent-spawner
-  namespace: platform-health-agent
+  namespace: ai-platform
 ---
 # READER — cluster-wide, get/list/watch only.
 apiVersion: rbac.authorization.k8s.io/v1
@@ -87,7 +93,7 @@ metadata:
 subjects:
   - kind: ServiceAccount
     name: platform-health-agent-reader
-    namespace: platform-health-agent
+    namespace: ai-platform
 roleRef:
   kind: ClusterRole
   name: platform-health-agent-reader
@@ -140,20 +146,20 @@ metadata:
 subjects:
   - kind: ServiceAccount
     name: platform-health-agent-writer
-    namespace: platform-health-agent
+    namespace: ai-platform
 roleRef:
   kind: ClusterRole
   name: platform-health-agent-writer
   apiGroup: rbac.authorization.k8s.io
 ---
 # SPAWNER — cluster-dashboard backend + Event Watcher need to create Jobs
-# in their own namespace, plus manage RoleBindings in `team-*`
+# in the ai-platform namespace, plus manage RoleBindings in `team-*`
 # namespaces (Event Watcher's reconciler).
 apiVersion: rbac.authorization.k8s.io/v1
 kind: Role
 metadata:
   name: platform-health-agent-spawner
-  namespace: platform-health-agent
+  namespace: ai-platform
 rules:
   - apiGroups: ["batch"]
     resources: ["jobs"]
@@ -166,26 +172,44 @@ apiVersion: rbac.authorization.k8s.io/v1
 kind: RoleBinding
 metadata:
   name: platform-health-agent-spawner-handler
-  namespace: platform-health-agent
+  namespace: ai-platform
 subjects:
   - kind: ServiceAccount
     name: platform-health-agent-spawner
-    namespace: platform-health-agent
+    namespace: ai-platform
 roleRef:
   kind: Role
   name: platform-health-agent-spawner
   apiGroup: rbac.authorization.k8s.io
 ---
-# Event Watcher gets BOTH reader (cluster-wide) and spawner (in own ns).
+# Event Watcher gets BOTH reader (cluster-wide) and spawner (in ai-platform).
 apiVersion: rbac.authorization.k8s.io/v1
 kind: RoleBinding
 metadata:
   name: platform-health-agent-spawner-watcher
-  namespace: platform-health-agent
+  namespace: ai-platform
 subjects:
   - kind: ServiceAccount
     name: platform-health-agent-reader        # event-watcher uses the reader SA
-    namespace: platform-health-agent
+    namespace: ai-platform
+roleRef:
+  kind: Role
+  name: platform-health-agent-spawner
+  apiGroup: rbac.authorization.k8s.io
+---
+# The cluster-dashboard ServiceAccount (in ai-platform) creates Remediator Jobs
+# after an operator clicks Approve, so it also needs the spawner Role.
+# (Previously a separate cluster-dashboard-approvals Role in the dashboard
+# manifests — folded in here now that everything shares the ai-platform ns.)
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: platform-health-agent-spawner-dashboard
+  namespace: ai-platform
+subjects:
+  - kind: ServiceAccount
+    name: cluster-dashboard
+    namespace: ai-platform
 roleRef:
   kind: Role
   name: platform-health-agent-spawner
@@ -219,7 +243,7 @@ metadata:
 subjects:
   - kind: ServiceAccount
     name: platform-health-agent-reader
-    namespace: platform-health-agent
+    namespace: ai-platform
 roleRef:
   kind: ClusterRole
   name: platform-health-agent-rolebinding-manager

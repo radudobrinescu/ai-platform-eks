@@ -9,10 +9,12 @@ Two responsibilities:
    in browser.
 
 2. (New) Surface Platform Health Agent approvals from the `platform_health_agent` postgres
-   database (created by the optional platform-health-agent platform service):
+   database. The agent now ships as a component of THIS dashboard app (its
+   event-watcher + RBAC + config live alongside these manifests, all in the
+   ai-platform namespace):
      - GET  /investigations           → list of pending investigations
      - POST /investigations/<id>/approve → spawn Remediator Job in
-                                           platform-health-agent namespace
+                                           the ai-platform namespace
      - POST /investigations/<id>/dismiss → mark dismissed (no Job)
    The /data.json payload also includes `approvals_pending` (count) and
    `approvals_available` (boolean) so the topbar can render a badge.
@@ -67,7 +69,7 @@ DB_NAME = os.environ.get("DB_NAME", "platform_health_agent")
 DB_USER = os.environ.get("DB_USER")
 DB_PASSWORD = os.environ.get("DB_PASSWORD")
 
-PLATFORM_HEALTH_AGENT_NAMESPACE = os.environ.get("PLATFORM_HEALTH_AGENT_NAMESPACE", "platform-health-agent")
+PLATFORM_HEALTH_AGENT_NAMESPACE = os.environ.get("PLATFORM_HEALTH_AGENT_NAMESPACE", "ai-platform")
 APPROVAL_EXPIRY_HOURS = int(os.environ.get("APPROVAL_EXPIRY_HOURS", "24"))
 # An investigation Job has a 10-min hard deadline (activeDeadlineSeconds=600). If a
 # row is still 'running'/'remediating' well past that, the Job died without writing

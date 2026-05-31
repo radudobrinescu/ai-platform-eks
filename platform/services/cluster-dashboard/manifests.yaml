@@ -4,11 +4,14 @@
 #   1. Cluster topology view (existing): polls K8s for nodes/pods/InferenceEndpoints.
 #   2. Platform Health Agent approvals UI (new):  reads pending investigations from
 #      the `platform_health_agent` postgres database; on click, creates a Remediator
-#      Job in the `platform-health-agent` namespace.
+#      Job in the `ai-platform` namespace.
 #
-# Backwards-compatibility: when the platform-health-agent service is not deployed,
-# the database doesn't exist and the approvals UI auto-disables — the
-# topology view keeps working unchanged.
+# The Platform Health Agent now ships as a COMPONENT of this app — its
+# event-watcher, RBAC, config, and scripts live alongside these manifests
+# (pha-*.yaml, wired via kustomization.yaml), all in the ai-platform namespace.
+# It is always synced but idles gracefully unless a Kiro API key Secret is
+# present (see pha-event-watcher.yaml). When idle, the approvals UI auto-disables
+# (no investigations in the DB) and the topology view works unchanged.
 #
 # backend.py is generated from cluster-dashboard/scripts/backend.py by
 # kustomize (see kustomization.yaml). Image switched from python:3.12-alpine
@@ -50,33 +53,10 @@ roleRef:
   name: cluster-dashboard
   apiGroup: rbac.authorization.k8s.io
 ---
-# New: scoped Job-creation rights in the platform-health-agent namespace.
-# Used by the approvals UI to spawn Remediator Jobs after [Approve] click.
-# Bound only inside the platform-health-agent namespace — cannot create Jobs anywhere else.
-apiVersion: rbac.authorization.k8s.io/v1
-kind: Role
-metadata:
-  name: cluster-dashboard-approvals
-  namespace: platform-health-agent
-rules:
-  - apiGroups: ["batch"]
-    resources: ["jobs"]
-    verbs: ["create", "get", "list"]
----
-apiVersion: rbac.authorization.k8s.io/v1
-kind: RoleBinding
-metadata:
-  name: cluster-dashboard-approvals
-  namespace: platform-health-agent
-subjects:
-  - kind: ServiceAccount
-    name: cluster-dashboard
-    namespace: ai-platform
-roleRef:
-  kind: Role
-  name: cluster-dashboard-approvals
-  apiGroup: rbac.authorization.k8s.io
----
+# NOTE: the dashboard's Job-creation rights for spawning Remediator Jobs now
+# live in pha-rbac.yaml (RoleBinding platform-health-agent-spawner-dashboard),
+# since the agent + dashboard share the ai-platform namespace. Keeping all PHA
+# RBAC in one file avoids a Role split across two manifests.
 apiVersion: apps/v1
 kind: Deployment
 metadata:

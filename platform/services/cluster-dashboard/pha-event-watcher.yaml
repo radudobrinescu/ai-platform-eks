@@ -12,7 +12,7 @@ apiVersion: apps/v1
 kind: Deployment
 metadata:
   name: event-watcher
-  namespace: platform-health-agent
+  namespace: ai-platform
   labels:
     app.kubernetes.io/name: event-watcher
     app.kubernetes.io/part-of: platform-health-agent
@@ -141,6 +141,16 @@ spec:
               valueFrom: { secretKeyRef: { name: platform-db-credentials, key: username } }
             - name: DB_PASSWORD
               valueFrom: { secretKeyRef: { name: platform-db-credentials, key: password } }
+            # Kiro API key gates the agent. OPTIONAL (optional: true) so the pod
+            # boots even when PHA is not enabled — Terraform creates this Secret
+            # only when platform_health_agent_enabled=true. Absent → the watcher
+            # idles gracefully (no investigations); present → it activates.
+            - name: KIRO_API_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: platform-health-agent-secrets
+                  key: KIRO_API_KEY
+                  optional: true
           volumeMounts:
             - name: scripts
               mountPath: /scripts

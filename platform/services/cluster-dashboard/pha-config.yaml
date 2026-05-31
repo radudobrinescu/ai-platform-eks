@@ -15,7 +15,7 @@ apiVersion: v1
 kind: ConfigMap
 metadata:
   name: platform-health-agent-config
-  namespace: platform-health-agent
+  namespace: ai-platform
 data:
   # Cluster identity (used in kiro-cli prompts + EKS MCP AWS-API tool calls).
   # SET THESE to your cluster: CLUSTER_NAME is <resources_prefix>-<environment>
@@ -25,8 +25,11 @@ data:
   AWS_REGION: "us-east-1"
 
   # Which namespaces to watch. "*" = all except those in EXCLUDE_NAMESPACES.
+  # NOTE: ai-platform is NOT excluded — we watch the platform services there
+  # (litellm, langfuse, …). The watcher skips only its OWN pods/Jobs, by label
+  # + name, not by excluding the whole namespace (see event_watcher.py).
   WATCH_NAMESPACES: "*"
-  EXCLUDE_NAMESPACES: "kube-system,kube-node-lease,kube-public,argocd,external-secrets,gpu-operator,kuberay,amazon-cloudwatch,platform-health-agent"
+  EXCLUDE_NAMESPACES: "kube-system,kube-node-lease,kube-public,argocd,external-secrets,gpu-operator,kuberay,amazon-cloudwatch"
 
   # Per-resource debounce (no re-investigation within this window).
   DEBOUNCE_WINDOW_SEC: "600"

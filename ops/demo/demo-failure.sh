@@ -464,7 +464,7 @@ wait_for_investigation() {
     printf "."
   done
   echo
-  warn "timeout — check dashboard / kubectl logs -n platform-health-agent deploy/event-watcher"
+  warn "timeout — check dashboard / kubectl logs -n ai-platform deploy/event-watcher"
 }
 
 show_status() {

@@ -84,17 +84,3 @@ variable "gpu_data_volume_snapshot_id" {
   type        = string
   default     = ""
 }
-
-
-variable "platform_health_agent_enabled" {
-  description = "Provision Kubernetes-side prerequisites for the Platform Health Agent (namespace + secrets). The agent itself is deployed via ArgoCD/GitOps from platform/services/platform-health-agent/. When true, var.kiro_api_key (or TF_VAR_kiro_api_key env var) must also be set."
-  type        = bool
-  default     = false
-}
-
-variable "kiro_api_key" {
-  description = "Kiro CLI API key for headless mode. Required when var.platform_health_agent_enabled = true. Get one from https://kiro.dev/ → API keys. Set via TF_VAR_kiro_api_key env var (don't commit to .tfvars)."
-  type        = string
-  default     = ""
-  sensitive   = true
-}

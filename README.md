@@ -136,6 +136,9 @@ Bedrock. Design notes: [docs/platform-evolution-plan.md](docs/platform-evolution
 `FineTuneJob`, and (with `autoDeploy: true`) the tuned model becomes a live
 endpoint. Full guide: [docs/fine-tuning-getting-started.md](docs/fine-tuning-getting-started.md).
 
+> **Showing this on stage?** [docs/demo-walkthrough.md](docs/demo-walkthrough.md)
+> is a timed presenter's script (10/20/30-min cuts) with talk track and fallbacks.
+
 ---
 
 ## Self-service resources
@@ -174,10 +177,10 @@ spec:
 ## Operations
 
 The **cluster dashboard** (`:9090`, pictured above) is the primary operator view: a
-live topology of nodes, GPU slots, deployed models, and recent activity. An optional
-**Platform Health Agent** can watch for failures and propose fixes for one-click
-approval in the same dashboard — see
-[its README](platform/services/platform-health-agent/README.md) to enable it.
+live topology of nodes, GPU slots, deployed models, and recent activity. It also
+ships the **Platform Health Agent** — watches for failures and proposes fixes for
+one-click approval in the same dashboard (idle until you provide a Kiro key) — see
+[its README](platform/services/cluster-dashboard/PLATFORM-HEALTH-AGENT.md) to enable it.
 
 ```bash
 ./ops/recommend-instance.py <model>    # GPU sizing + fleet scaling
@@ -205,11 +208,11 @@ argocd/bootstrap/   ApplicationSets (platform services + self-service workloads)
 platform/
   config/kro/       InferenceEndpoint · AITeam · FineTuneJob definitions
   services/         litellm, open-webui, langfuse, gpu-operator, kuberay,
-                    cluster-dashboard, platform-health-agent
+                    cluster-dashboard (+ Platform Health Agent component)
 workloads/          Self-service YAMLs: models/ · teams/ · fine-tuning/
 ops/                Operational scripts (ops/demo/ holds demo-only scripts)
 terraform/          Infrastructure modules (VPC → IAM → EKS → observability)
-docs/               quickstart · fine-tuning · platform-evolution-plan
+docs/               quickstart · demo-walkthrough · fine-tuning · platform-evolution-plan
 ```
 
 ## Acknowledgments

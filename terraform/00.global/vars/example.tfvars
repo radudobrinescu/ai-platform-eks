@@ -70,12 +70,13 @@ gitops_revision = "main"
 # gpu_data_volume_snapshot_id = "snap-0123456789abcdef0"
 
 # Platform Health Agent (optional) — autonomous incident investigation/remediation.
-# See platform/services/platform-health-agent/README.md for design.
-# Provisions namespace + Kiro API key Secret + DB credentials copy. The agent
-# itself is then deployed by ArgoCD from argocd/bootstrap/platform.yaml.
-# When enabled, ALSO export the API key (do NOT commit to tfvars):
-#   export TF_VAR_kiro_api_key="kr-..."  # get from https://kiro.dev/
-# platform_health_agent_enabled = true
+# NOT a Terraform concern: it ships as a component of the cluster-dashboard
+# ArgoCD app (always deployed, ai-platform namespace) and idles until you create
+# its Kiro API key Secret with kubectl — same pattern as the hf-token Secret:
+#   kubectl create secret generic platform-health-agent-secrets \
+#     -n ai-platform --from-literal=KIRO_API_KEY="kr-..."   # get from https://kiro.dev/
+#   kubectl rollout restart deployment event-watcher -n ai-platform
+# See platform/services/cluster-dashboard/PLATFORM-HEALTH-AGENT.md.
 
 # Amazon Bedrock (default: enabled) — exposes frontier models (e.g. Claude
 # Sonnet 4.6) through LiteLLM with zero GPUs. Requires Bedrock model access
