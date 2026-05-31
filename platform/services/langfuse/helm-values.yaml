@@ -15,22 +15,33 @@ langfuse:
   # (langfuse-litellm-keys), so the very first model call is traced with no UI
   # clicks. See terraform/30.eks/30.cluster/langfuse-init.tf.
   #
-  # additionalEnvFrom pulls every LANGFUSE_INIT_* key (none collide with the
-  # chart's own env). NEXTAUTH_URL is set via additionalEnv below instead of
-  # here, because the chart renders its own NEXTAUTH_URL and `env` entries
-  # appended later win over earlier ones — `envFrom` would be shadowed.
-  additionalEnvFrom:
-    - secretRef:
-        name: langfuse-init
+  # The LANGFUSE_INIT_* keys drive headless initialization (org/project/API
+  # keys/admin user on first boot). This chart (1.5.20) has NO `additionalEnvFrom`
+  # support — it only honors `additionalEnv` (a list) — so each key is pulled
+  # individually from the langfuse-init Secret via secretKeyRef. We deliberately
+  # do NOT include NEXTAUTH_URL here: the chart already emits it from
+  # `nextauth.url` (below), and a second entry would make ServerSideApply reject
+  # the sync ("duplicate entries for key NEXTAUTH_URL"). `nextauth.url` is the
+  # single source of truth for the browser-facing URL.
   additionalEnv:
-    # Browser-facing URL — Terraform-controlled (var.langfuse_nextauth_url),
-    # surfaced through the langfuse-init Secret. Appended after the chart's own
-    # NEXTAUTH_URL so this value wins; no manual post-install edit of this file.
-    - name: NEXTAUTH_URL
-      valueFrom:
-        secretKeyRef:
-          name: langfuse-init
-          key: NEXTAUTH_URL
+    - name: LANGFUSE_INIT_ORG_ID
+      valueFrom: { secretKeyRef: { name: langfuse-init, key: LANGFUSE_INIT_ORG_ID } }
+    - name: LANGFUSE_INIT_ORG_NAME
+      valueFrom: { secretKeyRef: { name: langfuse-init, key: LANGFUSE_INIT_ORG_NAME } }
+    - name: LANGFUSE_INIT_PROJECT_ID
+      valueFrom: { secretKeyRef: { name: langfuse-init, key: LANGFUSE_INIT_PROJECT_ID } }
+    - name: LANGFUSE_INIT_PROJECT_NAME
+      valueFrom: { secretKeyRef: { name: langfuse-init, key: LANGFUSE_INIT_PROJECT_NAME } }
+    - name: LANGFUSE_INIT_PROJECT_PUBLIC_KEY
+      valueFrom: { secretKeyRef: { name: langfuse-init, key: LANGFUSE_INIT_PROJECT_PUBLIC_KEY } }
+    - name: LANGFUSE_INIT_PROJECT_SECRET_KEY
+      valueFrom: { secretKeyRef: { name: langfuse-init, key: LANGFUSE_INIT_PROJECT_SECRET_KEY } }
+    - name: LANGFUSE_INIT_USER_EMAIL
+      valueFrom: { secretKeyRef: { name: langfuse-init, key: LANGFUSE_INIT_USER_EMAIL } }
+    - name: LANGFUSE_INIT_USER_NAME
+      valueFrom: { secretKeyRef: { name: langfuse-init, key: LANGFUSE_INIT_USER_NAME } }
+    - name: LANGFUSE_INIT_USER_PASSWORD
+      valueFrom: { secretKeyRef: { name: langfuse-init, key: LANGFUSE_INIT_USER_PASSWORD } }
 
   salt:
     secretKeyRef:
@@ -38,11 +49,11 @@ langfuse:
       key: salt
 
   nextauth:
-    # Fallback only. The effective browser-facing URL comes from the
-    # langfuse-init Secret via additionalEnv above (NextAuth validates the
-    # sign-in Host header against it). This localhost default keeps the chart
-    # renderable and works with the SSM tunnel (./ops/ssm-tunnel.sh) when no
-    # langfuse-init Secret is present.
+    # Browser-facing URL — NextAuth validates the sign-in Host header against it,
+    # so it must match what users type. The localhost default works with the SSM
+    # tunnel (./ops/ssm-tunnel.sh). For ALB/domain access, override this value
+    # (it's the single source of truth; the Terraform var.langfuse_nextauth_url
+    # is surfaced for reference but this is what the pod uses).
     url: "http://localhost:3000"
     secret:
       secretKeyRef:
