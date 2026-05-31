@@ -595,6 +595,24 @@ def delete_investigation(investigation_id: str) -> tuple[int, dict]:
         return 500, {"error": str(e)}
 
 
+def delete_all_investigations() -> tuple[int, dict]:
+    """Bulk removal — drops every terminal investigation from postgres. Used by
+    the History tab's 'Dismiss all' button. In-flight rows (running / remediating
+    / awaiting_approval) are preserved so we never orphan a spawned Job or drop a
+    pending approval. NOT recoverable."""
+    if not (HAVE_PSYCOPG and DB_USER and DB_PASSWORD):
+        return 503, {"error": "approvals db unavailable"}
+    try:
+        with DB.connect() as conn, conn.cursor() as cur:
+            cur.execute(
+                "DELETE FROM investigations WHERE status NOT IN ('running','remediating','awaiting_approval')",
+            )
+            deleted = cur.rowcount
+        return 200, {"ok": True, "deleted": deleted}
+    except Exception as e:
+        return 500, {"error": str(e)}
+
+
 # ---------------------------------------------------------------------------
 # HTTP handler
 # ---------------------------------------------------------------------------
@@ -672,6 +690,10 @@ class Handler(http.server.SimpleHTTPRequestHandler):
         # Used by the dashboard's History tab to clear noise. NOT recoverable.
         parsed = urlparse(self.path)
         parts = [p for p in parsed.path.split("/") if p]
+        # DELETE /investigations — bulk "dismiss all" of terminal rows.
+        if len(parts) == 1 and parts[0] == "investigations":
+            status, body = delete_all_investigations()
+            return self._json(status, body)
         if len(parts) == 2 and parts[0] == "investigations":
             investigation_id = parts[1]
             try:

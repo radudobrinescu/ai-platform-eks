@@ -418,6 +418,19 @@ body { font-family: var(--font); background: var(--bg); color: var(--text); heig
 .history-item { position: relative; }
 .history-item:hover .history-delete { opacity: 1; }
 .history-delete:hover { background: var(--red-soft); color: var(--red); }
+
+.history-toolbar {
+  display: flex; align-items: center; justify-content: flex-end;
+  padding: 10px 20px; border-bottom: 1px solid var(--border);
+}
+.history-dismiss-all {
+  background: var(--surface); border: 1px solid var(--border);
+  border-radius: var(--radius-sm); padding: 5px 12px; cursor: pointer;
+  font-size: 12px; font-weight: 600; color: var(--text-secondary);
+  font-family: var(--font); transition: all 0.15s;
+}
+.history-dismiss-all:hover { background: var(--red-soft); color: var(--red); border-color: var(--red); }
+.history-dismiss-all:disabled { opacity: 0.5; cursor: not-allowed; }
 </style>
 </head>
 <body data-theme="dark">
@@ -781,7 +794,14 @@ document.addEventListener('keydown', e => { if(e.key === 'Escape') closeApproval
 // expanded detail are preserved while they read a pending issue).
 async function loadApprovals(silent){
   const list = document.getElementById('approvals-list');
-  if(!silent) list.innerHTML = '<div class="approvals-empty">Loading…</div>';
+  if(!silent){
+    // Writing the placeholder changes the DOM, so the cached signature no longer
+    // describes what's on screen. Invalidate it — otherwise, if the fetched items
+    // are unchanged since the last open, the `dataset.sig !== html` guard below
+    // would skip the rebuild and leave "Loading…" on screen forever.
+    list.innerHTML = '<div class="approvals-empty">Loading…</div>';
+    list.dataset.sig = '__loading__';
+  }
   try{
     const r = await fetch('/investigations');
     if(!r.ok) throw new Error('HTTP ' + r.status);
@@ -1089,9 +1109,34 @@ async function loadHistory(){
       list.innerHTML = '<div class="approvals-empty">No history yet.</div>';
       return;
     }
-    list.innerHTML = past.map(renderHistoryItem).join('');
+    const toolbar = `<div class="history-toolbar">
+      <button class="history-dismiss-all" onclick="dismissAllHistory()">🗑 Dismiss all (${past.length})</button>
+    </div>`;
+    list.innerHTML = toolbar + past.map(renderHistoryItem).join('');
   }catch(e){
     list.innerHTML = '<div class="approvals-empty">Failed to load history.</div>';
+  }
+}
+
+async function dismissAllHistory(){
+  const list = document.getElementById('history-list');
+  const count = list.querySelectorAll('.history-item').length;
+  if(!confirm(`Delete all ${count} item${count===1?'':'s'} from history? This is permanent and cannot be undone. (In-flight investigations are kept.)`)) return;
+  const btn = list.querySelector('.history-dismiss-all');
+  if(btn){ btn.disabled = true; btn.textContent = 'Dismissing…'; }
+  try{
+    const r = await fetch('/investigations', { method: 'DELETE' });
+    const body = await r.json().catch(() => ({}));
+    if(!r.ok){
+      alert(`Dismiss all failed: HTTP ${r.status} — ${body.error || ''}`);
+      if(btn){ btn.disabled = false; btn.textContent = `🗑 Dismiss all (${count})`; }
+      return;
+    }
+    // Reload so any preserved in-flight rows (and the empty state) render correctly.
+    await loadHistory();
+  }catch(e){
+    alert(`Dismiss all failed: ${e}`);
+    if(btn){ btn.disabled = false; btn.textContent = `🗑 Dismiss all (${count})`; }
   }
 }
 
