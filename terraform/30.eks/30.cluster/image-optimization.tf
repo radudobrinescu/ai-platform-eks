@@ -95,31 +95,48 @@ resource "null_resource" "gpu_data_volume_snapshot" {
 ################################################################################
 # Discover the latest snapshot by tags (avoids manual tfvar management)
 #
-# On first apply for a new cluster, the snapshot won't exist yet (null_resource
-# runs during apply, but data sources resolve at plan time). The snapshot is
-# picked up on the next apply or plan. This is expected — first deploy gets
-# SOCI-only optimization, second deploy activates the EBS snapshot.
+# On the FIRST apply for a new cluster the snapshot doesn't exist yet (the
+# null_resource creates it during apply, but data sources resolve at plan time).
+# So this MUST tolerate zero matches without erroring — the singular
+# `aws_ebs_snapshot` data source raises "Your query returned no results" on an
+# empty match and would abort `terraform apply` on a brand-new account. We use
+# the list-returning `aws_ebs_snapshot_ids` (empty list, no error) to gate, then
+# read the singular source only when ≥1 snapshot exists (so we still get
+# most_recent ordering). First deploy → SOCI-only; second deploy picks up the
+# snapshot. (Discovered: the maintainer never hit this because a gitignored
+# snapshot.auto.tfvars pinned the id, forcing count=0 here.)
 ################################################################################
-data "aws_ebs_snapshot" "gpu_data_volume" {
-  count = local.run_image_optimization && var.gpu_data_volume_snapshot_id == "" ? 1 : 0
-
-  most_recent = true
-  owners      = ["self"]
+data "aws_ebs_snapshot_ids" "gpu_data_volume" {
+  count  = local.run_image_optimization && var.gpu_data_volume_snapshot_id == "" ? 1 : 0
+  owners = ["self"]
 
   filter {
     name   = "tag:Cluster"
     values = [local.cluster_name]
   }
-
   filter {
     name   = "tag:Purpose"
     values = ["bottlerocket-data-volume"]
   }
-
   filter {
     name   = "status"
     values = ["completed"]
   }
+}
+
+locals {
+  # True only once at least one matching snapshot exists (zero on first apply).
+  gpu_snapshot_exists = try(length(data.aws_ebs_snapshot_ids.gpu_data_volume[0].ids) > 0, false)
+}
+
+# Singular lookup for most_recent ordering — read ONLY when a snapshot exists,
+# so a fresh account (zero matches) never triggers the no-results error.
+data "aws_ebs_snapshot" "gpu_data_volume" {
+  count = local.run_image_optimization && var.gpu_data_volume_snapshot_id == "" && local.gpu_snapshot_exists ? 1 : 0
+
+  most_recent  = true
+  owners       = ["self"]
+  snapshot_ids = data.aws_ebs_snapshot_ids.gpu_data_volume[0].ids
 }
 
 locals {
