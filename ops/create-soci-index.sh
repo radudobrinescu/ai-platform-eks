@@ -1,18 +1,39 @@
 #!/usr/bin/env bash
 # Build and push a SOCI index for an ECR image using a temporary EC2 instance.
-# Usage: ./ops/create-soci-index.sh <ecr-image-uri>
+# Usage: ./ops/create-soci-index.sh [-p <instance-profile>] <ecr-image-uri>
 # Example: ./ops/create-soci-index.sh <account-id>.dkr.ecr.<region>.amazonaws.com/docker-hub/anyscale/ray-llm:2.54.0-py311-cu128
+#
+# The temp instance must run under an instance profile that can BOTH pull and
+# PUSH to ECR (soci push uploads the index as a referrer artifact). The EKS
+# node role only has ECR *read*, so `soci push` 403s. Pass -p with a push-capable
+# profile (Terraform provisions `<cluster>-soci-builder` for this); without -p we
+# fall back to the first running node's profile (read-only — push will fail
+# unless that role was granted ECR write).
 set -euo pipefail
 
-IMAGE="${1:?Usage: $0 <ecr-image-uri>}"
+INSTANCE_PROFILE=""
+while getopts "p:h" opt; do
+  case "$opt" in
+    p) INSTANCE_PROFILE="$OPTARG" ;;
+    h) grep '^#' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
+    *) echo "Unknown option" >&2; exit 1 ;;
+  esac
+done
+shift $((OPTIND - 1))
+
+IMAGE="${1:?Usage: $0 [-p <instance-profile>] <ecr-image-uri>}"
 REGION=$(echo "$IMAGE" | grep -oE '[a-z]+-[a-z]+-[0-9]+')
 ACCOUNT=$(echo "$IMAGE" | grep -oE '^[0-9]+')
 CLUSTER_NAME=$(kubectl config view --minify -o jsonpath='{.clusters[0].name}' | awk -F/ '{print $NF}')
 
-# Reuse the Karpenter node role (has ECR access + SSM)
-INSTANCE_PROFILE=$(aws ec2 describe-instances --region "$REGION" \
-  --filters "Name=tag:eks:cluster-name,Values=$CLUSTER_NAME" "Name=instance-state-name,Values=running" \
-  --query "Reservations[0].Instances[0].IamInstanceProfile.Arn" --output text | awk -F/ '{print $NF}')
+# Default to the running node's instance profile only if -p wasn't supplied.
+# NOTE: the node profile has ECR read but NOT push — prefer -p <push-capable>.
+if [ -z "$INSTANCE_PROFILE" ]; then
+  INSTANCE_PROFILE=$(aws ec2 describe-instances --region "$REGION" \
+    --filters "Name=tag:eks:cluster-name,Values=$CLUSTER_NAME" "Name=instance-state-name,Values=running" \
+    --query "Reservations[0].Instances[0].IamInstanceProfile.Arn" --output text | awk -F/ '{print $NF}')
+  echo "⚠ No -p given; using node profile '$INSTANCE_PROFILE' (ECR read-only — 'soci push' may 403)." >&2
+fi
 SUBNET=$(kubectl get node -l role=system -o jsonpath='{.items[0].metadata.labels.topology\.kubernetes\.io/zone}' | \
   xargs -I{} aws ec2 describe-subnets --region "$REGION" \
     --filters "Name=tag:Name,Values=*${CLUSTER_NAME}*private*" "Name=availability-zone,Values={}" \

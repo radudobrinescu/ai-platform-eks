@@ -29,7 +29,10 @@ resource "null_resource" "soci_index" {
   }
 
   provisioner "local-exec" {
-    command     = "${path.module}/../../../ops/create-soci-index.sh ${local.ray_ecr_image}"
+    # Use the push-capable soci-builder profile (unsloth-image.tf) when fine-tuning
+    # is enabled; otherwise fall back to the script's node-profile default. The
+    # SOCI builder pushes the index back to ECR, which the EKS node role can't do.
+    command     = "${path.module}/../../../ops/create-soci-index.sh ${local.enable_fine_tuning ? "-p ${aws_iam_instance_profile.soci_builder[0].name} " : ""}${local.ray_ecr_image}"
     interpreter = ["bash", "-c"]
     environment = {
       AWS_REGION = local.region
