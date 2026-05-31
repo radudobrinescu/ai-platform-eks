@@ -7,9 +7,13 @@
 # ops script, same as image-optimization.tf) rather than adding the
 # kreuzwerker/docker provider — fewer moving parts.
 #
-# Re-runs only when the Dockerfile or the image tag changes. Requires Docker on
-# the machine running `terraform apply` (the build script fails loudly if absent
-# — run it on a Docker host or in CI, then re-apply to pick up the image).
+# Re-runs only when the Dockerfile or the image tag changes. The build needs
+# Docker on the `terraform apply` host, but DEGRADES GRACEFULLY without it: the
+# build script warns and exits 0 (no push), and the downstream SOCI/snapshot
+# steps self-skip when the image isn't in ECR — so a Docker-less apply still
+# brings up the platform (fine-tuning just can't run until the image is built
+# from a Docker host / CI and you re-apply). Set enable_fine_tuning=false to
+# opt out entirely.
 ################################################################################
 
 locals {
@@ -64,10 +68,15 @@ resource "null_resource" "unsloth_image" {
 # snapshotter (parallel-pull-unpack) chokes on the un-indexed image and the
 # FineTuneJob training pod gets stuck in ImagePullBackOff.
 #
-# Mirrors the ray-llm SOCI flow in image-optimization.tf. Runs only when fine-
-# tuning is enabled and a Docker host is available (same gate as the build).
-# Re-runs when the image tag changes. Uses the dedicated push-capable
-# soci-builder instance profile (the EKS node role is ECR read-only).
+# Mirrors the ray-llm SOCI flow in image-optimization.tf. Gated on fine-tuning.
+# The build (null_resource.unsloth_image) is a no-op without Docker on the apply
+# host — it exits 0 without pushing. create-soci-index.sh now self-guards on the
+# image being present in ECR (exits 0 if absent), so the no-Docker path is safe:
+# no image → SOCI step is a clean no-op, matching the documented "build later,
+# re-apply" escape hatch. `on_failure = continue` is belt-and-suspenders so a
+# transient SOCI-builder failure degrades to lazy-pull rather than aborting the
+# whole platform apply (SOCI is a best-effort cold-start optimization, not load-
+# bearing). Uses the push-capable soci-builder profile (node role is ECR read-only).
 ################################################################################
 resource "null_resource" "unsloth_soci_index" {
   count = local.enable_fine_tuning ? 1 : 0
@@ -80,6 +89,7 @@ resource "null_resource" "unsloth_soci_index" {
   provisioner "local-exec" {
     command     = "${path.module}/../../../ops/create-soci-index.sh -p ${aws_iam_instance_profile.soci_builder[0].name} ${aws_ecr_repository.unsloth_trainer[0].repository_url}:${local.unsloth_image_tag}"
     interpreter = ["bash", "-c"]
+    on_failure  = continue
     environment = {
       AWS_REGION = local.region
     }

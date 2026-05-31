@@ -96,14 +96,33 @@ if [[ -z "$ACCOUNT" || "$ACCOUNT" == "None" ]]; then
   exit 1
 fi
 
-# Expand short image references to full ECR pull-through cache URIs
+# Expand short image references to full ECR pull-through cache URIs, and drop
+# any private-ECR image that isn't pushed yet. The Unsloth trainer is listed by
+# Terraform whenever fine-tuning is enabled, but on a no-Docker apply it was
+# never built/pushed — baking it would hang the puller pod in ImagePullBackOff.
+# Skipping it keeps the no-Docker path working (ray-llm still bakes).
 FULL_IMAGES=()
 for img in "${IMAGES[@]}"; do
   if [[ "$img" != *".dkr.ecr."* ]]; then
     img="${ACCOUNT}.dkr.ecr.${REGION}.amazonaws.com/docker-hub/${img}"
   fi
+  # For private-ECR images (not the pull-through cache), verify the tag exists.
+  if [[ "$img" == *".dkr.ecr."* && "$img" != *"/docker-hub/"* ]]; then
+    repo="${img#*/}"; repo="${repo%%:*}"
+    tag="${img##*:}"
+    if ! aws ecr describe-images --region "$REGION" \
+          --repository-name "$repo" --image-ids "imageTag=${tag}" >/dev/null 2>&1; then
+      echo "  ⚠ skipping ${img} — not present in ECR (not built yet)." >&2
+      continue
+    fi
+  fi
   FULL_IMAGES+=("$img")
 done
+
+if [[ ${#FULL_IMAGES[@]} -eq 0 ]]; then
+  echo "Error: none of the requested images are present in ECR — nothing to bake." >&2
+  exit 1
+fi
 
 echo "╭──────────────────────────────────────────────────────────────────╮"
 echo "│  Bottlerocket Data Volume Snapshot Builder                       │"

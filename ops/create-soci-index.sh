@@ -24,6 +24,26 @@ shift $((OPTIND - 1))
 IMAGE="${1:?Usage: $0 [-p <instance-profile>] <ecr-image-uri>}"
 REGION=$(echo "$IMAGE" | grep -oE '[a-z]+-[a-z]+-[0-9]+')
 ACCOUNT=$(echo "$IMAGE" | grep -oE '^[0-9]+')
+
+# Self-protect: if the target image isn't in ECR yet, there's nothing to index.
+# This makes the script safe to call from Terraform on the no-Docker path — the
+# Unsloth build is skipped (no image pushed), so we must NOT launch a builder and
+# fail trying to pull a tag that doesn't exist. Exit 0 (success, no-op) instead.
+# Only applies to ECR repo URIs (<acct>.dkr.ecr.<region>...); skip the check for
+# any other registry.
+if echo "$IMAGE" | grep -qE '\.dkr\.ecr\.'; then
+  REPO_NAME="${IMAGE#*/}"; REPO_NAME="${REPO_NAME%%:*}"
+  IMG_TAG="${IMAGE##*:}"
+  if ! aws ecr describe-images --region "$REGION" \
+        --repository-name "$REPO_NAME" --image-ids "imageTag=${IMG_TAG}" \
+        >/dev/null 2>&1; then
+    echo "⚠ Image not found in ECR: ${IMAGE} — skipping SOCI index (nothing to index)." >&2
+    echo "  (Build/push the image first, then re-run; e.g. fine-tuning's Unsloth image" >&2
+    echo "   is only present after a Docker-enabled apply.)" >&2
+    exit 0
+  fi
+fi
+
 CLUSTER_NAME=$(kubectl config view --minify -o jsonpath='{.clusters[0].name}' | awk -F/ '{print $NF}')
 
 # Default to the running node's instance profile only if -p wasn't supplied.

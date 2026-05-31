@@ -35,6 +35,9 @@ resource "null_resource" "soci_index" {
     # role can't do (would 403 and abort the apply).
     command     = "${path.module}/../../../ops/create-soci-index.sh -p ${aws_iam_instance_profile.soci_builder[0].name} ${local.ray_ecr_image}"
     interpreter = ["bash", "-c"]
+    # Best-effort: SOCI is a cold-start optimization, not load-bearing. A
+    # transient builder failure must degrade to lazy-pull, not abort the apply.
+    on_failure = continue
     environment = {
       AWS_REGION = local.region
     }
@@ -60,9 +63,13 @@ resource "null_resource" "soci_index" {
 # compressed size); 300 GiB leaves headroom.
 ################################################################################
 locals {
-  # Images to bake. Unsloth trainer is included only when fine-tuning is enabled.
+  # Images to bake. The Unsloth trainer is listed when fine-tuning is enabled,
+  # but create-data-volume-snapshot.sh skips any image NOT present in ECR (the
+  # no-Docker path never pushes it), so listing it is safe — it's silently
+  # dropped if absent rather than hanging the puller. Avoids a plan-time
+  # data.aws_ecr_image read error on a not-yet-built image.
   snapshot_images = local.enable_fine_tuning ? "${local.ray_ecr_image} ${local.unsloth_image}" : local.ray_ecr_image
-  # Bigger volume when baking the extra ~14.5 GiB trainer image.
+  # Size for both unpacked when fine-tuning bakes the extra ~14.5 GiB trainer.
   snapshot_volume_gib = local.enable_fine_tuning ? 300 : 200
 }
 
@@ -78,6 +85,8 @@ resource "null_resource" "gpu_data_volume_snapshot" {
   provisioner "local-exec" {
     command     = "${path.module}/../../../ops/create-data-volume-snapshot.sh -r ${local.region} -n ${local.cluster_name} -s ${local.snapshot_volume_gib} ${local.snapshot_images}"
     interpreter = ["bash", "-c"]
+    # Best-effort cold-start optimization — never abort the platform apply.
+    on_failure = continue
     environment = {
       AWS_REGION = local.region
     }
