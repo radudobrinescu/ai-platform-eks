@@ -1,3 +1,9 @@
+# Hourly reconciler for LiteLLM state that has no event-driven owner:
+#   - orphaned teams (from deleted AITeams)
+#   - completed `-register` Jobs (GC)
+# Model deregistration is handled separately, event-driven, by the
+# `litellm-sync` controller (platform/services/litellm-sync) — this CronJob
+# no longer touches models.
 ---
 apiVersion: batch/v1
 kind: CronJob
@@ -28,38 +34,12 @@ spec:
                   SA_TOKEN=$(cat /var/run/secrets/kubernetes.io/serviceaccount/token)
                   CA=/var/run/secrets/kubernetes.io/serviceaccount/ca.crt
 
-                  # Get all models registered in LiteLLM
-                  MODELS=$(curl -sf "$LITELLM/v1/models" \
-                    -H "Authorization: Bearer $LITELLM_MASTER_KEY" \
-                    | sed -n 's/.*"id":"\([^"]*\)".*/\1/gp' | sort -u)
+                  # NOTE: model deregistration is NOT handled here. The
+                  # `litellm-sync` controller (platform/services/litellm-sync)
+                  # owns model consistency — it deregisters a model the moment
+                  # its InferenceEndpoint is deleted, via a finalizer. This
+                  # CronJob now only reconciles teams and GCs register Jobs.
 
-                  if [ -z "$MODELS" ]; then
-                    echo "No models in LiteLLM."
-                    exit 0
-                  fi
-
-                  # Get all InferenceEndpoints in this namespace
-                  ENDPOINTS=$(curl -sf --cacert "$CA" \
-                    -H "Authorization: Bearer $SA_TOKEN" \
-                    "$K8S/apis/kro.run/v1alpha1/namespaces/inference/inferenceendpoints" \
-                    | sed -n 's/.*"name":"\([^"]*\)".*/\1/gp' | sort -u)
-
-                  # Delete models that have no matching InferenceEndpoint
-                  for model in $MODELS; do
-                    if ! echo "$ENDPOINTS" | grep -qx "$model"; then
-                      echo "Orphaned: $model — deregistering"
-                      MODEL_INFO=$(curl -sf "$LITELLM/model/info" \
-                        -H "Authorization: Bearer $LITELLM_MASTER_KEY" \
-                        | sed -n "s/.*\"model_id\":\"\([^\"]*\)\".*\"model_name\":\"$model\".*/\1/p" | head -1)
-                      if [ -n "$MODEL_INFO" ]; then
-                        curl -sf -X POST "$LITELLM/model/delete" \
-                          -H "Content-Type: application/json" \
-                          -H "Authorization: Bearer $LITELLM_MASTER_KEY" \
-                          -d "{\"id\":\"$MODEL_INFO\"}" \
-                          && echo "  Deleted $model"
-                      fi
-                    fi
-                  done
                   # Clean up orphaned teams from LiteLLM
                   TEAMS=$(curl -sf "$LITELLM/team/list" \
                     -H "Authorization: Bearer $LITELLM_MASTER_KEY" \
@@ -124,7 +104,7 @@ metadata:
   name: litellm-cleanup
 rules:
   - apiGroups: ["kro.run"]
-    resources: ["inferenceendpoints", "aiteams"]
+    resources: ["aiteams"]
     verbs: ["list"]
   - apiGroups: ["batch"]
     resources: ["jobs"]

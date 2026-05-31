@@ -1,0 +1,39 @@
+# RBAC for litellm-sync.
+#
+# Least-privilege: the controller only reads InferenceEndpoints and patches
+# their finalizers, all within the `inference` namespace — so a namespaced
+# Role suffices (no ClusterRole). It needs no access to the LiteLLM master-key
+# Secret via the API: the key is injected into the pod as an env var by the
+# kubelet (secretKeyRef in deployment.yaml).
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: litellm-sync
+  namespace: inference
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: litellm-sync
+  namespace: inference
+rules:
+  - apiGroups: ["kro.run"]
+    resources: ["inferenceendpoints"]
+    # watch/list to observe; get for re-reads; patch/update to add and remove
+    # the finalizer on metadata.
+    verbs: ["get", "list", "watch", "patch", "update"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: litellm-sync
+  namespace: inference
+subjects:
+  - kind: ServiceAccount
+    name: litellm-sync
+    namespace: inference
+roleRef:
+  kind: Role
+  name: litellm-sync
+  apiGroup: rbac.authorization.k8s.io

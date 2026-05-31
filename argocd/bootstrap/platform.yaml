@@ -1,8 +1,8 @@
 # Platform — ArgoCD ApplicationSet defining all platform services.
 #
-# Eight applications in two shapes:
+# Nine applications in two shapes:
 #   - Plain-directory sources (platform-config, litellm, open-webui,
-#     cluster-dashboard, platform-health-agent):
+#     cluster-dashboard, platform-health-agent, litellm-sync):
 #       manifests live in this repo and are applied as-is.
 #   - Helm multi-source (gpu-operator, kuberay-operator, langfuse):
 #       chart pulled from upstream, values file pulled from this repo.
@@ -73,6 +73,14 @@ spec:
             namespace: platform-health-agent
             type: directory
             path: platform/services/platform-health-agent
+            tier: platform
+          # Keeps LiteLLM's model registry in sync with InferenceEndpoints
+          # (deregisters a model on IE deletion via a finalizer). Lives in the
+          # `inference` namespace alongside the endpoints it watches.
+          - name: litellm-sync
+            namespace: inference
+            type: directory
+            path: platform/services/litellm-sync
             tier: platform
   template:
     metadata:
