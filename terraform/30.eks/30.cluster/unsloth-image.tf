@@ -138,6 +138,18 @@ resource "aws_iam_role_policy" "soci_builder_ecr" {
         ]
         Resource = "arn:aws:ecr:${local.region}:${data.aws_caller_identity.current.account_id}:repository/*"
       },
+      {
+        # The SOCI builder is the apply-time FIRST puller of the ray-llm image
+        # through the docker-hub/* pull-through cache, so it must be able to
+        # import the upstream image (a fresh-account first pull 403s otherwise).
+        Sid    = "PullThroughImport"
+        Effect = "Allow"
+        Action = [
+          "ecr:BatchImportUpstreamImage",
+          "ecr:CreateRepository",
+        ]
+        Resource = "arn:aws:ecr:${local.region}:${data.aws_caller_identity.current.account_id}:repository/docker-hub/*"
+      },
     ]
   })
 }

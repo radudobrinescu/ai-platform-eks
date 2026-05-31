@@ -24,10 +24,19 @@ module "karpenter" {
 
   create_pod_identity_association = true
 
-  # Used to attach additional IAM policies to the Karpenter node IAM role
-  node_iam_role_additional_policies = {
-    AmazonSSMManagedInstanceCore = "arn:aws:iam::aws:policy/AmazonSSMManagedInstanceCore"
-  }
+  # Used to attach additional IAM policies to the Karpenter node IAM role.
+  # The ECR pull-through import policy is attached only when the docker-hub
+  # pull-through cache is enabled — GPU nodes pull the rayImage from the cache
+  # at runtime, and the FIRST pull must import the upstream image (403s with the
+  # default read-only node policy otherwise → ImagePullBackOff).
+  node_iam_role_additional_policies = merge(
+    {
+      AmazonSSMManagedInstanceCore = "arn:aws:iam::aws:policy/AmazonSSMManagedInstanceCore"
+    },
+    var.docker_hub_username != "" ? {
+      EcrPullThroughImport = aws_iam_policy.ecr_pull_through[0].arn
+    } : {},
+  )
 
   iam_role_name            = "KarpenterController-${module.eks.cluster_name}"
   iam_role_use_name_prefix = false

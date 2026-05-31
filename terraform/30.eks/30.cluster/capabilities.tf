@@ -134,6 +134,45 @@ resource "aws_ecr_pull_through_cache_rule" "docker_hub" {
   credential_arn        = aws_secretsmanager_secret.docker_hub[0].arn
 }
 
+# Auto-create the cached repos on first pull. Without a creation template the
+# FIRST pull through the cache also requires ecr:CreateRepository on the puller;
+# the template lets ECR create docker-hub/* repos itself, so node/builder roles
+# only need ecr:BatchImportUpstreamImage (granted below), not CreateRepository.
+resource "aws_ecr_repository_creation_template" "docker_hub" {
+  count                = var.docker_hub_username != "" ? 1 : 0
+  prefix               = "docker-hub"
+  applied_for          = ["PULL_THROUGH_CACHE"]
+  description          = "Auto-create pull-through cache repos for docker-hub/*"
+  image_tag_mutability = "MUTABLE"
+
+  depends_on = [aws_ecr_pull_through_cache_rule.docker_hub]
+}
+
+# Pull-through-cache import permission for principals that PULL docker-hub/*
+# images: a fresh-account first pull needs ecr:BatchImportUpstreamImage (and,
+# absent the creation template above, ecr:CreateRepository). The standard
+# read-only node policies (AmazonEC2ContainerRegistryReadOnly/PullOnly) lack it,
+# so without this the very first ray-llm pull — at apply time on the SOCI/snapshot
+# builder, and at runtime on GPU nodes — 403s and breaks model serving.
+resource "aws_iam_policy" "ecr_pull_through" {
+  count       = var.docker_hub_username != "" ? 1 : 0
+  name        = "${local.cluster_name}-ecr-pull-through-import"
+  description = "Allow importing upstream images into the docker-hub/* pull-through cache"
+
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [{
+      Sid    = "PullThroughImport"
+      Effect = "Allow"
+      Action = [
+        "ecr:BatchImportUpstreamImage",
+        "ecr:CreateRepository",
+      ]
+      Resource = "arn:aws:ecr:${local.region}:${data.aws_caller_identity.current.account_id}:repository/docker-hub/*"
+    }]
+  })
+}
+
 ################################################################################
 # Platform Config — KRO externalRef reads this ConfigMap.
 # rayImage always set: ECR mirror when pull-through cache is enabled, Docker Hub otherwise.
