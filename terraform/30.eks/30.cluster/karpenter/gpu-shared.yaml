@@ -34,13 +34,10 @@ spec:
   userData: |
     [settings.container-runtime]
     snapshotter = "soci"
-    [settings.container-runtime-plugins.soci-snapshotter]
-    pull-mode = "parallel-pull-unpack"
-    [settings.container-runtime-plugins.soci-snapshotter.parallel-pull-unpack]
-    max-concurrent-downloads-per-image = 10
-    concurrent-download-chunk-size = "16mb"
-    max-concurrent-unpacks-per-image = 10
-    discard-unpacked-layers = true
+    # Classic SOCI lazy-loading (FUSE) — NOT `parallel-pull-unpack`. PPU panics
+    # the Bottlerocket snapshotter mid-unpack on large multi-GB-layer images
+    # (kubelet sees "reading from server: EOF"); classic SOCI + the EBS-baked
+    # content store is the stable path. See gpu-inference.yaml for the full note.
 
     [settings.kubelet-device-plugins.nvidia]
     device-sharing-strategy = "time-slicing"
