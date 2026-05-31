@@ -29,10 +29,11 @@ resource "null_resource" "soci_index" {
   }
 
   provisioner "local-exec" {
-    # Use the push-capable soci-builder profile (unsloth-image.tf) when fine-tuning
-    # is enabled; otherwise fall back to the script's node-profile default. The
-    # SOCI builder pushes the index back to ECR, which the EKS node role can't do.
-    command     = "${path.module}/../../../ops/create-soci-index.sh ${local.enable_fine_tuning ? "-p ${aws_iam_instance_profile.soci_builder[0].name} " : ""}${local.ray_ecr_image}"
+    # Always use the push-capable soci-builder profile (unsloth-image.tf) — it
+    # exists whenever run_image_optimization is true (local.need_soci_builder).
+    # The builder pushes the SOCI index back to ECR, which the read-only EKS node
+    # role can't do (would 403 and abort the apply).
+    command     = "${path.module}/../../../ops/create-soci-index.sh -p ${aws_iam_instance_profile.soci_builder[0].name} ${local.ray_ecr_image}"
     interpreter = ["bash", "-c"]
     environment = {
       AWS_REGION = local.region

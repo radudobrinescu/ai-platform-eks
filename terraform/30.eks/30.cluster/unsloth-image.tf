@@ -12,6 +12,15 @@
 # — run it on a Docker host or in CI, then re-apply to pick up the image).
 ################################################################################
 
+locals {
+  # The push-capable SOCI builder profile is needed whenever ANY SOCI index is
+  # built: the ray-llm index (run_image_optimization) OR the unsloth index
+  # (enable_fine_tuning). Previously it was gated on enable_fine_tuning only, so
+  # `enable_fine_tuning=false` + docker_hub creds set (a documented combo) left
+  # the ray SOCI step pushing under the read-only node role → 403 → apply abort.
+  need_soci_builder = local.run_image_optimization || local.enable_fine_tuning
+}
+
 resource "aws_ecr_repository" "unsloth_trainer" {
   count                = local.enable_fine_tuning ? 1 : 0
   name                 = "${local.cluster_name}/unsloth-trainer"
@@ -93,7 +102,7 @@ resource "null_resource" "unsloth_soci_index" {
 # self-terminates), plus SSM core so the script can drive it via Run Command.
 ################################################################################
 resource "aws_iam_role" "soci_builder" {
-  count = local.enable_fine_tuning ? 1 : 0
+  count = local.need_soci_builder ? 1 : 0
   name  = "${local.cluster_name}-soci-builder"
 
   assume_role_policy = jsonencode({
@@ -109,7 +118,7 @@ resource "aws_iam_role" "soci_builder" {
 }
 
 resource "aws_iam_role_policy" "soci_builder_ecr" {
-  count = local.enable_fine_tuning ? 1 : 0
+  count = local.need_soci_builder ? 1 : 0
   name  = "ecr-pull-push"
   role  = aws_iam_role.soci_builder[0].id
 
@@ -155,13 +164,13 @@ resource "aws_iam_role_policy" "soci_builder_ecr" {
 }
 
 resource "aws_iam_role_policy_attachment" "soci_builder_ssm" {
-  count      = local.enable_fine_tuning ? 1 : 0
+  count      = local.need_soci_builder ? 1 : 0
   role       = aws_iam_role.soci_builder[0].name
   policy_arn = "arn:aws:iam::aws:policy/AmazonSSMManagedInstanceCore"
 }
 
 resource "aws_iam_instance_profile" "soci_builder" {
-  count = local.enable_fine_tuning ? 1 : 0
+  count = local.need_soci_builder ? 1 : 0
   name  = "${local.cluster_name}-soci-builder"
   role  = aws_iam_role.soci_builder[0].name
 
