@@ -256,6 +256,58 @@ class Langfuse:
         except Exception:
             return False
 
+    def verify_project(self) -> tuple[bool, str]:
+        """Prove the project keys authenticate against a real project.
+
+        health() only checks reachability — it returns ok even when the keys are
+        invalid or the headless-init project was never created. This hits an
+        endpoint that REQUIRES valid project-key auth, so it catches the silent
+        "keys exist but the project doesn't" failure (HTTP 401) that otherwise
+        only surfaces as missing traces. Returns (ok, human-readable detail).
+        """
+        try:
+            status, resp = _request("GET", f"{self.base}/api/public/projects",
+                                     headers=self._auth)
+            names = [p.get("name") for p in resp.get("data", [])]
+            return True, f"authenticated (project: {', '.join(names) or '?'})"
+        except HttpError as e:
+            if e.status in (401, 403):
+                return False, ("keys rejected (HTTP {}). The headless-init project "
+                               "may not exist — check the langfuse-init Secret and "
+                               "that langfuse-web ran init AFTER it was created."
+                               .format(e.status))
+            return False, f"unexpected HTTP {e.status}: {e.body[:120]}"
+        except Exception as e:
+            return False, str(e)
+
+    def trace_roundtrip(self) -> tuple[bool, str]:
+        """Write one trace via the ingestion API and confirm it lands.
+
+        This exercises the FULL write path (ingestion -> blob store -> worker ->
+        ClickHouse) that silently broke when MinIO was down or ClickHouse was
+        full. A 207 with no errors means the path is healthy end to end.
+        """
+        evt_id = "preflight-roundtrip"
+        trace_id = "preflight-roundtrip-trace"
+        body = {"batch": [{
+            "id": evt_id, "type": "trace-create",
+            "timestamp": "2020-01-01T00:00:00.000Z",
+            "body": {"id": trace_id, "name": "preflight-roundtrip"},
+        }]}
+        try:
+            status, resp = _request("POST", f"{self.base}/api/public/ingestion",
+                                     headers=self._auth, body=body)
+            errors = resp.get("errors") or []
+            if errors:
+                return False, (f"ingestion rejected the event: {errors[:1]}. "
+                               "Blob store (MinIO) or ClickHouse may be unhealthy.")
+            return True, "ingestion accepted the trace (write path healthy)"
+        except HttpError as e:
+            return False, (f"ingestion failed (HTTP {e.status}). Likely MinIO down "
+                           f"or ClickHouse disk full: {e.body[:120]}")
+        except Exception as e:
+            return False, str(e)
+
     def ensure_dataset(self, name: str) -> None:
         """Create the dataset (idempotent — Langfuse upserts by name)."""
         self._api("POST", "/v2/datasets", {"name": name})
@@ -583,12 +635,25 @@ def preflight(
                 print("       Fix (Bedrock): enable model access in the Bedrock console")
                 print("       (Console → Bedrock → Model access) and confirm enable_bedrock=true.")
 
-    # Langfuse
+    # Langfuse — verify the FULL turnkey tracing promise, not just reachability.
+    # Each check maps to a real failure we've seen silently kill tracing:
+    #   reachable   → service up
+    #   verify      → project keys authenticate (catches missing headless-init project)
+    #   roundtrip   → ingestion accepts a trace (catches dead MinIO / full ClickHouse)
     if langfuse is not None:
-        if langfuse.health():
-            print("[ok] Langfuse reachable")
+        if not langfuse.health():
+            ok = False
+            print("[FAIL] Langfuse unreachable.")
+            print("       Fix: run ./ops/ssm-tunnel.sh, or check the langfuse-web pod.")
         else:
-            print("[warn] Langfuse unreachable — results still run, but won't be traced/linked.")
+            print("[ok] Langfuse reachable")
+            v_ok, v_detail = langfuse.verify_project()
+            print(f"[{'ok' if v_ok else 'FAIL'}] Langfuse project keys — {v_detail}")
+            ok = ok and v_ok
+            if v_ok:
+                rt_ok, rt_detail = langfuse.trace_roundtrip()
+                print(f"[{'ok' if rt_ok else 'FAIL'}] Langfuse trace write path — {rt_detail}")
+                ok = ok and rt_ok
     else:
         print("[warn] No Langfuse keys — comparison runs but isn't linked to a dataset run.")
 
