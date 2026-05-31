@@ -489,32 +489,49 @@ function selectModel(name){selectedModel=selectedModel===name?null:name;renderAl
 
 function renderModels(eps){
   const el=document.getElementById('sidebar-models');
-  if(!eps.length){el.innerHTML='<div class="model-empty">No models deployed</div>';return;}
-  el.innerHTML=eps.map(ep=>{
-    const ready=ep.ready==='True',st=ep.modelStatus||'Pending';
-    const cls=ready?'running':st==='DEPLOYING'?'deploying':'pending';
-    const sel=selectedModel===ep.name?'selected':'';
-    const elapsed=Math.floor((Date.now()-new Date(ep.created).getTime())/1000);
-    const timer=ready?'':`<div class="mtimer">⏱ ${Math.floor(elapsed/60)}m ${elapsed%60}s</div>`;
-    const gpuCount=ep.gpuCount||1,tp=ep.tp||1,pp=ep.pp||1;
-    let strat=gpuCount===1?'1 GPU':tp>1&&pp>1?`TP=${tp}×PP=${pp}`:tp>1?`TP=${tp}`:pp>1?`PP=${pp}`:`${gpuCount} GPU`;
-    const mode=ep.shared?'shared':strat;
-    return `<div class="model-item ${sel}" onclick="selectModel('${ep.name}')">
-      <div class="model-top"><div class="mdot ${cls}"></div><div class="mname">${ep.name}</div><div class="mstatus ${cls}">${st}</div></div>
-      <div class="mdetail">${mode} · ${ep.model}</div>${timer}</div>`;
-  }).join('');
+  if(!eps.length){
+    if(el.dataset.sig!=='__empty__'){el.innerHTML='<div class="model-empty">No models deployed</div>';el.dataset.sig='__empty__';}
+    return;
+  }
+  // Structural signature EXCLUDES the live elapsed timer — so a card that's only
+  // ticking its "⏱ Xm Ys" isn't torn down and rebuilt every 2s poll (which reset
+  // the view). We rebuild only on a real change (status/selection/model set),
+  // and tick the timers in place below.
+  const sig=eps.map(ep=>`${ep.name}|${ep.ready}|${ep.modelStatus}|${selectedModel===ep.name}|${ep.shared}|${ep.gpuCount}|${ep.tp}|${ep.pp}|${ep.model}`).join('~');
+  if(el.dataset.sig!==sig){
+    el.innerHTML=eps.map(ep=>{
+      const ready=ep.ready==='True',st=ep.modelStatus||'Pending';
+      const cls=ready?'running':st==='DEPLOYING'?'deploying':'pending';
+      const sel=selectedModel===ep.name?'selected':'';
+      const timer=ready?'':`<div class="mtimer" data-created="${ep.created}">⏱ </div>`;
+      const gpuCount=ep.gpuCount||1,tp=ep.tp||1,pp=ep.pp||1;
+      let strat=gpuCount===1?'1 GPU':tp>1&&pp>1?`TP=${tp}×PP=${pp}`:tp>1?`TP=${tp}`:pp>1?`PP=${pp}`:`${gpuCount} GPU`;
+      const mode=ep.shared?'shared':strat;
+      return `<div class="model-item ${sel}" onclick="selectModel('${ep.name}')">
+        <div class="model-top"><div class="mdot ${cls}"></div><div class="mname">${ep.name}</div><div class="mstatus ${cls}">${st}</div></div>
+        <div class="mdetail">${mode} · ${ep.model}</div>${timer}</div>`;
+    }).join('');
+    el.dataset.sig=sig;
+  }
+  // Tick the elapsed timers in place (no DOM teardown).
+  for(const t of el.querySelectorAll('.mtimer[data-created]')){
+    const elapsed=Math.floor((Date.now()-new Date(t.dataset.created).getTime())/1000);
+    t.textContent=`⏱ ${Math.floor(elapsed/60)}m ${elapsed%60}s`;
+  }
 }
 
 function renderLinks(links){
   const el=document.getElementById('sidebar-links');
   if(!el)return;
-  if(!links||!links.length){el.innerHTML='<div class="model-empty">Waiting for ALB hostname…</div>';return;}
-  el.innerHTML=links.map(l=>
-    `<a class="link-row" href="${l.url}" target="_blank" rel="noopener noreferrer" title="${l.url}">
-       <span class="link-icon">${l.icon||'🔗'}</span>
-       <span class="link-text"><div class="link-label">${l.label}</div><div class="link-desc">${l.desc||''}</div></span>
-       <span class="link-ext">↗</span>
-     </a>`).join('');
+  const html=(!links||!links.length)
+    ? '<div class="model-empty">Waiting for ALB hostname…</div>'
+    : links.map(l=>
+      `<a class="link-row" href="${l.url}" target="_blank" rel="noopener noreferrer" title="${l.url}">
+         <span class="link-icon">${l.icon||'🔗'}</span>
+         <span class="link-text"><div class="link-label">${l.label}</div><div class="link-desc">${l.desc||''}</div></span>
+         <span class="link-ext">↗</span>
+       </a>`).join('');
+  if(el.dataset.sig!==html){el.innerHTML=html;el.dataset.sig=html;}  // skip rebuild when unchanged
 }
 
 function renderAll(){if(!lastData)return;renderModels(lastData.endpoints);renderLinks(lastData.links);renderInfra(lastData.nodes,lastData.pods);}
@@ -612,7 +629,12 @@ function renderInfra(nodes,pods){
     }
     html+=`</div>`;
   }
-  document.getElementById('infra').innerHTML=html;
+  // Skip the rebuild when the rendered infra is identical — a 2s poll that
+  // changes nothing must not tear down and re-lay-out the whole view (which
+  // dropped hover/selection state). The "new" badges are time-thresholded
+  // booleans, so the signature flips exactly when a badge appears/clears.
+  const el=document.getElementById('infra');
+  if(el.dataset.sig!==html){el.innerHTML=html;el.dataset.sig=html;}
 }
 
 function diff(data){
@@ -736,7 +758,7 @@ async function openApprovals(){
     const modalOpen = document.getElementById('approvals-modal')?.classList.contains('open');
     const hasInflight = document.querySelector('.approval-remediating') !== null;
     if(modalOpen && pendingActive && !hasInflight){
-      loadApprovals();
+      loadApprovals(true);  // silent: no "Loading…" flash, no rebuild if unchanged
     } else if(!modalOpen) {
       clearInterval(window._approvalsRefreshTimer);
       window._approvalsRefreshTimer = null;
@@ -754,19 +776,27 @@ function closeApprovals(){
 }
 document.addEventListener('keydown', e => { if(e.key === 'Escape') closeApprovals(); });
 
-async function loadApprovals(){
+// `silent` = background auto-refresh: never show the "Loading…" flash, and skip
+// the DOM rebuild when nothing changed (so the user's scroll position and any
+// expanded detail are preserved while they read a pending issue).
+async function loadApprovals(silent){
   const list = document.getElementById('approvals-list');
-  list.innerHTML = '<div class="approvals-empty">Loading…</div>';
+  if(!silent) list.innerHTML = '<div class="approvals-empty">Loading…</div>';
   try{
     const r = await fetch('/investigations');
     if(!r.ok) throw new Error('HTTP ' + r.status);
     const { items } = await r.json();
-    if(!items || !items.length){
-      list.innerHTML = '<div class="approvals-empty">No pending approvals.</div>';
-      return;
+    const html = (!items || !items.length)
+      ? '<div class="approvals-empty">No pending approvals.</div>'
+      : items.map(renderApproval).join('');
+    // Only touch the DOM if the content actually changed — a no-op refresh must
+    // not reset the view the user is looking at.
+    if(list.dataset.sig !== html){
+      list.innerHTML = html;
+      list.dataset.sig = html;
     }
-    list.innerHTML = items.map(renderApproval).join('');
   }catch(e){
+    if(silent) return;  // background refresh failed — keep the current view, don't flash an error
     list.innerHTML = '<div class="approvals-empty">Failed to load. The agent may be unavailable.<br><span style="font-family:var(--mono);font-size:11px">' + escapeHtml(String(e)) + '</span></div>';
   }
 }
