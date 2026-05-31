@@ -192,8 +192,8 @@ Update the allowlist in `platform/config/ingress.yaml` (and `platform/services/c
 ### 9. Test
 
 ```bash
-# qwen3-3b ships in the default catalog; or use the model you deployed above.
-./ops/test-model.sh qwen3-3b "What is Kubernetes?"
+# Use the model you deployed in step 7 (or claude-opus-4-8, which needs no GPU).
+./ops/test-model.sh claude-opus-4-8 "What is Kubernetes?"
 ```
 
 ---
@@ -218,9 +218,13 @@ Full guide: [docs/fine-tuning-getting-started.md](docs/fine-tuning-getting-start
 
 ## The money demo — compare models
 
-Run the same eval set through Sonnet, the base small model, and the fine-tuned
-small model, and let Langfuse show that a small fine-tuned model can match a
-large commercial one at a fraction of the cost.
+Run the same eval set through the frontier model (Opus 4.8), the base small
+model, and the fine-tuned small model, and let Langfuse show that a small
+fine-tuned model can match a large commercial one at a fraction of the cost.
+
+Prereq: the two self-hosted contenders must be deployed first — the base
+`qwen3-3b` (an `InferenceEndpoint`, see step 7) and `qwen3-support-tuned` (a
+`FineTuneJob` with `autoDeploy: true`). `claude-opus-4-8` needs no deploy.
 
 ```bash
 ./ops/compare-models.py \

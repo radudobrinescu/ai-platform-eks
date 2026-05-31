@@ -1,9 +1,10 @@
 # Model catalog
 
-Platform-shipped models that come up automatically on a fresh install — the
-"models out of the box" half of the turnkey platform. ArgoCD syncs this
-directory (the `models` ApplicationSet recurses into `workloads/models/`), so
-anything here is deployed by default.
+A place for platform-shipped models that should come up automatically on a fresh
+install. ArgoCD syncs this directory (the `models` ApplicationSet recurses into
+`workloads/models/`), so any `InferenceEndpoint` YAML added here deploys by
+default — the "models out of the box" half of the turnkey platform. It currently
+ships **empty** (see below).
 
 | File | Endpoint (LiteLLM alias) | What it is |
 |------|--------------------------|------------|

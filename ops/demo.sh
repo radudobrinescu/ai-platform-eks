@@ -5,8 +5,9 @@
 # Copy-paste commands section by section. NOT meant to run end-to-end.
 #
 # Prerequisites:
-#   - Cluster running with the shipped catalog model qwen3-3b deployed
-#     (workloads/models/catalog/qwen3-3b.yaml) + claude-opus-4-8 (Bedrock)
+#   - claude-opus-4-8 available (Bedrock, zero GPUs — always on)
+#   - qwen3-3b deployed: commit an InferenceEndpoint (Qwen/Qwen2.5-3B-Instruct)
+#     to workloads/models/ and push (the catalog ships empty by design)
 #   - llama32-1b NOT deployed (added live during the demo in Part 4)
 #   - Teams onboarded (dev-team, data-science — workloads/teams/)
 #   - AWS_REGION exported (defaults to your kubeconfig / aws cli region)
@@ -63,8 +64,8 @@ kubectl get resourcegraphdefinitions
 kubectl get inferenceendpoints -n inference \
   -o custom-columns=NAME:.metadata.name,READY:.status.ready,STATUS:.status.modelStatus,ENDPOINT:.status.endpoint
 
-# Show what a model definition looks like
-cat workloads/models/catalog/qwen3-3b.yaml
+# Show what a model definition looks like (the qwen3-3b you deployed under workloads/models/)
+cat workloads/models/qwen3-3b.yaml 2>/dev/null || cat workloads/models/TEMPLATE.yaml.example
 
 # "6 lines of YAML. KRO expands this into a RayService with vLLM,
 #  GPU worker pods, a LiteLLM registration Job, and a CloudWatch
@@ -157,20 +158,13 @@ kubectl get ns | grep team
 kubectl get resourcequota -n team-dev
 kubectl get networkpolicy -n team-dev
 
-# Get team API keys (data-science: models ['*']; dev-team: scoped to [qwen3-3b])
+# Get team API keys. data-science has models: ['*'] (everything allowed);
+# dev-team has models: [] (locked down — nothing allowed). To demo a per-model
+# ALLOW instead of a blanket deny, scope a team to e.g. ["qwen3-3b"] in its YAML.
 DS_KEY=$(kubectl get secret data-science-api-key -n team-data-science \
   -o jsonpath='{.data.api-key}' | base64 -d)
 DEV_KEY=$(kubectl get secret dev-api-key -n team-dev \
   -o jsonpath='{.data.api-key}' | base64 -d)
-
-# Dev team calls qwen3-3b — ALLOWED (in their model list)
-echo ""
-echo ">>> Dev team → qwen3-3b (ALLOWED)"
-curl -s http://localhost:4000/v1/chat/completions \
-  -H "Content-Type: application/json" \
-  -H "Authorization: Bearer $DEV_KEY" \
-  -d '{"model": "qwen3-3b", "messages": [{"role": "user", "content": "What is EKS? One sentence."}]}' \
-  | jq -r '.choices[0].message.content'
 
 # Data-science team calls claude-opus-4-8 — ALLOWED (models: '*')
 echo ""
@@ -181,7 +175,7 @@ curl -s http://localhost:4000/v1/chat/completions \
   -d '{"model": "claude-opus-4-8", "messages": [{"role": "user", "content": "What is Kubernetes? One sentence."}]}' \
   | jq -r '.choices[0].message.content'
 
-# Dev team tries claude-opus-4-8 — BLOCKED (not in their model list)
+# Dev team tries claude-opus-4-8 — BLOCKED (its model list is empty)
 echo ""
 echo ">>> Dev team → claude-opus-4-8 (BLOCKED)"
 curl -s http://localhost:4000/v1/chat/completions \

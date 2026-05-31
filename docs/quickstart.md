@@ -79,8 +79,19 @@ the `langfuse_init_user_email` and `terraform output -raw langfuse_admin_passwor
 and you'll see the trace, with cost and latency, from your first call. No key
 setup, no restart dance.
 
-The default small model `qwen3-3b` (Qwen2.5-3B-Instruct) comes up on its own GPU
-node once Karpenter provisions one.
+### Stand up the small open model (the money-demo's cheap contender)
+
+The catalog ships empty, so deploy the base small model — `qwen3-3b`
+(Qwen2.5-3B-Instruct) — that the comparison below pits against Opus 4.8. Commit
+one `InferenceEndpoint` and Karpenter provisions a GPU node for it:
+
+```bash
+cp workloads/models/TEMPLATE.yaml.example workloads/models/qwen3-3b.yaml
+# edit: name=qwen3-3b, model="Qwen/Qwen2.5-3B-Instruct" (add `shared: true` to
+# time-slice it onto a shared GPU). Then:
+git add workloads/models/qwen3-3b.yaml && git commit -m "feat: deploy qwen3-3b" && git push
+kubectl get inferenceendpoints -n inference -w   # ready in a few minutes
+```
 
 ## 4. Bring your data + fine-tune
 
