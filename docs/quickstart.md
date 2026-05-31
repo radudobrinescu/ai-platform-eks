@@ -63,7 +63,8 @@ default model catalog from git.
 ```bash
 ./platformctl status dev      # watch ArgoCD + pods + models come up
 ./platformctl tunnel          # forward WebUI :8080, LiteLLM :4000, Langfuse :3000
-./platformctl preflight       # confirm Bedrock + models answer; clear fix if not
+./platformctl preflight       # confirm Bedrock + models answer AND Langfuse tracing
+                              # works end to end; prints the exact fix if not
 ```
 
 Chat against **Claude Opus 4.8** in Open WebUI (http://localhost:8080) or:
@@ -79,6 +80,12 @@ curl -s http://localhost:4000/v1/chat/completions \
 the `langfuse_init_user_email` and `terraform output -raw langfuse_admin_password`)
 and you'll see the trace, with cost and latency, from your first call. No key
 setup, no restart dance.
+
+> Provisioning a brand-new cluster? Run through
+> [docs/fresh-cluster-validation.md](fresh-cluster-validation.md) once to prove
+> tracing works end to end from a cold apply — `./platformctl preflight` now
+> asserts it (project keys authenticate + a test trace lands), so a silent
+> failure shows up as a loud, fixable one.
 
 ### Stand up the small open model (the money-demo's cheap contender)
 
