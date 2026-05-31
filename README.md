@@ -65,9 +65,9 @@ EKS Cluster
 ## Quick Start
 
 > **Turnkey path:** the [quickstart guide](docs/quickstart.md) walks the whole
-> journey — provision → use Sonnet with zero GPUs → fine-tune → prove it with a
-> Langfuse comparison — using the thin `./platformctl` wrapper. The steps below
-> are the underlying commands.
+> journey — provision → use Claude Opus 4.8 with zero GPUs → fine-tune → prove it
+> with a Langfuse comparison — using the thin `./platformctl` wrapper. The steps
+> below are the underlying commands.
 
 ### 1. Fork the repo + point the platform at your fork
 
@@ -237,13 +237,13 @@ Prereq: the two self-hosted contenders must be deployed first — the base
 Every call is traced (cost/latency/tokens) and tagged as a Langfuse **dataset
 run**, so you compare runs side by side; configure an LLM-as-judge evaluator for
 voice/policy/helpfulness scoring. The script prints the **cost crossover** — the
-daily request volume above which the self-hosted tuned model is cheaper than
-Sonnet (reusing `recommend-instance.py`'s pricing model). See
+daily request volume above which the self-hosted tuned model is cheaper than the
+Bedrock frontier model (reusing `recommend-instance.py`'s pricing model). See
 [docs/quickstart.md](docs/quickstart.md) and
 [docs/platform-evolution-plan.md](docs/platform-evolution-plan.md).
 
 `./ops/compare-models.py --preflight` checks connectivity and Bedrock model
-access, printing the exact fix if Sonnet isn't enabled in your account.
+access, printing the exact fix if Claude Opus 4.8 isn't enabled in your account.
 
 ---
 
@@ -460,7 +460,7 @@ workloads/
 ops/                             # Operational scripts
 terraform/                       # Infrastructure modules (VPC → IAM → EKS → Observability)
 docs/
-  quickstart.md                            # Turnkey path: provision → Sonnet → fine-tune → compare
+  quickstart.md                            # Turnkey path: provision → Opus 4.8 → fine-tune → compare
   fine-tuning-getting-started.md           # Self-service QLoRA guide
   platform-evolution-plan.md               # Turnkey platform design (P1–P6)
   fine-tuning-implementation-plan-v2.md    # Fine-tuning design

@@ -7,8 +7,8 @@ large commercial one on a narrow task, at a fraction of the cost.
 This is the one genuinely new component of the turnkey platform, and it stays
 intentionally thin: it leans on tools that already exist.
 
-  - LiteLLM unifies every model (Bedrock Sonnet, self-hosted Qwen base, the
-    fine-tuned Qwen) behind ONE OpenAI-compatible endpoint and ONE key.
+  - LiteLLM unifies every model (the Bedrock frontier model, self-hosted Qwen
+    base, the fine-tuned Qwen) behind ONE OpenAI-compatible endpoint and ONE key.
   - LiteLLM's Langfuse callback already traces every call with cost / latency /
     tokens — so the objective metrics are logged for free.
   - Langfuse owns the dataset storage, the side-by-side run comparison UI, the
@@ -25,10 +25,10 @@ What this script does:
      recommend-instance.py's pricing/throughput model — no new cost system.
 
 Quality scoring (voice match, policy correctness, helpfulness) is done IN
-Langfuse: configure an LLM-as-judge evaluator once in the UI (judge = Sonnet via
-this same LiteLLM endpoint), and use the side-by-side view for human preference.
-This script deliberately does NOT implement a judge — that would duplicate a
-built-in.
+Langfuse: configure an LLM-as-judge evaluator once in the UI (judge = the
+frontier model, e.g. claude-opus-4-8, via this same LiteLLM endpoint), and use
+the side-by-side view for human preference. This script deliberately does NOT
+implement a judge — that would duplicate a built-in.
 
 Dataset format (JSONL, one object per line):
     {"id": "q1", "input": "How do I reset my password?", "expected_output": "..."}
@@ -394,7 +394,7 @@ class Crossover:
     gpu_monthly_usd: float
     tuned_tokens_per_req: float
     tuned_cost_per_req: float          # at the break-even request volume
-    sonnet_cost_per_req: float
+    baseline_cost_per_req: float       # frontier (e.g. Opus 4.8) per-request cost
     breakeven_reqs_per_day: float | None
     note: str = ""
 
@@ -424,7 +424,7 @@ def gpu_price_for_model(hf_model_id: str, region: str | None) -> dict | None:
 
 def compute_crossover(
     *, hf_model_id: str, region: str | None,
-    avg_completion_tokens: float, sonnet_cost_per_req: float,
+    avg_completion_tokens: float, baseline_cost_per_req: float,
 ) -> Crossover | None:
     """Compute the request-volume break-even between a self-hosted GPU node and
     per-request Bedrock pricing.
@@ -448,14 +448,14 @@ def compute_crossover(
     else:
         reqs_per_hour_capacity = 0.0
 
-    if sonnet_cost_per_req <= 0 or reqs_per_hour_capacity <= 0:
+    if baseline_cost_per_req <= 0 or reqs_per_hour_capacity <= 0:
         breakeven = None
-        note = "insufficient data (no Sonnet cost or no throughput estimate)"
+        note = "insufficient data (no baseline cost or no throughput estimate)"
     else:
         # self-hosted $/req at volume V/day = price_h * 24 / V (node runs 24h).
-        # break-even where that equals Sonnet's per-request cost:
-        #   price_h * 24 / V = sonnet_cost_per_req  →  V = price_h * 24 / sonnet_cost_per_req
-        breakeven = (price_h * 24.0) / sonnet_cost_per_req
+        # break-even where that equals the baseline's per-request cost:
+        #   price_h * 24 / V = baseline_cost_per_req  →  V = price_h * 24 / baseline_cost_per_req
+        breakeven = (price_h * 24.0) / baseline_cost_per_req
         # Don't claim a break-even the node physically can't serve.
         max_per_day = reqs_per_hour_capacity * 24.0
         if breakeven > max_per_day:
@@ -463,7 +463,7 @@ def compute_crossover(
                     f"(~{max_per_day:,.0f}/day) — add replicas or it never crosses on one node")
         else:
             note = (f"above ~{breakeven:,.0f} req/day the self-hosted model is "
-                    f"cheaper per request than Sonnet")
+                    f"cheaper per request than the frontier baseline")
 
     tuned_cost_per_req = (price_h * 24.0 / breakeven) if breakeven else 0.0
     return Crossover(
@@ -472,7 +472,7 @@ def compute_crossover(
         gpu_monthly_usd=price_h * HOURS_PER_MONTH,
         tuned_tokens_per_req=tokens_per_req,
         tuned_cost_per_req=tuned_cost_per_req,
-        sonnet_cost_per_req=sonnet_cost_per_req,
+        baseline_cost_per_req=baseline_cost_per_req,
         breakeven_reqs_per_day=breakeven,
         note=note,
     )
@@ -532,7 +532,7 @@ def print_crossover(c: Crossover) -> None:
     print(f"  Cheapest GPU node : {c.gpu_instance}  "
           f"(${c.gpu_price_usd_h:.3f}/hr, ~${c.gpu_monthly_usd:,.0f}/mo)")
     print(f"  Avg completion    : {c.tuned_tokens_per_req:.0f} tokens/req")
-    print(f"  Sonnet cost/req   : ${c.sonnet_cost_per_req:.5f}")
+    print(f"  Baseline cost/req : ${c.baseline_cost_per_req:.5f}")
     if c.breakeven_reqs_per_day:
         print(f"  Break-even        : ~{c.breakeven_reqs_per_day:,.0f} req/day")
     print(f"  → {c.note}")
@@ -626,27 +626,34 @@ def parse_args(argv: list[str] | None) -> argparse.Namespace:
                    help="Which --models alias is the self-hosted contender (for cost crossover).")
     p.add_argument("--self-hosted-hf-id", default=None,
                    help="HuggingFace id of the self-hosted base model (drives the GPU price lookup).")
-    p.add_argument("--sonnet-model", default="claude-opus-4-8",
-                   help="Which alias is the Bedrock/Sonnet baseline (default: claude-opus-4-8).")
-    p.add_argument("--sonnet-cost-per-req", type=float, default=None,
-                   help="Override Sonnet $/req for the crossover (else estimated from tokens).")
+    p.add_argument("--baseline-model", "--sonnet-model", dest="baseline_model",
+                   default="claude-opus-4-8",
+                   help="Which alias is the Bedrock frontier baseline "
+                        "(default: claude-opus-4-8). --sonnet-model is a "
+                        "deprecated alias.")
+    p.add_argument("--baseline-cost-per-req", "--sonnet-cost-per-req",
+                   dest="baseline_cost_per_req", type=float, default=None,
+                   help="Override the baseline $/req for the crossover (else "
+                        "estimated from tokens). --sonnet-cost-per-req is a "
+                        "deprecated alias.")
     p.add_argument("--region", default=None,
                    help="AWS region for GPU pricing (default: recommend-instance.py autodetect).")
     return p.parse_args(argv)
 
 
-# Rough Bedrock Claude Sonnet pricing ($/1K tokens) used ONLY to estimate a
-# per-request cost for the crossover when Langfuse cost isn't queried. Verify
-# against current Bedrock pricing; override with --sonnet-cost-per-req.
-SONNET_USD_PER_1K_INPUT = 0.003
-SONNET_USD_PER_1K_OUTPUT = 0.015
+# Rough Bedrock Claude Opus 4.8 pricing ($/1K tokens) used ONLY to estimate a
+# per-request cost for the crossover when Langfuse cost isn't queried. These are
+# the frontier-baseline list prices (~$15 / $75 per 1M tokens). Verify against
+# current Bedrock pricing; override with --baseline-cost-per-req.
+BASELINE_USD_PER_1K_INPUT = 0.015
+BASELINE_USD_PER_1K_OUTPUT = 0.075
 
 
-def estimate_sonnet_cost_per_req(summary: ModelSummary | None) -> float:
+def estimate_baseline_cost_per_req(summary: ModelSummary | None) -> float:
     if not summary or summary.n_ok == 0:
         return 0.0
-    return (summary.avg_prompt_tokens / 1000.0) * SONNET_USD_PER_1K_INPUT \
-        + (summary.avg_completion_tokens / 1000.0) * SONNET_USD_PER_1K_OUTPUT
+    return (summary.avg_prompt_tokens / 1000.0) * BASELINE_USD_PER_1K_INPUT \
+        + (summary.avg_completion_tokens / 1000.0) * BASELINE_USD_PER_1K_OUTPUT
 
 
 def run(args: argparse.Namespace) -> int:
@@ -719,17 +726,17 @@ def run(args: argparse.Namespace) -> int:
 
     # Cost crossover (optional)
     if args.self_hosted_model and args.self_hosted_hf_id:
-        sonnet_summary = next(
-            (s for s in summaries if s.model == args.sonnet_model), None)
-        sonnet_cost = args.sonnet_cost_per_req \
-            if args.sonnet_cost_per_req is not None \
-            else estimate_sonnet_cost_per_req(sonnet_summary)
+        baseline_summary = next(
+            (s for s in summaries if s.model == args.baseline_model), None)
+        baseline_cost = args.baseline_cost_per_req \
+            if args.baseline_cost_per_req is not None \
+            else estimate_baseline_cost_per_req(baseline_summary)
         self_summary = next(
             (s for s in summaries if s.model == args.self_hosted_model), None)
         avg_compl = self_summary.avg_completion_tokens if self_summary else 256.0
         c = compute_crossover(
             hf_model_id=args.self_hosted_hf_id, region=args.region,
-            avg_completion_tokens=avg_compl, sonnet_cost_per_req=sonnet_cost)
+            avg_completion_tokens=avg_compl, baseline_cost_per_req=baseline_cost)
         if c:
             print_crossover(c)
         else:

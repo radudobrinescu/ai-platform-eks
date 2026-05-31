@@ -12,9 +12,10 @@ standalone; the value compounds.
 - AWS account + credentials (`aws sts get-caller-identity` works)
 - `terraform`, `kubectl`, `aws`, `make`, `python3`, `jq`
 - **AWS Identity Center** enabled (ArgoCD capability requires it)
-- **Bedrock model access** enabled in-account for Claude Sonnet
-  (Console → Bedrock → Model access → enable the Sonnet model). The platform
-  preflights this and tells you the exact fix if it's missing.
+- **Bedrock model access** enabled in-account for Claude Opus 4.8
+  (Console → Bedrock → Model access → enable Claude Opus 4.8, served via the
+  `global.anthropic.claude-opus-4-8` cross-region inference profile). The
+  platform preflights this and tells you the exact fix if it's missing.
 - (Optional, for faster image pulls) a Docker Hub token for the ECR pull-through
   cache — see the main [README](../README.md).
 
@@ -129,13 +130,13 @@ side-by-side. Cost and latency are on every trace. Configure an **LLM-as-judge**
 evaluator (judge = `claude-opus-4-8`) on a voice/policy/helpfulness rubric, and
 use the side-by-side view for human preference. The script also prints the
 **cost crossover** — the daily request volume above which the self-hosted tuned
-model is cheaper per request than Sonnet.
+model is cheaper per request than the Bedrock frontier model (Claude Opus 4.8).
 
 ## 6. Decide
 
 Read the cost/quality crossover and route production traffic accordingly — the
-cheap tuned model for the common case, Sonnet for the hard tail. It's all one
-OpenAI-compatible API, governed by the same `AITeam` budgets and keys.
+cheap tuned model for the common case, Claude Opus 4.8 for the hard tail. It's
+all one OpenAI-compatible API, governed by the same `AITeam` budgets and keys.
 
 ## Tear down
 
