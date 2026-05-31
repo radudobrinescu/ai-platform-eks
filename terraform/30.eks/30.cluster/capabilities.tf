@@ -345,9 +345,11 @@ resource "kubernetes_secret" "argocd_cluster" {
 ################################################################################
 # ArgoCD — bootstrap Application.
 # Points at argocd/bootstrap/ in the git repo, which contains ApplicationSets
-# that define all platform services and workloads. This is the only ArgoCD
+# that define all platform services and workloads. This is the ONLY ArgoCD
 # Application rendered by Terraform — everything else is in git, managed by
-# ArgoCD. Forking the platform = set var.gitops_repo_url; no sed required.
+# ArgoCD. Forking the platform = set var.gitops_repo_url here AND the matching
+# repoURL in argocd/bootstrap/{platform,workloads}.yaml (ArgoCD ApplicationSet
+# generators can't read a Terraform variable). See those files' headers.
 ################################################################################
 resource "kubectl_manifest" "argocd_bootstrap" {
   count = local.capabilities.gitops ? 1 : 0

@@ -54,6 +54,9 @@ observability_configuration = {
 #   export TF_VAR_docker_hub_access_token="dckr_pat_XXXXXXXXXX"
 
 # GitOps repository — ArgoCD syncs the platform from this repo.
+# When you FORK, also set the same URL/branch in argocd/bootstrap/platform.yaml
+# ($repo/$rev) and argocd/bootstrap/workloads.yaml (repoURL) — ArgoCD generators
+# can't read this tfvar. See those files' headers for the fork checklist.
 gitops_repo_url = "https://github.com/YOUR-ORG/YOUR-REPO.git"
 gitops_revision = "main"
 

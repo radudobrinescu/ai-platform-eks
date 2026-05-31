@@ -55,8 +55,11 @@ observability_configuration = {
 
 # GitOps repository — ArgoCD syncs the platform from this repo.
 # Required when cluster_config.capabilities.gitops = true.
-# No sed-over-the-tree needed — Terraform renders the bootstrap Application
-# with this URL and everything else flows from argocd/bootstrap/.
+# This sets the URL for the root `bootstrap` Application that Terraform renders.
+# IMPORTANT: ArgoCD ApplicationSet generators can't read a Terraform variable,
+# so when you FORK you must also set the same URL/branch in two git files (each
+# once): the $repo/$rev in argocd/bootstrap/platform.yaml and the repoURL in
+# argocd/bootstrap/workloads.yaml. See those files' headers for the checklist.
 gitops_repo_url = "https://github.com/YOUR-ORG/YOUR-REPO.git"
 gitops_revision = "main"
 

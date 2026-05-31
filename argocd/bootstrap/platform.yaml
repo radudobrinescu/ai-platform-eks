@@ -7,10 +7,13 @@
 #   - Helm multi-source (gpu-operator, kuberay-operator, langfuse):
 #       chart pulled from upstream, values file pulled from this repo.
 #
-# The repo URL appears twice below — once for plain-directory apps,
-# once for the $values source in Helm-based apps. Forking the platform
-# = change the two literal URLs here, update argocd/bootstrap/workloads.yaml,
-# and set var.gitops_repo_url in Terraform. That's it.
+# FORKING THE PLATFORM — three coordinated settings (ArgoCD ApplicationSet
+# generators can't read a Terraform variable, so the repo URL lives in git, not
+# in tfvars; Terraform only renders the root `bootstrap` Application):
+#   1. var.gitops_repo_url / var.gitops_revision in your tfvars  → the root bootstrap app
+#   2. $repo / $rev in the templatePatch below (set ONCE, used by all apps here)
+#   3. repoURL / targetRevision in argocd/bootstrap/workloads.yaml (set ONCE there)
+# Points 2 and 3 must match point 1. Default placeholder: YOUR-ORG/YOUR-REPO.
 ---
 apiVersion: argoproj.io/v1alpha1
 kind: ApplicationSet
@@ -114,11 +117,16 @@ spec:
           - CreateNamespace=true
           - ServerSideApply=true
   templatePatch: |
+    {{- /* Fork point: set your repo URL + branch ONCE here (used by both the */ -}}
+    {{- /* directory source and the Helm $values source below). Mirror the same */ -}}
+    {{- /* value in argocd/bootstrap/workloads.yaml. */ -}}
+    {{- $repo := "https://github.com/YOUR-ORG/YOUR-REPO.git" }}
+    {{- $rev := "main" }}
     spec:
       {{- if eq .type "directory" }}
       source:
-        repoURL: https://github.com/radudobrinescu/ai-platform-eks.git
-        targetRevision: main
+        repoURL: {{ $repo }}
+        targetRevision: {{ $rev }}
         path: {{ .path }}
         {{- if eq .recurse "true" }}
         directory:
@@ -133,7 +141,7 @@ spec:
           helm:
             valueFiles:
               - $values/{{ .valuesPath }}
-        - repoURL: https://github.com/radudobrinescu/ai-platform-eks.git
-          targetRevision: main
+        - repoURL: {{ $repo }}
+          targetRevision: {{ $rev }}
           ref: values
       {{- end }}

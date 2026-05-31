@@ -69,22 +69,42 @@ EKS Cluster
 > Langfuse comparison — using the thin `./platformctl` wrapper. The steps below
 > are the underlying commands.
 
-### 1. Deploy Infrastructure
+### 1. Fork the repo + point the platform at your fork
+
+ArgoCD syncs the platform from a Git repo, so it must be **your** fork (the
+self-service `git push` loop and your committed `workloads/` only deploy from a
+repo you can push to). ArgoCD ApplicationSet generators can't read a Terraform
+variable, so the fork URL lives in three coordinated places — all set to the
+same `https://github.com/YOUR-ORG/YOUR-REPO.git`:
+
+1. `gitops_repo_url` + `gitops_revision` in your tfvars (the root bootstrap app)
+2. `$repo` / `$rev` in `argocd/bootstrap/platform.yaml` (set once, used by all platform apps)
+3. `repoURL` / `targetRevision` in `argocd/bootstrap/workloads.yaml` (set once)
+
+```bash
+# After forking + cloning your fork, rewrite the placeholder in the two AppSets:
+grep -rl 'YOUR-ORG/YOUR-REPO' argocd/bootstrap/ \
+  | xargs sed -i '' 's#https://github.com/YOUR-ORG/YOUR-REPO.git#<YOUR_FORK_URL>#g'
+# If your default branch isn't `main`, also update targetRevision/$rev in both files.
+git commit -am "chore: point platform at my fork" && git push
+```
+
+### 2. Deploy Infrastructure
 
 ```bash
 cd terraform/00.global/vars/
 cp example.tfvars your-env.tfvars
-# Edit: set Identity Center ARN, VPC CIDR, gitops_repo_url, capabilities
+# Edit: set Identity Center ARN, VPC CIDR, gitops_repo_url (your fork), capabilities
 
 cd terraform
-export AWS_REGION=eu-central-1
+export AWS_REGION=eu-central-1   # any region; the platform is region-agnostic
 make bootstrap ENVIRONMENT=your-env
 make ENVIRONMENT=your-env apply-all
 ```
 
 This creates VPC, IAM roles, EKS cluster with managed capabilities, Karpenter NodePools, and all platform secrets. Cluster name: `{resources_prefix}-{ENVIRONMENT}`.
 
-### 2. (Optional) GPU Image Optimization
+### 3. (Optional) GPU Image Optimization
 
 Enable ECR pull-through cache for faster image pulls:
 
@@ -95,7 +115,7 @@ export TF_VAR_docker_hub_access_token="dckr_pat_XXXXXXXXXX"
 
 Terraform automatically creates a SOCI index + EBS data volume snapshot on `apply`. Two-apply flow for new clusters — second apply wires the snapshot into Karpenter NodeClasses.
 
-### 3. (Optional) Enable the Platform Health Agent
+### 4. (Optional) Enable the Platform Health Agent
 
 The agent is opt-in. To turn it on:
 
@@ -109,7 +129,7 @@ export TF_VAR_kiro_api_key="kr-..."   # get from https://kiro.dev/
 
 Terraform provisions the agent's namespace, the Kiro API key Secret, and a copy of `platform-db-credentials`. ArgoCD then deploys the agent itself from `platform/services/platform-health-agent/`. See [`platform/services/platform-health-agent/README.md`](platform/services/platform-health-agent/README.md) for design and operation.
 
-### 4. Verify ArgoCD
+### 5. Verify ArgoCD
 
 ArgoCD is deployed as a managed capability — no manual bootstrap needed. Terraform renders a bootstrap Application pointing at `argocd/bootstrap/` with your `gitops_repo_url`.
 
@@ -118,14 +138,14 @@ aws eks update-kubeconfig --region $AWS_REGION --name ai-platform-your-env
 kubectl get applications -n argocd
 ```
 
-### 5. Create HuggingFace Token (for gated models)
+### 6. Create HuggingFace Token (for gated models)
 
 ```bash
 kubectl create secret generic hf-token -n inference \
   --from-literal=token=hf_YOUR_TOKEN_HERE
 ```
 
-### 6. Deploy a Model
+### 7. Deploy a Model
 
 ```bash
 cp workloads/models/TEMPLATE.yaml.example workloads/models/my-model.yaml
@@ -149,7 +169,7 @@ git push
 kubectl get inferenceendpoints -n inference -w
 ```
 
-### 7. Access Services
+### 8. Access Services
 
 The platform exposes services via an internet-facing ALB restricted by IP allowlist:
 
@@ -169,7 +189,7 @@ kubectl get ingress ai-platform-litellm -n ai-platform \
 
 Update the allowlist in `platform/config/ingress.yaml` (and `platform/services/cluster-dashboard/manifests.yaml`) when your IP changes.
 
-### 8. Test
+### 9. Test
 
 ```bash
 # qwen3-3b ships in the default catalog; or use the model you deployed above.
