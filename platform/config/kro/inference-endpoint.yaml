@@ -280,9 +280,10 @@ spec:
                               # fixed local dir that vLLM loads directly (no HF). The
                               # weights are guaranteed present (the training Job uploaded
                               # them before creating this endpoint), so a miss is fatal. ---
-                              # NB: strip trailing slash with sed, NOT shell ${VAR%/} —
-                              # KRO interprets any ${...} in this block as a CEL
-                              # expression (see the $MODEL_ID / $(...) style above).
+                              # NB: strip the trailing slash with sed (not shell
+                              # parameter expansion) — KRO scans this whole string for
+                              # its CEL delimiter and would try to parse a dollar-brace
+                              # sequence as an expression and fail to build the graph.
                               PREFIX=$(echo "$MODEL_SOURCE" | sed 's#/*$##')
                               LOCAL="/hf-cache/finetuned"
                               echo "Fine-tuned model — syncing s3://$CACHE_BUCKET/$PREFIX/ to $LOCAL"
