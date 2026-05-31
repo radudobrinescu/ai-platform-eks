@@ -853,6 +853,27 @@ spec:
 print(f"✓ Fine-tuning complete. Model: {s3_prefix}")
 ```
 
+> **⚠️ Known limitation — autoDeploy is `kubectl apply`, not GitOps (deferred).**
+> The current autoDeploy path has the trainer Job `kubectl apply` the InferenceEndpoint
+> directly. The resulting IE is a real, working endpoint — but it is **untracked by
+> ArgoCD and absent from git**: there is no YAML in `workloads/models/`, so it can't be
+> reviewed, won't survive a cluster rebuild, and won't be pruned by deleting any file.
+> Deleting it requires a direct `kubectl delete` (it has no ArgoCD tracking-id and no
+> owner-ref to the FineTuneJob — the two are independent top-level objects).
+>
+> **Kept as-is on purpose** for now: the immediate `kubectl apply` makes the model live
+> within the same Job, which is the smoothest path for a live demo.
+>
+> **Future implementation** (see [§9 open question 8](#9-open-questions-intentionally-deferred-to-v2)):
+> on training success, instead of `kubectl apply`, have the Job **open an MR/PR** that
+> adds `workloads/models/{JOB_NAME}.yaml` (the same IE spec above, name suffixed `-tuned`
+> for clarity) to the GitOps repo. A human merges → ArgoCD deploys it through the
+> standard managed path. The endpoint then becomes reviewable, durable, and decoupled
+> from the FineTuneJob for real. Requires a repo-scoped bot token in the trainer Job and
+> targets only `gitops_repo_url` (the platform has two remotes). When `autoDeploy: false`,
+> the symmetric behaviour is to emit the ready-to-commit IE YAML (logs + artifact) with
+> the exact `git add/commit/push`, rather than applying anything.
+
 #### 4.6.1 Dataset format detection (within `train.py`)
 
 ```python
@@ -1169,6 +1190,7 @@ EOF
 5. **DPO / GRPO methods**: Different trainer (DPOTrainer in TRL). Would add another `method:` value.
 6. **Cancel/resume**: V1 is fire-and-forget. Future: state checkpointing + resume from S3.
 7. **Public dataset access**: Currently only S3 + gated HF datasets. Add support for public HF datasets (already works via `HuggingFace:org/dataset` URI but not extensively tested).
+8. **GitOps-native autoDeploy (MR/PR)**: Today `autoDeploy: true` makes the trainer Job `kubectl apply` the InferenceEndpoint directly, producing an endpoint that is unmanaged by ArgoCD and absent from git (see the autoDeploy limitation note in §4.6). Future: on success, open an MR/PR adding `workloads/models/{name}-tuned.yaml` to `gitops_repo_url` so the tuned model deploys through the standard managed path — reviewable, durable, and decoupled from the FineTuneJob. When `autoDeploy: false`, emit the ready-to-commit IE YAML + exact git commands instead of applying. Needs a repo-scoped bot token in the trainer Job. **Kept as direct `kubectl apply` for now** because the in-Job deploy is the smoothest path for live demos.
 
 ---
 

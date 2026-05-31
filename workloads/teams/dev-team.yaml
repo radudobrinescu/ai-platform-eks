@@ -11,8 +11,7 @@ spec:
   langfuseSecretKey: ''
   maxBudget: '100.0'
   memoryQuota: 8Gi
-  models:
-  - qwen3-3b
+  models: []
   rpmLimit: 60
   teamName: dev
   tpmLimit: 100000
