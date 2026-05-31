@@ -123,7 +123,7 @@ spec:
             - name: DB_PASSWORD
               valueFrom: { secretKeyRef: { name: platform-db-credentials, key: password } }
             - name: PLATFORM_HEALTH_AGENT_NAMESPACE
-              value: platform-health-agent
+              value: ai-platform
             - name: APPROVAL_EXPIRY_HOURS
               value: "24"
             - name: MAX_REMEDIATIONS_PER_DAY
