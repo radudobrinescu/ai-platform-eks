@@ -46,7 +46,6 @@ configMapGenerator:
       - scripts/event_watcher.py
       - scripts/investigate.sh
       - scripts/remediate.sh
-      - scripts/kiro_run.sh
       - scripts/persist_findings.py
       - scripts/db_init.sh
       - scripts/ddl.sql

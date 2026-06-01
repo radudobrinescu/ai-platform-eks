@@ -100,6 +100,8 @@ spec:
               valueFrom: { configMapKeyRef: { name: platform-health-agent-config, key: EXCLUDE_NAMESPACES } }
             - name: DEBOUNCE_WINDOW_SEC
               valueFrom: { configMapKeyRef: { name: platform-health-agent-config, key: DEBOUNCE_WINDOW_SEC } }
+            - name: OUT_OF_SCOPE_COOLDOWN_SEC
+              valueFrom: { configMapKeyRef: { name: platform-health-agent-config, key: OUT_OF_SCOPE_COOLDOWN_SEC } }
             - name: TRIGGER_CRASHLOOP
               valueFrom: { configMapKeyRef: { name: platform-health-agent-config, key: TRIGGER_CRASHLOOP } }
             - name: TRIGGER_OOMKILLED

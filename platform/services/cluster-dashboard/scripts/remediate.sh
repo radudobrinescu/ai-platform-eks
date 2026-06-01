@@ -149,14 +149,18 @@ Write a SINGLE JSON object to /results/result.json with EXACTLY these keys:
 Do NOT exit until /results/result.json exists.
 EOF
 
-# Invoke kiro-cli with retry + 'auto' fallback (see kiro_run.sh) to ride out
-# transient kiro-cli startup failures.
-. /scripts/kiro_run.sh
-kiro_prepare
-if ! run_kiro remediate "${KIRO_MODEL_REMEDIATE}" /results/result.json /tmp/prompt.txt "$LOG"; then
-    post_error "remediator did not produce /results/result.json (after retries + auto fallback). tail:
+# Invoke kiro-cli. Give the slow eks-mcp-server room to register first.
+/tools/kiro-cli settings mcp.noInteractiveTimeout 120000 >/dev/null 2>&1 || true
+echo "[remediate] running kiro-cli model=${KIRO_MODEL_REMEDIATE}…"
+if ! /tools/kiro-cli chat --no-interactive \
+        --model "${KIRO_MODEL_REMEDIATE}" \
+        --trust-all-tools \
+        "$(cat /tmp/prompt.txt)" 2>&1 | tee "$LOG"; then
+    post_error "kiro-cli exited non-zero during remediation. tail:
 $(tail -20 "$LOG" | sed 's/[\\r\\n]/ /g; s/\"/\\\\\"/g')"
 fi
+
+[ -s /results/result.json ] || post_error "remediator did not produce /results/result.json"
 if ! python3 -c 'import json,sys; json.load(open("/results/result.json"))'; then
     post_error "/results/result.json is not valid JSON. tail:
 $(tail -10 "$LOG")"

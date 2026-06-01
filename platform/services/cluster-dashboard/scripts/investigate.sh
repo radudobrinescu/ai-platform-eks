@@ -155,17 +155,22 @@ uncertainty in the summary.
 Do NOT modify any resources. Do NOT exit until /results/findings.json exists.
 EOF
 
-# ─── Invoke kiro-cli (with retry + model fallback) ────────────────────
-# run_kiro retries the configured model, then falls back to 'auto', to ride
-# out transient kiro-cli startup failures (flaky MCP-settings fetch). The
-# kept LOG file doubles as post-mortem AND container stdout (tee), so kubectl
-# logs shows the full tool-call history even after the pod is GC'd.
-. /scripts/kiro_run.sh
-kiro_prepare
-if ! run_kiro investigate "${KIRO_MODEL_INVESTIGATE}" /results/findings.json /tmp/prompt.txt "$LOG"; then
-    post_error "kiro-cli did not produce /results/findings.json (after retries + auto fallback). tail of log:
+# ─── Invoke kiro-cli ──────────────────────────────────────────────────
+# Give the slow-cold-starting eks-mcp-server room to register in
+# non-interactive mode (default 30s is too short); best-effort.
+/tools/kiro-cli settings mcp.noInteractiveTimeout 120000 >/dev/null 2>&1 || true
+echo "[investigate] running kiro-cli model=${KIRO_MODEL_INVESTIGATE}…"
+# Tee to the kept file (post-mortem) AND container stdout (so kubectl logs
+# shows the tool-call history even after the pod is GC'd).
+if ! /tools/kiro-cli chat --no-interactive \
+        --model "${KIRO_MODEL_INVESTIGATE}" \
+        --trust-all-tools \
+        "$(cat /tmp/prompt.txt)" 2>&1 | tee "$LOG"; then
+    post_error "kiro-cli exited non-zero. tail of log:
 $(tail -20 "$LOG" | sed 's/[\\r\\n]/ /g; s/\"/\\\\\"/g')"
 fi
+
+[ -s /results/findings.json ] || post_error "kiro-cli did not produce /results/findings.json"
 if ! python3 -c 'import json,sys; json.load(open("/results/findings.json"))'; then
     post_error "/results/findings.json is not valid JSON. tail of log:
 $(tail -10 "$LOG")"

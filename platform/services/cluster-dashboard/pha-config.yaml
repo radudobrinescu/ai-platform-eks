@@ -34,6 +34,12 @@ data:
   # Per-resource debounce (no re-investigation within this window).
   DEBOUNCE_WINDOW_SEC: "600"
 
+  # After a resource is concluded out-of-scope (can't auto-remediate), don't
+  # re-investigate it for this long. Stops stuck platform resources (e.g. an
+  # AITeam in ai-platform) from re-firing every debounce window and draining
+  # the daily budget. 86400 = re-check once a day.
+  OUT_OF_SCOPE_COOLDOWN_SEC: "86400"
+
   # Trigger toggles. "false" disables that signal.
   TRIGGER_CRASHLOOP: "true"
   TRIGGER_OOMKILLED: "true"

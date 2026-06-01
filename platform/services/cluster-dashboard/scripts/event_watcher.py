@@ -55,6 +55,12 @@ EXCLUDE_NAMESPACES = set(filter(None, os.environ.get("EXCLUDE_NAMESPACES", "").s
 DEBOUNCE_WINDOW_SEC = int(os.environ.get("DEBOUNCE_WINDOW_SEC", "600"))
 MAX_CONCURRENT = int(os.environ.get("MAX_CONCURRENT_INVESTIGATIONS", "3"))
 MAX_PER_DAY = int(os.environ.get("MAX_INVESTIGATIONS_PER_DAY", "50"))
+# After we conclude a resource is out-of-scope (can't auto-remediate, e.g. a
+# stuck AITeam in ai-platform), don't re-investigate it for this long. Without
+# this, the stuck-resource scanner re-fires every DEBOUNCE_WINDOW_SEC forever,
+# burning the daily budget on a verdict that won't change. Re-checks daily so a
+# genuinely-changed resource is eventually picked up again.
+OUT_OF_SCOPE_COOLDOWN_SEC = int(os.environ.get("OUT_OF_SCOPE_COOLDOWN_SEC", "86400"))
 
 TRIGGERS = {
     "CrashLoopBackOff": os.environ.get("TRIGGER_CRASHLOOP", "true").lower() == "true",
@@ -182,6 +188,20 @@ def should_throttle(conn: psycopg.Connection, kind: str, namespace: str, name: s
         active = cur.fetchone()
         if active:
             return f"already_in_flight({active[0]})"
+
+        # 0b. Out-of-scope cooldown: if we recently concluded this resource is
+        # out-of-scope (can't auto-remediate), don't keep re-investigating it —
+        # the verdict won't change and it would drain the daily budget.
+        cur.execute(
+            """SELECT 1 FROM investigations
+                WHERE resource_kind=%s AND resource_namespace=%s AND resource_name=%s
+                  AND out_of_scope = true
+                  AND created_at > now() - make_interval(secs => %s)
+                LIMIT 1""",
+            (kind, namespace, name, OUT_OF_SCOPE_COOLDOWN_SEC),
+        )
+        if cur.fetchone():
+            return "out_of_scope_cooldown"
 
         # 1. Per-resource debounce.
         cur.execute(
