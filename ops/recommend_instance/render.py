@@ -711,10 +711,24 @@ def _print_scaling_section(
                   f"{s.option.nodepool:<14}{suffix}{reset}")
 
 
-def _print_yaml_snippet(model: ModelSpec, vram: VramEstimate, best: Option,
-                        args: argparse.Namespace, C: type,
-                        scaling: list[ScalingRecommendation] | None = None) -> None:
-    name = model.model_id.split("/")[-1].lower().replace(".", "-").replace("_", "-")
+def model_name_from_id(model_id: str) -> str:
+    """Derive the kebab-case name used as the YAML filename, metadata.name, and
+    LiteLLM model name. Single source of truth for deploy + undeploy."""
+    return model_id.split("/")[-1].lower().replace(".", "-").replace("_", "-")
+
+
+def build_inference_yaml(
+    model: ModelSpec, vram: VramEstimate, best: Option,
+    args: argparse.Namespace,
+    scaling: list[ScalingRecommendation] | None = None,
+) -> tuple[str, str, str, str]:
+    """Build the InferenceEndpoint manifest for the recommended config.
+
+    Returns (name, yaml_path, yaml_body, commit_msg). Used both to print the
+    copy-paste snippet and to write the file directly with --deploy, so the two
+    paths can never drift.
+    """
+    name = model_name_from_id(model.model_id)
     max_len = args.seq
 
     # In fleet mode, the YAML must reflect the fleet pick (which may differ
@@ -797,14 +811,26 @@ def _print_yaml_snippet(model: ModelSpec, vram: VramEstimate, best: Option,
         f"  minReplicas: {min_replicas}",
         f"  maxReplicas: {max_replicas}",
     ])
-    yaml_body = "\n".join(lines)
+    yaml_body = "\n".join(lines) + "\n"
+    return name, yaml_path, yaml_body, commit_msg
 
+
+def _print_yaml_snippet(model: ModelSpec, vram: VramEstimate, best: Option,
+                        args: argparse.Namespace, C: type,
+                        scaling: list[ScalingRecommendation] | None = None) -> None:
+    name, yaml_path, yaml_body, commit_msg = build_inference_yaml(
+        model, vram, best, args, scaling)
+
+    # --deploy/--undeploy do the git work for you; the copy-paste block is the
+    # manual path. Point at the automated one so users know it exists.
+    print(f"\n{C.BOLD}Deploy this model{C.RESET} — "
+          f"{C.DIM}automatically:{C.RESET} re-run with {C.BOLD}--deploy{C.RESET} "
+          f"{C.DIM}(writes the file, commits, and pushes for you).{C.RESET}")
+    print(f"{C.DIM}Or copy-paste the block below into your shell:{C.RESET}\n")
     # The heredoc uses a quoted 'EOF' so the YAML content is not subject to
     # shell expansion (model IDs sometimes contain '$' in other ecosystems).
-    print(f"\n{C.BOLD}Deploy this model{C.RESET} — "
-          f"{C.DIM}copy-paste the block below into your shell:{C.RESET}\n")
     print(f"cat > {yaml_path} <<'EOF'")
-    print(yaml_body)
+    print(yaml_body, end="")
     print("EOF")
 
     print(f"\n{C.DIM}Then commit and push (ArgoCD picks it up within ~30s):{C.RESET}\n")
@@ -814,6 +840,9 @@ def _print_yaml_snippet(model: ModelSpec, vram: VramEstimate, best: Option,
     print()
     print(f"{C.DIM}# Watch the deployment come up:{C.RESET}")
     print("kubectl get inferenceendpoints -n inference -w")
+    print(f"{C.DIM}# Later, to remove it (ArgoCD deletes the model + LiteLLM "
+          f"deregisters):{C.RESET}")
+    print(f"./ops/recommend-instance.py --undeploy {name}")
 
 
 def print_json(

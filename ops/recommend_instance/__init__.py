@@ -54,7 +54,14 @@ Examples:
   HF_TOKEN=hf_... ./ops/recommend-instance.py google/gemma-3-27b-it
 
   # Budget-conscious: cap at $5/hr per instance
-  ./ops/recommend-instance.py Qwen/Qwen2.5-32B-Instruct --quant int4 --max-price 5"""
+  ./ops/recommend-instance.py Qwen/Qwen2.5-32B-Instruct --quant int4 --max-price 5
+
+  # Recommend AND deploy: write the YAML, commit, and push (ArgoCD picks it up)
+  ./ops/recommend-instance.py Qwen/Qwen2.5-3B-Instruct --deploy
+
+  # Remove a deployed model: delete its YAML, commit, push (ArgoCD prunes it,
+  # LiteLLM deregisters it). No model lookup — just the name.
+  ./ops/recommend-instance.py --undeploy qwen2-5-3b-instruct"""
 
 from .cli import main
 

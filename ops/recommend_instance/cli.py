@@ -38,7 +38,9 @@ def main(argv: list[str] | None = None) -> int:
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog=__doc__.split("Examples:", 1)[1] if "Examples:" in (__doc__ or "") else "",
     )
-    p.add_argument("model", help="HuggingFace model ID (e.g. google/gemma-3-4b-it)")
+    p.add_argument("model", nargs="?", default=None,
+                   help="HuggingFace model ID (e.g. google/gemma-3-4b-it). "
+                        "Not required with --undeploy.")
     p.add_argument("--quant", choices=sorted(WEIGHT_BYTES),
                    default="bf16", help="Weights quantisation (default: bf16)")
     p.add_argument("--kv-quant", choices=sorted(KV_BYTES),
@@ -94,7 +96,28 @@ def main(argv: list[str] | None = None) -> int:
                         "throughput — forces escalation to faster GPUs if needed.")
     p.add_argument("--hf-token", default=os.environ.get("HF_TOKEN"),
                    help="HuggingFace token (also $HF_TOKEN). Required for gated models.")
+    p.add_argument("--deploy", action="store_true",
+                   help="Write the recommended InferenceEndpoint YAML to "
+                        "workloads/models/, then git commit + push so ArgoCD "
+                        "deploys it (instead of only printing the snippet).")
+    p.add_argument("--undeploy", metavar="NAME", default=None,
+                   help="Delete workloads/models/<NAME>.yaml and git commit + push "
+                        "so ArgoCD removes the model (and LiteLLM deregisters it). "
+                        "Operates on the file by name — no model lookup; the "
+                        "positional model arg is not required with --undeploy.")
+    p.add_argument("--yes", "-y", action="store_true",
+                   help="Skip the confirmation prompt for --deploy/--undeploy.")
     args = p.parse_args(argv)
+
+    # --undeploy is a pure file/git operation: short-circuit before any HF fetch
+    # or pricing call (no model metadata needed to delete a manifest).
+    if args.undeploy is not None:
+        from .gitops import undeploy_model
+        return undeploy_model(args.undeploy, args)
+
+    # Every other path needs a model to size/recommend.
+    if not args.model:
+        p.error("the 'model' argument is required (unless using --undeploy)")
 
     if not 0.0 <= args.safety_margin < 0.5:
         sys.exit("error: --safety-margin must be in [0.0, 0.5)")
@@ -183,5 +206,18 @@ def main(argv: list[str] | None = None) -> int:
         print_json(model, vram, opts, best, args, price_src, scaling)
     else:
         print_human(model, vram, opts, best, args, price_src, scaling, prices)
+
+    # --deploy: write the recommended manifest + commit + push. Requires a real
+    # recommendation — refuse if nothing fits within the constraints.
+    if args.deploy:
+        if best is None:
+            sys.stderr.write("\ncannot --deploy: no instance fits the model within "
+                             "the given constraints (raise --max-price or adjust flags).\n")
+            return 2
+        from .gitops import deploy_model
+        from .render import build_inference_yaml
+        name, yaml_path, yaml_body, commit_msg = build_inference_yaml(
+            model, vram, best, args, scaling)
+        return deploy_model(name, yaml_path, yaml_body, commit_msg, args)
 
     return 0 if best else 2
