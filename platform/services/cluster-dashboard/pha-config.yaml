@@ -51,11 +51,24 @@ data:
   # Missing Secret/ConfigMap referenced as env (envFrom/valueFrom) →
   # CreateContainerConfigError. Distinct from FailedMount (volume mounts).
   TRIGGER_CONFIGERROR: "true"
+  # Container can't start (bad command, missing binary, perms) → RunContainerError.
+  TRIGGER_RUNCONTAINERERROR: "true"
+  # Node MemoryPressure/DiskPressure/PIDPressure=True or cordoned (unschedulable).
+  TRIGGER_NODEPRESSURE: "true"
+  # Pod sandbox / CNI setup failure → pod stuck ContainerCreating.
+  TRIGGER_PODSANDBOX: "true"
+  # Pod Running but persistently not Ready (readiness probe failing). Gated by
+  # POD_NOT_READY_THRESHOLD_SEC to clear normal slow model loads.
+  TRIGGER_PODNOTREADY: "true"
 
   # Stuck-resource scanner — polls KRO/Ray CRs (InferenceEndpoint, AITeam,
   # RayService). Fires when any has been in non-healthy state for this long.
   STUCK_RESOURCE_THRESHOLD_SEC: "300"
   STUCK_RESOURCE_POLL_INTERVAL: "60"
+
+  # A Running pod still not Ready after this long is treated as stuck (readiness
+  # probe failing). High enough to clear normal startup / vLLM model loads.
+  POD_NOT_READY_THRESHOLD_SEC: "600"
 
   # Concurrency + cost guards.
   MAX_CONCURRENT_INVESTIGATIONS: "3"

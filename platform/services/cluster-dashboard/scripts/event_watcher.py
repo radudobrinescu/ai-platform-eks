@@ -74,7 +74,22 @@ TRIGGERS = {
     # kubelet can't build the container config. Distinct from FailedMount, which
     # is a *volume* mount failure surfaced as a separate event.
     "CreateContainerConfigError": os.environ.get("TRIGGER_CONFIGERROR", "true").lower() == "true",
+    # Container can't start (bad command/entrypoint, missing binary, perms).
+    "RunContainerError": os.environ.get("TRIGGER_RUNCONTAINERERROR", "true").lower() == "true",
+    # Node resource pressure (Memory/Disk/PID) or cordoned (unschedulable).
+    "NodePressure": os.environ.get("TRIGGER_NODEPRESSURE", "true").lower() == "true",
+    # Pod sandbox / CNI setup failure → pod stuck ContainerCreating.
+    "FailedCreatePodSandBox": os.environ.get("TRIGGER_PODSANDBOX", "true").lower() == "true",
+    # Pod Running but persistently not Ready (readiness probe failing past
+    # POD_NOT_READY_THRESHOLD_SEC). Generous threshold avoids firing during
+    # normal slow model loads (e.g. vLLM).
+    "PodNotReady": os.environ.get("TRIGGER_PODNOTREADY", "true").lower() == "true",
 }
+
+# A Running pod that's still not Ready after this many seconds is treated as
+# stuck (readiness probe persistently failing). Set high enough to clear normal
+# container/model startup — vLLM model loads can take minutes.
+POD_NOT_READY_THRESHOLD_SEC = int(os.environ.get("POD_NOT_READY_THRESHOLD_SEC", "600"))
 
 # Threshold: a custom resource is considered "stuck" if it hasn't reached
 # its healthy state within this many seconds since creation.
@@ -479,7 +494,44 @@ def detect_pod_trigger(pod) -> tuple[str, dict] | None:
                     pod, container=f"{cs.name} ({kind_label})",
                     detail=waiting.message or "",
                 )
+            # Container can't start: bad command/entrypoint, missing binary,
+            # permission error. Persistent state, actionable immediately.
+            if (waiting and waiting.reason in ("RunContainerError", "StartError")
+                    and TRIGGERS["RunContainerError"]):
+                return "RunContainerError", _pod_payload(
+                    pod, container=f"{cs.name} ({kind_label})",
+                    detail=waiting.message or "",
+                )
+
+    # Pod Running but persistently not Ready (readiness probe failing). No
+    # waiting/terminated state to key on — gate on age so we don't fire during
+    # normal startup. Checked after the per-container loop so a container that's
+    # actively CrashLooping/erroring (handled above) takes precedence.
+    if TRIGGERS["PodNotReady"] and _pod_persistently_unready(pod):
+        return "PodNotReady", _pod_payload(
+            pod, container="(pod)",
+            detail=f"Pod Running but not Ready for >{POD_NOT_READY_THRESHOLD_SEC}s "
+                   f"(readiness probe failing)",
+        )
     return None
+
+
+def _pod_persistently_unready(pod) -> bool:
+    """True if the pod is Running but has been not-Ready longer than the
+    threshold — i.e. a readiness probe that won't pass, not a slow start."""
+    if not pod.status or pod.status.phase != "Running":
+        return False
+    # All containers must be started (else it's a startup/init issue handled
+    # elsewhere); the symptom is specifically Ready=False while Running.
+    conds = {c.type: c for c in (pod.status.conditions or [])}
+    ready = conds.get("Ready")
+    if not ready or ready.status != "False":
+        return False
+    # Age since the Ready condition last flipped (fall back to pod start time).
+    ref_ts = ready.last_transition_time or pod.status.start_time
+    if not ref_ts:
+        return False
+    return (datetime.now(timezone.utc) - ref_ts).total_seconds() >= POD_NOT_READY_THRESHOLD_SEC
 
 
 def _pod_payload(pod, container: str, detail: str) -> dict:
@@ -528,23 +580,46 @@ def detect_event_trigger(event) -> tuple[str, dict] | None:
         return "FailedScheduling", payload
     if event.reason == "FailedMount" and TRIGGERS["FailedMount"]:
         return "FailedMount", payload
+    # Pod sandbox / CNI setup failure → pod stuck ContainerCreating.
+    if event.reason in ("FailedCreatePodSandBox", "FailedPodSandBoxStatus") \
+            and TRIGGERS["FailedCreatePodSandBox"]:
+        return "FailedCreatePodSandBox", payload
     return None
 
 
 def detect_node_trigger(node) -> tuple[str, dict] | None:
-    if not TRIGGERS["NodeNotReady"]:
-        return None
     if not node.status or not node.status.conditions:
         return None
-    for cond in node.status.conditions:
-        if cond.type == "Ready" and cond.status == "False":
-            return "NodeNotReady", {
-                "kind": "Node",
-                "namespace": "",
-                "name": node.metadata.name,
-                "reason": cond.reason,
-                "message": cond.message,
-            }
+
+    def _node_payload(trigger_reason: str, message: str) -> dict:
+        return {
+            "kind": "Node",
+            "namespace": "",
+            "name": node.metadata.name,
+            "reason": trigger_reason,
+            "message": message,
+        }
+
+    conds = {c.type: c for c in node.status.conditions}
+
+    # NotReady takes precedence — it's the most severe node signal.
+    ready = conds.get("Ready")
+    if TRIGGERS["NodeNotReady"] and ready and ready.status == "False":
+        return "NodeNotReady", _node_payload(ready.reason, ready.message)
+
+    if TRIGGERS["NodePressure"]:
+        # Resource pressure: condition present AND True.
+        for ctype in ("MemoryPressure", "DiskPressure", "PIDPressure"):
+            c = conds.get(ctype)
+            if c and c.status == "True":
+                return "NodePressure", _node_payload(ctype, c.message or ctype)
+        # Cordoned: spec.unschedulable. Skip Karpenter's brief
+        # consolidation/drain churn by ignoring nodes already being deleted.
+        spec = node.spec
+        if spec and getattr(spec, "unschedulable", False) \
+                and not (node.metadata.deletion_timestamp):
+            return "NodePressure", _node_payload(
+                "Unschedulable", f"Node {node.metadata.name} is cordoned (unschedulable)")
     return None
 
 

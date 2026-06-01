@@ -118,10 +118,20 @@ spec:
               valueFrom: { configMapKeyRef: { name: platform-health-agent-config, key: TRIGGER_STUCKRESOURCE } }
             - name: TRIGGER_CONFIGERROR
               valueFrom: { configMapKeyRef: { name: platform-health-agent-config, key: TRIGGER_CONFIGERROR } }
+            - name: TRIGGER_RUNCONTAINERERROR
+              valueFrom: { configMapKeyRef: { name: platform-health-agent-config, key: TRIGGER_RUNCONTAINERERROR } }
+            - name: TRIGGER_NODEPRESSURE
+              valueFrom: { configMapKeyRef: { name: platform-health-agent-config, key: TRIGGER_NODEPRESSURE } }
+            - name: TRIGGER_PODSANDBOX
+              valueFrom: { configMapKeyRef: { name: platform-health-agent-config, key: TRIGGER_PODSANDBOX } }
+            - name: TRIGGER_PODNOTREADY
+              valueFrom: { configMapKeyRef: { name: platform-health-agent-config, key: TRIGGER_PODNOTREADY } }
             - name: STUCK_RESOURCE_THRESHOLD_SEC
               valueFrom: { configMapKeyRef: { name: platform-health-agent-config, key: STUCK_RESOURCE_THRESHOLD_SEC } }
             - name: STUCK_RESOURCE_POLL_INTERVAL
               valueFrom: { configMapKeyRef: { name: platform-health-agent-config, key: STUCK_RESOURCE_POLL_INTERVAL } }
+            - name: POD_NOT_READY_THRESHOLD_SEC
+              valueFrom: { configMapKeyRef: { name: platform-health-agent-config, key: POD_NOT_READY_THRESHOLD_SEC } }
             - name: MAX_CONCURRENT_INVESTIGATIONS
               valueFrom: { configMapKeyRef: { name: platform-health-agent-config, key: MAX_CONCURRENT_INVESTIGATIONS } }
             - name: MAX_INVESTIGATIONS_PER_DAY
