@@ -1217,7 +1217,7 @@ function renderHistoryItem(inv){
       <span class="outcome ${cls}">${escapeHtml(outcome)}</span>
       <span style="margin-left:auto;font-family:var(--mono);font-size:11px;color:var(--text-muted);padding-right:24px">${escapeHtml(tsText)}</span>
     </div>
-    <div class="history-row2">${escapeHtml(inv.trigger_kind)} · ${escapeHtml(where)}${inv.approved_by ? ' · approver=' + escapeHtml(inv.approved_by) : ''}</div>
+    <div class="history-row2">${escapeHtml(inv.trigger_kind)} · ${escapeHtml(where)}${inv.approved_by ? ' · approved via dashboard' : ''}</div>
     ${oosReason
       ? `<div class="history-summary"><span class="oos-tag">Out of scope</span> ${escapeHtml(oosReason)}</div>`
       : `<div class="history-summary">${escapeHtml(summary)}</div>`}
