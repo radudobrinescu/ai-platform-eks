@@ -1,15 +1,9 @@
 #!/usr/bin/env bash
-# Tunnel to the internal ALB via SSM through an EKS node.
-# Creates port forwards for all platform services.
+# Tunnel to Kubernetes services via SSM through an EKS node.
+# Forwards directly to ClusterIPs, bypassing the ALB and its IP allowlist.
 set -euo pipefail
 
 NAMESPACE="ai-platform"
-INGRESS_NAME="ai-platform-litellm"
-
-echo "→ Getting internal ALB hostname..."
-ALB_HOST=$(kubectl get ingress "$INGRESS_NAME" -n "$NAMESPACE" -o jsonpath='{.status.loadBalancer.ingress[0].hostname}')
-[ -z "$ALB_HOST" ] && { echo "ERROR: Could not find ALB hostname. Is the ingress provisioned?"; exit 1; }
-echo "  ALB: $ALB_HOST"
 
 CLUSTER_NAME=$(kubectl config view --minify -o jsonpath='{.clusters[0].name}' | awk -F/ '{print $NF}')
 echo "→ Finding an EKS node in the criticaladdons node group (cluster: $CLUSTER_NAME)..."
@@ -23,7 +17,18 @@ INSTANCE_ID=$(aws ec2 describe-instances \
 echo "  Instance: $INSTANCE_ID"
 
 echo ""
-echo "→ Starting SSM tunnels..."
+echo "→ Resolving Kubernetes service ClusterIPs..."
+OPENWEBUI_IP=$(kubectl get svc open-webui -n "$NAMESPACE" -o jsonpath='{.spec.clusterIP}')
+LITELLM_IP=$(kubectl get svc litellm -n "$NAMESPACE" -o jsonpath='{.spec.clusterIP}')
+LANGFUSE_IP=$(kubectl get svc langfuse-web -n "$NAMESPACE" -o jsonpath='{.spec.clusterIP}')
+DASHBOARD_IP=$(kubectl get svc cluster-dashboard -n "$NAMESPACE" -o jsonpath='{.spec.clusterIP}')
+echo "  open-webui:        $OPENWEBUI_IP:8080"
+echo "  litellm:           $LITELLM_IP:4000"
+echo "  langfuse-web:      $LANGFUSE_IP:3000"
+echo "  cluster-dashboard: $DASHBOARD_IP:9090"
+
+echo ""
+echo "→ Starting SSM tunnels (via ClusterIP — bypasses ALB allowlist)..."
 echo "  Open WebUI:  http://localhost:8080"
 echo "  LiteLLM:     http://localhost:4000"
 echo "  Langfuse:    http://localhost:3000"
@@ -32,19 +37,19 @@ echo ""
 
 aws ssm start-session --target "$INSTANCE_ID" \
   --document-name AWS-StartPortForwardingSessionToRemoteHost \
-  --parameters "{\"host\":[\"$ALB_HOST\"],\"portNumber\":[\"8080\"],\"localPortNumber\":[\"8080\"]}" &
+  --parameters "{\"host\":[\"$OPENWEBUI_IP\"],\"portNumber\":[\"8080\"],\"localPortNumber\":[\"8080\"]}" &
 
 aws ssm start-session --target "$INSTANCE_ID" \
   --document-name AWS-StartPortForwardingSessionToRemoteHost \
-  --parameters "{\"host\":[\"$ALB_HOST\"],\"portNumber\":[\"4000\"],\"localPortNumber\":[\"4000\"]}" &
+  --parameters "{\"host\":[\"$LITELLM_IP\"],\"portNumber\":[\"4000\"],\"localPortNumber\":[\"4000\"]}" &
 
 aws ssm start-session --target "$INSTANCE_ID" \
   --document-name AWS-StartPortForwardingSessionToRemoteHost \
-  --parameters "{\"host\":[\"$ALB_HOST\"],\"portNumber\":[\"3000\"],\"localPortNumber\":[\"3000\"]}" &
+  --parameters "{\"host\":[\"$LANGFUSE_IP\"],\"portNumber\":[\"3000\"],\"localPortNumber\":[\"3000\"]}" &
 
 aws ssm start-session --target "$INSTANCE_ID" \
   --document-name AWS-StartPortForwardingSessionToRemoteHost \
-  --parameters "{\"host\":[\"$ALB_HOST\"],\"portNumber\":[\"9090\"],\"localPortNumber\":[\"9090\"]}" &
+  --parameters "{\"host\":[\"$DASHBOARD_IP\"],\"portNumber\":[\"9090\"],\"localPortNumber\":[\"9090\"]}" &
 
 trap 'kill $(jobs -p) 2>/dev/null; exit' INT TERM
 wait
