@@ -49,8 +49,17 @@ The turnkey defaults (no edits needed) are:
 |-------|---------|-------------------|
 | `enable_bedrock` | `true` | Claude Opus 4.8 via LiteLLM, zero GPUs |
 | `enable_fine_tuning` | `true` | `FineTuneJob` + Unsloth trainer image |
-| `langfuse_nextauth_url` | `http://localhost:3000` | works with the SSM tunnel |
+| `langfuse_nextauth_url` | `http://localhost:3000` | Langfuse login via `./platformctl tunnel` (see note) |
 | `langfuse_init_user_email` | `admin@ai-platform.local` | Langfuse admin login |
+
+> **Langfuse login URL:** NextAuth validates the browser's Host header against
+> `langfuse_nextauth_url`, so it must match what you actually type. The default
+> `http://localhost:3000` is correct for the SSM tunnel (`./platformctl tunnel`) —
+> the day-one path, since the ALB hostname doesn't exist until after the first
+> apply. To log in over the **ALB/domain** instead, set this to the ALB URL
+> (`http://k8s-aiplatform-<hash>.<region>.elb.amazonaws.com:3000`, available after
+> the first apply) or `https://langfuse.<your-domain>`, then re-apply. Leaving it
+> at `localhost` while reaching Langfuse via the ALB breaks sign-in (Host mismatch).
 
 ## 2. Provision
 
