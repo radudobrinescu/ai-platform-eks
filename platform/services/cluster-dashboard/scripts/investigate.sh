@@ -19,7 +19,7 @@ set -eu
 [ -n "${INVESTIGATION_ID:-}" ] || { echo "INVESTIGATION_ID not set" >&2; exit 2; }
 [ -n "${EVENT_PAYLOAD:-}"   ] || { echo "EVENT_PAYLOAD not set"   >&2; exit 2; }
 
-mkdir -p /results "$HOME/.kiro"
+mkdir -p /results "$HOME/.kiro/settings"
 LOG=/results/kiro-stdout.log
 
 post_error() {
@@ -56,10 +56,13 @@ users:
 EOF
 
 # ─── MCP config: read-only EKS server ─────────────────────────────────
-# /pydeps is on PYTHONPATH already (env var in the Job spec). The
-# eks-mcp-server binary needs PYTHONPATH set to find its package, which
-# it inherits from the kiro-cli process.
-cat > "$HOME/.kiro/mcp.json" <<'EOF'
+# kiro-cli reads global MCP config from $HOME/.kiro/settings/mcp.json (NOT
+# $HOME/.kiro/mcp.json — that path is silently ignored, which is why the
+# eks tools never registered). /pydeps is on PYTHONPATH already (Job env);
+# the eks-mcp-server binary inherits it from the kiro-cli process.
+# "timeout" is the per-server launch budget (ms) — the python entrypoint
+# cold-starts slowly, so give it room.
+cat > "$HOME/.kiro/settings/mcp.json" <<'EOF'
 {
   "mcpServers": {
     "eks": {
@@ -67,7 +70,9 @@ cat > "$HOME/.kiro/mcp.json" <<'EOF'
       "args": [
         "--auth-mode", "kubeconfig",
         "--allow-sensitive-data-access"
-      ]
+      ],
+      "timeout": 60000,
+      "disabled": false
     }
   }
 }
@@ -156,6 +161,7 @@ EOF
 # kept LOG file doubles as post-mortem AND container stdout (tee), so kubectl
 # logs shows the full tool-call history even after the pod is GC'd.
 . /scripts/kiro_run.sh
+kiro_prepare
 if ! run_kiro investigate "${KIRO_MODEL_INVESTIGATE}" /results/findings.json /tmp/prompt.txt "$LOG"; then
     post_error "kiro-cli did not produce /results/findings.json (after retries + auto fallback). tail of log:
 $(tail -20 "$LOG" | sed 's/[\\r\\n]/ /g; s/\"/\\\\\"/g')"

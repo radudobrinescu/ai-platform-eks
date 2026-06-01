@@ -13,7 +13,7 @@ set -eu
 
 [ -n "${INVESTIGATION_ID:-}" ] || { echo "INVESTIGATION_ID not set" >&2; exit 2; }
 
-mkdir -p /results "$HOME/.kiro"
+mkdir -p /results "$HOME/.kiro/settings"
 LOG=/results/kiro-stdout.log
 
 post_error() {
@@ -71,8 +71,10 @@ users:
   user: { token: ${KUBE_TOKEN} }
 EOF
 
-# MCP config: WRITE mode.
-cat > "$HOME/.kiro/mcp.json" <<'EOF'
+# MCP config: WRITE mode. kiro-cli reads $HOME/.kiro/settings/mcp.json (NOT
+# $HOME/.kiro/mcp.json — that path is silently ignored). "timeout" gives the
+# slow-cold-starting python entrypoint room to register before the prompt runs.
+cat > "$HOME/.kiro/settings/mcp.json" <<'EOF'
 {
   "mcpServers": {
     "eks": {
@@ -81,7 +83,9 @@ cat > "$HOME/.kiro/mcp.json" <<'EOF'
         "--auth-mode", "kubeconfig",
         "--allow-sensitive-data-access",
         "--allow-write"
-      ]
+      ],
+      "timeout": 60000,
+      "disabled": false
     }
   }
 }
@@ -148,6 +152,7 @@ EOF
 # Invoke kiro-cli with retry + 'auto' fallback (see kiro_run.sh) to ride out
 # transient kiro-cli startup failures.
 . /scripts/kiro_run.sh
+kiro_prepare
 if ! run_kiro remediate "${KIRO_MODEL_REMEDIATE}" /results/result.json /tmp/prompt.txt "$LOG"; then
     post_error "remediator did not produce /results/result.json (after retries + auto fallback). tail:
 $(tail -20 "$LOG" | sed 's/[\\r\\n]/ /g; s/\"/\\\\\"/g')"

@@ -1,23 +1,45 @@
-# kiro_run.sh — shared kiro-cli invocation with retry + model fallback.
+# kiro_run.sh — shared kiro-cli invocation with MCP setup, retry + model fallback.
 #
 # Sourced by investigate.sh and remediate.sh (both mount the same
-# platform-health-agent-scripts ConfigMap at /scripts).
+# platform-health-agent-scripts ConfigMap at /scripts). Each wrapper first
+# writes its MCP config to $HOME/.kiro/settings/mcp.json, then calls run_kiro.
 #
-# Why: kiro-cli occasionally fails to retrieve its MCP/auth settings at
-# startup ("Failed to retrieve MCP settings…"). When that fetch fails it
-# degrades to a state where the only model it sees is 'auto', and then
-# rejects the configured model with:
-#     error: Model '<name>' does not exist. Available models: auto
-# …writing no output file. That's transient — a fresh attempt usually
-# recovers. So we retry the configured model a few times, and if it still
-# reports the model unavailable, fall back to --model auto (always present)
-# so the run completes instead of surfacing a permanent Failed card.
+# MCP loading (the thing that kept the agent tool-less):
+#   - kiro-cli reads global MCP config from $HOME/.kiro/settings/mcp.json. The
+#     wrappers used to write $HOME/.kiro/mcp.json, which kiro-cli ignores — so
+#     the eks-mcp-server tools never registered and the agent silently fell back
+#     to raw kubectl. The wrappers now write the correct path.
+#   - In --no-interactive mode kiro-cli waits up to `mcp.noInteractiveTimeout`
+#     (default 30s) for MCP servers, then proceeds WITHOUT the ones still
+#     starting. The eks-mcp-server is a slow-cold-starting python entrypoint, so
+#     kiro_prepare() bumps that budget. We deliberately do NOT pass
+#     --require-mcp-startup: if MCP still isn't ready, letting kiro-cli proceed
+#     lets the LLM fall back to /tools/kubectl (RBAC-bounded, still safe) and
+#     complete the task rather than hard-failing.
 #
-#   run_kiro <label> <model> <output_file> <prompt_file> <log_file>
-#     returns 0 iff <output_file> exists and is non-empty after the run.
+# Model retry/fallback: kiro-cli occasionally degrades at startup to where the
+# only model it sees is 'auto', rejecting the configured model with
+# "Model '<name>' does not exist. Available models: auto" and writing no output.
+# So run_kiro retries the configured model, then falls back to --model auto.
 #
-# Tunable: KIRO_MAX_ATTEMPTS (env, default 3) — attempts on the configured
-# model before the 'auto' fallback.
+#   kiro_prepare                                   # once, before run_kiro
+#   run_kiro <label> <model> <out> <prompt> <log>  # 0 iff <out> is non-empty
+#
+# Tunables (env): KIRO_MAX_ATTEMPTS (default 3),
+#                 KIRO_MCP_TIMEOUT_MS (default 120000).
+
+kiro_prepare() {
+    # Give slow MCP servers room to register before the prompt runs in
+    # non-interactive mode. Best-effort: first-run/settings quirks must not
+    # abort the investigation.
+    _to="${KIRO_MCP_TIMEOUT_MS:-120000}"
+    /tools/kiro-cli settings mcp.noInteractiveTimeout "$_to" >/dev/null 2>&1 \
+        && echo "[kiro] set mcp.noInteractiveTimeout=${_to}ms" \
+        || echo "[kiro] WARN: could not set mcp.noInteractiveTimeout (continuing)" >&2
+    # Diagnostic: log which MCP servers kiro-cli sees configured.
+    echo "[kiro] configured MCP servers:"
+    /tools/kiro-cli mcp list 2>&1 | sed 's/^/  /' || true
+}
 
 run_kiro() {
     _label="$1"; _model="$2"; _out="$3"; _prompt_file="$4"; _log="$5"
