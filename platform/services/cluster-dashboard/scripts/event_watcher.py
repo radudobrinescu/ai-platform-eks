@@ -102,12 +102,12 @@ PYTHON_IMAGE = os.environ.get("PYTHON_IMAGE", "python:3.12-slim")
 KUBECTL_VERSION = os.environ.get("KUBECTL_VERSION", "v1.32.5")
 NAMESPACE = "ai-platform"  # where the watcher runs and Investigator/Remediator Jobs are spawned
 
-# PHA is "enabled" only when a Kiro API key is present. Terraform provisions the
-# platform-health-agent-secrets Secret (mounted here, optional) ONLY when
-# platform_health_agent_enabled=true. Without it the watcher idles gracefully —
-# it boots, serves a healthy endpoint, watches nothing and spawns no Jobs — so
-# the always-synced cluster-dashboard app stays Healthy on clusters that never
-# opted in. See main().
+# PHA is "enabled" only when a Kiro API key is present. The
+# platform-health-agent-secrets Secret (mounted here, optional) is created
+# manually with kubectl (see PLATFORM-HEALTH-AGENT.md). Without it the watcher
+# idles gracefully — it boots, serves a healthy endpoint, watches nothing and
+# spawns no Jobs — so the always-synced cluster-dashboard app stays Healthy on
+# clusters that never opted in. See main().
 KIRO_API_KEY = os.environ.get("KIRO_API_KEY", "")
 PHA_ENABLED = bool(KIRO_API_KEY.strip())
 
@@ -997,8 +997,8 @@ def main() -> int:
 
     # Graceful idle: no Kiro API key → the agent is disabled. Don't watch, don't
     # spawn Jobs (the spawned Jobs require KIRO_API_KEY and would fail anyway).
-    # Just idle until SIGTERM. Enable by provisioning the key (Terraform
-    # platform_health_agent_enabled=true) and restarting this Deployment.
+    # Just idle until SIGTERM. Enable by creating the platform-health-agent-secrets
+    # Secret (kubectl) and restarting this Deployment.
     if not PHA_ENABLED:
         log.warning("Platform Health Agent DISABLED — no KIRO_API_KEY present. "
                     "Watcher idling (no investigations). To enable: create the "

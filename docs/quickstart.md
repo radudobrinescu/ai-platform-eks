@@ -25,11 +25,23 @@ standalone; the value compounds.
 cd terraform/00.global/vars
 cp example.tfvars dev.tfvars
 # Edit dev.tfvars:
-#   - shared_config.resources_prefix         (cluster name prefix)
-#   - capabilities_config.argocd_idc_*        (your Identity Center ARN + user/group IDs)
+#   - shared_config.resources_prefix         (cluster name prefix; cluster = <prefix>-<env>)
+#   - capabilities_config.argocd_idc_*        (your Identity Center ARN + user/group IDs;
+#                                              idc region is independent of the cluster region)
 #   - gitops_repo_url                         (this repo, or your fork)
 #   - (optional) langfuse_nextauth_url        (ALB/domain URL for the Langfuse UI)
 ```
+
+> **If you forked**, set the fork URL in all three places (they must match or ArgoCD
+> syncs the wrong repo): `gitops_repo_url` above, plus the literal URLs in
+> `argocd/bootstrap/platform.yaml` (`$repo :=`) and `argocd/bootstrap/workloads.yaml`
+> (`repoURL:`). Deploying this repo as-is? They already match — nothing to change.
+
+> **Public ALB access** is restricted by an IP allowlist that ships as a placeholder.
+> To reach the UIs over the internet, set your IP (`curl -s https://checkip.amazonaws.com`
+> → `<ip>/32`) in all four `inbound-cidrs` lines — `platform/config/ingress.yaml` (×3)
+> and `platform/services/cluster-dashboard/manifests.yaml` (×1) — then push. Or just
+> use `./platformctl tunnel` (SSM), which needs no allowlist edit.
 
 The turnkey defaults (no edits needed) are:
 

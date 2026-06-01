@@ -69,11 +69,13 @@ The [**quickstart guide**](docs/quickstart.md) walks the full turnkey path
 via the thin `./platformctl` wrapper. The essentials:
 
 ```bash
-# 1. Fork this repo and point the platform at your fork (ArgoCD syncs from it).
-#    Set the same URL in your tfvars (gitops_repo_url) and both AppSets:
-grep -rl 'YOUR-ORG/YOUR-REPO' argocd/bootstrap/ \
-  | xargs sed -i '' 's#https://github.com/YOUR-ORG/YOUR-REPO.git#<YOUR_FORK_URL>#g'
-git commit -am "chore: point platform at my fork" && git push
+# 1. Point the platform at the git repo ArgoCD will sync from.
+#    If you FORKED this repo, set your fork URL in THREE places (they must match):
+#      - gitops_repo_url in your tfvars
+#      - argocd/bootstrap/platform.yaml   (the `$repo :=` line)
+#      - argocd/bootstrap/workloads.yaml  (the `repoURL:` line)
+#    If you're deploying this repo as-is, these are already set — skip to step 2.
+git commit -am "chore: point platform at my fork" && git push   # only if you changed URLs
 
 # 2. Provision (VPC, IAM, EKS + managed capabilities, Karpenter, secrets).
 cd terraform/00.global/vars && cp example.tfvars your-env.tfvars   # edit: IdC ARN, fork URL
@@ -82,34 +84,52 @@ make bootstrap ENVIRONMENT=your-env
 make ENVIRONMENT=your-env apply-all
 
 # 3. Talk to the frontier model immediately — no GPU required.
+#    Cluster name = <resources_prefix>-<env> (prefix is in your tfvars; example.tfvars → "ai-platform").
 aws eks update-kubeconfig --region $AWS_REGION --name ai-platform-your-env
-./ops/test-model.sh claude-opus-4-8 "What is Kubernetes?"
+# Bedrock models are static (no InferenceEndpoint) — query them via the LiteLLM API:
+curl -s http://localhost:4000/v1/chat/completions -H "Authorization: Bearer $LITELLM_KEY" \
+  -H 'Content-Type: application/json' \
+  -d '{"model":"claude-opus-4-8","messages":[{"role":"user","content":"What is Kubernetes?"}]}'
+# (./ops/test-model.sh works for self-hosted models — those have an InferenceEndpoint CR.)
 ```
 
 Deploy a self-hosted model — commit a YAML and push:
 
 ```yaml
-# workloads/models/gemma-4b.yaml
+# workloads/models/qwen3-3b.yaml
 apiVersion: kro.run/v1alpha1
 kind: InferenceEndpoint
 metadata:
-  name: gemma-4b
+  name: qwen3-3b
   namespace: inference
 spec:
-  model: "google/gemma-3-4b-it"
+  model: "Qwen/Qwen2.5-3B-Instruct"   # ungated — no token needed
   gpuCount: 1
 ```
 
 ```bash
-git add workloads/models/gemma-4b.yaml && git commit -m "feat: deploy gemma-4b" && git push
+git add workloads/models/qwen3-3b.yaml && git commit -m "feat: deploy qwen3-3b" && git push
 kubectl get inferenceendpoints -n inference -w   # watch it come up
 ```
+
+> **Gated models** (e.g. `google/gemma-3-4b-it`, Llama) need a HuggingFace token.
+> Create it once in the `inference` namespace before deploying such a model:
+> `kubectl create secret generic hf-token -n inference --from-literal=token=hf_...`
+> (and accept the model's license on HuggingFace). Ungated models like Qwen need nothing.
 
 > Not sure which GPU a model needs? `./ops/recommend-instance.py <hf-model-id>`
 > reads the architecture, estimates VRAM, and emits a ready-to-commit YAML.
 
 **Access the UIs** (internet-facing ALB restricted by IP allowlist, or `./ops/ssm-tunnel.sh` from anywhere):
 Open WebUI `:8080` · LiteLLM API `:4000` · Langfuse `:3000` · Cluster Dashboard `:9090`.
+
+> **Set the allowlist to YOUR IP before relying on the public ALB.** The shipped
+> `inbound-cidrs` is a placeholder and won't match you — leave it and the UIs are
+> silently unreachable (use `./ops/ssm-tunnel.sh` meanwhile). Replace the CIDR in
+> all four spots (they must stay identical — one shared ALB group):
+> `platform/config/ingress.yaml` (×3) and
+> `platform/services/cluster-dashboard/manifests.yaml` (×1), then commit + push.
+> `curl -s https://checkip.amazonaws.com` gives your current IP → use `<ip>/32`.
 
 ---
 

@@ -112,4 +112,6 @@ governed by `AITeam` budgets/keys, and traced in Langfuse.
 - **Training Job OOM** → bump `minVramPerGpuGiB`/`workerMemory`, or lower `maxSeqLength`/`batchSize`.
 - **autoDeploy endpoint stuck Pending** → `kubectl describe inferenceendpoint <name> -n inference`;
   check the `hf-cache-download` init container synced the `fine-tuned/...` prefix.
-- **Gated base model** → create the `hf-token` Secret in `inference` (see main README).
+- **Gated base model** → create the `hf-token` Secret in `inference` first:
+  `kubectl create secret generic hf-token -n inference --from-literal=token=hf_...`
+  (and accept the model's license on HuggingFace). The default Qwen base is ungated.

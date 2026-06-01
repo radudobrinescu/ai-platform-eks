@@ -7,7 +7,7 @@ kind: Kustomization
 #   2. The Platform Health Agent (pha-*.yaml): event-watcher Deployment, RBAC,
 #      config, and the scripts ConfigMap. The agent is always synced but idles
 #      gracefully unless a Kiro API key Secret (platform-health-agent-secrets,
-#      provisioned by Terraform when platform_health_agent_enabled=true) is
+#      created manually with kubectl — see PLATFORM-HEALTH-AGENT.md) is
 #      present — see pha-event-watcher.yaml + scripts/event_watcher.py.
 resources:
   - manifests.yaml

@@ -156,8 +156,8 @@ spec:
             - name: DB_PASSWORD
               valueFrom: { secretKeyRef: { name: platform-db-credentials, key: password } }
             # Kiro API key gates the agent. OPTIONAL (optional: true) so the pod
-            # boots even when PHA is not enabled — Terraform creates this Secret
-            # only when platform_health_agent_enabled=true. Absent → the watcher
+            # boots even when PHA is not enabled — this Secret is created manually
+            # with kubectl (see PLATFORM-HEALTH-AGENT.md). Absent → the watcher
             # idles gracefully (no investigations); present → it activates.
             - name: KIRO_API_KEY
               valueFrom:
