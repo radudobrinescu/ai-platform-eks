@@ -156,7 +156,7 @@ EOF
 }
 
 apply_failedmount() {
-  hdr "FailedMount — Pod references non-existent Secret"
+  hdr "CreateContainerConfigError — Pod references non-existent Secret (envFrom)"
   ensure_ns
   kubectl apply -n "$NS" -f - <<EOF
 apiVersion: apps/v1
@@ -179,9 +179,9 @@ EOF
   cat <<EOF
 ${C_DIM}
 expected timeline:
-  ~10s   pod scheduled, kubelet tries to mount
-  ~15s   FailedMount event emitted
-  ~30s   watcher fires FailedMount trigger
+  ~10s   pod scheduled, kubelet tries to build container config
+  ~15s   CreateContainerConfigError (envFrom secret missing)
+  ~30s   watcher fires CreateContainerConfigError trigger
   ~90s   investigation complete
 
 LLM diagnosis:
@@ -512,7 +512,7 @@ ${C_BOLD}Platform Health Agent — failure scenario picker${C_RST}
     3) ${C_GRN}crashloop${C_RST}  CrashLoopBackOff — Python KeyError on missing env var  (~90s)
 
   ${C_BOLD}Tier 2 — realistic infra issues${C_RST}
-    4) ${C_GRN}mount${C_RST}      FailedMount — Pod references non-existent Secret       (~90s)
+    4) ${C_GRN}mount${C_RST}      CreateContainerConfigError — missing Secret (envFrom)  (~90s)
     5) ${C_GRN}sched${C_RST}      FailedScheduling — Pod requests 100 CPU + 200 GiB      (~180s)
     6) ${C_GRN}configmap${C_RST}  ConfigMap key mismatch — best LLM-correlation demo     (~90s)
 

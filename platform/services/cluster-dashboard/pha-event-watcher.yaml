@@ -116,6 +116,8 @@ spec:
               valueFrom: { configMapKeyRef: { name: platform-health-agent-config, key: TRIGGER_FAILEDMOUNT } }
             - name: TRIGGER_STUCKRESOURCE
               valueFrom: { configMapKeyRef: { name: platform-health-agent-config, key: TRIGGER_STUCKRESOURCE } }
+            - name: TRIGGER_CONFIGERROR
+              valueFrom: { configMapKeyRef: { name: platform-health-agent-config, key: TRIGGER_CONFIGERROR } }
             - name: STUCK_RESOURCE_THRESHOLD_SEC
               valueFrom: { configMapKeyRef: { name: platform-health-agent-config, key: STUCK_RESOURCE_THRESHOLD_SEC } }
             - name: STUCK_RESOURCE_POLL_INTERVAL

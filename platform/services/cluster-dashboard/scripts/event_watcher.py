@@ -70,6 +70,10 @@ TRIGGERS = {
     "NodeNotReady":     os.environ.get("TRIGGER_NODENOTREADY","true").lower() == "true",
     "FailedMount":      os.environ.get("TRIGGER_FAILEDMOUNT", "true").lower() == "true",
     "StuckResource":    os.environ.get("TRIGGER_STUCKRESOURCE", "true").lower() == "true",
+    # Missing Secret/ConfigMap referenced as an env (envFrom/valueFrom) → the
+    # kubelet can't build the container config. Distinct from FailedMount, which
+    # is a *volume* mount failure surfaced as a separate event.
+    "CreateContainerConfigError": os.environ.get("TRIGGER_CONFIGERROR", "true").lower() == "true",
 }
 
 # Threshold: a custom resource is considered "stuck" if it hasn't reached
@@ -463,6 +467,15 @@ def detect_pod_trigger(pod) -> tuple[str, dict] | None:
             if (waiting and waiting.reason in ("ImagePullBackOff", "ErrImagePull")
                     and TRIGGERS["ImagePullBackOff"]):
                 return "ImagePullBackOff", _pod_payload(
+                    pod, container=f"{cs.name} ({kind_label})",
+                    detail=waiting.message or "",
+                )
+            # Missing Secret/ConfigMap referenced via envFrom/valueFrom → the
+            # container config can't be built. No restart-count gate: this state
+            # is persistent (kubelet retries forever) and actionable immediately.
+            if (waiting and waiting.reason in ("CreateContainerConfigError", "CreateContainerError")
+                    and TRIGGERS["CreateContainerConfigError"]):
+                return "CreateContainerConfigError", _pod_payload(
                     pod, container=f"{cs.name} ({kind_label})",
                     detail=waiting.message or "",
                 )

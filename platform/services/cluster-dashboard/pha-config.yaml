@@ -48,6 +48,9 @@ data:
   TRIGGER_NODENOTREADY: "true"
   TRIGGER_FAILEDMOUNT: "true"
   TRIGGER_STUCKRESOURCE: "true"
+  # Missing Secret/ConfigMap referenced as env (envFrom/valueFrom) →
+  # CreateContainerConfigError. Distinct from FailedMount (volume mounts).
+  TRIGGER_CONFIGERROR: "true"
 
   # Stuck-resource scanner — polls KRO/Ray CRs (InferenceEndpoint, AITeam,
   # RayService). Fires when any has been in non-healthy state for this long.
