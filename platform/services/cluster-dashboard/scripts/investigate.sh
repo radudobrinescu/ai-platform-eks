@@ -141,7 +141,8 @@ Write a SINGLE JSON object to /results/findings.json with EXACTLY these keys:
   ],
   "risk_assessment":        "what could go wrong if the fix is applied",
   "requires_manual_review": true | false,
-  "out_of_scope":           true | false
+  "out_of_scope":           true | false,
+  "out_of_scope_reason":    "if out_of_scope is true, ONE concise sentence naming WHY — which protected resource/namespace puts it out of scope (e.g. 'The fix requires modifying the dev-team AITeam custom resource, which is platform-managed.'). Empty string when out_of_scope is false."
 }
 
 For \`fix_commands\`, write kubectl-style commands as strings (these are the

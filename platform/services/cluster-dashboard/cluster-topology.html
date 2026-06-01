@@ -394,6 +394,12 @@ body { font-family: var(--font); background: var(--bg); color: var(--text); heig
 .outcome-expired  { background: rgba(150,150,150,0.12); color: var(--text-muted); }
 .outcome-pending  { background: var(--amber-soft);  color: var(--amber); }
 .outcome-running  { background: var(--accent-soft); color: var(--accent); }
+.outcome-oos      { background: var(--purple-soft); color: var(--purple); }
+.oos-tag {
+  display: inline-block; font-weight: 700; font-size: 10px; text-transform: uppercase;
+  letter-spacing: 0.4px; padding: 1px 6px; border-radius: 4px; margin-right: 6px;
+  background: var(--purple-soft); color: var(--purple);
+}
 .history-row2 {
   font-size: 11px; color: var(--text-muted); margin-top: 4px;
   font-family: var(--mono);
@@ -1171,6 +1177,7 @@ function renderHistoryItem(inv){
     else if(result.applied)                       { outcome = '⚠ Applied (verify failed)'; cls = 'outcome-failed'; }
     else                                          { outcome = '✕ Apply failed'; cls = 'outcome-failed'; }
   } else if(inv.status === 'failed')    { outcome = '✕ Failed';    cls = 'outcome-failed'; }
+   else if(inv.status === 'dismissed' && inv.out_of_scope){ outcome = 'Out of scope'; cls = 'outcome-oos'; }
    else if(inv.status === 'dismissed')   { outcome = 'Dismissed';  cls = 'outcome-dismissed'; }
    else if(inv.status === 'expired')     { outcome = 'Expired';    cls = 'outcome-expired'; }
    else if(inv.status === 'remediating') { outcome = '⟳ Applying fix…'; cls = 'outcome-running'; }
@@ -1182,6 +1189,12 @@ function renderHistoryItem(inv){
   const fix = (inv.fix_commands || []).map(fc =>
     (fc.description ? '# ' + fc.description + '\n' : '') + (fc.commands || []).join('\n')
   ).join('\n\n');
+
+  // Out-of-scope rows: surface WHY the agent declined to act. Prefer the
+  // dedicated reason; fall back to the summary for rows from before that field.
+  const oosReason = inv.out_of_scope
+    ? (findings.out_of_scope_reason || summary || 'No reason recorded.')
+    : '';
 
   // Corner control:
   //  - terminal rows  → permanent delete (×)
@@ -1205,7 +1218,9 @@ function renderHistoryItem(inv){
       <span style="margin-left:auto;font-family:var(--mono);font-size:11px;color:var(--text-muted);padding-right:24px">${escapeHtml(tsText)}</span>
     </div>
     <div class="history-row2">${escapeHtml(inv.trigger_kind)} · ${escapeHtml(where)}${inv.approved_by ? ' · approver=' + escapeHtml(inv.approved_by) : ''}</div>
-    <div class="history-summary">${escapeHtml(summary)}</div>
+    ${oosReason
+      ? `<div class="history-summary"><span class="oos-tag">Out of scope</span> ${escapeHtml(oosReason)}</div>`
+      : `<div class="history-summary">${escapeHtml(summary)}</div>`}
     <div class="history-detail">
       ${fix ? '<div style="font-weight:600;font-size:11px;color:var(--text-muted);margin-bottom:4px">PROPOSED FIX</div><pre>' + escapeHtml(fix) + '</pre>' : ''}
       ${result.applied !== undefined ? renderPostFixStatus(result) : ''}
