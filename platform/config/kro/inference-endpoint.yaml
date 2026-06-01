@@ -178,16 +178,16 @@ spec:
                     # consolidationPolicy: WhenEmpty).
                     karpenter.sh/do-not-disrupt: "true"
                 spec:
-                  # Place the Ray head on the dedicated CPU head pool (gpu-head),
-                  # NOT a GPU node. The head runs the Serve controller (needs the
-                  # heavy ray-llm image) but requests NO GPU — pinning it to a GPU
-                  # pool wasted a GPU node (for shared:false, a whole extra one).
-                  # The gpu-head NodeClass carries the same pre-pulled-image EBS
-                  # snapshot, so the head still starts in ~0s, on cheap CPU compute.
-                  # No GPU toleration needed: gpu-head nodes are untainted.
+                  # The head runs the Serve controller (needs the heavy ray-llm
+                  # image) but requests NO GPU, so keep it OFF GPU nodes — pinning
+                  # it to a GPU pool wasted capacity (for shared:false, a whole
+                  # extra GPU node). No workload-type selector + no GPU toleration
+                  # means it lands on the default CPU pool (the GPU pools are
+                  # tainted, so it can't go there). The image lazy-loads via SOCI
+                  # there; that startup is hidden behind the worker's much longer
+                  # GPU-provision + weight-load path, so it's not the bottleneck.
                   nodeSelector:
                     kubernetes.io/arch: amd64
-                    workload-type: gpu-head
                   containers:
                     - name: ray-head
                       image: ${platformConfig.data.?rayImage.orValue(schema.spec.rayImage)}
