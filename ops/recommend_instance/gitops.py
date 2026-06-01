@@ -46,8 +46,11 @@ def _confirm(prompt: str, assume_yes: bool) -> bool:
 
 
 def _git_commit_push(root: str, rel_path: str, commit_msg: str, C: type) -> int:
-    """Stage exactly `rel_path`, commit, and push. Returns a process exit code."""
-    add = _run(["git", "add", "--", rel_path], cwd=root)
+    """Stage exactly `rel_path` (a create, modify, OR delete), commit, and push.
+    Returns a process exit code. `-A` is required so a deletion stages cleanly —
+    a plain `git add -- <path>` errors with 'pathspec did not match' once the
+    file is gone, which is what silently broke --undeploy."""
+    add = _run(["git", "add", "-A", "--", rel_path], cwd=root)
     if add.returncode != 0:
         print(f"{C.RED}git add failed:{C.RESET} {add.stderr.strip()}", file=sys.stderr)
         return 1
@@ -130,14 +133,15 @@ def undeploy_model(name: str, args) -> int:
         print("Aborted — file left in place.")
         return 1
 
-    rm = _run(["git", "rm", "--", rel_path], cwd=root)
-    if rm.returncode != 0:
-        # Fall back to a plain unlink if the file isn't tracked yet.
-        try:
-            os.remove(abs_path)
-        except OSError as e:
-            print(f"{C.RED}could not remove {rel_path}:{C.RESET} {e}", file=sys.stderr)
-            return 1
+    # Remove the file on disk only — staging is handled uniformly by
+    # _git_commit_push (`git add -A`). Do NOT `git rm` here: that pre-stages the
+    # deletion, and the subsequent add then had nothing to match → the commit was
+    # skipped and the file was left deleted-but-not-committed (the bug this fixes).
+    try:
+        os.remove(abs_path)
+    except OSError as e:
+        print(f"{C.RED}could not remove {rel_path}:{C.RESET} {e}", file=sys.stderr)
+        return 1
 
     rc = _git_commit_push(root, rel_path, f"chore: undeploy {name}", C)
     if rc == 0:
