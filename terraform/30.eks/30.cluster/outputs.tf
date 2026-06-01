@@ -31,11 +31,14 @@ output "next_steps" {
        kubectl get secret litellm-secrets -n ai-platform -o jsonpath='{.data.master-key}' | base64 -d
 
     5. Langfuse tracing is live on first boot — no key setup needed.
-       Sign in at ${var.langfuse_nextauth_url}
+       The sign-in URL is auto-set to the ALB hostname (langfuse-nextauth-url
+       CronJob). Print it once the ingress is up:
+         echo "http://$(kubectl get ingress ai-platform-langfuse -n ai-platform \
+           -o jsonpath='{.status.loadBalancer.ingress[0].hostname}'):3000"
          user: ${var.langfuse_init_user_email}
          pass: terraform output -raw langfuse_admin_password
 
-    6. Try the frontier model with zero GPUs (Bedrock Claude Sonnet 4.6):
+    6. Try the frontier model with zero GPUs (Bedrock Claude Opus 4.8):
        requires Bedrock model access enabled in-account; see ops/compare-models.py --preflight
   EOT
 }

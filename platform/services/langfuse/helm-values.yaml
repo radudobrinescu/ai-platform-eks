@@ -50,10 +50,22 @@ langfuse:
 
   nextauth:
     # Browser-facing URL — NextAuth validates the sign-in Host header against it,
-    # so it must match what users type. The localhost default works with the SSM
-    # tunnel (./ops/ssm-tunnel.sh). For ALB/domain access, override this value
-    # (it's the single source of truth; the Terraform var.langfuse_nextauth_url
-    # is surfaced for reference but this is what the pod uses).
+    # so it must match what users type. This `url` is only the INITIAL value the
+    # chart renders into langfuse-web; the live value is reconciled at runtime:
+    #
+    #   - Default (ALB, turnkey): the langfuse-nextauth-url CronJob
+    #     (platform/config/langfuse-nextauth-url.yaml) reads the ALB hostname off
+    #     the ingress and sets NEXTAUTH_URL=http://<alb-host>:3000 on the
+    #     Deployment, so UI sign-in works behind the load balancer with zero
+    #     manual steps. ArgoCD selfHeal is told to ignore that env value
+    #     (ignoreDifferences in argocd/bootstrap/platform.yaml) so it sticks.
+    #
+    #   - Custom domain (production): pin a real URL here, e.g.
+    #     https://langfuse.example.com (behind Route53 + ACM). The reconciler
+    #     detects the non-placeholder value and leaves it alone.
+    #
+    #   - SSM tunnel fallback: the localhost default below still works via
+    #     ./ops/ssm-tunnel.sh on a cluster with no ALB ingress.
     url: "http://localhost:3000"
     secret:
       secretKeyRef:

@@ -62,7 +62,7 @@ variable "enable_fine_tuning" {
 }
 
 variable "langfuse_nextauth_url" {
-  description = "Browser-facing URL of the Langfuse web UI. NextAuth validates the Host header of sign-in requests against this, so it must match what users type. Default works with the SSM tunnel (ops/ssm-tunnel.sh). For ALB access set e.g. http://k8s-aiplatform-<hash>.<region>.elb.amazonaws.com:3000, or https://langfuse.<your-domain> behind a domain+cert. Injected into Langfuse via the Terraform-managed langfuse-init secret — no manual edit of the git-tracked helm values."
+  description = "Browser-facing URL of the Langfuse web UI (the Host that NextAuth validates sign-in against). For the default turnkey ALB access you can leave this as-is: the langfuse-nextauth-url CronJob (platform/config/langfuse-nextauth-url.yaml) discovers the ALB hostname at runtime and sets NEXTAUTH_URL on the langfuse-web Deployment automatically. Override only matters if you pin a custom domain — and that is done in platform/services/langfuse/helm-values.yaml (nextauth.url), which the reconciler then respects. This var is retained for reference/back-compat (it feeds the langfuse-init secret's NEXTAUTH_URL key, which the chart does not consume)."
   type        = string
   default     = "http://localhost:3000"
 }
