@@ -178,19 +178,16 @@ spec:
                     # consolidationPolicy: WhenEmpty).
                     karpenter.sh/do-not-disrupt: "true"
                 spec:
-                  # Place the Ray head on gpu-shared pool so it lands on the
-                  # warm-pool node where the Ray LLM image is pre-pulled.
-                  # The head doesn't request GPU, so it schedules alongside
-                  # the worker (which preempts the placeholder for its GPU
-                  # slice). Result: head container starts in <5 s instead of
-                  # ~7 min of image pull on a fresh default-pool instance.
+                  # Place the Ray head on the dedicated CPU head pool (gpu-head),
+                  # NOT a GPU node. The head runs the Serve controller (needs the
+                  # heavy ray-llm image) but requests NO GPU — pinning it to a GPU
+                  # pool wasted a GPU node (for shared:false, a whole extra one).
+                  # The gpu-head NodeClass carries the same pre-pulled-image EBS
+                  # snapshot, so the head still starts in ~0s, on cheap CPU compute.
+                  # No GPU toleration needed: gpu-head nodes are untainted.
                   nodeSelector:
                     kubernetes.io/arch: amd64
-                    workload-type: gpu-shared
-                  tolerations:
-                    - key: nvidia.com/gpu
-                      operator: Exists
-                      effect: NoSchedule
+                    workload-type: gpu-head
                   containers:
                     - name: ray-head
                       image: ${platformConfig.data.?rayImage.orValue(schema.spec.rayImage)}
