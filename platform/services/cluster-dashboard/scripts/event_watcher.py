@@ -78,7 +78,7 @@ STUCK_RESOURCE_THRESHOLD_SEC = int(os.environ.get("STUCK_RESOURCE_THRESHOLD_SEC"
 # How often to scan for stuck resources.
 STUCK_RESOURCE_POLL_INTERVAL = int(os.environ.get("STUCK_RESOURCE_POLL_INTERVAL", "60"))
 
-KIRO_MODEL_INVESTIGATE = os.environ.get("KIRO_MODEL_INVESTIGATE", "claude-opus-4.8")
+KIRO_MODEL_INVESTIGATE = os.environ.get("KIRO_MODEL_INVESTIGATE", "auto")
 PYTHON_IMAGE = os.environ.get("PYTHON_IMAGE", "python:3.12-slim")
 KUBECTL_VERSION = os.environ.get("KUBECTL_VERSION", "v1.32.5")
 NAMESPACE = "ai-platform"  # where the watcher runs and Investigator/Remediator Jobs are spawned

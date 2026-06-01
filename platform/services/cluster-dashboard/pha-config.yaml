@@ -64,7 +64,10 @@ data:
   APPROVAL_EXPIRY_HOURS: "24"
 
   # Models. Available list: kiro-cli chat --list-models
-  KIRO_MODEL_INVESTIGATE: "claude-opus-4.8"
+  # Investigate runs on every triggered event (frequent, read-only) → "auto"
+  # lets kiro-cli route per-step for speed/cost. Remediate is rare + high-stakes
+  # (executes approved writes) → pinned to Opus for deterministic capability.
+  KIRO_MODEL_INVESTIGATE: "auto"
   KIRO_MODEL_REMEDIATE: "claude-opus-4.8"
 
   # Database (no password — that's in platform-db-credentials secret in ai-platform).
