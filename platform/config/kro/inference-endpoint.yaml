@@ -178,16 +178,26 @@ spec:
                     # consolidationPolicy: WhenEmpty).
                     karpenter.sh/do-not-disrupt: "true"
                 spec:
-                  # The head runs the Serve controller (needs the heavy ray-llm
-                  # image) but requests NO GPU, so keep it OFF GPU nodes — pinning
-                  # it to a GPU pool wasted capacity (for shared:false, a whole
-                  # extra GPU node). No workload-type selector + no GPU toleration
-                  # means it lands on the default CPU pool (the GPU pools are
-                  # tainted, so it can't go there). The image lazy-loads via SOCI
-                  # there; that startup is hidden behind the worker's much longer
-                  # GPU-provision + weight-load path, so it's not the bottleneck.
+                  # Co-locate the head on the SAME GPU pool as the worker (match
+                  # its workload-type selector) — NOT a separate node. The head
+                  # requests 0 GPU (see resources below), so it rides the GPU node
+                  # the worker already needs, consuming only spare CPU/RAM, no GPU
+                  # slice. Why here and not a CPU pool: the head needs the heavy
+                  # ~13GiB ray-llm image, and only the GPU pools' nodes boot from
+                  # the pre-pulled EBS image snapshot → head image start ~0s. On a
+                  # snapshot-less CPU node it was a full ~9min Docker Hub pull, and
+                  # the worker blocks on the head's GCS, so that serialized in
+                  # front of every deploy. The earlier waste (a whole extra GPU
+                  # node for shared:false) came from hardcoding gpu-shared here
+                  # while the worker used gpu-inference; matching the worker's pool
+                  # fixes that — they bin-pack onto one node.
                   nodeSelector:
                     kubernetes.io/arch: amd64
+                    workload-type: "${schema.spec.shared ? 'gpu-shared' : 'gpu-inference'}"
+                  tolerations:
+                    - key: nvidia.com/gpu
+                      operator: Exists
+                      effect: NoSchedule
                   containers:
                     - name: ray-head
                       image: ${platformConfig.data.?rayImage.orValue(schema.spec.rayImage)}
