@@ -1,0 +1,14 @@
+apiVersion: kro.run/v1alpha1
+kind: InferenceEndpoint
+metadata:
+  name: qwen3-4b-instruct-2507
+  namespace: inference
+spec:
+  model: "Qwen/Qwen3-4B-Instruct-2507"
+  gpuCount: 1
+  maxModelLen: 8192
+  minVramPerGpuGiB: 12
+  workerMemory: "12Gi"
+  # maxNumSeqs: 64
+  minReplicas: 1
+  maxReplicas: 2
