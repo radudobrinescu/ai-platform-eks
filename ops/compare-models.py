@@ -392,7 +392,6 @@ def call_model(
     body = {
         "model": model,
         "messages": item.to_messages(),
-        "temperature": 0.2,
         "max_tokens": 1024,
         # LiteLLM forwards `metadata` to its Langfuse callback. trace_name/tags
         # make the run easy to find in the UI; the explicit API link is the
