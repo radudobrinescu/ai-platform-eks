@@ -79,7 +79,7 @@ from typing import Any
 
 DEFAULT_LITELLM_URL = os.environ.get("LITELLM_URL", "http://localhost:4000")
 DEFAULT_LANGFUSE_URL = os.environ.get("LANGFUSE_URL", "http://localhost:3000")
-DEFAULT_MODELS = "claude-opus-4-8,qwen3-3b"
+DEFAULT_MODELS = None  # auto-detect from LiteLLM /v1/models
 REQUEST_TIMEOUT_SEC = 120
 # Approximate hours/month an always-on GPU node runs (matches recommend-instance.py).
 HOURS_PER_MONTH = 730.0
@@ -670,8 +670,8 @@ def parse_args(argv: list[str] | None) -> argparse.Namespace:
     )
     p.add_argument("--dataset", type=Path,
                    help="JSONL eval file (required unless --preflight).")
-    p.add_argument("--models", default=DEFAULT_MODELS,
-                   help=f"Comma-separated LiteLLM model aliases (default: {DEFAULT_MODELS}).")
+    p.add_argument("--models", default=None,
+                   help="Comma-separated LiteLLM model aliases (default: auto-detect all registered models).")
     p.add_argument("--langfuse-dataset", default="model-comparison",
                    help="Langfuse dataset name (default: model-comparison).")
     p.add_argument("--run-suffix", default="",
@@ -721,11 +721,24 @@ def estimate_baseline_cost_per_req(summary: ModelSummary | None) -> float:
 
 
 def run(args: argparse.Namespace) -> int:
-    models = [m.strip() for m in args.models.split(",") if m.strip()]
+    api_key = resolve_litellm_key(args.litellm_key)
+
+    # Auto-detect models from LiteLLM if not explicitly provided.
+    if args.models:
+        models = [m.strip() for m in args.models.split(",") if m.strip()]
+    else:
+        try:
+            _, resp = _request("GET", f"{args.litellm_url.rstrip('/')}/v1/models",
+                               headers={"Authorization": f"Bearer {api_key}"})
+            models = [m["id"] for m in resp.get("data", [])]
+        except Exception:
+            models = []
+        if not models:
+            sys.exit("ERROR: no models registered in LiteLLM and --models not provided.")
+        print(f"Auto-detected {len(models)} model(s): {', '.join(models)}\n")
+
     if not models:
         sys.exit("ERROR: --models is empty")
-
-    api_key = resolve_litellm_key(args.litellm_key)
 
     # Langfuse wiring (optional)
     langfuse: Langfuse | None = None
