@@ -77,7 +77,7 @@ APPROVAL_EXPIRY_HOURS = int(os.environ.get("APPROVAL_EXPIRY_HOURS", "24"))
 # History tab so users can clear the noise. Must comfortably exceed the Job deadline.
 STALE_INVESTIGATION_MINUTES = int(os.environ.get("STALE_INVESTIGATION_MINUTES", "15"))
 MAX_REMEDIATIONS_PER_DAY = int(os.environ.get("MAX_REMEDIATIONS_PER_DAY", "20"))
-KIRO_MODEL_REMEDIATE = os.environ.get("KIRO_MODEL_REMEDIATE", "claude-opus-4.8")
+KIRO_MODEL_REMEDIATE = os.environ.get("KIRO_MODEL_REMEDIATE", "auto")
 PYTHON_IMAGE = os.environ.get("PYTHON_IMAGE", "python:3.12-slim")
 KUBECTL_VERSION = os.environ.get("KUBECTL_VERSION", "v1.32.5")
 

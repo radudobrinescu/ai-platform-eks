@@ -127,7 +127,11 @@ Procedure:
      - kubectl delete pod X -n Y
        → manage_k8s_resource(operation="delete", kind="Pod", api_version="v1", name="X", namespace="Y")
 3. Apply each command in order. Continue past individual failures.
-4. Sleep 30 seconds (use \`fs_write\` to write a sleep-marker, no other way available).
+4. Poll until healthy (do NOT just sleep a fixed time): re-read the affected
+   resource(s) with manage_k8s_resource(operation="read") / list_k8s_resources,
+   wait ~5s between checks (run \`sleep 5\` via the shell tool), and stop AS SOON
+   AS they are healthy (criteria below). Give up after ~6 checks (~30s total) and
+   report the current state — don't keep polling. Proceed immediately on success.
 5. Verify the affected resources reached a healthy state:
      - For Pods: status.phase=Running and containerStatuses[*].ready=true
      - For Deployments: status.availableReplicas == status.replicas
