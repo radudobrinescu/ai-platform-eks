@@ -147,10 +147,11 @@ spec:
                 args:
                   llm_configs:
                     - model_loading_config:
-                        model_id: "${schema.spec.modelSource != '' ? '/hf-cache/finetuned' : schema.spec.model}"
-                        # Fine-tuned models load from the local dir the init
-                        # container synced; standard models resolve `model_id`
-                        # from the HF cache / live download.
+                        model_id: "${schema.spec.modelSource != '' ? 'Qwen/Qwen2.5-3B-Instruct' : schema.spec.model}"
+                        # Fine-tuned models: model_id resolves config/tokenizer
+                        # from HuggingFace (base model), model_source loads the
+                        # actual fine-tuned weights from the local dir the init
+                        # container synced.
                         model_source: "${schema.spec.modelSource != '' ? '/hf-cache/finetuned' : schema.spec.model}"
                       engine_kwargs:
                         dtype: bfloat16
