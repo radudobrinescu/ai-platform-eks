@@ -213,10 +213,10 @@ spec:
                       resources:
                         requests:
                           cpu: "200m"
-                          memory: "1Gi"
+                          memory: "3Gi"
                         limits:
                           cpu: "500m"
-                          memory: "2Gi"
+                          memory: "5Gi"
             workerGroupSpecs:
               - groupName: gpu-workers
                 replicas: ${schema.spec.minReplicas}
