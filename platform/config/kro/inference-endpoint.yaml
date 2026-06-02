@@ -147,7 +147,7 @@ spec:
                 args:
                   llm_configs:
                     - model_loading_config:
-                        model_id: ${schema.spec.model}
+                        model_id: "${schema.spec.modelSource != '' ? '/hf-cache/finetuned' : schema.spec.model}"
                         # Fine-tuned models load from the local dir the init
                         # container synced; standard models resolve `model_id`
                         # from the HF cache / live download.
