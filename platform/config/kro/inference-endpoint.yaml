@@ -170,7 +170,7 @@ spec:
             headGroupSpec:
               rayStartParams:
                 dashboard-host: "0.0.0.0"
-                num-cpus: "0"
+                num-cpus: "1"
               template:
                 metadata:
                   annotations:
