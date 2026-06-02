@@ -1,0 +1,14 @@
+apiVersion: kro.run/v1alpha1
+kind: InferenceEndpoint
+metadata:
+  name: novabay-support-tuned
+  namespace: inference
+  labels:
+    ai-platform/source: fine-tuning
+spec:
+  model: novabay-support-tuned
+  modelSource: "fine-tuned/novabay-support-tuned/20260602T110538Z/"
+  gpuCount: 1
+  workerCpu: "2"
+  workerMemory: "12Gi"
+  minVramPerGpuGiB: 24
