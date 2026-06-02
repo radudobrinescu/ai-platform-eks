@@ -375,7 +375,7 @@ spec:
                           - key: karpenter.k8s.aws/instance-gpu-memory
                             operator: Gt
                             values:
-                              - "${string(schema.spec.minVramPerGpuGiB > 0 ? (schema.spec.minVramPerGpuGiB * 1024) - 1 : 0)}"
+                              - "${string(schema.spec.minVramPerGpuGiB > 0 ? ((schema.spec.minVramPerGpuGiB - 1) * 1024) - 1 : 0)}"
               initContainers:
                 # Gate on validation success — no GPU node provisioned if it fails.
                 # Reuse the trainer image (bundles kubectl + a shell) so the node
