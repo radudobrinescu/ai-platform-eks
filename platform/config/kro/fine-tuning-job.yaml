@@ -24,8 +24,8 @@ spec:
 
       # === Resources ===
       gpuCount:         "integer | default=1"            # V1 supports 1
-      workerMemory:     "string  | default=32Gi"
-      workerCpu:        "string  | default=8"
+      workerMemory:     "string  | default=16Gi"
+      workerCpu:        "string  | default=4"
       minVramPerGpuGiB: "integer | default=24"
       timeoutHours:     "integer | default=6"
       shared:           "boolean | default=false"        # time-sliced GPU pool
