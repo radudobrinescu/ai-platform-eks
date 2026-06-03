@@ -26,7 +26,7 @@ spec:
       gpuCount:         "integer | default=1"            # V1 supports 1
       workerMemory:     "string  | default=16Gi"
       workerCpu:        "string  | default=4"
-      minVramPerGpuGiB: "integer | default=24"
+      minVramPerGpuGiB: "integer | default=16"
       timeoutHours:     "integer | default=6"
       shared:           "boolean | default=false"        # time-sliced GPU pool
 
@@ -277,7 +277,7 @@ spec:
                       minReplicas: 1
                       maxReplicas: 1
                       workerMemory: "16Gi"
-                      minVramPerGpuGiB: 24
+                      minVramPerGpuGiB: 16
                 """)
                 with open("/tmp/endpoint.yaml", "w") as fh:
                     fh.write(endpoint_yaml)
