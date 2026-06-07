@@ -209,10 +209,15 @@ spec:
           configMap:
             name: platform-db-init
   volumeClaimTemplates:
-    - metadata:
+    # Make these fields explicit in source so ArgoCD's diff doesn't flag them
+    # against the API-server-injected defaults on the live PVC template.
+    - apiVersion: v1
+      kind: PersistentVolumeClaim
+      metadata:
         name: data
       spec:
         accessModes: ["ReadWriteOnce"]
+        volumeMode: Filesystem
         resources:
           requests:
             storage: 10Gi
