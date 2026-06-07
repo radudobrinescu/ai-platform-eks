@@ -58,3 +58,6 @@ spec:
         syncOptions:
           - CreateNamespace=true
           - ServerSideApply=true
+          # Compare against server-side dry-run apply so API-server-defaulted
+          # fields don't show as drift. See platform.yaml for full rationale.
+          - ServerSideDiff=true

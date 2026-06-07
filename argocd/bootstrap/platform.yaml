@@ -134,6 +134,12 @@ spec:
         syncOptions:
           - CreateNamespace=true
           - ServerSideApply=true
+          # Compare against server-side dry-run apply rather than the raw
+          # manifest. Without this, API-server-defaulted fields (e.g.
+          # imagePullPolicy: IfNotPresent, ports[].protocol: TCP,
+          # configMap.defaultMode: 420, volumeClaimTemplates[].spec.volumeMode)
+          # are reported as OutOfSync forever even though SSA succeeds.
+          - ServerSideDiff=true
   templatePatch: |
     {{- /* Fork point: set your repo URL + branch ONCE here (used by both the */ -}}
     {{- /* directory source and the Helm $values source below). Mirror the same */ -}}
