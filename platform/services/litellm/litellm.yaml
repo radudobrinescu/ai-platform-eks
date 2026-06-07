@@ -213,6 +213,9 @@ spec:
         name: data
       spec:
         accessModes: ["ReadWriteOnce"]
+        # Explicit to match API server default; without it, ArgoCD reports
+        # this StatefulSet permanently OutOfSync because SSA fills it in.
+        volumeMode: Filesystem
         resources:
           requests:
             storage: 10Gi

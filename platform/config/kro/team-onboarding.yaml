@@ -341,7 +341,7 @@ spec:
               curl http://litellm.ai-platform.svc.cluster.local:4000/v1/chat/completions \
                 -H "Authorization: Bearer $API_KEY" \
                 -H "Content-Type: application/json" \
-                -d '{"model": "${schema.spec.models[0]}", "messages": [{"role": "user", "content": "Hello!"}]}'
+                -d '{"model": "${size(schema.spec.models) > 0 ? schema.spec.models[0] : "<none-allowed>"}", "messages": [{"role": "user", "content": "Hello!"}]}'
 
             ## Your Configuration
 
