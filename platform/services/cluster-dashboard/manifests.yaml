@@ -220,7 +220,7 @@ metadata:
     alb.ingress.kubernetes.io/healthcheck-path: /data.json
     # inbound-cidrs: operator allowlist. Must stay IDENTICAL to
     # platform/config/ingress.yaml (shared ALB group "ai-platform").
-    alb.ingress.kubernetes.io/inbound-cidrs: 213.17.160.253/32
+    alb.ingress.kubernetes.io/inbound-cidrs: 15.248.2.181/32
 spec:
   ingressClassName: alb
   rules:
