@@ -167,7 +167,7 @@ body { font-family: var(--font); background: var(--bg); color: var(--text); heig
 .pool-empty { padding: 24px; text-align: center; color: var(--text-muted); font-size: 12px; }
 
 /* Node cards */
-.nd { background: var(--surface-hover); padding: 16px 18px; border-radius: 8px; border: 1px solid var(--border); transition: all 0.2s; }
+.nd { background: var(--surface-hover); padding: 16px 18px; border-radius: 8px; border: 1px solid var(--border); transition: all 0.2s; display: flex; flex-direction: column; }
 .nd.dimmed { opacity: 0.15; }
 .nd.highlight { background: var(--accent-soft); border-color: var(--accent); }
 .nd-top { display: flex; align-items: center; gap: 8px; margin-bottom: 10px; flex-wrap: wrap; }
@@ -194,8 +194,12 @@ body { font-family: var(--font); background: var(--bg); color: var(--text); heig
 .ns-leg-item { display: flex; align-items: center; gap: 5px; font-size: 10px; color: var(--text-muted); font-family: var(--mono); }
 .ns-leg-dot { width: 8px; height: 8px; border-radius: 3px; }
 
-/* GPU meter */
-.gpu-m { margin-top: 12px; padding: 12px 14px; background: rgba(167,139,250,0.04); border-radius: var(--radius-sm); border: 1px solid rgba(167,139,250,0.1); }
+/* GPU meter — margin-top:auto pushes the GPU slot block to the bottom of the
+   .nd flex column so blocks align across tiles in the same grid row regardless
+   of how many workload-pod chips sit above. The .gpu-m's own background tint
+   and border provide visual separation when the tile is dense and the
+   auto-margin collapses to 0. */
+.gpu-m { margin-top: auto; padding: 12px 14px; background: rgba(167,139,250,0.04); border-radius: var(--radius-sm); border: 1px solid rgba(167,139,250,0.1); }
 .gpu-m-label { font-size: 10px; font-weight: 700; color: var(--purple); margin-bottom: 8px; text-transform: uppercase; letter-spacing: 0.5px; font-family: var(--mono); }
 .gpu-slots { display: flex; gap: 5px; }
 .gs { flex: 1; min-height: 44px; border-radius: 6px; display: flex; align-items: center; justify-content: center; font-size: 11px; font-weight: 700; font-family: var(--mono); padding: 6px 8px; text-align: center; word-break: break-all; line-height: 1.3; }
