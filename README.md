@@ -119,6 +119,87 @@ presenter's script (10/20/30-min cuts) with talk track and fallbacks.
 
 ---
 
+## Tear down
+
+```bash
+./platformctl down <env>          # → make destroy-all ENVIRONMENT=<env>
+                                  #   prompts you to type the env name to confirm
+```
+
+`destroy-all` walks the six terraform stages in reverse
+(`oss-obs → native-obs → addons → cluster → iam → networking`). On a healthy
+cluster that has been idle, it finishes in ~25 minutes. On a cluster that's
+been actively running models, expect **30–45 min** and a few hand-cleanup
+steps below. The script does **not** touch the bootstrap state (S3
+`tfstate-<account>` + DynamoDB `tfstate-lock`), so a subsequent
+`./platformctl up <env>` still works.
+
+### Run this *before* `down` (avoids the gotchas)
+
+```bash
+# 1. Drain the cluster from the gitops side so destroy doesn't race ArgoCD.
+kubectl delete applicationset --all -n argocd --wait=false
+kubectl delete application    --all -n argocd --wait=false
+kubectl delete inferenceendpoints,aiteams,finetunejobs --all -A --wait=false
+kubectl delete ingress --all -A --wait=false      # → ALB controller cleans up the ALB
+
+# 2. Empty the training-datasets bucket (force_destroy=false by design — real
+#    user data lives there. Skipping this makes the cluster destroy fail.)
+aws s3 rm "s3://$(terraform -chdir=terraform/30.eks/30.cluster output -raw cluster_name)-training-datasets" --recursive
+# If versioning is enabled (it is, by default), purge versions + delete markers too:
+aws s3api delete-objects --bucket "<cluster>-training-datasets" \
+    --delete "$(aws s3api list-object-versions --bucket "<cluster>-training-datasets" \
+                --query='{Objects: Versions[].{Key:Key,VersionId:VersionId}}')" 2>/dev/null || true
+
+# 3. Empty the unsloth-trainer ECR repo (also force_delete=false by design):
+aws ecr batch-delete-image --repository-name "<cluster>/unsloth-trainer" \
+    --image-ids "$(aws ecr list-images --repository-name "<cluster>/unsloth-trainer" \
+                   --query 'imageIds[*]' --output json)" 2>/dev/null || true
+
+./platformctl down <env>
+```
+
+### Run this *after* `down` (mop up orphans)
+
+Several resources legitimately escape Terraform's reach because they're
+created by **in-cluster controllers** rather than Terraform. Sweep them once
+the destroy returns:
+
+| What | Why it leaks | Fix |
+|---|---|---|
+| Karpenter-spawned EC2 instances | Karpenter is destroyed before it can drain its own NodeClaims. The leftover instance pins a subnet → VPC destroy hangs ~18 min. | `aws ec2 terminate-instances --instance-ids $(aws ec2 describe-instances --filters Name=vpc-id,Values=<vpc> Name=instance-state-name,Values=running --query 'Reservations[].Instances[].InstanceId' --output text)` |
+| ALB controller security group (`k8s-traffic-*`) and EKS cluster security group | Created by the ALB controller / EKS, not Terraform. Pin the VPC. | `aws ec2 delete-security-group --group-id <id>` for each non-default SG in the VPC |
+| Orphaned EBS volumes from PVCs | When you force-strip namespace finalizers (needed if `networking.k8s.aws/resources` finalizers hang on stale NetworkPolicies), the PV→PVC→volume reclaim chain breaks. ~20 small volumes get left in `available`. | `aws ec2 delete-volume --volume-id <id>` for each volume with cluster tags |
+| SOCI/data-volume EBS snapshot | Created out-of-band by `ops/create-data-volume-snapshot.sh`. Never tracked by terraform. | `aws ec2 delete-snapshot --snapshot-id <id>` |
+| Unassociated EIPs | Released cleanly only if NAT GW destruction was clean; can leak if the destroy hit a timeout. | `aws ec2 release-address --allocation-id <id>` |
+| CloudWatch log groups (`/aws/containerinsights/<cluster>/...`) | CloudWatch Container Insights addon writes outside Terraform's view. | `aws logs delete-log-group --log-group-name <name>` |
+
+### Things you'll hit (and the cause)
+
+* **`Error acquiring the state lock`** — a previous `terraform` run was
+  killed mid-flight. Find the lock ID in the error and run
+  `terraform -chdir=terraform/<stage> force-unlock -force <id>`.
+* **`kubernetes_namespace.ai_platform: Still destroying...`** for many
+  minutes — a `NetworkPolicy` finalizer (`networking.k8s.aws/resources`)
+  is waiting for the VPC CNI controller, which has already been destroyed.
+  Strip the finalizers manually:
+  `kubectl get networkpolicies -n ai-platform -o name | xargs -I {} kubectl patch -n ai-platform {} --type=merge -p '{"metadata":{"finalizers":[]}}'`
+* **`ECR Repository ... not empty`** — empty it with `aws ecr batch-delete-image`, then re-run.
+* **Subnet stuck destroying for 15+ min** — almost always an orphan
+  Karpenter EC2 instance. See the table above.
+
+When in doubt, the final state should match this:
+
+```bash
+# Should return empty for the env you destroyed:
+aws eks list-clusters --query 'clusters[?contains(@, `<env>`)]'
+aws ec2 describe-vpcs --filters "Name=tag:Environment,Values=<env>" --query 'Vpcs[].VpcId'
+aws s3 ls | grep "<env>"
+aws iam list-roles --query "Roles[?contains(RoleName, '<cluster-name>')].RoleName"
+```
+
+---
+
 ## Repository layout
 
 ```
