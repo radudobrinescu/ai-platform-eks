@@ -33,7 +33,11 @@ variable "docker_hub_username" {
   description = "Docker Hub username for ECR pull-through cache. Set via TF_VAR_docker_hub_username env var."
   type        = string
   default     = ""
-  sensitive   = true
+  # Not marked sensitive: a sensitive username propagates into for_each in
+  # the Karpenter module's node_iam_role_additional_policies map (where the
+  # comparison `var.docker_hub_username != ""` decides whether to attach the
+  # ECR pull-through policy), which Terraform rejects on plan/destroy. Only
+  # the access token below is genuinely a secret.
 }
 
 variable "docker_hub_access_token" {
