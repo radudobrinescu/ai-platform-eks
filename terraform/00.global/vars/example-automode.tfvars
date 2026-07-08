@@ -7,7 +7,7 @@ shared_config = {
 }
 
 cluster_config = {
-  kubernetes_version  = "1.35"
+  kubernetes_version  = "1.36"
   eks_auto_mode       = true # AWS manages compute, networking, storage
   private_eks_cluster = false
   create_mng_system   = false # Not needed — Auto Mode manages nodes

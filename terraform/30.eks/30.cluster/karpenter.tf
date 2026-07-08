@@ -24,6 +24,29 @@ module "karpenter" {
 
   create_pod_identity_association = true
 
+  # Additional controller permissions required by newer Karpenter versions that
+  # the pinned module (v21.1.5) does not yet grant:
+  #   - ec2:DescribeInstanceStatus  → required since Karpenter 1.12 for the
+  #     interruption controller's EC2 instance-status health checks.
+  #   - ec2:DescribePlacementGroups → required since Karpenter 1.11 for
+  #     placement-group support (harmless when unused; future-proofs the role).
+  #   - iam:ListInstanceProfiles    → required since Karpenter 1.7 for the
+  #     instance-profile controller/garbage-collection (does not support
+  #     resource-level scoping, so it must target "*").
+  # All are read-only; consistent with the module's AllowRegionalReadActions.
+  iam_policy_statements = [
+    {
+      sid       = "AllowInstanceStatusAndPlacementGroupReads"
+      effect    = "Allow"
+      resources = ["*"]
+      actions = [
+        "ec2:DescribeInstanceStatus",
+        "ec2:DescribePlacementGroups",
+        "iam:ListInstanceProfiles",
+      ]
+    }
+  ]
+
   # Used to attach additional IAM policies to the Karpenter node IAM role.
   # The ECR pull-through import policy is attached only when the docker-hub
   # pull-through cache is enabled — GPU nodes pull the rayImage from the cache
@@ -63,7 +86,7 @@ resource "helm_release" "karpenter" {
   repository_username = data.aws_ecrpublic_authorization_token.token.user_name
   repository_password = data.aws_ecrpublic_authorization_token.token.password
   chart               = "karpenter"
-  version             = "1.10.0"
+  version             = "1.13.0"
   wait                = false
 
   values = [
@@ -122,7 +145,17 @@ data "kubectl_path_documents" "karpenter_manifests" {
   ]
 }
 
-# workaround terraform issue with attributes that cannot be determined ahead because of module dependencies
+# Count-stabilization workaround (kubectl provider issue #58). The real
+# kubectl_path_documents above interpolates values only known at apply
+# (module.karpenter role, resolved snapshot ID, ...), so its `.documents`
+# length is unknown at plan and can't drive the kubectl_manifest `count`. This
+# "dummy" renders the SAME files with empty vars: the document COUNT is
+# identical and plan-time-known, while the real content comes from the resource
+# above. Deliberately NOT factored into a shared module with the auto-mode twin
+# in main.tf — the call-sites differ in vars, and a module would change these
+# resources' addresses, forcing destroy/recreate of the live Karpenter
+# NodePools/NodeClasses. Fileset counting can't replace it (a file may hold
+# multiple YAML documents). Revisit if the provider fixes unknown-count support.
 # https://github.com/gavinbunney/terraform-provider-kubectl/issues/58
 data "kubectl_path_documents" "karpenter_manifests_dummy" {
   count   = (local.capabilities.autoscaling || local.eks_auto_mode) ? 1 : 0

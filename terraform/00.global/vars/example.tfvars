@@ -7,7 +7,7 @@ shared_config = {
 }
 
 cluster_config = {
-  kubernetes_version  = "1.35"
+  kubernetes_version  = "1.36"
   eks_auto_mode       = false
   private_eks_cluster = false
   create_mng_system   = true # Required — runs Karpenter, CoreDNS, VPC CNI
