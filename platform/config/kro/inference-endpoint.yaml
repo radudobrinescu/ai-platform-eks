@@ -9,7 +9,7 @@ spec:
     spec:
       model:                "string"                    # HuggingFace model ID (e.g. google/gemma-3-4b-it)
       modelSource:          "string  | default="        # S3 prefix (relative to model-cache bucket) for a fine-tuned model; when set, the init container syncs from here and vLLM loads the local path instead of downloading `model` from HF
-      gpuCount:             "integer | default=1"       # Total GPUs per worker (must equal tensorParallelSize × pipelineParallelSize)
+      gpuCount:             'integer | default=1 enum="1,2,4,8"'       # Total GPUs per worker (must equal tensorParallelSize × pipelineParallelSize)
       tensorParallelSize:   "integer | default=0"       # TP degree — splits layers across GPUs (0 = use gpuCount, backward-compat)
       pipelineParallelSize: "integer | default=1"       # PP degree — splits layer groups across GPUs (prefer on PCIe/non-NVLink)
       shared:               "boolean | default=false"   # Use GPU time-slicing (shared GPU node pool)
@@ -62,11 +62,7 @@ spec:
                   command: ["sh", "-c"]
                   args:
                     - |
-                      # --- Validate gpuCount is a power of 2 (vLLM tensor parallelism requirement) ---
-                      case "$GPU_COUNT" in
-                        1|2|4|8) ;;
-                        *) echo "ERROR: gpuCount=$GPU_COUNT is invalid. Must be 1, 2, 4, or 8."; exit 1 ;;
-                      esac
+                      # gpuCount ∈ {1,2,4,8} is enforced by the CRD schema (enum marker).
 
                       # --- Validate TP × PP = gpuCount when TP is explicitly set ---
                       if [ "$TP_SIZE" -gt 0 ]; then

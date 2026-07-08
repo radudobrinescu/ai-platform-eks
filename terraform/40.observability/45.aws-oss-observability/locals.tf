@@ -13,6 +13,11 @@ locals {
   grafana_workspace_description            = join("", ["Amazon Managed Grafana workspace for ${local.grafana_workspace_name}"])
   grafana_workspace_api_expiration_days    = 30
   grafana_workspace_api_expiration_seconds = 60 * 60 * 24 * local.grafana_workspace_api_expiration_days
+  # Rotate at 80% of the key's TTL so a fresh key is always provisioned BEFORE
+  # the old one expires. Rotation is driven by time_rotating.this, which forces
+  # replacement of aws_grafana_workspace_api_key.this (see grafana_operator.tf).
+  # Must be strictly less than grafana_workspace_api_expiration_days.
+  grafana_workspace_api_rotation_days = floor(local.grafana_workspace_api_expiration_days * 0.8)
 
   critical_addons_tolerations = {
     tolerations = [

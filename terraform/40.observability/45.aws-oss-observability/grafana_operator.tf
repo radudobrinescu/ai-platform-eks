@@ -31,7 +31,7 @@ resource "aws_kms_key" "secrets" {
 # https://github.com/hashicorp/terraform-provider-aws/issues/27043#issuecomment-1614947274
 resource "time_rotating" "this" {
   count         = var.observability_configuration.aws_oss_tooling && var.observability_configuration.aws_oss_tooling_config.enable_grafana_operator ? 1 : 0
-  rotation_days = local.grafana_workspace_api_expiration_days
+  rotation_days = local.grafana_workspace_api_rotation_days
 }
 
 resource "time_static" "this" {
@@ -43,7 +43,7 @@ resource "aws_grafana_workspace_api_key" "this" {
   count           = var.observability_configuration.aws_oss_tooling && var.observability_configuration.aws_oss_tooling_config.enable_grafana_operator ? 1 : 0
   key_name        = "eks-monitoring-grafana-admin-key"
   key_role        = "ADMIN"
-  seconds_to_live = local.grafana_workspace_api_expiration_seconds // TODO: mechanism to rotate expired key
+  seconds_to_live = local.grafana_workspace_api_expiration_seconds // key TTL; rotated early (rotation_days < expiration_days) by time_rotating.this via replace_triggered_by below, so a valid key is always in place
   workspace_id    = module.managed_grafana[count.index].workspace_id
 
   lifecycle {

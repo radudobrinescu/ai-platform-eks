@@ -12,18 +12,18 @@ spec:
       dataset:   "string"                              # s3://bucket/key.jsonl  OR  HuggingFace:org/dataset
 
       # === Training hyperparameters ===
-      method:               "string  | default=qlora"   # qlora | lora | full
-      loraRank:             "integer | default=16"
+      method:               'string  | default=qlora enum="qlora,lora,full"'   # enforced by CRD schema
+      loraRank:             'integer | default=16 enum="8,16,32,64,128"'
       loraAlpha:            "integer | default=16"
       learningRate:         "string  | default=2e-4"
       epochs:               "integer | default=1"
       batchSize:            "integer | default=2"
       gradientAccumulation: "integer | default=4"
       maxSeqLength:         "integer | default=2048"
-      datasetFormat:        "string  | default=auto"     # auto | alpaca | sharegpt | chatml | completion | raw
+      datasetFormat:        'string  | default=auto enum="auto,alpaca,sharegpt,chatml,completion,raw"'
 
       # === Resources ===
-      gpuCount:         "integer | default=1"            # V1 supports 1
+      gpuCount:         "integer | default=1 minimum=1 maximum=1"  # V1 supports 1 (enforced by CRD schema)
       workerMemory:     "string  | default=16Gi"
       workerCpu:        "string  | default=4"
       minVramPerGpuGiB: "integer | default=16"
@@ -325,21 +325,14 @@ spec:
                         *)
                           echo "ERROR: dataset must be 's3://...' or 'HuggingFace:org/dataset'"; exit 1 ;;
                       esac
-                      case "$METHOD" in qlora|lora|full) ;; *) echo "ERROR: invalid method $METHOD"; exit 1 ;; esac
-                      case "$LORA_RANK" in 8|16|32|64|128) ;; *) echo "ERROR: invalid loraRank $LORA_RANK"; exit 1 ;; esac
-                      [ "$GPU_COUNT" = "1" ] || { echo "ERROR: V1 only supports gpuCount=1"; exit 1; }
+                      # method / loraRank / gpuCount are validated by the CRD
+                      # schema (enum + min/max markers) at admission time.
                       echo "Validation passed"
                   env:
                     - name: BASE_MODEL
                       value: ${schema.spec.baseModel}
                     - name: DATASET
                       value: ${schema.spec.dataset}
-                    - name: METHOD
-                      value: ${schema.spec.method}
-                    - name: LORA_RANK
-                      value: ${string(schema.spec.loraRank)}
-                    - name: GPU_COUNT
-                      value: ${string(schema.spec.gpuCount)}
 
     # --- Training Job (the heavy lifter) ---
     - id: trainingjob

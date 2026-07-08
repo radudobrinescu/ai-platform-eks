@@ -270,7 +270,12 @@ data "kubectl_path_documents" "automode_manifests" {
   ]
 }
 
-# workaround terraform issue with attributes that cannot be determined ahead because of module dependencies
+# Count-stabilization workaround (kubectl provider issue #58). Twin of the
+# karpenter_manifests_dummy in karpenter.tf (see the full rationale there): the
+# real kubectl_path_documents above uses apply-time values, so this dummy
+# renders the SAME auto-mode files with empty vars to get a plan-time-known
+# document count for the kubectl_manifest `count`. Intentionally kept inline
+# (not modularized) to avoid changing resource addresses on the live cluster.
 # https://github.com/gavinbunney/terraform-provider-kubectl/issues/58
 data "kubectl_path_documents" "automode_manifests_dummy" {
   count   = local.eks_auto_mode ? 1 : 0
