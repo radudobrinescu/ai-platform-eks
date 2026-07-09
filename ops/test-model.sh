@@ -12,17 +12,23 @@ PF_PID=""
 cleanup() { [ -n "$PF_PID" ] && kill "$PF_PID" 2>/dev/null; }
 trap cleanup EXIT
 
-# Check model status
-STATUS=$(kubectl get inferenceendpoint "$MODEL" -n inference -o jsonpath='{.status.message}' 2>/dev/null) || {
-  echo "ERROR: InferenceEndpoint '$MODEL' not found in namespace 'inference'."
-  echo "Available models:"
-  kubectl get inferenceendpoints -n inference -o custom-columns='NAME:.metadata.name,STATUS:.status.modelStatus,MESSAGE:.status.message' 2>/dev/null || echo "  (none)"
+# Find the endpoint across serving kinds (InferenceEndpoint / VLLMEndpoint /
+# LLMDEndpoint) and check readiness. Bedrock models have no CR — skip the check.
+READY=""; KIND=""
+for k in inferenceendpoint vllmendpoint llmdendpoint; do
+  if r=$(kubectl get "$k" "$MODEL" -n inference -o jsonpath='{.status.ready}' 2>/dev/null); then
+    READY="$r"; KIND="$k"; break
+  fi
+done
+if [ -z "$KIND" ]; then
+  echo "ERROR: no InferenceEndpoint/VLLMEndpoint/LLMDEndpoint named '$MODEL' in namespace 'inference'."
+  echo "Available serving endpoints:"
+  kubectl get inferenceendpoints,vllmendpoints,llmdendpoints -n inference 2>/dev/null || echo "  (none)"
+  echo "(If '$MODEL' is a Bedrock model it has no CR — it should still answer via LiteLLM.)"
   exit 1
-}
-
-READY=$(kubectl get inferenceendpoint "$MODEL" -n inference -o jsonpath='{.status.ready}' 2>/dev/null)
+fi
 if [ "$READY" != "True" ]; then
-  echo "⏳ Model '$MODEL' is not ready yet: $STATUS"
+  echo "⏳ Model '$MODEL' ($KIND) is not ready yet."
   exit 1
 fi
 

@@ -158,7 +158,7 @@ steps below. The script does **not** touch the bootstrap state (S3
 # 1. Drain the cluster from the gitops side so destroy doesn't race ArgoCD.
 kubectl delete applicationset --all -n argocd --wait=false
 kubectl delete application    --all -n argocd --wait=false
-kubectl delete inferenceendpoints,vllmendpoints,aiteams,finetunejobs --all -A --wait=false
+kubectl delete inferenceendpoints,vllmendpoints,llmdendpoints,aiteams,finetunejobs --all -A --wait=false
 kubectl delete ingress --all -A --wait=false      # → ALB controller cleans up the ALB
 
 # 2. Empty the training-datasets bucket (force_destroy=false by design — real

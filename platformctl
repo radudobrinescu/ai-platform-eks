@@ -66,8 +66,8 @@ cmd_status() {
   log "Platform pods (ai-platform ns)"
   kubectl get pods -n ai-platform 2>/dev/null || true
   echo
-  log "Inference endpoints (models)"
-  kubectl get inferenceendpoints -n inference 2>/dev/null || true
+  log "Serving endpoints (inference / vllm / llm-d)"
+  kubectl get inferenceendpoints,vllmendpoints,llmdendpoints -n inference 2>/dev/null || true
   echo
   log "Fine-tune jobs"
   kubectl get finetunejobs -n inference 2>/dev/null || echo "  (none / CRD not installed yet)"
