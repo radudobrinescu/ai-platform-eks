@@ -553,6 +553,30 @@ def _fetch_endpoints() -> list:
     return out
 
 
+def _cpu_m(s) -> int:
+    """K8s CPU quantity -> millicores."""
+    s = str(s or "0").strip()
+    try:
+        if s.endswith("m"): return int(float(s[:-1]))
+        if s.endswith("n"): return int(float(s[:-1]) / 1e6)
+        if s.endswith("u"): return int(float(s[:-1]) / 1e3)
+        return int(float(s) * 1000)
+    except Exception:
+        return 0
+
+
+def _mem_mi(s) -> int:
+    """K8s memory quantity -> MiB."""
+    s = str(s or "0").strip()
+    for u, f in (("Ki", 1 / 1024), ("Mi", 1.0), ("Gi", 1024.0), ("Ti", 1048576.0),
+                 ("K", 0.000953674), ("M", 0.953674), ("G", 953.674)):
+        if s.endswith(u):
+            try: return int(float(s[:-len(u)]) * f)
+            except Exception: return 0
+    try: return int(float(s) / 1048576)
+    except Exception: return 0
+
+
 def _build_k8s_snapshot() -> dict:
     nodes_data = k8s_get("/api/v1/nodes")
     pods_data = k8s_get("/api/v1/pods")
@@ -586,6 +610,8 @@ def _build_k8s_snapshot() -> dict:
                                        labels.get("eks.amazonaws.com/capacityType", "on-demand")),
                 "gpu": int(allocatable.get("nvidia.com/gpu", "0")),
                 "gpuProduct": labels.get("nvidia.com/gpu.product", "").replace("-", " "),
+                "cpuAllocM": _cpu_m(allocatable.get("cpu", "0")),
+                "memAllocMi": _mem_mi(allocatable.get("memory", "0")),
                 "created": n["metadata"].get("creationTimestamp", ""),
             })
 
@@ -596,14 +622,18 @@ def _build_k8s_snapshot() -> dict:
             if phase not in ("Running", "Pending"):
                 continue
             containers = p.get("spec", {}).get("containers", [])
-            gpu_req = sum(int(c.get("resources", {}).get("requests", {}).get("nvidia.com/gpu", "0"))
-                          for c in containers)
+            reqs = [c.get("resources", {}).get("requests", {}) or {} for c in containers]
+            gpu_req = sum(int(r.get("nvidia.com/gpu", "0") or 0) for r in reqs)
+            cpu_req = sum(_cpu_m(r.get("cpu", "0")) for r in reqs)
+            mem_req = sum(_mem_mi(r.get("memory", "0")) for r in reqs)
             pods.append({
                 "name": p["metadata"]["name"],
                 "namespace": p["metadata"]["namespace"],
                 "node": p.get("spec", {}).get("nodeName", ""),
                 "phase": phase,
                 "gpu": gpu_req,
+                "cpuReqM": cpu_req,
+                "memReqMi": mem_req,
                 "created": p["metadata"].get("creationTimestamp", ""),
             })
 

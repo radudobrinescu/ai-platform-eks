@@ -150,16 +150,32 @@ tbody tr:hover{background:var(--surface-2)}
 .util{font-size:10px;color:var(--text-muted);font-family:var(--mono)}
 .mock-tag{position:fixed;bottom:12px;right:16px;background:var(--amber-soft);color:var(--amber);border:1px solid rgba(251,191,36,.35);font-size:10px;font-weight:700;padding:4px 10px;border-radius:20px;letter-spacing:.5px;z-index:60}
 </style>
+<style>
+.search{position:relative}
+.q-res{position:absolute;top:36px;left:0;right:0;background:var(--panel,#12161f);border:1px solid var(--border,#242c3a);border-radius:10px;overflow:hidden;z-index:60;box-shadow:0 14px 34px rgba(0,0,0,.45);display:none}
+.q-res.open{display:block}
+.q-item{display:flex;align-items:center;gap:8px;padding:8px 12px;cursor:pointer;font-size:13px;border-bottom:1px solid var(--border,#242c3a)}
+.q-item:last-child{border-bottom:none}
+.q-item:hover,.q-item.sel{background:var(--accent-soft,#1e2636)}
+.q-type{margin-left:auto;font-size:10px;text-transform:uppercase;letter-spacing:.05em;color:var(--text-muted,#8b93a7)}
+.ns-legend{display:flex;flex-wrap:wrap;gap:6px 12px;margin:2px 0 9px;font-size:11px;color:var(--text-muted,#8b93a7)}
+.ns-legend span{display:inline-flex;align-items:center;gap:5px}
+.ns-legend i{width:9px;height:9px;border-radius:2px;display:inline-block}
+.np-row{display:flex;align-items:center;gap:8px;padding:3px 0;font-size:12px}
+.np-dot{width:6px;height:6px;border-radius:50%;flex:none}
+.np-name{overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-family:ui-monospace,monospace}
+.np-meta{margin-left:auto;color:var(--text-muted,#8b93a7);font-size:11px;flex:none}
+</style>
 </head>
 <body>
 <div class="app">
   <div class="top">
     <div class="logo"><span>AI</span> Platform</div>
     <div class="top-sep"></div>
-    <div class="search">🔎 <input placeholder="Search models, teams, nodes…"></div>
+    <div class="search">🔎 <input id="q" autocomplete="off" placeholder="Search models, teams, nodes…" oninput="doSearch(this.value)" onkeydown="if(event.key==='Enter'){searchGo();}else if(event.key==='Escape'){this.value='';doSearch('');}" onblur="setTimeout(()=>{const r=document.getElementById('q-res');if(r)r.className='q-res'},150)"><div id="q-res" class="q-res"></div></div>
     <div class="spacer"></div>
     <div class="pill" id="top-cost" title="Realtime cluster cost — estimate">💲 —</div>
-    <div class="pill" id="top-health" title="Health"></div>
+    <div class="pill" id="top-health" title="Health — click for details" style="cursor:pointer" onclick="go('health',document.querySelectorAll('.nav-item')[5])"></div>
     <button class="icon-btn" title="Theme" onclick="toggleTheme()">◐</button>
     <div class="live" id="live">Live</div>
   </div>
@@ -264,7 +280,10 @@ tbody tr:hover{background:var(--surface-2)}
 const TIERS={bedrock:['Bedrock','b-bedrock'],vllm:['vLLM','b-vllm'],'llm-d':['llm-d','b-llmd'],ft:['fine-tuned','b-ft'],ray:['Ray','b-ray']};
 const MTABS=[['all','All'],['bedrock','Bedrock'],['vllm','vLLM'],['llm-d','llm-d'],['ft','Fine-tuned']];
 let D={models:[],teams:[],gpu:[],argocd:[],nodes:[],pods:[],cost:{},costExt:{},sources:{},links:[]};
-let mtab='all', selected=null, prevM={}, activity=[], invs=[];
+let mtab='all', selected=null, selectedNode=null, prevM={}, activity=[], invs=[], lastSearch=[];
+const NS_COLORS=['#818cf8','#34d399','#fbbf24','#f472b6','#22d3ee','#a78bfa','#fb923c','#4ade80','#e879f9','#60a5fa','#f87171','#2dd4bf'];
+function nsColor(ns){let h=0;for(let i=0;i<(ns||'').length;i++)h=(h*31+ns.charCodeAt(i))>>>0;return NS_COLORS[h%NS_COLORS.length];}
+function relTime(iso){if(!iso)return'';const d=(Date.now()-new Date(iso).getTime())/1000;if(d<3600)return Math.max(1,Math.round(d/60))+'m';if(d<86400)return Math.round(d/3600)+'h';return Math.round(d/86400)+'d';}
 const hist={rpm:[],tok:[],cost:[],gpu:[]};
 const $=id=>document.getElementById(id);
 const esc=s=>String(s==null?'':s).replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
@@ -289,7 +308,7 @@ function diffActivity(){const t=new Date().toLocaleTimeString('en-GB',{hour:'2-d
 
 function alertList(){const out=[];(D.models||[]).forEach(m=>{if(m.status!=='running')out.push({icon:'⚠',sev:'warn',t:`${m.name} · ${m.status}`,d:`${tierLabel(m.tier)} · ${m.availableReplicas||0}/${m.replicas||1} replicas ready`});else if(m.tier==='llm-d'&&m.router&&m.router!=='Healthy')out.push({icon:'⚠',sev:'warn',t:`${m.name} · router ${m.router}`,d:'llm-d EPP/router not yet Healthy'});else if(m.health&&m.health.toLowerCase()!=='healthy')out.push({icon:'⚠',sev:'warn',t:`${m.name} · ${m.health}`,d:'LiteLLM health check'});});(D.argocd||[]).forEach(a=>{if(a.sync!=='Synced'||a.health!=='Healthy')out.push({icon:'🚢',sev:'warn',t:`ArgoCD · ${a.name}`,d:`${a.sync} · ${a.health}`});});(D.nodeAlerts||[]).forEach(a=>out.push({icon:'🖥',sev:a.sev||'warn',t:`Node ${a.node} · ${a.issue}`,d:'EKS node condition'}));return out;}
 
-function renderAll(){kpis();topbar();ovModels();costMini();gpuBars();ovHealth();ovFeed();modelTabs();modelsBody();teamsView();costViews();infra();healthView();links();if(selected)openModel(selected,true);}
+function renderAll(){kpis();topbar();ovModels();costMini();gpuBars();ovHealth();ovFeed();modelTabs();modelsBody();teamsView();costViews();infra();healthView();links();if(selected)openModel(selected,true);if(selectedNode)openNode(selectedNode,true);}
 
 function topbar(){const c=D.cost||{};$('top-cost').innerHTML=`💲 <b class="cg">$${(c.hourly||0).toFixed(2)}</b>/hr · ~$${Math.round(c.monthly||0).toLocaleString()}/mo`;const al=alertList().length,ap=D.approvals_pending||0;const p=$('top-health');p.className='pill'+(al||ap?' warn':'');p.innerHTML=(al||ap)?`<span class="cw">⚠ ${al}</span> alerts · <b>${ap}</b> approval${ap===1?'':'s'}`:`✓ healthy`;const nm=$('nav-mcount');if(nm)nm.textContent=(D.models||[]).length||'';const hb=$('nav-hbadge');if(hb){const n=al+ap;hb.textContent=n||'';hb.style.display=n?'':'none';}}
 
@@ -330,7 +349,7 @@ function costViews(){const c=D.cost||{},ce=D.costExt||{};const src=c.priceSource
   const tr=ce.trend||[];$('cost-trend').innerHTML=tr.length>1?spark(tr.map(x=>x[1]),'var(--green)',360,60)+`<div class="muted" style="font-size:11px;margin-top:6px">last ${tr.length} days · spend/day</div>`:'<div class="muted">trend builds as usage accrues</div>';}
 
 const POOLMAP={'gpu-inference':'GPU · dedicated','gpu-shared':'GPU · time-sliced','default':'platform services','__mng__':'critical addons'};
-function infra(){const nodes=D.nodes||[],pods=D.pods||[],gpu=D.gpu||[];const utilByHost={};gpu.forEach(g=>utilByHost[g.node]=g);const pools={};nodes.forEach(n=>{(pools[n.pool||'__mng__']=pools[n.pool||'__mng__']||[]).push(n)});let h='';for(const p of Object.keys(pools)){const pl=(p==='__mng__')?'Managed node group':('Karpenter NodePool · '+p);const pd=POOLMAP[p]||'';h+=`<div class="sec-title">${esc(pl)}${pd?' · '+esc(pd):''} · ${pools[p].length} node(s)</div><div class="cols">`;h+=pools[p].map(n=>{const host=n.name.split('.')[0];const g=utilByHost[host];const mdl=g&&g.model;const slots=(n.gpu>0)?`<div class="gpuslots">${(g&&g.util||Array(n.gpu).fill(0)).map(u=>u===0&&!mdl?'<div class="gs free">free</div>':`<div class="gs used">${u}%</div>`).join('')}</div>`:'';return `<div class="card"><div class="card-h"><h3>${esc(n.instance)} <span class="badge2 b-ray" style="background:var(--accent-soft);color:#c7d2fe">${esc(n.capacity||'')}</span></h3><span class="util">$${(n.hourly||0).toFixed(2)}/hr</span></div>${slots}<div class="util" style="margin-top:8px">${mdl?'serving '+esc(mdl):(n.gpu>0?'idle':esc(n.zone||''))}</div></div>`}).join('');h+='</div>';}$('infra-pools').innerHTML=h||'<div class="muted">No nodes</div>';}
+function infra(){const nodes=D.nodes||[],pods=D.pods||[],gpu=D.gpu||[];const utilByHost={};gpu.forEach(g=>utilByHost[g.node]=g);const pools={};nodes.forEach(n=>{(pools[n.pool||'__mng__']=pools[n.pool||'__mng__']||[]).push(n)});let h='';for(const p of Object.keys(pools)){const pl=(p==='__mng__')?'Managed node group':('Karpenter NodePool · '+p);const pd=POOLMAP[p]||'';h+=`<div class="sec-title">${esc(pl)}${pd?' · '+esc(pd):''} · ${pools[p].length} node(s)</div><div class="cols">`;h+=pools[p].map(n=>{const host=n.name.split('.')[0];const g=utilByHost[host];const mdl=g&&g.model;const slots=(n.gpu>0)?`<div class="gpuslots">${(g&&g.util||Array(n.gpu).fill(0)).map(u=>u===0&&!mdl?'<div class="gs free">free</div>':`<div class="gs used">${u}%</div>`).join('')}</div>`:'';return `<div class="card" style="cursor:pointer" onclick="openNode('${esc(n.name)}')"><div class="card-h"><h3>${esc(n.instance)} <span class="badge2 b-ray" style="background:var(--accent-soft);color:#c7d2fe">${esc(n.capacity||'')}</span></h3><span class="util">$${(n.hourly||0).toFixed(2)}/hr</span></div>${slots}<div class="util" style="margin-top:8px">${mdl?'serving '+esc(mdl):(n.gpu>0?'idle':esc(n.zone||''))}</div></div>`}).join('');h+='</div>';}$('infra-pools').innerHTML=h||'<div class="muted">No nodes</div>';}
 
 function healthView(){const al=alertList();$('health-alerts').innerHTML=(invs.length?invs.map(iv=>`<div class="alert"><span class="ai">🔧</span><div style="flex:1"><div class="at">${esc(iv.resource_kind||'')} ${esc(iv.resource_name||'')} — fix ready</div><div class="ad">${esc((iv.findings||'').slice(0,160))}</div></div><div class="ax"><button class="btn approve" onclick="approve('${iv.id}',this)">Approve fix</button><button class="btn dismiss" onclick="dismiss('${iv.id}',this)">Dismiss</button></div></div>`).join(''):'')+(al.length?al.map(alertRow).join(''):(invs.length?'':'<div class="muted" style="padding:8px 0">✓ All models and apps healthy · no pending fixes</div>'));
   const a=D.argocd||[];$('argo-sync').innerHTML=(D.sources||{}).argocd?(a.length?a.map(x=>`<div class="alert"><span class="ai">${x.health==='Healthy'&&x.sync==='Synced'?'🟢':'🟡'}</span><div><div class="at">${esc(x.name)}</div><div class="ad">${esc(x.sync)} · ${esc(x.health)}</div></div></div>`).join(''):'<div class="muted">no applications</div>'):'<div class="muted">ArgoCD status unavailable</div>';}
@@ -342,7 +361,7 @@ function linkFor(kind){return (D.links||[]).find(l=>l.label.toLowerCase().includ
 function openLink(kind){const u=linkFor(kind).url;if(u&&u!=='#')window.open(u,'_blank');}
 function copyCurl(name,ev){const u=(linkFor('litellm').url||'$LITELLM').replace(/\/ui.*/,'');const t=`curl ${u}/v1/chat/completions -H "Authorization: Bearer $LITELLM_KEY" -H "Content-Type: application/json" -d '{"model":"${name}","messages":[{"role":"user","content":"Hello"}]}'`;const fb=()=>{try{const b=ev&&ev.target&&ev.target.closest('button');if(b){const o=b.innerHTML;b.innerHTML='✓ copied';setTimeout(()=>{b.innerHTML=o;},1200);}}catch(e){}};if(navigator.clipboard&&navigator.clipboard.writeText){navigator.clipboard.writeText(t).then(fb,fb);}else{fb();}}
 
-function openModel(name,keep){const m=(D.models||[]).find(x=>x.name===name);if(!m){closeDrawer();return;}selected=name;const s=(D.sources||{}).litellm;
+function openModel(name,keep){const m=(D.models||[]).find(x=>x.name===name);if(!m){closeDrawer();return;}selected=name;selectedNode=null;const s=(D.sources||{}).litellm;
   $('drawer').innerHTML=`<button class="drawer-x" onclick="closeDrawer()">×</button>
    <div style="display:flex;align-items:center;gap:10px"><span class="dot ${m.status==='running'?'ok':'warn'}"></span><span style="font-size:19px;font-weight:800">${esc(m.name)}</span>${tierBadge(m.tier)}</div>
    <div class="m-id" style="margin-top:4px">${esc(m.model)}</div>
@@ -355,11 +374,56 @@ function openModel(name,keep){const m=(D.models||[]).find(x=>x.name===name);if(!
   -d '{"model":"${esc(m.name)}","messages":[{"role":"user","content":"Hi"}]}'</div>
    <div style="display:flex;gap:8px;margin-top:18px"><button class="btn approve" style="flex:1" onclick="openLink('langfuse')">📊 Langfuse</button><button class="btn dismiss" style="flex:1" onclick="openLink('webui')">💬 WebUI</button></div>`;
   if(!keep){$('drawer').classList.add('open');$('scrim').classList.add('open');}}
-function closeDrawer(){selected=null;$('drawer').classList.remove('open');$('scrim').classList.remove('open');}
+function closeDrawer(){selected=null;selectedNode=null;$('drawer').classList.remove('open');$('scrim').classList.remove('open');}
+function openNode(name,keep){
+  const n=(D.nodes||[]).find(x=>x.name===name);if(!n){closeDrawer();return;}
+  selectedNode=name;selected=null;
+  const host=n.name.split('.')[0];
+  const g=(D.gpu||[]).find(x=>x.node===host);
+  const gutil=g&&g.util&&g.util.length?Math.round(g.util.reduce((a,b)=>a+b,0)/g.util.length):null;
+  const np=(D.pods||[]).filter(p=>p.node===name);
+  const cpuReq=np.reduce((s,p)=>s+(p.cpuReqM||0),0),memReq=np.reduce((s,p)=>s+(p.memReqMi||0),0);
+  const cpuA=n.cpuAllocM||0,memA=n.memAllocMi||0;
+  const cpuPct=cpuA?Math.round(cpuReq/cpuA*100):0,memPct=memA?Math.round(memReq/memA*100):0;
+  const byNs={};np.forEach(p=>{(byNs[p.namespace]=byNs[p.namespace]||[]).push(p);});
+  const nsList=Object.keys(byNs).sort((a,b)=>byNs[b].length-byNs[a].length);
+  const bar=(pct,col)=>`<div class="bar" style="margin-top:5px"><i style="width:${Math.min(100,Math.max(2,pct))}%;background:${col}"></i></div>`;
+  const usage=`<div class="sec-title">Usage</div>`
+    +`<div class="bar-lbl"><span>GPU util${g&&g.model?' · '+esc(g.model):''}</span><span>${gutil==null?'—':gutil+'%'}</span></div>`
+    +(n.gpu>0?bar(gutil||0,(gutil||0)>85?'var(--amber)':'var(--green)'):'<div class="util" style="margin:2px 0">no GPU on this node</div>')
+    +`<div class="bar-lbl" style="margin-top:11px"><span>CPU requested</span><span>${(cpuReq/1000).toFixed(1)} / ${(cpuA/1000).toFixed(1)} cores · ${cpuPct}%</span></div>`+bar(cpuPct,'var(--accent)')
+    +`<div class="bar-lbl" style="margin-top:11px"><span>Memory requested</span><span>${(memReq/1024).toFixed(1)} / ${(memA/1024).toFixed(1)} GiB · ${memPct}%</span></div>`+bar(memPct,'var(--cyan)');
+  const legend=nsList.length?`<div class="ns-legend">${nsList.map(ns=>`<span><i style="background:${nsColor(ns)}"></i>${esc(ns)} (${byNs[ns].length})</span>`).join('')}</div>`:'';
+  const podsHtml=nsList.length?nsList.map(ns=>byNs[ns].map(p=>`<div class="np-row"><span class="np-dot" style="background:${nsColor(ns)}"></span><span class="np-name">${esc(p.name)}</span><span class="np-meta">${p.gpu?p.gpu+'×GPU ':''}${p.phase!=='Running'?esc(p.phase):''}</span></div>`).join('')).join(''):'<div class="muted" style="padding:6px 0">No pods scheduled</div>';
+  const age=relTime(n.created);
+  $('drawer').innerHTML=`<button class="drawer-x" onclick="closeDrawer()">×</button>
+   <div style="display:flex;align-items:center;gap:10px"><span class="dot ok"></span><span style="font-size:19px;font-weight:800">${esc(host)}</span><span class="badge2 b-ray" style="background:var(--accent-soft);color:#c7d2fe">${esc(n.capacity||'')}</span></div>
+   <div class="m-id" style="margin-top:4px">${esc(n.instance)}${n.gpuProduct?' · '+esc(n.gpuProduct):''}</div>
+   <div class="mini-kpi"><div class="mk"><div class="mkv" style="color:var(--purple)">${gutil==null?'—':gutil+'%'}</div><div class="mkl">GPU util</div></div><div class="mk"><div class="mkv">${np.length}</div><div class="mkl">pods</div></div><div class="mk"><div class="mkv">$${(n.hourly||0).toFixed(2)}</div><div class="mkl">$/hr</div></div></div>
+   <div class="sec-title">Node</div>
+   <div class="kv"><span class="k">Instance</span><span class="v">${esc(n.instance)}</span><span class="k">Capacity</span><span class="v">${esc(n.capacity||'')}</span><span class="k">GPUs</span><span class="v">${n.gpu||0}</span><span class="k">Zone</span><span class="v">${esc(n.zone||'')}</span><span class="k">Nodepool</span><span class="v">${esc(n.pool==='__mng__'?'managed node group':n.pool)}</span>${age?`<span class="k">Age</span><span class="v">${esc(age)}</span>`:''}</div>
+   ${usage}
+   <div class="sec-title">Pods by namespace <span class="muted" style="font-weight:500;text-transform:none;letter-spacing:0">· ${np.length} on node</span></div>
+   ${legend}${podsHtml}`;
+  if(!keep){$('drawer').classList.add('open');$('scrim').classList.add('open');}}
+function doSearch(q){q=(q||'').trim().toLowerCase();const res=$('q-res');if(!res)return;if(!q){res.className='q-res';res.innerHTML='';lastSearch=[];return;}
+  const items=[];
+  (D.models||[]).forEach(m=>{if((m.name||'').toLowerCase().includes(q)||(m.model||'').toLowerCase().includes(q))items.push({type:'model',name:m.name,label:m.name,sub:m.model||''});});
+  (D.nodes||[]).forEach(n=>{const h=n.name.split('.')[0];if(h.toLowerCase().includes(q)||(n.instance||'').toLowerCase().includes(q))items.push({type:'node',name:n.name,label:h,sub:n.instance||''});});
+  (D.teams||[]).forEach(t=>{if((t.name||'').toLowerCase().includes(q)||(t.id||'').toLowerCase().includes(q))items.push({type:'team',name:t.name||t.id,label:t.name||t.id,sub:'team'});});
+  lastSearch=items.slice(0,8);
+  res.innerHTML=lastSearch.length?lastSearch.map((it,i)=>`<div class="q-item${i===0?' sel':''}" onmousedown="pickSearch(${i})"><b>${esc(it.label)}</b> <span class="muted" style="font-size:11px">${esc(it.sub)}</span><span class="q-type">${it.type}</span></div>`).join(''):'<div class="q-item muted">No matches</div>';
+  res.className='q-res open';}
+function pickSearch(i){const it=lastSearch[i];if(!it)return;const inp=$('q');if(inp)inp.value='';$('q-res').className='q-res';
+  if(it.type==='model'){go('models',document.querySelectorAll('.nav-item')[1]);openModel(it.name);}
+  else if(it.type==='node'){go('infra',document.querySelectorAll('.nav-item')[4]);openNode(it.name);}
+  else if(it.type==='team'){go('teams',document.querySelectorAll('.nav-item')[2]);}}
+function searchGo(){if(lastSearch.length)pickSearch(0);}
 function go(v,el){document.querySelectorAll('.view').forEach(x=>x.classList.remove('active'));$('v-'+v).classList.add('active');document.querySelectorAll('.nav-item').forEach(x=>x.classList.remove('active'));if(el)el.classList.add('active');document.querySelector('.main').scrollTop=0;}
 function toggleTheme(){const b=document.body,n=b.getAttribute('data-theme')==='light'?'dark':'light';b.setAttribute('data-theme',n);localStorage.setItem('theme',n);}
 const saved=localStorage.getItem('theme');if(saved)document.body.setAttribute('data-theme',saved);
 poll();setInterval(poll,5000);
+document.addEventListener('keydown',e=>{if(e.key==='Escape'){const r=document.getElementById('q-res');if(r&&r.classList.contains('open')){r.className='q-res';}else{closeDrawer();}}});
 
 </script>
 </body>
