@@ -133,6 +133,36 @@ body { font-family: var(--font); background: var(--bg); color: var(--text); heig
 .mmeta .router-ok   { color: var(--green); }
 .mmeta .router-warn { color: var(--amber); }
 
+/* Cost card */
+.cost-est { font-size: 9px; font-weight: 700; color: var(--text-muted); }
+.cost-main { display: flex; align-items: baseline; gap: 4px; margin-top: 2px; }
+#cost-hr { font-size: 26px; font-weight: 800; color: var(--green); font-family: var(--mono); }
+.cost-unit { font-size: 12px; color: var(--text-secondary); }
+.cost-mo { font-size: 11px; color: var(--text-muted); margin-top: 3px; }
+.cost-split { display: flex; gap: 14px; margin-top: 10px; font-size: 11px; color: var(--text-secondary); font-family: var(--mono); }
+.cost-seg { display: flex; align-items: center; gap: 5px; }
+.cost-seg b { color: var(--text); font-weight: 700; }
+.cost-dot { width: 8px; height: 8px; border-radius: 2px; }
+.cost-dot.gpu { background: var(--purple); }
+.cost-dot.plat { background: var(--accent); }
+
+/* Model-first main-stage panel */
+.models-panel { margin-bottom: 20px; }
+.mp-hdr { font-size: 11px; font-weight: 700; text-transform: uppercase; letter-spacing: 1px; color: var(--text-muted); margin-bottom: 10px; display: flex; align-items: center; gap: 8px; }
+.mp-count { background: rgba(255,255,255,0.06); color: var(--text-secondary); border-radius: 10px; padding: 1px 8px; font-size: 11px; }
+.mp-empty { font-size: 13px; color: var(--text-muted); padding: 16px 18px; background: rgba(255,255,255,0.02); border: 1px dashed var(--border); border-radius: var(--radius); }
+.mp-empty code { font-family: var(--mono); font-size: 12px; color: var(--text-secondary); background: rgba(255,255,255,0.05); padding: 1px 5px; border-radius: 3px; }
+.mp-grid { display: flex; flex-wrap: wrap; gap: 12px; }
+.mcard { flex: 1 1 300px; max-width: 440px; background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius); padding: 14px 16px; cursor: pointer; transition: all 0.15s; }
+.mcard:hover { border-color: var(--border-light); background: var(--surface-hover); }
+.mcard.selected { border-color: var(--accent); background: var(--accent-soft); }
+.mcard-top { display: flex; align-items: center; gap: 8px; }
+.mcard-name { font-size: 15px; font-weight: 700; }
+.mcard-top .mstatus { margin-left: auto; }
+.mcard-model { font-size: 11px; color: var(--text-muted); font-family: var(--mono); margin-top: 5px; }
+.mcard-meta { font-size: 11px; color: var(--text-secondary); font-family: var(--mono); margin-top: 8px; }
+.mp-timer { color: var(--amber); font-weight: 600; }
+
 /* Quick Links */
 .link-row { display: flex; align-items: center; gap: 10px; padding: 7px 8px; border-radius: 6px; text-decoration: none; color: var(--text); transition: background 0.12s; }
 .link-row:hover { background: var(--surface-hover); }
@@ -497,8 +527,13 @@ body { font-family: var(--font); background: var(--bg); color: var(--text); heig
       <div class="stat-row"><span class="stat-label">Models</span><span class="stat-val" id="s-models">–</span></div>
     </div>
     <div class="card">
-      <div class="card-title">Models</div>
-      <div id="sidebar-models"><div class="model-empty">No models deployed</div></div>
+      <div class="card-title">Cost <span class="cost-est">estimate</span></div>
+      <div class="cost-main"><span id="cost-hr">$0.00</span><span class="cost-unit">/hr</span></div>
+      <div class="cost-mo">~<span id="cost-mo">$0</span>/mo if steady 24×7</div>
+      <div class="cost-split">
+        <span class="cost-seg"><span class="cost-dot gpu"></span>GPU <b id="cost-gpu">$0</b></span>
+        <span class="cost-seg"><span class="cost-dot plat"></span>platform <b id="cost-plat">$0</b></span>
+      </div>
     </div>
     <div class="card">
       <div class="card-title">Activity</div>
@@ -511,6 +546,7 @@ body { font-family: var(--font); background: var(--bg); color: var(--text); heig
   </div>
 
   <div class="main" id="main-scroll">
+    <div id="models-panel" class="models-panel"></div>
     <div id="infra"></div>
   </div>
 </div>
@@ -543,39 +579,37 @@ function log(type,msg){
 
 function selectModel(name){selectedModel=selectedModel===name?null:name;renderAll();}
 
-function renderModels(eps){
-  const el=document.getElementById('sidebar-models');
+function renderModelsPanel(eps){
+  const el=document.getElementById('models-panel'); if(!el)return;
+  const MODE_LABEL={ray:'Ray',vllm:'vLLM','llm-d':'llm-d'},MODE_CLS={ray:'ray',vllm:'vllm','llm-d':'llmd'};
   if(!eps.length){
-    if(el.dataset.sig!=='__empty__'){el.innerHTML='<div class="model-empty">No models deployed</div>';el.dataset.sig='__empty__';}
+    if(el.dataset.sig!=='__empty__'){el.innerHTML='<div class="mp-hdr">Models</div><div class="mp-empty">No models deployed — commit a <code>VLLMEndpoint</code> or <code>LLMDEndpoint</code> to <code>workloads/</code> and push.</div>';el.dataset.sig='__empty__';}
     return;
   }
-  // Structural signature EXCLUDES the live elapsed timer — so a card that's only
-  // ticking its "⏱ Xm Ys" isn't torn down and rebuilt every 2s poll (which reset
-  // the view). We rebuild only on a real change (status/selection/model set),
-  // and tick the timers in place below.
-  const MODE_LABEL={ray:'Ray',vllm:'vLLM','llm-d':'llm-d'},MODE_CLS={ray:'ray',vllm:'vllm','llm-d':'llmd'};
+  // Signature excludes the live timer so a card only ticking its elapsed time
+  // isn't torn down every poll (which would drop hover/selection).
   const sig=eps.map(ep=>`${ep.name}|${ep.mode}|${ep.ready}|${ep.status||ep.modelStatus}|${ep.availableReplicas}|${ep.replicas}|${ep.routerHealth}|${selectedModel===ep.name}|${ep.shared}|${ep.gpuCount}|${ep.tp}|${ep.pp}|${ep.model}`).join('~');
   if(el.dataset.sig!==sig){
-    el.innerHTML=eps.map(ep=>{
+    const cards=eps.map(ep=>{
       const ready=ep.ready==='True',st=ep.status||ep.modelStatus||'Pending';
       const cls=ready?'running':'deploying';
       const sel=selectedModel===ep.name?'selected':'';
-      const timer=ready?'':`<div class="mtimer" data-created="${ep.created}">⏱ </div>`;
+      const timer=ready?'':`<span class="mp-timer" data-created="${ep.created}">⏱ </span>`;
       const gpuCount=ep.gpuCount||1,tp=ep.tp||1,pp=ep.pp||1;
       const strat=ep.shared?'shared GPU':gpuCount===1?'1 GPU':tp>1&&pp>1?`TP${tp}×PP${pp}`:tp>1?`TP=${tp}`:pp>1?`PP=${pp}`:`${gpuCount} GPU`;
-      const repl=`${ep.availableReplicas||0}/${ep.replicas||1} ready`;
       let router='';
       if(ep.mode==='llm-d'&&ep.routerHealth){const ok=ep.routerHealth==='Healthy';router=` · <span class="${ok?'router-ok':'router-warn'}">router ${ep.routerHealth}</span>`;}
       const modeLabel=MODE_LABEL[ep.mode]||ep.mode||'?',modeCls=MODE_CLS[ep.mode]||'ray';
-      return `<div class="model-item ${sel}" onclick="selectModel('${ep.name}')">
-        <div class="model-top"><div class="mdot ${cls}"></div><div class="mname">${ep.name}</div><span class="mode-badge ${modeCls}">${modeLabel}</span><div class="mstatus ${cls}">${st}</div></div>
-        <div class="mdetail">${ep.model}</div>
-        <div class="mmeta">${strat} · ${repl}${router}</div>${timer}</div>`;
+      return `<div class="mcard ${sel}" onclick="selectModel('${ep.name}')">
+        <div class="mcard-top"><div class="mdot ${cls}"></div><span class="mcard-name">${ep.name}</span><span class="mode-badge ${modeCls}">${modeLabel}</span><span class="mstatus ${cls}">${st}</span></div>
+        <div class="mcard-model">${ep.model}</div>
+        <div class="mcard-meta">${strat} · ${ep.availableReplicas||0}/${ep.replicas||1} ready${router} ${timer}</div>
+      </div>`;
     }).join('');
+    el.innerHTML=`<div class="mp-hdr">Models <span class="mp-count">${eps.length}</span></div><div class="mp-grid">${cards}</div>`;
     el.dataset.sig=sig;
   }
-  // Tick the elapsed timers in place (no DOM teardown).
-  for(const t of el.querySelectorAll('.mtimer[data-created]')){
+  for(const t of el.querySelectorAll('.mp-timer[data-created]')){
     const elapsed=Math.floor((Date.now()-new Date(t.dataset.created).getTime())/1000);
     t.textContent=`⏱ ${Math.floor(elapsed/60)}m ${elapsed%60}s`;
   }
@@ -595,7 +629,7 @@ function renderLinks(links){
   if(el.dataset.sig!==html){el.innerHTML=html;el.dataset.sig=html;}  // skip rebuild when unchanged
 }
 
-function renderAll(){if(!lastData)return;renderModels(lastData.endpoints);renderLinks(lastData.links);renderInfra(lastData.nodes,lastData.pods);}
+function renderAll(){if(!lastData)return;renderModelsPanel(lastData.endpoints);renderLinks(lastData.links);renderInfra(lastData.nodes,lastData.pods);}
 
 function renderInfra(nodes,pods){
   const pools={};
@@ -661,7 +695,8 @@ function renderInfra(nodes,pods){
             const podName=gp.name;
             let label;
             if(podName.includes('warmup')) label='warmup';
-            else label=podName.replace(/-[a-z0-9]{5}-(?:gpu-workers-worker|head).*$/,'').replace(/-gpu-workers.*$/,'').replace(/-head.*$/,'').replace(/-vllm-[a-z0-9]{5,10}(-[a-z0-9]{5})?$/,'');
+            else label=Object.keys(epByName).filter(en=>podName.startsWith(en+'-')).sort((a,b)=>b.length-a.length)[0]
+                       || podName.replace(/-[a-z0-9]{5}-(?:gpu-workers-worker|head).*$/,'').replace(/-gpu-workers.*$/,'').replace(/-head.*$/,'').replace(/-vllm-[a-z0-9]{5,10}(-[a-z0-9]{5})?$/,'');
             const gpuCount=gp.gpu||1;
             // Look up parallelism strategy from InferenceEndpoint
             const ep=epByName[label];
@@ -719,6 +754,11 @@ async function poll(){
     document.getElementById('s-nodes').textContent=data.nodes.length;
     document.getElementById('s-gpus').textContent=data.nodes.reduce((s,n)=>s+n.gpu,0);
     document.getElementById('s-models').textContent=data.endpoints.length;
+    const c=data.cost||{};
+    document.getElementById('cost-hr').textContent='$'+(c.hourly||0).toFixed(2);
+    document.getElementById('cost-mo').textContent='$'+Math.round(c.monthly||0).toLocaleString();
+    document.getElementById('cost-gpu').textContent='$'+(c.gpuHourly||0).toFixed(2)+'/hr';
+    document.getElementById('cost-plat').textContent='$'+(c.platformHourly||0).toFixed(2)+'/hr';
     document.getElementById('top-cluster').textContent=`ai-platform · ${data.nodes.length} nodes`;
     updateApprovalsBadge(data);
     renderAll();

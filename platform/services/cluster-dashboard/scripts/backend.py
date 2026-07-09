@@ -287,7 +287,7 @@ def build_remediator_job(investigation_id: str) -> dict:
 # Snapshot building
 # ---------------------------------------------------------------------------
 
-snapshot = {"nodes": [], "pods": [], "endpoints": [],
+snapshot = {"nodes": [], "pods": [], "endpoints": [], "cost": {},
             "approvals_available": False, "approvals_pending": 0,
             "links": [], "ts": 0}
 snapshot_lock = threading.Lock()
@@ -336,6 +336,49 @@ SERVING_KINDS = [
     ("vllmendpoints", "vllm"),
     ("llmdendpoints", "llm-d"),
 ]
+
+
+# Node hourly cost estimate — eu-central-1 on-demand list price ($/hr, Linux/
+# Shared) from the AWS Pricing API. Spot nodes are approximated at SPOT_FACTOR of
+# on-demand (real spot price varies). Unknown instance types are counted as
+# `unpriced` so the total stays honest rather than silently undercounting.
+NODE_PRICES = {
+    "g6.xlarge": 1.0064, "g6.2xlarge": 1.2225, "g6.4xlarge": 1.6547, "g6.8xlarge": 2.519,
+    "g6.12xlarge": 5.7543, "g6.16xlarge": 4.2477, "g6.24xlarge": 8.3473, "g6.48xlarge": 16.6946,
+    "g5.xlarge": 1.258, "g5.2xlarge": 1.5156, "g5.4xlarge": 2.0308, "g5.8xlarge": 3.0612,
+    "g5.12xlarge": 7.0928, "g5.48xlarge": 20.3681,
+    "c5.large": 0.097, "c5.xlarge": 0.194, "c5.2xlarge": 0.388,
+    "c5a.large": 0.087, "c5a.xlarge": 0.174,
+    "c7i.large": 0.1018, "c7i.xlarge": 0.2037, "c7a.large": 0.1171, "c7a.xlarge": 0.2343,
+    "m6g.large": 0.092, "m6g.xlarge": 0.184, "m5.large": 0.115, "m5.xlarge": 0.23, "r5.large": 0.152,
+}
+SPOT_FACTOR = 0.35        # rough spot discount vs on-demand
+HOURS_PER_MONTH = 730
+
+
+def _compute_cost(nodes: list) -> dict:
+    """Sum the running nodes' hourly rates → realtime $/hr + 730h monthly
+    projection, split GPU vs platform. Annotates each node with its `hourly`."""
+    hourly = gpu_hourly = 0.0
+    unpriced = 0
+    for n in nodes:
+        base = NODE_PRICES.get(n["instance"])
+        if base is None:
+            unpriced += 1
+            n["hourly"] = 0.0
+            continue
+        rate = base * (SPOT_FACTOR if n.get("capacity") == "spot" else 1.0)
+        n["hourly"] = round(rate, 4)
+        hourly += rate
+        if n["gpu"] > 0:
+            gpu_hourly += rate
+    return {
+        "hourly": round(hourly, 4),
+        "monthly": round(hourly * HOURS_PER_MONTH, 2),
+        "gpuHourly": round(gpu_hourly, 4),
+        "platformHourly": round(hourly - gpu_hourly, 4),
+        "unpriced": unpriced,
+    }
 
 
 def _normalize_endpoint(ep: dict, mode: str) -> dict:
@@ -439,6 +482,7 @@ def _build_k8s_snapshot() -> dict:
             })
 
     endpoints = _fetch_endpoints()
+    cost = _compute_cost(nodes)
 
     # Approvals snapshot — best-effort, never blocks the dashboard.
     approvals_available = False
@@ -454,6 +498,7 @@ def _build_k8s_snapshot() -> dict:
 
     return {
         "nodes": nodes, "pods": pods, "endpoints": endpoints,
+        "cost": cost,
         "approvals_available": approvals_available,
         "approvals_pending": approvals_pending,
         "links": _build_links(),
