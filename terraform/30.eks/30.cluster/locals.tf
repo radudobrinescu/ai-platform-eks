@@ -11,7 +11,7 @@ locals {
   ray_image     = "anyscale/ray-llm:${local.ray_image_tag}"
 
   # Unsloth fine-tuning trainer image. Built from
-  # platform/services/unsloth-trainer/Dockerfile and pushed to a private ECR
+  # platform/images/unsloth-trainer/Dockerfile and pushed to a private ECR
   # repo by unsloth-image.tf. Bump the tag to rebuild + re-push. Surfaced to KRO
   # via the platform-config ConfigMap (unslothImage) so FineTuneJob reads it.
   unsloth_image_tag = "0.1.0"
@@ -40,13 +40,6 @@ locals {
     gitops = try(var.cluster_config.capabilities.gitops, false)
     kro    = try(var.cluster_config.capabilities.kro, false)
     ack    = try(var.cluster_config.capabilities.ack, false)
-
-    # Inference ingress/routing: Envoy AI Gateway + Gateway API Inference
-    # Extension (GIE). Default OFF — turning it on installs the gateway control
-    # plane; the serving path only moves onto it when an InferenceEndpoint sets
-    # routing=gateway (default stays 'service'). Becomes the platform default at
-    # cutover; the 'service' path is retained as break-glass.
-    inference_gateway = try(var.cluster_config.capabilities.inference_gateway, false)
   }
 
   create_mng_system = try(var.cluster_config.create_mng_system, !local.eks_auto_mode, true)

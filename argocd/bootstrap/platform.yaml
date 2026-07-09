@@ -1,6 +1,6 @@
 # Platform — ArgoCD ApplicationSet defining all platform services.
 #
-# Eight applications (by default) in two shapes:
+# Nine applications (by default) in two shapes:
 #   - Plain-directory sources (platform-config, litellm, open-webui,
 #     cluster-dashboard, litellm-sync): manifests live in this repo and are
 #     applied as-is.
@@ -51,6 +51,15 @@ spec:
             chartRepo: https://ray-project.github.io/kuberay-helm/
             chartVersion: "1.5.1"
             valuesPath: platform/services/kuberay/helm-values.yaml
+            tier: infra
+          # GIE CRDs (InferencePool) + the llm-d OCI Helm repo registration —
+          # the substrate the LLMDEndpoint scale tier needs. Minimal (CRDs + a
+          # repo Secret, no running pods); shipped by default so teams can use
+          # LLMDEndpoint with no cluster toggle. See its README.
+          - name: inference-gateway
+            namespace: argocd
+            type: directory
+            path: platform/services/inference-gateway
             tier: infra
           # --- Platform Services (user-facing) ---
           - name: litellm

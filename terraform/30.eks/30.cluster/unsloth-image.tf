@@ -2,7 +2,7 @@
 # Unsloth trainer image — ECR repo + build/push
 #
 # Unsloth has no official Docker image, so we build our own from
-# platform/services/unsloth-trainer/Dockerfile and push it to a private ECR
+# platform/images/unsloth-trainer/Dockerfile and push it to a private ECR
 # repo. Follows the repo's established image-artifact pattern (null_resource +
 # ops script, same as image-optimization.tf) rather than adding the
 # kreuzwerker/docker provider — fewer moving parts.
@@ -46,7 +46,7 @@ resource "null_resource" "unsloth_image" {
   count = local.enable_fine_tuning ? 1 : 0
 
   triggers = {
-    dockerfile_sha = filesha256("${path.module}/../../../platform/services/unsloth-trainer/Dockerfile")
+    dockerfile_sha = filesha256("${path.module}/../../../platform/images/unsloth-trainer/Dockerfile")
     image_tag      = local.unsloth_image_tag
     repo_url       = aws_ecr_repository.unsloth_trainer[0].repository_url
   }

@@ -225,11 +225,11 @@ argocd/bootstrap/   ApplicationSets (platform services + self-service workloads)
 platform/
   config/kro/       InferenceEndpoint · VLLMEndpoint · LLMDEndpoint · AITeam · FineTuneJob (the API)
   services/         litellm, open-webui, langfuse, gpu-operator, kuberay,
-                    cluster-dashboard (+ Platform Health Agent component)
+                    cluster-dashboard (+ Platform Health Agent), inference-gateway
+  images/           Container build contexts (unsloth-trainer, platform-controller)
 workloads/          Self-service YAMLs: models/ · scale-models/ · teams/ · fine-tuning/
 ops/                Operational scripts (ops/demo/ holds demo-only scripts)
-terraform/          Infrastructure modules (VPC → IAM → EKS → observability,
-                    + optional gated inference-gateway / GIE substrate)
+terraform/          Infrastructure modules (VPC → IAM → EKS → observability)
 docs/               demo-walkthrough · platform-product-report ·
                     llm-d-and-ingress-architecture · roadmap/
 ```

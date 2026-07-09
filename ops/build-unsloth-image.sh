@@ -19,7 +19,7 @@ REGION="${AWS_REGION:-us-east-1}"
 ECR_REPO=""
 TAG=""
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-DOCKERFILE_DIR="${SCRIPT_DIR}/../platform/services/unsloth-trainer"
+DOCKERFILE_DIR="${SCRIPT_DIR}/../platform/images/unsloth-trainer"
 
 while getopts "r:e:t:d:h" opt; do
   case "$opt" in
