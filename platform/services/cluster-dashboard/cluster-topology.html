@@ -124,6 +124,14 @@ body { font-family: var(--font); background: var(--bg); color: var(--text); heig
 .mdetail { font-size: 11px; color: var(--text-muted); margin-top: 4px; font-family: var(--mono); }
 .mtimer { font-size: 11px; font-family: var(--mono); color: var(--amber); font-weight: 600; margin-top: 3px; }
 .model-empty { font-size: 12px; color: var(--text-muted); padding: 12px 0; }
+/* Serving-mode badge (ray | vllm | llm-d) */
+.mode-badge { font-size: 9px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.4px; padding: 2px 6px; border-radius: 4px; white-space: nowrap; }
+.mode-badge.vllm { background: var(--green-soft); color: var(--green); }
+.mode-badge.llmd { background: var(--purple-soft); color: var(--purple); }
+.mode-badge.ray  { background: rgba(255,255,255,0.05); color: var(--text-muted); }
+.mmeta { font-size: 10px; color: var(--text-secondary); margin-top: 4px; font-family: var(--mono); }
+.mmeta .router-ok   { color: var(--green); }
+.mmeta .router-warn { color: var(--amber); }
 
 /* Quick Links */
 .link-row { display: flex; align-items: center; gap: 10px; padding: 7px 8px; border-radius: 6px; text-decoration: none; color: var(--text); transition: background 0.12s; }
@@ -182,7 +190,7 @@ body { font-family: var(--font); background: var(--bg); color: var(--text); heig
 /* Pods */
 .nd-pods { display: flex; flex-wrap: wrap; gap: 5px; }
 .pd { height: 24px; padding: 0 9px; border-radius: 5px; font-size: 11px; font-family: var(--mono); display: flex; align-items: center; font-weight: 500; cursor: default; border: 1px solid; }
-.pd.inf { background: var(--red-soft); color: var(--red); border-color: rgba(255,107,107,0.2); }
+.pd.inf { background: rgba(45,212,191,0.12); color: #2dd4bf; border-color: rgba(45,212,191,0.25); }
 .pd.plat { background: var(--accent-soft); color: #818cf8; border-color: rgba(91,95,246,0.2); }
 .pd.gpu-op { background: var(--green-soft); color: var(--green); border-color: rgba(61,220,132,0.2); }
 .pd.kuberay { background: rgba(103,232,249,0.1); color: var(--cyan); border-color: rgba(103,232,249,0.2); }
@@ -489,7 +497,7 @@ body { font-family: var(--font); background: var(--bg); color: var(--text); heig
       <div class="stat-row"><span class="stat-label">Models</span><span class="stat-val" id="s-models">–</span></div>
     </div>
     <div class="card">
-      <div class="card-title">Inference Endpoints</div>
+      <div class="card-title">Models</div>
       <div id="sidebar-models"><div class="model-empty">No models deployed</div></div>
     </div>
     <div class="card">
@@ -517,7 +525,7 @@ const POOLS = [
 const DAEMONSETS = ['aws-node','kube-proxy','ebs-csi-node','eks-pod-identity-agent','aws-for-fluent-bit','cloudwatch-agent','fluent-bit','prometheus-node-exporter','nfd-worker','dcgm-exporter'];
 const SKIP_POD = ['-register','cleanup'];
 const NS_CLS = {'inference':'inf','ai-platform':'plat','kuberay':'kuberay','gpu-operator':'gpu-op','external-secrets':'sys','grafana-operator':'sys'};
-const NS_COLORS = {'inference':['rgba(255,107,107,0.3)','var(--red)'],'ai-platform':['rgba(91,95,246,0.3)','#818cf8'],'kuberay':['rgba(103,232,249,0.3)','var(--cyan)'],'gpu-operator':['rgba(61,220,132,0.3)','var(--green)']};
+const NS_COLORS = {'inference':['rgba(45,212,191,0.3)','#2dd4bf'],'ai-platform':['rgba(91,95,246,0.3)','#818cf8'],'kuberay':['rgba(103,232,249,0.3)','var(--cyan)'],'gpu-operator':['rgba(61,220,132,0.3)','var(--green)']};
 
 let prevNodes=new Set(),prevPods=new Set(),prevEps=new Set(),prevEpSt={};
 let events=[],connected=false,selectedModel=null,lastData=null;
@@ -545,19 +553,24 @@ function renderModels(eps){
   // ticking its "⏱ Xm Ys" isn't torn down and rebuilt every 2s poll (which reset
   // the view). We rebuild only on a real change (status/selection/model set),
   // and tick the timers in place below.
-  const sig=eps.map(ep=>`${ep.name}|${ep.ready}|${ep.modelStatus}|${selectedModel===ep.name}|${ep.shared}|${ep.gpuCount}|${ep.tp}|${ep.pp}|${ep.model}`).join('~');
+  const MODE_LABEL={ray:'Ray',vllm:'vLLM','llm-d':'llm-d'},MODE_CLS={ray:'ray',vllm:'vllm','llm-d':'llmd'};
+  const sig=eps.map(ep=>`${ep.name}|${ep.mode}|${ep.ready}|${ep.status||ep.modelStatus}|${ep.availableReplicas}|${ep.replicas}|${ep.routerHealth}|${selectedModel===ep.name}|${ep.shared}|${ep.gpuCount}|${ep.tp}|${ep.pp}|${ep.model}`).join('~');
   if(el.dataset.sig!==sig){
     el.innerHTML=eps.map(ep=>{
-      const ready=ep.ready==='True',st=ep.modelStatus||'Pending';
-      const cls=ready?'running':st==='DEPLOYING'?'deploying':'pending';
+      const ready=ep.ready==='True',st=ep.status||ep.modelStatus||'Pending';
+      const cls=ready?'running':'deploying';
       const sel=selectedModel===ep.name?'selected':'';
       const timer=ready?'':`<div class="mtimer" data-created="${ep.created}">⏱ </div>`;
       const gpuCount=ep.gpuCount||1,tp=ep.tp||1,pp=ep.pp||1;
-      let strat=gpuCount===1?'1 GPU':tp>1&&pp>1?`TP=${tp}×PP=${pp}`:tp>1?`TP=${tp}`:pp>1?`PP=${pp}`:`${gpuCount} GPU`;
-      const mode=ep.shared?'shared':strat;
+      const strat=ep.shared?'shared GPU':gpuCount===1?'1 GPU':tp>1&&pp>1?`TP${tp}×PP${pp}`:tp>1?`TP=${tp}`:pp>1?`PP=${pp}`:`${gpuCount} GPU`;
+      const repl=`${ep.availableReplicas||0}/${ep.replicas||1} ready`;
+      let router='';
+      if(ep.mode==='llm-d'&&ep.routerHealth){const ok=ep.routerHealth==='Healthy';router=` · <span class="${ok?'router-ok':'router-warn'}">router ${ep.routerHealth}</span>`;}
+      const modeLabel=MODE_LABEL[ep.mode]||ep.mode||'?',modeCls=MODE_CLS[ep.mode]||'ray';
       return `<div class="model-item ${sel}" onclick="selectModel('${ep.name}')">
-        <div class="model-top"><div class="mdot ${cls}"></div><div class="mname">${ep.name}</div><div class="mstatus ${cls}">${st}</div></div>
-        <div class="mdetail">${mode} · ${ep.model}</div>${timer}</div>`;
+        <div class="model-top"><div class="mdot ${cls}"></div><div class="mname">${ep.name}</div><span class="mode-badge ${modeCls}">${modeLabel}</span><div class="mstatus ${cls}">${st}</div></div>
+        <div class="mdetail">${ep.model}</div>
+        <div class="mmeta">${strat} · ${repl}${router}</div>${timer}</div>`;
     }).join('');
     el.dataset.sig=sig;
   }
@@ -648,7 +661,7 @@ function renderInfra(nodes,pods){
             const podName=gp.name;
             let label;
             if(podName.includes('warmup')) label='warmup';
-            else label=podName.replace(/-[a-z0-9]{5}-(?:gpu-workers-worker|head).*$/,'').replace(/-gpu-workers.*$/,'').replace(/-head.*$/,'');
+            else label=podName.replace(/-[a-z0-9]{5}-(?:gpu-workers-worker|head).*$/,'').replace(/-gpu-workers.*$/,'').replace(/-head.*$/,'').replace(/-vllm-[a-z0-9]{5,10}(-[a-z0-9]{5})?$/,'');
             const gpuCount=gp.gpu||1;
             // Look up parallelism strategy from InferenceEndpoint
             const ep=epByName[label];
