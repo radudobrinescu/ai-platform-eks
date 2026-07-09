@@ -845,6 +845,27 @@ def _is_stuck_inferenceendpoint(ep: dict) -> bool:
     return _resource_age_seconds(ep) >= STUCK_RESOURCE_THRESHOLD_SEC
 
 
+def _is_stuck_vllmendpoint(ep: dict) -> bool:
+    # VLLMEndpoint (simple vLLM) is healthy once its Deployment is available,
+    # which the RGD surfaces as status.ready == "True".
+    status = ep.get("status") or {}
+    if str(status.get("ready", "False")) == "True":
+        return False
+    return _resource_age_seconds(ep) >= STUCK_RESOURCE_THRESHOLD_SEC
+
+
+def _is_stuck_llmdendpoint(ep: dict) -> bool:
+    # LLMDEndpoint (llm-d scale tier) is healthy when the vLLM replicas are
+    # ready AND the router (EPP + InferencePool, delivered as an ArgoCD
+    # Application) reports Healthy via status.routerHealth.
+    status = ep.get("status") or {}
+    ready = str(status.get("ready", "False")) == "True"
+    router_healthy = status.get("routerHealth", "") == "Healthy"
+    if ready and router_healthy:
+        return False
+    return _resource_age_seconds(ep) >= STUCK_RESOURCE_THRESHOLD_SEC
+
+
 def _is_stuck_rayservice(rs: dict) -> bool:
     status = rs.get("status") or {}
     # RayService is healthy when serviceStatus is "Running" and active replicas exist.
@@ -858,7 +879,9 @@ def watch_stuck_resources(conn_factory) -> None:
     on those that haven't reached healthy state in time.
 
     Resources scanned (read-only):
-      - inferenceendpoints.kro.run        (cluster-wide, in `inference` ns)
+      - inferenceendpoints.kro.run        (in `inference` ns; Ray, legacy)
+      - vllmendpoints.kro.run             (in `inference` ns; simple vLLM)
+      - llmdendpoints.kro.run             (in `inference` ns; llm-d scale tier)
       - aiteams.kro.run                   (cluster-wide, in `ai-platform` ns)
       - rayservices.ray.io                (cluster-wide)
     """
@@ -896,6 +919,36 @@ def watch_stuck_resources(conn_factory) -> None:
                     "age_seconds": int(_resource_age_seconds(ep)),
                 }
                 spawn_investigation(conn, batch_v1, "StuckResource", payload)
+
+            # --- VLLMEndpoints (simple vLLM) + LLMDEndpoints (llm-d scale) ---
+            for plural, kind, stuck_fn in (
+                ("vllmendpoints", "VLLMEndpoint", _is_stuck_vllmendpoint),
+                ("llmdendpoints", "LLMDEndpoint", _is_stuck_llmdendpoint),
+            ):
+                try:
+                    items = custom.list_namespaced_custom_object(
+                        group="kro.run", version="v1alpha1",
+                        namespace="inference", plural=plural,
+                    ).get("items", [])
+                except ApiException as e:
+                    if e.status != 404:
+                        log.warning("list %s: %s", plural, e)
+                    items = []
+                for ep in items:
+                    if not stuck_fn(ep):
+                        continue
+                    st = ep.get("status") or {}
+                    payload = {
+                        "kind": kind,
+                        "namespace": ep["metadata"].get("namespace", ""),
+                        "name": ep["metadata"]["name"],
+                        "ready": str(st.get("ready", "False")),
+                        "routerHealth": st.get("routerHealth", ""),
+                        "availableReplicas": st.get("availableReplicas", 0),
+                        "model": (ep.get("spec") or {}).get("model", ""),
+                        "age_seconds": int(_resource_age_seconds(ep)),
+                    }
+                    spawn_investigation(conn, batch_v1, "StuckResource", payload)
 
             # --- AITeams ---
             try:

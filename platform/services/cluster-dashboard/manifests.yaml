@@ -33,7 +33,7 @@ rules:
     resources: ["nodes", "pods"]
     verbs: ["get", "list"]
   - apiGroups: ["kro.run"]
-    resources: ["inferenceendpoints"]
+    resources: ["inferenceendpoints", "vllmendpoints", "llmdendpoints"]
     verbs: ["list"]
   # Read the shared ALB ingress to discover its hostname for the Quick Links panel.
   - apiGroups: ["networking.k8s.io"]

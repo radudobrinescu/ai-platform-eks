@@ -328,10 +328,75 @@ def _build_links() -> list:
     return links
 
 
+# Serving kinds surfaced on the dashboard. Ray InferenceEndpoint is legacy
+# (being retired); VLLMEndpoint (simple) and LLMDEndpoint (llm-d scale tier) are
+# the current path. All three are kro.run/v1alpha1 in the `inference` namespace.
+SERVING_KINDS = [
+    ("inferenceendpoints", "ray"),
+    ("vllmendpoints", "vllm"),
+    ("llmdendpoints", "llm-d"),
+]
+
+
+def _normalize_endpoint(ep: dict, mode: str) -> dict:
+    """Flatten a serving CR (any of the three kinds) into one dashboard record
+    with a `mode` field. Status is normalized so the UI can render all kinds
+    uniformly: Ray reports modelStatus; vLLM/llm-d report ready +
+    availableReplicas; llm-d also reports routerHealth (EPP/router health)."""
+    spec = ep.get("spec", {}) or {}
+    status = ep.get("status", {}) or {}
+    gpu_count = int(spec.get("gpuCount", 1) or 1)
+    tp = int(spec.get("tensorParallelSize", 0) or 0)
+    pp = int(spec.get("pipelineParallelSize", 1) or 1)
+    if tp == 0:
+        tp = gpu_count if pp == 1 else 1
+    # Desired replicas: llm-d uses `replicas`; ray/vllm use `minReplicas`.
+    replicas = int(spec.get("replicas", spec.get("minReplicas", 1)) or 1)
+    ready = str(status.get("ready", "False"))
+    avail = int(status.get("availableReplicas", 0) or 0)
+    norm_status = status.get("modelStatus", "Pending") if mode == "ray" \
+        else ("Running" if ready == "True" else "Pending")
+    return {
+        "name": ep["metadata"]["name"],
+        "model": spec.get("model", ""),
+        "mode": mode,
+        "shared": bool(spec.get("shared", False)),
+        "gpuCount": gpu_count,
+        "tp": tp,
+        "pp": pp,
+        "replicas": replicas,
+        "availableReplicas": avail,
+        "ready": ready,
+        # `modelStatus` kept for back-compat with the current HTML; `status` is
+        # the normalized, mode-agnostic label the reworked UI should use.
+        "modelStatus": norm_status,
+        "status": norm_status,
+        "routerHealth": str(status.get("routerHealth", "")) if mode == "llm-d" else "",
+        "message": status.get("message", "") if mode == "ray" else "",
+        "created": ep["metadata"].get("creationTimestamp", ""),
+    }
+
+
+def _fetch_endpoints() -> list:
+    """Poll every serving kind in the `inference` namespace and return normalized
+    records. A kind whose CRD isn't installed is skipped silently."""
+    out = []
+    for plural, mode in SERVING_KINDS:
+        data = k8s_get(f"/apis/kro.run/v1alpha1/namespaces/inference/{plural}")
+        if not data:
+            continue
+        for ep in data.get("items", []):
+            try:
+                out.append(_normalize_endpoint(ep, mode))
+            except Exception:
+                continue
+    out.sort(key=lambda e: (e["mode"], e["name"]))
+    return out
+
+
 def _build_k8s_snapshot() -> dict:
     nodes_data = k8s_get("/api/v1/nodes")
     pods_data = k8s_get("/api/v1/pods")
-    ep_data = k8s_get("/apis/kro.run/v1alpha1/namespaces/inference/inferenceendpoints")
 
     nodes = []
     if nodes_data:
@@ -373,28 +438,7 @@ def _build_k8s_snapshot() -> dict:
                 "created": p["metadata"].get("creationTimestamp", ""),
             })
 
-    endpoints = []
-    if ep_data:
-        for ep in ep_data.get("items", []):
-            status = ep.get("status", {})
-            spec = ep.get("spec", {})
-            gpu_count = int(spec.get("gpuCount", 1))
-            tp = int(spec.get("tensorParallelSize", 0))
-            pp = int(spec.get("pipelineParallelSize", 1))
-            if tp == 0:
-                tp = gpu_count if pp == 1 else 1
-            endpoints.append({
-                "name": ep["metadata"]["name"],
-                "model": spec.get("model", ""),
-                "shared": spec.get("shared", False),
-                "gpuCount": gpu_count,
-                "tp": tp,
-                "pp": pp,
-                "modelStatus": status.get("modelStatus", "Pending"),
-                "ready": status.get("ready", "False"),
-                "message": status.get("message", ""),
-                "created": ep["metadata"].get("creationTimestamp", ""),
-            })
+    endpoints = _fetch_endpoints()
 
     # Approvals snapshot — best-effort, never blocks the dashboard.
     approvals_available = False
