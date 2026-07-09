@@ -176,7 +176,7 @@ body { font-family: var(--font); background: var(--bg); color: var(--text); heig
 .bcost-top { display: flex; align-items: baseline; gap: 3px; }
 .bcost-top #cost-hr { font-size: 19px; font-weight: 800; color: var(--green); font-family: var(--mono); }
 .bcost-top .cost-unit { font-size: 11px; color: var(--text-secondary); }
-.bcost-sub { font-size: 9px; color: var(--text-muted); font-family: var(--mono); margin-top: 1px; }
+.bcost-sub { font-size: 11px; color: var(--text-secondary); font-family: var(--mono); margin-top: 2px; }
 .banner-links { display: flex; gap: 6px; margin-right: 4px; }
 .blink { display: flex; align-items: center; gap: 5px; padding: 5px 10px; border: 1px solid var(--border); border-radius: var(--radius-sm); text-decoration: none; color: var(--text-secondary); font-size: 11px; font-weight: 600; white-space: nowrap; transition: all 0.15s; }
 .blink:hover { background: var(--surface-hover); border-color: var(--accent); color: var(--text); }
@@ -536,8 +536,6 @@ body { font-family: var(--font); background: var(--bg); color: var(--text); heig
   <div class="topbar">
     <div class="logo"><span>AI</span> Platform</div>
     <div class="topbar-sep"></div>
-    <div class="cluster-id" id="top-cluster">connecting...</div>
-    <div class="topbar-sep"></div>
     <div class="banner-stats">
       <div class="bstat"><span class="bstat-val" id="s-nodes">–</span><span class="bstat-label">nodes</span></div>
       <div class="bstat"><span class="bstat-val purple" id="s-gpus">–</span><span class="bstat-label">GPU slots</span></div>
@@ -773,11 +771,10 @@ async function poll(){
     document.getElementById('cost-mo').textContent='$'+Math.round(c.monthly||0).toLocaleString();
     document.getElementById('cost-gpu').textContent='$'+(c.gpuHourly||0).toFixed(2)+'/hr';
     document.getElementById('cost-plat').textContent='$'+(c.platformHourly||0).toFixed(2)+'/hr';
-    document.getElementById('top-cluster').textContent=`ai-platform · ${data.nodes.length} nodes`;
     updateApprovalsBadge(data);
     renderAll();
     if(!connected){connected=true;log('mod','Connected to cluster');}
-  }catch(e){if(!connected)document.getElementById('top-cluster').textContent='connecting...';}
+  }catch(e){/* keep last snapshot on a transient fetch error; the Live badge reflects connection */}
 }
 poll();setInterval(poll,2000);
 
