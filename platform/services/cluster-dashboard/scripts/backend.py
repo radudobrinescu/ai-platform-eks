@@ -29,6 +29,7 @@ from __future__ import annotations
 
 import http.client
 import http.server
+import decimal
 import json
 import os
 import re
@@ -39,6 +40,13 @@ import threading
 import time
 import uuid
 from urllib.parse import urlparse
+
+
+def _json_default(o):
+    """psycopg returns NUMERIC columns as Decimal, which json can't serialize."""
+    if isinstance(o, decimal.Decimal):
+        return float(o)
+    raise TypeError(f"Object of type {type(o).__name__} is not JSON serializable")
 
 # psycopg is optional from the code's POV — if it can't import (image
 # missing the dep), approvals are disabled rather than crashing the
@@ -554,11 +562,11 @@ def _litellm_metrics() -> dict:
                 "p50": round(r[3]) if r[3] is not None else None,
                 "p95": round(r[4]) if r[4] is not None else None,
                 "tps": round(r[5], 1), "spend5m": float(r[6]),
-                "errPct": round(r[7], 1) if r[7] is not None else 0}
+                "errPct": round(float(r[7]), 1) if r[7] is not None else 0}
         try:
             cur.execute('SELECT DISTINCT ON (model_name) model_name,status,response_time_ms FROM "LiteLLM_HealthCheckTable" ORDER BY model_name,checked_at DESC')
             for r in cur.fetchall():
-                out["health"][r[0]] = {"status": r[1], "rt": r[2]}
+                out["health"][r[0]] = {"status": r[1], "rt": float(r[2]) if r[2] is not None else None}
         except Exception:
             pass
         try:
@@ -983,7 +991,7 @@ class Handler(http.server.SimpleHTTPRequestHandler):
                 base = dict(snapshot)
             with metrics_lock:
                 base.update(metrics)
-            data = json.dumps(base).encode("utf-8")
+            data = json.dumps(base, default=_json_default).encode("utf-8")
             self.send_response(200)
             self.send_header("Content-Type", "application/json")
             self.send_header("Cache-Control", "no-cache")
