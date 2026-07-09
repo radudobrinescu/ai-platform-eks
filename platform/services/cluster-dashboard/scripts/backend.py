@@ -57,6 +57,12 @@ try:
 except Exception:
     HAVE_PSYCOPG = False
 
+try:
+    import boto3                          # type: ignore[import-not-found]
+    HAVE_BOTO3 = True
+except Exception:
+    HAVE_BOTO3 = False
+
 
 # ---------------------------------------------------------------------------
 # Config
@@ -403,12 +409,70 @@ def _detect_region(nodes: list) -> str:
     return max(counts, key=counts.get) if counts else os.environ.get("AWS_REGION", "")
 
 
+PRICING_ENDPOINT_REGION = os.environ.get("PRICING_ENDPOINT_REGION", "us-east-1")
+_live_price_cache: dict = {}   # region -> {"ts": float, "prices": {instance: usd}}
+
+
+def _fetch_ec2_ondemand(client, region: str, instance_type: str):
+    """One instance type's on-demand Linux/shared $/hr from the Price List API."""
+    resp = client.get_products(ServiceCode="AmazonEC2", MaxResults=1, Filters=[
+        {"Type": "TERM_MATCH", "Field": "regionCode", "Value": region},
+        {"Type": "TERM_MATCH", "Field": "instanceType", "Value": instance_type},
+        {"Type": "TERM_MATCH", "Field": "operatingSystem", "Value": "Linux"},
+        {"Type": "TERM_MATCH", "Field": "tenancy", "Value": "Shared"},
+        {"Type": "TERM_MATCH", "Field": "preInstalledSw", "Value": "NA"},
+        {"Type": "TERM_MATCH", "Field": "capacitystatus", "Value": "Used"},
+    ])
+    for item in resp.get("PriceList", []):
+        terms = (json.loads(item).get("terms", {}) or {}).get("OnDemand", {}) or {}
+        for term in terms.values():
+            for dim in (term.get("priceDimensions", {}) or {}).values():
+                usd = (dim.get("pricePerUnit", {}) or {}).get("USD")
+                if usd and float(usd) > 0:
+                    return round(float(usd), 4)
+    return None
+
+
+def _live_prices(region: str, instances: tuple) -> dict:
+    """Live on-demand prices from the AWS Price List API (needs pricing:GetProducts
+    via Pod Identity + boto3). Cached per region for 6h; missing types fetched on
+    demand. Best-effort — returns {} if boto3/creds/perms are unavailable so the
+    caller falls back to the shipped/ConfigMap table."""
+    if not (HAVE_BOTO3 and region and instances):
+        return {}
+    ent = _live_price_cache.get(region)
+    now = time.time()
+    if ent is None or now - ent["ts"] > 21600:
+        ent = {"ts": now, "prices": {}}
+        _live_price_cache[region] = ent
+    missing = [i for i in instances if i not in ent["prices"]]
+    if missing:
+        try:
+            client = boto3.client("pricing", region_name=PRICING_ENDPOINT_REGION)
+            for it in missing:
+                try:
+                    p = _fetch_ec2_ondemand(client, region, it)
+                    if p is not None:
+                        ent["prices"][it] = p
+                except Exception:
+                    pass
+        except Exception:
+            pass
+    return dict(ent["prices"])
+
+
 def _compute_cost(nodes: list) -> dict:
     """Sum the running nodes' hourly rates -> realtime $/hr + 730h monthly
     projection, split GPU vs platform. Region-aware; annotates each node with
-    its `hourly`. Instance types with no price data are counted (`unpriced`)."""
+    its `hourly`. Instance types with no price data are counted (`unpriced`).
+    Prefers live AWS Price List data, falling back to the ConfigMap/shipped table."""
     region = _detect_region(nodes)
-    prices = _prices_by_region().get(region, {})
+    instances = tuple(sorted({n.get("instance") for n in nodes
+                              if n.get("instance") and n.get("instance") != "unknown"}))
+    prices = dict(_prices_by_region().get(region, {}))
+    live = _live_prices(region, instances)
+    prices.update(live)
+    price_source = "aws-price-list" if live else ("table" if prices else "none")
     hourly = gpu_hourly = 0.0
     unpriced = 0
     for n in nodes:
@@ -429,6 +493,7 @@ def _compute_cost(nodes: list) -> dict:
         "platformHourly": round(hourly - gpu_hourly, 4),
         "unpriced": unpriced,
         "region": region,
+        "priceSource": price_source,
     }
 
 

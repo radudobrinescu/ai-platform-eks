@@ -27,3 +27,68 @@ resource "kubernetes_config_map" "cluster_dashboard_links" {
     aws_eks_capability.argocd,
   ]
 }
+
+
+################################################################################
+# Cluster dashboard — live node pricing (AWS Price List API via Pod Identity)
+#
+# The dashboard's Cost view estimates node $/hr. So the estimate works in any
+# account/region without a hardcoded table, the backend queries the AWS Price
+# List API (pricing:GetProducts) for the running instance types in the region,
+# caching results and falling back to its shipped/ConfigMap prices if this
+# access is absent.
+#
+# The dashboard's ServiceAccount is created by the GitOps manifests
+# (platform/services/cluster-dashboard/manifests.yaml), NOT Terraform — so we
+# grant AWS access via an EKS Pod Identity association (no SA annotation, no
+# conflict with ArgoCD self-heal) rather than IRSA. Requires the
+# eks-pod-identity-agent addon, installed by default on this cluster.
+#
+# Read-only: the Price List API returns global pricing data, not account
+# resources, so Resource = "*" is the only valid scope.
+################################################################################
+resource "aws_iam_role" "dashboard_pricing" {
+  count = local.capabilities.gitops ? 1 : 0
+  name  = "${local.cluster_name}-dashboard-pricing"
+
+  assume_role_policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [{
+      Effect    = "Allow"
+      Principal = { Service = "pods.eks.amazonaws.com" }
+      Action    = ["sts:AssumeRole", "sts:TagSession"]
+    }]
+  })
+
+  tags = local.tags
+}
+
+resource "aws_iam_role_policy" "dashboard_pricing" {
+  count = local.capabilities.gitops ? 1 : 0
+  name  = "price-list-read"
+  role  = aws_iam_role.dashboard_pricing[0].id
+
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [{
+      Effect = "Allow"
+      Action = [
+        "pricing:GetProducts",
+        "pricing:DescribeServices",
+        "pricing:GetAttributeValues",
+      ]
+      Resource = "*"
+    }]
+  })
+}
+
+resource "aws_eks_pod_identity_association" "dashboard_pricing" {
+  count = local.capabilities.gitops ? 1 : 0
+
+  cluster_name    = module.eks.cluster_name
+  namespace       = "ai-platform"
+  service_account = "cluster-dashboard"
+  role_arn        = aws_iam_role.dashboard_pricing[0].arn
+
+  tags = local.tags
+}

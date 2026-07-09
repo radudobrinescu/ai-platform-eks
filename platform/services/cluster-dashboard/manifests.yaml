@@ -96,7 +96,7 @@ spec:
               # psycopg is optional from the backend's POV — if pip fails
               # (e.g. air-gapped), the dashboard still serves the topology
               # view, just without approvals.
-              pip install --no-cache-dir --target=/pydeps psycopg[binary]==3.2.3 pyyaml==6.0.2 || true
+              pip install --no-cache-dir --target=/pydeps psycopg[binary]==3.2.3 pyyaml==6.0.2 'boto3>=1.34,<2' || true
           volumeMounts:
             - name: pydeps
               mountPath: /pydeps
@@ -175,7 +175,7 @@ spec:
               memory: "96Mi"
             limits:
               cpu: "300m"
-              memory: "192Mi"
+              memory: "256Mi"
           livenessProbe:
             httpGet:
               path: /data.json
