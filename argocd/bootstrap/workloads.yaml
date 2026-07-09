@@ -7,6 +7,9 @@
 #                Platform team adds a YAML here to onboard a new team.
 # - fine-tuning: syncs workloads/fine-tuning/ → creates FineTuneJob CRs.
 #                Users add a YAML here to fine-tune a model.
+# - scale-models: syncs workloads/scale-models/ → creates LLMDEndpoint CRs.
+#                Users add a YAML here to serve a model on the llm-d scale tier
+#                (KV-cache/load-aware routing across replicas).
 #
 # Forking = set repoURL/targetRevision below (ONCE), mirror $repo/$rev in
 # argocd/bootstrap/platform.yaml, and set var.gitops_repo_url in Terraform.
@@ -29,6 +32,8 @@ spec:
             path: workloads/teams
           - name: fine-tuning
             path: workloads/fine-tuning
+          - name: scale-models
+            path: workloads/scale-models
   template:
     metadata:
       name: '{{.name}}'

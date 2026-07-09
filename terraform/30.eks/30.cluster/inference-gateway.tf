@@ -230,7 +230,31 @@ resource "kubectl_manifest" "gateway_buffer_policy" {
   depends_on = [kubectl_manifest.gateway]
 }
 
-# NOTE (remaining increment-2 step): extend platform/config/kro/inference-endpoint.yaml
-# with a routing field (default 'service') that renders an InferencePool + HTTPRoute
-# + EPP against this Gateway and re-points the LiteLLM register at the gateway when
-# routing=gateway. Until then the Gateway is provisioned but routes nothing.
+# Register the llm-d OCI Helm repo with ArgoCD so the Applications rendered by the
+# LLMDEndpoint KRO RGD (platform/config/kro/llmd-endpoint.yaml) can pull the
+# llm-d-router-standalone chart. Public registry — no credentials needed; ArgoCD
+# only needs the repo declared as an OCI Helm source (enableOCI).
+resource "kubernetes_secret" "llmd_helm_repo" {
+  count = local.capabilities.inference_gateway ? 1 : 0
+
+  metadata {
+    name      = "llm-d-charts"
+    namespace = "argocd"
+    labels = {
+      "argocd.argoproj.io/secret-type" = "repository"
+    }
+  }
+
+  data = {
+    name      = "llm-d-charts"
+    url       = "ghcr.io/llm-d/charts"
+    type      = "helm"
+    enableOCI = "true"
+  }
+}
+
+# Scale-tier serving (llm-d) is delivered per-model by the LLMDEndpoint RGD, which
+# renders the vLLM model servers + a LiteLLM registration + an ArgoCD Application
+# that installs the llm-d router (EPP + InferencePool + Envoy) from the chart above.
+# The base Envoy Gateway + GIE CRDs installed here are the reused substrate; the
+# Envoy AI Gateway layer is a drop candidate (see docs/llm-d-and-ingress-architecture.md).
