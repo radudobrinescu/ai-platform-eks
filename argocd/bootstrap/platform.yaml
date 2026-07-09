@@ -1,6 +1,6 @@
 # Platform — ArgoCD ApplicationSet defining all platform services.
 #
-# Nine applications (by default) in two shapes:
+# Ten applications (by default) in two shapes:
 #   - Plain-directory sources (platform-config, litellm, open-webui,
 #     cluster-dashboard, litellm-sync): manifests live in this repo and are
 #     applied as-is.
@@ -60,6 +60,14 @@ spec:
             namespace: argocd
             type: directory
             path: platform/services/inference-gateway
+            tier: infra
+          # metrics-server (metrics.k8s.io) — actual node/pod CPU+memory usage,
+          # consumed by the cluster-dashboard Infrastructure view and available
+          # for `kubectl top` / HPA. Upstream static manifest, vendored.
+          - name: metrics-server
+            namespace: kube-system
+            type: directory
+            path: platform/services/metrics-server
             tier: infra
           # --- Platform Services (user-facing) ---
           - name: litellm

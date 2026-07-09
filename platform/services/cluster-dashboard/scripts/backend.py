@@ -615,6 +615,24 @@ def _build_k8s_snapshot() -> dict:
                 "created": n["metadata"].get("creationTimestamp", ""),
             })
 
+    # Actual node usage from metrics-server (metrics.k8s.io). Best-effort: with
+    # no metrics-server, cpuUsedM/memUsedMi stay None and the UI shows only
+    # requested. cpu is nanocores/millicores, memory is Ki/Mi — reuse parsers.
+    node_usage = {}
+    try:
+        mu = k8s_get("/apis/metrics.k8s.io/v1beta1/nodes")
+        for it in (mu or {}).get("items", []):
+            u = it.get("usage", {}) or {}
+            node_usage[it.get("metadata", {}).get("name", "")] = {
+                "cpuUsedM": _cpu_m(u.get("cpu", "0")),
+                "memUsedMi": _mem_mi(u.get("memory", "0")),
+            }
+    except Exception:
+        node_usage = {}
+    for n in nodes:
+        n["cpuUsedM"] = node_usage.get(n["name"], {}).get("cpuUsedM")
+        n["memUsedMi"] = node_usage.get(n["name"], {}).get("memUsedMi")
+
     pods = []
     if pods_data:
         for p in pods_data.get("items", []):

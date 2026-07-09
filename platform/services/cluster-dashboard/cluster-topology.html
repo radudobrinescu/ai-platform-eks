@@ -165,6 +165,7 @@ tbody tr:hover{background:var(--surface-2)}
 .np-dot{width:6px;height:6px;border-radius:50%;flex:none}
 .np-name{overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-family:ui-monospace,monospace}
 .np-meta{margin-left:auto;color:var(--text-muted,#8b93a7);font-size:11px;flex:none}
+.np-sub{font-size:10.5px;color:var(--text-muted,#8b93a7);margin-top:3px}
 </style>
 </head>
 <body>
@@ -349,7 +350,7 @@ function costViews(){const c=D.cost||{},ce=D.costExt||{};const src=c.priceSource
   const tr=ce.trend||[];$('cost-trend').innerHTML=tr.length>1?spark(tr.map(x=>x[1]),'var(--green)',360,60)+`<div class="muted" style="font-size:11px;margin-top:6px">last ${tr.length} days · spend/day</div>`:'<div class="muted">trend builds as usage accrues</div>';}
 
 const POOLMAP={'gpu-inference':'GPU · dedicated','gpu-shared':'GPU · time-sliced','default':'platform services','__mng__':'critical addons'};
-function infra(){const nodes=D.nodes||[],pods=D.pods||[],gpu=D.gpu||[];const utilByHost={};gpu.forEach(g=>utilByHost[g.node]=g);const pools={};nodes.forEach(n=>{(pools[n.pool||'__mng__']=pools[n.pool||'__mng__']||[]).push(n)});let h='';for(const p of Object.keys(pools)){const pl=(p==='__mng__')?'Managed node group':('Karpenter NodePool · '+p);const pd=POOLMAP[p]||'';h+=`<div class="sec-title">${esc(pl)}${pd?' · '+esc(pd):''} · ${pools[p].length} node(s)</div><div class="cols">`;h+=pools[p].map(n=>{const host=n.name.split('.')[0];const g=utilByHost[host];const mdl=g&&g.model;const slots=(n.gpu>0)?`<div class="gpuslots">${(g&&g.util||Array(n.gpu).fill(0)).map(u=>u===0&&!mdl?'<div class="gs free">free</div>':`<div class="gs used">${u}%</div>`).join('')}</div>`:'';return `<div class="card" style="cursor:pointer" onclick="openNode('${esc(n.name)}')"><div class="card-h"><h3>${esc(n.instance)} <span class="badge2 b-ray" style="background:var(--accent-soft);color:#c7d2fe">${esc(n.capacity||'')}</span></h3><span class="util">$${(n.hourly||0).toFixed(2)}/hr</span></div>${slots}<div class="util" style="margin-top:8px">${mdl?'serving '+esc(mdl):(n.gpu>0?'idle':esc(n.zone||''))}</div></div>`}).join('');h+='</div>';}$('infra-pools').innerHTML=h||'<div class="muted">No nodes</div>';}
+function infra(){const nodes=D.nodes||[],pods=D.pods||[],gpu=D.gpu||[];const utilByHost={};gpu.forEach(g=>utilByHost[g.node]=g);const pools={};nodes.forEach(n=>{(pools[n.pool||'__mng__']=pools[n.pool||'__mng__']||[]).push(n)});let h='';for(const p of Object.keys(pools)){const pl=(p==='__mng__')?'Managed node group':('Karpenter NodePool · '+p);const pd=POOLMAP[p]||'';h+=`<div class="sec-title">${esc(pl)}${pd?' · '+esc(pd):''} · ${pools[p].length} node(s)</div><div class="cols">`;h+=pools[p].map(n=>{const host=n.name.split('.')[0];const g=utilByHost[host];const mdl=g&&g.model;const cnp=n.cpuAllocM?Math.round((n.cpuUsedM||0)/n.cpuAllocM*100):null;const mnp=n.memAllocMi?Math.round((n.memUsedMi||0)/n.memAllocMi*100):null;const usg=cnp!=null?` · <span class="muted">cpu ${cnp}% · mem ${mnp}%</span>`:'';const slots=(n.gpu>0)?`<div class="gpuslots">${(g&&g.util||Array(n.gpu).fill(0)).map(u=>u===0&&!mdl?'<div class="gs free">free</div>':`<div class="gs used">${u}%</div>`).join('')}</div>`:'';return `<div class="card" style="cursor:pointer" onclick="openNode('${esc(n.name)}')"><div class="card-h"><h3>${esc(n.instance)} <span class="badge2 b-ray" style="background:var(--accent-soft);color:#c7d2fe">${esc(n.capacity||'')}</span></h3><span class="util">$${(n.hourly||0).toFixed(2)}/hr</span></div>${slots}<div class="util" style="margin-top:8px">${mdl?'serving '+esc(mdl):(n.gpu>0?'idle':esc(n.zone||''))}${usg}</div></div>`}).join('');h+='</div>';}$('infra-pools').innerHTML=h||'<div class="muted">No nodes</div>';}
 
 function healthView(){const al=alertList();$('health-alerts').innerHTML=(invs.length?invs.map(iv=>`<div class="alert"><span class="ai">🔧</span><div style="flex:1"><div class="at">${esc(iv.resource_kind||'')} ${esc(iv.resource_name||'')} — fix ready</div><div class="ad">${esc((iv.findings||'').slice(0,160))}</div></div><div class="ax"><button class="btn approve" onclick="approve('${iv.id}',this)">Approve fix</button><button class="btn dismiss" onclick="dismiss('${iv.id}',this)">Dismiss</button></div></div>`).join(''):'')+(al.length?al.map(alertRow).join(''):(invs.length?'':'<div class="muted" style="padding:8px 0">✓ All models and apps healthy · no pending fixes</div>'));
   const a=D.argocd||[];$('argo-sync').innerHTML=(D.sources||{}).argocd?(a.length?a.map(x=>`<div class="alert"><span class="ai">${x.health==='Healthy'&&x.sync==='Synced'?'🟢':'🟡'}</span><div><div class="at">${esc(x.name)}</div><div class="ad">${esc(x.sync)} · ${esc(x.health)}</div></div></div>`).join(''):'<div class="muted">no applications</div>'):'<div class="muted">ArgoCD status unavailable</div>';}
@@ -385,14 +386,20 @@ function openNode(name,keep){
   const cpuReq=np.reduce((s,p)=>s+(p.cpuReqM||0),0),memReq=np.reduce((s,p)=>s+(p.memReqMi||0),0);
   const cpuA=n.cpuAllocM||0,memA=n.memAllocMi||0;
   const cpuPct=cpuA?Math.round(cpuReq/cpuA*100):0,memPct=memA?Math.round(memReq/memA*100):0;
+  const cpuUsed=n.cpuUsedM,memUsed=n.memUsedMi;
+  const cpuUsedPct=(cpuUsed!=null&&cpuA)?Math.round(cpuUsed/cpuA*100):null,memUsedPct=(memUsed!=null&&memA)?Math.round(memUsed/memA*100):null;
   const byNs={};np.forEach(p=>{(byNs[p.namespace]=byNs[p.namespace]||[]).push(p);});
   const nsList=Object.keys(byNs).sort((a,b)=>byNs[b].length-byNs[a].length);
   const bar=(pct,col)=>`<div class="bar" style="margin-top:5px"><i style="width:${Math.min(100,Math.max(2,pct))}%;background:${col}"></i></div>`;
   const usage=`<div class="sec-title">Usage</div>`
     +`<div class="bar-lbl"><span>GPU util${g&&g.model?' · '+esc(g.model):''}</span><span>${gutil==null?'—':gutil+'%'}</span></div>`
-    +(n.gpu>0?bar(gutil||0,(gutil||0)>85?'var(--amber)':'var(--green)'):'<div class="util" style="margin:2px 0">no GPU on this node</div>')
-    +`<div class="bar-lbl" style="margin-top:11px"><span>CPU requested</span><span>${(cpuReq/1000).toFixed(1)} / ${(cpuA/1000).toFixed(1)} cores · ${cpuPct}%</span></div>`+bar(cpuPct,'var(--accent)')
-    +`<div class="bar-lbl" style="margin-top:11px"><span>Memory requested</span><span>${(memReq/1024).toFixed(1)} / ${(memA/1024).toFixed(1)} GiB · ${memPct}%</span></div>`+bar(memPct,'var(--cyan)');
+    +(n.gpu>0?bar(gutil||0,(gutil||0)>85?'var(--amber)':'var(--green)'):'<div class="util" style="margin:2px 0 4px">no GPU on this node</div>')
+    +`<div class="bar-lbl" style="margin-top:11px"><span>CPU${cpuUsedPct!=null?'':' requested'}</span><span>${cpuUsedPct!=null?`${(cpuUsed/1000).toFixed(2)} / ${(cpuA/1000).toFixed(1)} cores · ${cpuUsedPct}%`:`${(cpuReq/1000).toFixed(1)} / ${(cpuA/1000).toFixed(1)} cores · ${cpuPct}%`}</span></div>`
+    +bar(cpuUsedPct!=null?cpuUsedPct:cpuPct,(cpuUsedPct||cpuPct)>85?'var(--amber)':'var(--accent)')
+    +(cpuUsedPct!=null?`<div class="np-sub">requested ${(cpuReq/1000).toFixed(1)} cores · ${cpuPct}%</div>`:'')
+    +`<div class="bar-lbl" style="margin-top:11px"><span>Memory${memUsedPct!=null?'':' requested'}</span><span>${memUsedPct!=null?`${(memUsed/1024).toFixed(1)} / ${(memA/1024).toFixed(1)} GiB · ${memUsedPct}%`:`${(memReq/1024).toFixed(1)} / ${(memA/1024).toFixed(1)} GiB · ${memPct}%`}</span></div>`
+    +bar(memUsedPct!=null?memUsedPct:memPct,(memUsedPct||memPct)>85?'var(--amber)':'var(--cyan)')
+    +(memUsedPct!=null?`<div class="np-sub">requested ${(memReq/1024).toFixed(1)} GiB · ${memPct}%</div>`:'');
   const legend=nsList.length?`<div class="ns-legend">${nsList.map(ns=>`<span><i style="background:${nsColor(ns)}"></i>${esc(ns)} (${byNs[ns].length})</span>`).join('')}</div>`:'';
   const podsHtml=nsList.length?nsList.map(ns=>byNs[ns].map(p=>`<div class="np-row"><span class="np-dot" style="background:${nsColor(ns)}"></span><span class="np-name">${esc(p.name)}</span><span class="np-meta">${p.gpu?p.gpu+'×GPU ':''}${p.phase!=='Running'?esc(p.phase):''}</span></div>`).join('')).join(''):'<div class="muted" style="padding:6px 0">No pods scheduled</div>';
   const age=relTime(n.created);
