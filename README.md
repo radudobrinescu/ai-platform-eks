@@ -12,11 +12,11 @@ provisioning, serving, routing, and observability. A frontier model
 - **One gateway, every model.** LiteLLM puts Bedrock, vLLM-served open models, and
   fine-tuned models behind a single `/v1/chat/completions` endpoint — with team
   isolation, budgets, and Langfuse tracing built in.
-- **Proven, extendable templates.** Four [KRO](https://kro.run) resources
-  (`InferenceEndpoint`, `VLLMEndpoint`, `AITeam`, `FineTuneJob`) capture the hard
-  parts — tensor-parallelism, GPU sizing, scale-to-zero, fine-tune→deploy — as a
-  few lines of YAML. They're the platform's API: fork and extend them, don't
-  reinvent them.
+- **Proven, extendable templates.** Five [KRO](https://kro.run) resources
+  (`InferenceEndpoint`, `VLLMEndpoint`, `LLMDEndpoint`, `AITeam`, `FineTuneJob`)
+  capture the hard parts — tensor-parallelism, GPU sizing, scale-to-zero,
+  scale-tier routing, fine-tune→deploy — as a few lines of YAML. They're the
+  platform's API: fork and extend them, don't reinvent them.
 
 **Stack:** EKS Managed Capabilities (ArgoCD · KRO · ACK) · Karpenter · vLLM ·
 Ray Serve · LiteLLM · Langfuse — with an optional **llm-d + Gateway API Inference
@@ -40,6 +40,7 @@ The custom resources **are** the self-service interface:
 |---|---|
 | **`InferenceEndpoint`** | Serve a model on Ray Serve + vLLM — HuggingFace ID, or a fine-tuned model from S3 |
 | **`VLLMEndpoint`** | Serve a model on plain vLLM (no Ray) — a simpler, more modern alternative |
+| **`LLMDEndpoint`** | Serve a model on the llm-d scale tier — KV-cache/load/prefix-aware routing across replicas (opt-in; needs the `inference_gateway` capability) |
 | **`AITeam`** | Onboard a team: namespace, RBAC, budget, rate limits, scoped API key |
 | **`FineTuneJob`** | QLoRA fine-tune (Unsloth), optionally `autoDeploy` the result |
 
@@ -114,9 +115,9 @@ Fine-tune with the same `git push` loop: upload a dataset, commit a `FineTuneJob
 with `autoDeploy: true`, and the tuned model goes live as an endpoint.
 
 **Scale-tier routing (llm-d).** For high-QPS or long, multi-turn/agentic
-workloads, the optional llm-d tier schedules requests across vLLM replicas using
-live KV-cache, prefix, and queue-depth signals, and supports prefill/decode
-disaggregation. Architecture and the ALB-vs-Envoy ingress decision are in
+workloads, commit an `LLMDEndpoint` (see `workloads/scale-models/`) and the
+optional llm-d tier schedules requests across vLLM replicas using live KV-cache,
+prefix, and queue-depth signals, and supports prefill/decode disaggregation. Architecture and the ALB-vs-Envoy ingress decision are in
 **[docs/llm-d-and-ingress-architecture.md](docs/llm-d-and-ingress-architecture.md)**;
 disaggregation roadmap in **[docs/roadmap/disaggregated-inference.md](docs/roadmap/disaggregated-inference.md)**.
 
@@ -222,10 +223,10 @@ aws iam list-roles --query "Roles[?contains(RoleName, '<cluster-name>')].RoleNam
 ```
 argocd/bootstrap/   ApplicationSets (platform services + self-service workloads)
 platform/
-  config/kro/       InferenceEndpoint · VLLMEndpoint · AITeam · FineTuneJob (the API)
+  config/kro/       InferenceEndpoint · VLLMEndpoint · LLMDEndpoint · AITeam · FineTuneJob (the API)
   services/         litellm, open-webui, langfuse, gpu-operator, kuberay,
                     cluster-dashboard (+ Platform Health Agent component)
-workloads/          Self-service YAMLs: models/ · teams/ · fine-tuning/
+workloads/          Self-service YAMLs: models/ · scale-models/ · teams/ · fine-tuning/
 ops/                Operational scripts (ops/demo/ holds demo-only scripts)
 terraform/          Infrastructure modules (VPC → IAM → EKS → observability,
                     + optional gated inference-gateway / GIE substrate)
