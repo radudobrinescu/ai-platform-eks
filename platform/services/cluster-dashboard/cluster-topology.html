@@ -57,7 +57,7 @@
 body { font-family: var(--font); background: var(--bg); color: var(--text); height: 100vh; overflow: hidden; }
 
 /* Layout */
-.shell { display: grid; grid-template-columns: 280px 1fr; grid-template-rows: 56px 1fr; height: 100vh; }
+.shell { display: grid; grid-template-columns: 300px 1fr; grid-template-rows: 56px 1fr; height: 100vh; }
 
 /* Topbar */
 .topbar {
@@ -116,7 +116,10 @@ body { font-family: var(--font); background: var(--bg); color: var(--text); heig
 .mdot.running { background: var(--green); box-shadow: 0 0 6px rgba(61,220,132,0.5); }
 .mdot.deploying { background: var(--amber); animation: pulse 1.5s infinite; }
 .mdot.pending { background: var(--text-muted); }
-.mname { font-size: 14px; font-weight: 700; }
+.mname { font-size: 14px; font-weight: 700; flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.model-top .mstatus { flex-shrink: 0; }
+.model-sub { display: flex; align-items: center; gap: 6px; margin-top: 5px; min-width: 0; }
+.model-sub .mdetail { margin-top: 0; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .mstatus { margin-left: auto; font-size: 10px; font-weight: 700; padding: 3px 8px; border-radius: 4px; text-transform: uppercase; letter-spacing: 0.3px; }
 .mstatus.running { background: var(--green-soft); color: var(--green); }
 .mstatus.deploying { background: var(--amber-soft); color: var(--amber); }
@@ -162,6 +165,28 @@ body { font-family: var(--font); background: var(--bg); color: var(--text); heig
 .mcard-model { font-size: 11px; color: var(--text-muted); font-family: var(--mono); margin-top: 5px; }
 .mcard-meta { font-size: 11px; color: var(--text-secondary); font-family: var(--mono); margin-top: 8px; }
 .mp-timer { color: var(--amber); font-weight: 600; }
+
+/* Banner (top) — platform stats + cost + quick links */
+.banner-stats { display: flex; gap: 20px; }
+.bstat { display: flex; flex-direction: column; line-height: 1.05; }
+.bstat-val { font-size: 19px; font-weight: 800; }
+.bstat-val.purple { color: var(--purple); }
+.bstat-label { font-size: 9px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.6px; color: var(--text-muted); }
+.banner-cost { display: flex; flex-direction: column; line-height: 1.1; }
+.bcost-top { display: flex; align-items: baseline; gap: 3px; }
+.bcost-top #cost-hr { font-size: 19px; font-weight: 800; color: var(--green); font-family: var(--mono); }
+.bcost-top .cost-unit { font-size: 11px; color: var(--text-secondary); }
+.bcost-sub { font-size: 9px; color: var(--text-muted); font-family: var(--mono); margin-top: 1px; }
+.banner-links { display: flex; gap: 6px; margin-right: 4px; }
+.blink { display: flex; align-items: center; gap: 5px; padding: 5px 10px; border: 1px solid var(--border); border-radius: var(--radius-sm); text-decoration: none; color: var(--text-secondary); font-size: 11px; font-weight: 600; white-space: nowrap; transition: all 0.15s; }
+.blink:hover { background: var(--surface-hover); border-color: var(--accent); color: var(--text); }
+.blink-icon { font-size: 13px; line-height: 1; }
+
+/* Sidebar Models list — scrollable, fills the panel above Activity */
+.card-models { flex: 0 1 auto; min-height: 120px; max-height: 62vh; display: flex; flex-direction: column; overflow: hidden; }
+#models-list { overflow-y: auto; margin: 0 -2px; padding: 0 2px; }
+.models-count { background: rgba(255,255,255,0.06); color: var(--text-secondary); border-radius: 10px; padding: 1px 7px; font-size: 10px; font-weight: 700; }
+.card-activity .event-list { max-height: 170px; }
 
 /* Quick Links */
 .link-row { display: flex; align-items: center; gap: 10px; padding: 7px 8px; border-radius: 6px; text-decoration: none; color: var(--text); transition: background 0.12s; }
@@ -512,7 +537,19 @@ body { font-family: var(--font); background: var(--bg); color: var(--text); heig
     <div class="logo"><span>AI</span> Platform</div>
     <div class="topbar-sep"></div>
     <div class="cluster-id" id="top-cluster">connecting...</div>
+    <div class="topbar-sep"></div>
+    <div class="banner-stats">
+      <div class="bstat"><span class="bstat-val" id="s-nodes">–</span><span class="bstat-label">nodes</span></div>
+      <div class="bstat"><span class="bstat-val purple" id="s-gpus">–</span><span class="bstat-label">GPU slots</span></div>
+      <div class="bstat"><span class="bstat-val" id="s-models">–</span><span class="bstat-label">models</span></div>
+    </div>
+    <div class="topbar-sep"></div>
+    <div class="banner-cost" title="Estimate — eu-central-1 on-demand list price; spot approximated at 0.35×">
+      <div class="bcost-top"><span id="cost-hr">$0.00</span><span class="cost-unit">/hr</span></div>
+      <div class="bcost-sub">~<span id="cost-mo">$0</span>/mo · GPU <span id="cost-gpu">$0</span> · platform <span id="cost-plat">$0</span></div>
+    </div>
     <div class="topbar-spacer"></div>
+    <div class="banner-links" id="banner-links"></div>
     <button class="theme-toggle" onclick="toggleTheme()" title="Toggle light/dark mode">◐</button>
     <button class="approvals-btn" id="approvals-btn" onclick="openApprovals()" style="display:none" title="Platform Health Agent — pending approvals">🔔 <span id="approvals-count">0</span></button>
     <div class="live-badge" id="live-badge">Live</div>
@@ -520,33 +557,17 @@ body { font-family: var(--font); background: var(--bg); color: var(--text); heig
 
   <div class="sidebar">
     <div class="sidebar-resizer" id="sidebar-resizer"></div>
-    <div class="card">
-      <div class="card-title">Cluster</div>
-      <div class="stat-row"><span class="stat-label">Nodes</span><span class="stat-val" id="s-nodes">–</span></div>
-      <div class="stat-row"><span class="stat-label">GPU Slots</span><span class="stat-val purple" id="s-gpus">–</span></div>
-      <div class="stat-row"><span class="stat-label">Models</span><span class="stat-val" id="s-models">–</span></div>
+    <div class="card card-models">
+      <div class="card-title">Models <span class="models-count" id="models-count"></span></div>
+      <div id="models-list"><div class="model-empty">No models deployed</div></div>
     </div>
-    <div class="card">
-      <div class="card-title">Cost <span class="cost-est">estimate</span></div>
-      <div class="cost-main"><span id="cost-hr">$0.00</span><span class="cost-unit">/hr</span></div>
-      <div class="cost-mo">~<span id="cost-mo">$0</span>/mo if steady 24×7</div>
-      <div class="cost-split">
-        <span class="cost-seg"><span class="cost-dot gpu"></span>GPU <b id="cost-gpu">$0</b></span>
-        <span class="cost-seg"><span class="cost-dot plat"></span>platform <b id="cost-plat">$0</b></span>
-      </div>
-    </div>
-    <div class="card">
+    <div class="card card-activity">
       <div class="card-title">Activity</div>
       <div class="event-list" id="event-log"><div class="ev"><span class="ev-time">--:--</span> waiting...</div></div>
-    </div>
-    <div class="card">
-      <div class="card-title">Quick Links</div>
-      <div id="sidebar-links"><div class="model-empty">Resolving endpoints…</div></div>
     </div>
   </div>
 
   <div class="main" id="main-scroll">
-    <div id="models-panel" class="models-panel"></div>
     <div id="infra"></div>
   </div>
 </div>
@@ -579,57 +600,50 @@ function log(type,msg){
 
 function selectModel(name){selectedModel=selectedModel===name?null:name;renderAll();}
 
-function renderModelsPanel(eps){
-  const el=document.getElementById('models-panel'); if(!el)return;
+function renderModels(eps){
+  const el=document.getElementById('models-list'); if(!el)return;
+  const cnt=document.getElementById('models-count'); if(cnt) cnt.textContent=eps.length||'';
   const MODE_LABEL={ray:'Ray',vllm:'vLLM','llm-d':'llm-d'},MODE_CLS={ray:'ray',vllm:'vllm','llm-d':'llmd'};
   if(!eps.length){
-    if(el.dataset.sig!=='__empty__'){el.innerHTML='<div class="mp-hdr">Models</div><div class="mp-empty">No models deployed — commit a <code>VLLMEndpoint</code> or <code>LLMDEndpoint</code> to <code>workloads/</code> and push.</div>';el.dataset.sig='__empty__';}
+    if(el.dataset.sig!=='__empty__'){el.innerHTML='<div class="model-empty">No models deployed — commit a VLLMEndpoint or LLMDEndpoint to workloads/ and push.</div>';el.dataset.sig='__empty__';}
     return;
   }
   // Signature excludes the live timer so a card only ticking its elapsed time
   // isn't torn down every poll (which would drop hover/selection).
   const sig=eps.map(ep=>`${ep.name}|${ep.mode}|${ep.ready}|${ep.status||ep.modelStatus}|${ep.availableReplicas}|${ep.replicas}|${ep.routerHealth}|${selectedModel===ep.name}|${ep.shared}|${ep.gpuCount}|${ep.tp}|${ep.pp}|${ep.model}`).join('~');
   if(el.dataset.sig!==sig){
-    const cards=eps.map(ep=>{
-      const ready=ep.ready==='True',st=ep.status||ep.modelStatus||'Pending';
-      const cls=ready?'running':'deploying';
+    el.innerHTML=eps.map(ep=>{
+      const ready=ep.ready==='True',st=ep.status||ep.modelStatus||'Pending',cls=ready?'running':'deploying';
       const sel=selectedModel===ep.name?'selected':'';
-      const timer=ready?'':`<span class="mp-timer" data-created="${ep.created}">⏱ </span>`;
+      const timer=ready?'':`<div class="mtimer" data-created="${ep.created}">⏱ </div>`;
       const gpuCount=ep.gpuCount||1,tp=ep.tp||1,pp=ep.pp||1;
       const strat=ep.shared?'shared GPU':gpuCount===1?'1 GPU':tp>1&&pp>1?`TP${tp}×PP${pp}`:tp>1?`TP=${tp}`:pp>1?`PP=${pp}`:`${gpuCount} GPU`;
       let router='';
       if(ep.mode==='llm-d'&&ep.routerHealth){const ok=ep.routerHealth==='Healthy';router=` · <span class="${ok?'router-ok':'router-warn'}">router ${ep.routerHealth}</span>`;}
       const modeLabel=MODE_LABEL[ep.mode]||ep.mode||'?',modeCls=MODE_CLS[ep.mode]||'ray';
-      return `<div class="mcard ${sel}" onclick="selectModel('${ep.name}')">
-        <div class="mcard-top"><div class="mdot ${cls}"></div><span class="mcard-name">${ep.name}</span><span class="mode-badge ${modeCls}">${modeLabel}</span><span class="mstatus ${cls}">${st}</span></div>
-        <div class="mcard-model">${ep.model}</div>
-        <div class="mcard-meta">${strat} · ${ep.availableReplicas||0}/${ep.replicas||1} ready${router} ${timer}</div>
-      </div>`;
+      return `<div class="model-item ${sel}" title="${ep.name} · ${ep.model}" onclick="selectModel('${ep.name}')">
+        <div class="model-top"><span class="mdot ${cls}"></span><span class="mname">${ep.name}</span><span class="mstatus ${cls}">${st}</span></div>
+        <div class="model-sub"><span class="mode-badge ${modeCls}">${modeLabel}</span><span class="mdetail">${ep.model}</span></div>
+        <div class="mmeta">${strat} · ${ep.availableReplicas||0}/${ep.replicas||1} ready${router}</div>${timer}</div>`;
     }).join('');
-    el.innerHTML=`<div class="mp-hdr">Models <span class="mp-count">${eps.length}</span></div><div class="mp-grid">${cards}</div>`;
     el.dataset.sig=sig;
   }
-  for(const t of el.querySelectorAll('.mp-timer[data-created]')){
+  for(const t of el.querySelectorAll('.mtimer[data-created]')){
     const elapsed=Math.floor((Date.now()-new Date(t.dataset.created).getTime())/1000);
     t.textContent=`⏱ ${Math.floor(elapsed/60)}m ${elapsed%60}s`;
   }
 }
 
 function renderLinks(links){
-  const el=document.getElementById('sidebar-links');
+  const el=document.getElementById('banner-links');
   if(!el)return;
-  const html=(!links||!links.length)
-    ? '<div class="model-empty">Waiting for ALB hostname…</div>'
+  const html=(!links||!links.length) ? ''
     : links.map(l=>
-      `<a class="link-row" href="${l.url}" target="_blank" rel="noopener noreferrer" title="${l.url}">
-         <span class="link-icon">${l.icon||'🔗'}</span>
-         <span class="link-text"><div class="link-label">${l.label}</div><div class="link-desc">${l.desc||''}</div></span>
-         <span class="link-ext">↗</span>
-       </a>`).join('');
+      `<a class="blink" href="${l.url}" target="_blank" rel="noopener noreferrer" title="${l.desc||l.label} — ${l.url}"><span class="blink-icon">${l.icon||'🔗'}</span>${l.label}</a>`).join('');
   if(el.dataset.sig!==html){el.innerHTML=html;el.dataset.sig=html;}  // skip rebuild when unchanged
 }
 
-function renderAll(){if(!lastData)return;renderModelsPanel(lastData.endpoints);renderLinks(lastData.links);renderInfra(lastData.nodes,lastData.pods);}
+function renderAll(){if(!lastData)return;renderModels(lastData.endpoints);renderLinks(lastData.links);renderInfra(lastData.nodes,lastData.pods);}
 
 function renderInfra(nodes,pods){
   const pools={};
