@@ -640,6 +640,9 @@ def _build_k8s_snapshot() -> dict:
 
 LITELLM_DB_NAME    = os.environ.get("LITELLM_DB_NAME", "litellm")
 DCGM_URL           = os.environ.get("DCGM_URL", "http://nvidia-dcgm-exporter.gpu-operator.svc.cluster.local:9400/metrics")
+DCGM_NAMESPACE     = os.environ.get("DCGM_NAMESPACE", "gpu-operator")
+DCGM_POD_SELECTOR  = os.environ.get("DCGM_POD_SELECTOR", "app=nvidia-dcgm-exporter")
+DCGM_PORT          = os.environ.get("DCGM_PORT", "9400")
 LITELLM_CONFIG_CM  = os.environ.get("LITELLM_CONFIG_CM", "litellm-config")
 LITELLM_NAMESPACE  = os.environ.get("LITELLM_NAMESPACE", "ai-platform")
 METRICS_INTERVAL   = int(os.environ.get("METRICS_INTERVAL", "25"))
@@ -719,23 +722,51 @@ def _litellm_metrics() -> dict:
 
 
 def _dcgm_util() -> dict:
-    """Per-node GPU utilization (%) parsed from dcgm-exporter Prometheus text."""
+    """Per-node GPU utilization (%) parsed from dcgm-exporter Prometheus text.
+
+    Scrapes EVERY dcgm-exporter pod directly (one per GPU node), not the
+    round-robin Service VIP — the VIP returns only whichever pod it load-balanced
+    to, so a multi-GPU-node cluster would show just one node. Falls back to the
+    Service URL if pod discovery yields nothing (e.g. missing pods RBAC)."""
     import urllib.request
-    out: dict = {}
-    with urllib.request.urlopen(urllib.request.Request(DCGM_URL), timeout=5) as r:
-        text = r.read().decode("utf-8", "ignore")
-    for line in text.splitlines():
-        if not line.startswith("DCGM_FI_DEV_GPU_UTIL{"):
-            continue
+
+    def _parse(text: str, out: dict) -> None:
+        for line in text.splitlines():
+            if not line.startswith("DCGM_FI_DEV_GPU_UTIL{"):
+                continue
+            try:
+                labels = line[line.index("{") + 1:line.index("}")]
+                val = float(line.rsplit(" ", 1)[1])
+                host = next((kv.split("=", 1)[1].strip('"') for kv in labels.split(",")
+                             if kv.startswith("Hostname=")), None)
+                if host:
+                    out.setdefault(host, []).append(round(val))
+            except Exception:
+                continue
+
+    def _scrape(url: str, out: dict) -> None:
         try:
-            labels = line[line.index("{") + 1:line.index("}")]
-            val = float(line.rsplit(" ", 1)[1])
-            host = next((kv.split("=", 1)[1].strip('"') for kv in labels.split(",")
-                         if kv.startswith("Hostname=")), None)
-            if host:
-                out.setdefault(host, []).append(round(val))
+            with urllib.request.urlopen(urllib.request.Request(url), timeout=4) as r:
+                _parse(r.read().decode("utf-8", "ignore"), out)
         except Exception:
-            continue
+            pass
+
+    out: dict = {}
+    urls = []
+    try:
+        pods = k8s_get(f"/api/v1/namespaces/{DCGM_NAMESPACE}/pods"
+                       f"?labelSelector={DCGM_POD_SELECTOR}")
+        for p in (pods or {}).get("items", []):
+            st = p.get("status", {})
+            if st.get("phase") == "Running" and st.get("podIP"):
+                urls.append(f"http://{st['podIP']}:{DCGM_PORT}/metrics")
+    except Exception:
+        urls = []
+
+    for url in urls:
+        _scrape(url, out)
+    if not out:            # discovery failed or pods unreachable → Service VIP
+        _scrape(DCGM_URL, out)
     return out
 
 
