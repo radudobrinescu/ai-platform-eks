@@ -3,1357 +3,364 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>AI Platform — Cluster Dashboard</title>
+<title>AI Platform — Console</title>
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;600;700&family=Manrope:wght@400;500;600;700;800&display=swap" rel="stylesheet">
 <style>
-:root, [data-theme="dark"] {
-  --bg: #151722;
-  --surface: #1c1f2e;
-  --surface-hover: #242738;
-  --border: #2a2d3e;
-  --border-light: #353849;
-  --text: #e8eaed;
-  --text-secondary: #9ba1b0;
-  --text-muted: #5f6577;
-  --accent: #5b5ff6;
-  --accent-soft: rgba(91,95,246,0.12);
-  --green: #3ddc84;
-  --green-soft: rgba(61,220,132,0.12);
-  --amber: #ffb340;
-  --amber-soft: rgba(255,179,64,0.12);
-  --red: #ff6b6b;
-  --red-soft: rgba(255,107,107,0.1);
-  --purple: #a78bfa;
-  --purple-soft: rgba(167,139,250,0.12);
-  --cyan: #67e8f9;
-  --font: 'Manrope', -apple-system, sans-serif;
-  --mono: 'JetBrains Mono', monospace;
-  --radius: 10px;
-  --radius-sm: 6px;
+:root{
+  --bg:#0f1118; --surface:#171a26; --surface-2:#1e2130; --surface-hover:#242838;
+  --border:#272b3d; --border-light:#343a52; --text:#e8eaf0; --text-2:#9aa1b4; --text-muted:#616880;
+  --accent:#6366f1; --accent-soft:rgba(99,102,241,0.14);
+  --green:#34d399; --green-soft:rgba(52,211,153,0.13);
+  --amber:#fbbf24; --amber-soft:rgba(251,191,36,0.13);
+  --red:#f87171; --red-soft:rgba(248,113,113,0.13);
+  --purple:#a78bfa; --purple-soft:rgba(167,139,250,0.14);
+  --cyan:#22d3ee; --cyan-soft:rgba(34,211,238,0.13);
+  --teal:#2dd4bf; --teal-soft:rgba(45,212,191,0.13);
+  --orange:#fb923c; --orange-soft:rgba(251,146,60,0.14);
+  --font:'Manrope',sans-serif; --mono:'JetBrains Mono',monospace; --r:12px; --r-sm:7px;
 }
-[data-theme="light"] {
-  --bg: #f8f9fb;
-  --surface: #ffffff;
-  --surface-hover: #f3f4f6;
-  --border: #e5e7eb;
-  --border-light: #d1d5db;
-  --text: #111827;
-  --text-secondary: #4b5563;
-  --text-muted: #9ca3af;
-  --accent: #4f46e5;
-  --accent-soft: rgba(79,70,229,0.08);
-  --green: #059669;
-  --green-soft: rgba(5,150,105,0.08);
-  --amber: #d97706;
-  --amber-soft: rgba(217,119,6,0.08);
-  --red: #dc2626;
-  --red-soft: rgba(220,38,38,0.06);
-  --purple: #7c3aed;
-  --purple-soft: rgba(124,58,237,0.08);
-  --cyan: #0891b2;
-}
-* { margin: 0; padding: 0; box-sizing: border-box; }
-body { font-family: var(--font); background: var(--bg); color: var(--text); height: 100vh; overflow: hidden; }
-
-/* Layout */
-.shell { display: grid; grid-template-columns: 300px 1fr; grid-template-rows: 56px 1fr; height: 100vh; }
-
+*{margin:0;padding:0;box-sizing:border-box}
+body{font-family:var(--font);background:var(--bg);color:var(--text);height:100vh;overflow:hidden;font-size:13px}
+.app{display:grid;grid-template-columns:212px 1fr;grid-template-rows:58px 1fr;height:100vh}
 /* Topbar */
-.topbar {
-  grid-column: 1 / -1; padding: 0 24px;
-  display: flex; align-items: center; gap: 16px;
-  background: var(--surface); border-bottom: 1px solid var(--border);
-}
-.logo { font-size: 16px; font-weight: 800; letter-spacing: -0.3px; }
-.logo span { color: var(--accent); }
-.topbar-sep { width: 1px; height: 24px; background: var(--border); }
-.cluster-id { font-family: var(--mono); font-size: 12px; color: var(--text-muted); padding: 4px 10px; background: rgba(255,255,255,0.03); border: 1px solid var(--border); border-radius: var(--radius-sm); }
-.topbar-spacer { flex: 1; }
-.theme-toggle { background: none; border: 1px solid var(--border); border-radius: var(--radius-sm); padding: 5px 10px; cursor: pointer; font-size: 14px; line-height: 1; color: var(--text-secondary); transition: all 0.2s; }
-.theme-toggle:hover { background: var(--surface-hover); border-color: var(--border-light); }
-.live-badge { display: flex; align-items: center; gap: 6px; font-size: 12px; font-weight: 600; color: var(--green); }
-.live-badge::before { content: ''; width: 7px; height: 7px; border-radius: 50%; background: var(--green); box-shadow: 0 0 8px var(--green); animation: pulse 2s infinite; }
-
-/* Sidebar */
-.sidebar {
-  position: relative;
-  padding: 16px 12px; overflow-y: auto; overflow-x: hidden;
-  background: var(--surface); border-right: 1px solid var(--border);
-  display: flex; flex-direction: column; gap: 12px;
-  min-height: 0;   /* allow the sidebar to scroll instead of growing the grid track */
-}
-.sidebar-resizer {
-  position: absolute; top: 0; right: -2px; bottom: 0; width: 4px;
-  cursor: col-resize; z-index: 100; background: transparent; transition: background 0.15s;
-}
-.sidebar-resizer:hover { background: var(--accent); opacity: 0.5; }
-.sidebar-resizer.active { background: var(--accent); opacity: 1; }
-.card {
-  background: rgba(255,255,255,0.02); border: 1px solid var(--border);
-  border-radius: var(--radius); padding: 16px;
-  flex-shrink: 0;   /* hold natural height; the sidebar scrolls instead of cards overlapping */
-}
-.card-title {
-  font-size: 10px; font-weight: 700; text-transform: uppercase;
-  letter-spacing: 1.2px; color: var(--text-muted); margin-bottom: 12px;
-}
-.stat-row { display: flex; justify-content: space-between; align-items: baseline; padding: 5px 0; }
-.stat-label { font-size: 13px; color: var(--text-secondary); }
-.stat-val { font-size: 20px; font-weight: 800; }
-.stat-val.purple { color: var(--purple); }
-
-/* Model items */
-.model-item {
-  padding: 12px 14px; border-radius: var(--radius-sm); margin-bottom: 6px;
-  background: rgba(255,255,255,0.015); border: 1px solid var(--border);
-  cursor: pointer; transition: all 0.15s;
-}
-.model-item:hover { background: var(--surface-hover); border-color: var(--border-light); }
-.model-item.selected { border-color: var(--accent); background: var(--accent-soft); }
-.model-top { display: flex; align-items: center; gap: 8px; }
-.mdot { width: 8px; height: 8px; border-radius: 50%; flex-shrink: 0; }
-.mdot.running { background: var(--green); box-shadow: 0 0 6px rgba(61,220,132,0.5); }
-.mdot.deploying { background: var(--amber); animation: pulse 1.5s infinite; }
-.mdot.pending { background: var(--text-muted); }
-.mname { font-size: 14px; font-weight: 700; flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.model-top .mstatus { flex-shrink: 0; }
-.model-sub { display: flex; align-items: center; gap: 6px; margin-top: 5px; min-width: 0; }
-.model-sub .mdetail { margin-top: 0; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.mstatus { margin-left: auto; font-size: 10px; font-weight: 700; padding: 3px 8px; border-radius: 4px; text-transform: uppercase; letter-spacing: 0.3px; }
-.mstatus.running { background: var(--green-soft); color: var(--green); }
-.mstatus.deploying { background: var(--amber-soft); color: var(--amber); }
-.mstatus.pending { background: rgba(255,255,255,0.05); color: var(--text-muted); }
-.mdetail { font-size: 11px; color: var(--text-muted); margin-top: 4px; font-family: var(--mono); }
-.mtimer { font-size: 11px; font-family: var(--mono); color: var(--amber); font-weight: 600; margin-top: 3px; }
-.model-empty { font-size: 12px; color: var(--text-muted); padding: 12px 0; }
-/* Serving-mode badge (ray | vllm | llm-d) */
-.mode-badge { font-size: 9px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.4px; padding: 2px 6px; border-radius: 4px; white-space: nowrap; }
-.mode-badge.vllm { background: var(--green-soft); color: var(--green); }
-.mode-badge.llmd { background: var(--purple-soft); color: var(--purple); }
-.mode-badge.ray  { background: rgba(255,255,255,0.05); color: var(--text-muted); }
-.mmeta { font-size: 10px; color: var(--text-secondary); margin-top: 4px; font-family: var(--mono); }
-.mmeta .router-ok   { color: var(--green); }
-.mmeta .router-warn { color: var(--amber); }
-
-/* Cost card */
-.cost-est { font-size: 9px; font-weight: 700; color: var(--text-muted); }
-.cost-main { display: flex; align-items: baseline; gap: 4px; margin-top: 2px; }
-#cost-hr { font-size: 26px; font-weight: 800; color: var(--green); font-family: var(--mono); }
-.cost-unit { font-size: 12px; color: var(--text-secondary); }
-.cost-mo { font-size: 11px; color: var(--text-muted); margin-top: 3px; }
-.cost-split { display: flex; gap: 14px; margin-top: 10px; font-size: 11px; color: var(--text-secondary); font-family: var(--mono); }
-.cost-seg { display: flex; align-items: center; gap: 5px; }
-.cost-seg b { color: var(--text); font-weight: 700; }
-.cost-dot { width: 8px; height: 8px; border-radius: 2px; }
-.cost-dot.gpu { background: var(--purple); }
-.cost-dot.plat { background: var(--accent); }
-
-/* Model-first main-stage panel */
-.models-panel { margin-bottom: 20px; }
-.mp-hdr { font-size: 11px; font-weight: 700; text-transform: uppercase; letter-spacing: 1px; color: var(--text-muted); margin-bottom: 10px; display: flex; align-items: center; gap: 8px; }
-.mp-count { background: rgba(255,255,255,0.06); color: var(--text-secondary); border-radius: 10px; padding: 1px 8px; font-size: 11px; }
-.mp-empty { font-size: 13px; color: var(--text-muted); padding: 16px 18px; background: rgba(255,255,255,0.02); border: 1px dashed var(--border); border-radius: var(--radius); }
-.mp-empty code { font-family: var(--mono); font-size: 12px; color: var(--text-secondary); background: rgba(255,255,255,0.05); padding: 1px 5px; border-radius: 3px; }
-.mp-grid { display: flex; flex-wrap: wrap; gap: 12px; }
-.mcard { flex: 1 1 300px; max-width: 440px; background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius); padding: 14px 16px; cursor: pointer; transition: all 0.15s; }
-.mcard:hover { border-color: var(--border-light); background: var(--surface-hover); }
-.mcard.selected { border-color: var(--accent); background: var(--accent-soft); }
-.mcard-top { display: flex; align-items: center; gap: 8px; }
-.mcard-name { font-size: 15px; font-weight: 700; }
-.mcard-top .mstatus { margin-left: auto; }
-.mcard-model { font-size: 11px; color: var(--text-muted); font-family: var(--mono); margin-top: 5px; }
-.mcard-meta { font-size: 11px; color: var(--text-secondary); font-family: var(--mono); margin-top: 8px; }
-.mp-timer { color: var(--amber); font-weight: 600; }
-
-/* Banner (top) — platform stats + cost + quick links */
-.banner-stats { display: flex; gap: 20px; }
-.bstat { display: flex; flex-direction: column; line-height: 1.05; }
-.bstat-val { font-size: 19px; font-weight: 800; }
-.bstat-val.purple { color: var(--purple); }
-.bstat-label { font-size: 9px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.6px; color: var(--text-muted); }
-.banner-cost { display: flex; flex-direction: column; line-height: 1.1; }
-.bcost-top { display: flex; align-items: baseline; gap: 3px; }
-.bcost-top #cost-hr { font-size: 19px; font-weight: 800; color: var(--green); font-family: var(--mono); }
-.bcost-top .cost-unit { font-size: 11px; color: var(--text-secondary); }
-.bcost-sub { font-size: 11px; color: var(--text-secondary); font-family: var(--mono); margin-top: 2px; }
-.banner-links { display: flex; gap: 6px; margin-right: 4px; }
-.blink { display: flex; align-items: center; gap: 5px; padding: 5px 10px; border: 1px solid var(--border); border-radius: var(--radius-sm); text-decoration: none; color: var(--text-secondary); font-size: 11px; font-weight: 600; white-space: nowrap; transition: all 0.15s; }
-.blink:hover { background: var(--surface-hover); border-color: var(--accent); color: var(--text); }
-.blink-icon { font-size: 13px; line-height: 1; }
-
-/* Sidebar Models list — scrollable, fills the panel above Activity */
-.card-models { flex: 0 1 auto; min-height: 120px; max-height: 62vh; display: flex; flex-direction: column; overflow: hidden; }
-#models-list { overflow-y: auto; margin: 0 -2px; padding: 0 2px; }
-.models-count { background: rgba(255,255,255,0.06); color: var(--text-secondary); border-radius: 10px; padding: 1px 7px; font-size: 10px; font-weight: 700; }
-.card-activity .event-list { max-height: 170px; }
-
-/* Quick Links */
-.link-row { display: flex; align-items: center; gap: 10px; padding: 7px 8px; border-radius: 6px; text-decoration: none; color: var(--text); transition: background 0.12s; }
-.link-row:hover { background: var(--surface-hover); }
-.link-icon { font-size: 15px; line-height: 1; flex-shrink: 0; }
-.link-text { min-width: 0; flex: 1; }
-.link-label { font-size: 12px; font-weight: 600; }
-.link-desc { font-size: 10px; color: var(--text-muted); margin-top: 1px; }
-.link-ext { font-size: 11px; color: var(--text-muted); flex-shrink: 0; }
-.link-row:hover .link-ext { color: var(--accent); }
-
-/* Events */
-.event-list { font-size: 11px; font-family: var(--mono); color: var(--text-secondary); max-height: 200px; overflow-y: auto; }
-.ev { padding: 4px 0; border-bottom: 1px solid rgba(255,255,255,0.03); line-height: 1.6; }
-.ev-time { color: var(--text-muted); }
-.ev-add { color: var(--green); }
-.ev-del { color: var(--red); }
-.ev-mod { color: var(--amber); }
-
+.top{grid-column:1/-1;display:flex;align-items:center;gap:14px;padding:0 20px;background:var(--surface);border-bottom:1px solid var(--border)}
+.logo{font-size:16px;font-weight:800;letter-spacing:-.3px}.logo span{color:var(--accent)}
+.top-sep{width:1px;height:26px;background:var(--border)}
+.search{flex:1;max-width:420px;display:flex;align-items:center;gap:8px;background:var(--bg);border:1px solid var(--border);border-radius:var(--r-sm);padding:7px 11px;color:var(--text-muted);font-size:12px}
+.search input{background:none;border:none;outline:none;color:var(--text);font-family:var(--font);font-size:12px;width:100%}
+.spacer{flex:1}
+.pill{display:flex;align-items:center;gap:8px;background:var(--bg);border:1px solid var(--border);border-radius:var(--r-sm);padding:6px 11px;font-size:12px}
+.pill b{font-family:var(--mono);font-weight:700}
+.pill .cg{color:var(--green)} .pill.warn{border-color:rgba(251,191,36,.35)}
+.pill.warn .cw{color:var(--amber);font-weight:700}
+.live{display:flex;align-items:center;gap:6px;font-size:12px;font-weight:600;color:var(--green)}
+.live::before{content:'';width:7px;height:7px;border-radius:50%;background:var(--green);box-shadow:0 0 8px var(--green);animation:pulse 2s infinite}
+.icon-btn{background:none;border:1px solid var(--border);border-radius:var(--r-sm);padding:6px 9px;color:var(--text-2);cursor:pointer;font-size:13px}
+.icon-btn:hover{background:var(--surface-hover)}
+@keyframes pulse{0%,100%{opacity:1}50%{opacity:.35}}
+/* Nav */
+.nav{background:var(--surface);border-right:1px solid var(--border);padding:14px 10px;display:flex;flex-direction:column;gap:3px}
+.nav-item{display:flex;align-items:center;gap:11px;padding:9px 12px;border-radius:var(--r-sm);color:var(--text-2);cursor:pointer;font-weight:600;font-size:13px}
+.nav-item:hover{background:var(--surface-hover);color:var(--text)}
+.nav-item.active{background:var(--accent-soft);color:#c7d2fe}
+.nav-item .ni{font-size:15px;width:18px;text-align:center}
+.nav-item .badge{margin-left:auto;background:var(--red);color:#fff;font-size:10px;font-weight:700;border-radius:9px;padding:1px 6px}
+.nav-foot{margin-top:auto;display:flex;flex-direction:column;gap:2px}
+.nav-link{display:flex;align-items:center;gap:9px;padding:7px 12px;border-radius:var(--r-sm);color:var(--text-muted);text-decoration:none;font-size:12px}
+.nav-link:hover{background:var(--surface-hover);color:var(--text-2)}
 /* Main */
-.main { padding: 16px; overflow-y: auto; background: var(--bg); }
-
-/* Pools */
-.pool { margin-bottom: 16px; border-radius: var(--radius); border: 1px solid var(--border); background: var(--surface); overflow: hidden; transition: opacity 0.3s; }
-.pool.dimmed { opacity: 0.2; }
-.pool-hdr { padding: 12px 18px; display: flex; align-items: center; gap: 10px; border-bottom: 1px solid var(--border); }
-.pool-hdr .badge { font-size: 9px; padding: 3px 8px; border-radius: 4px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.5px; }
-.pool-hdr .pool-name { font-size: 14px; font-weight: 700; }
-.pool-hdr .cnt { font-size: 11px; color: var(--text-muted); padding: 2px 8px; background: rgba(255,255,255,0.04); border-radius: 10px; }
-.pool-hdr .desc { font-size: 11px; color: var(--text-muted); margin-left: auto; }
-.gpu-shared .pool-hdr { background: rgba(167,139,250,0.05); }
-.gpu-shared .badge { background: var(--purple-soft); color: var(--purple); border: 1px solid rgba(167,139,250,0.2); }
-.gpu-inference .pool-hdr { background: rgba(255,179,64,0.04); }
-.gpu-inference .badge { background: var(--amber-soft); color: var(--amber); border: 1px solid rgba(255,179,64,0.2); }
-.default .pool-hdr { background: rgba(91,95,246,0.04); }
-.default .badge { background: var(--accent-soft); color: var(--accent); border: 1px solid rgba(91,95,246,0.2); }
-.mng .pool-hdr { background: rgba(61,220,132,0.04); }
-.mng .badge { background: var(--green-soft); color: var(--green); border: 1px solid rgba(61,220,132,0.2); }
-
-.pool-body { display: grid; grid-template-columns: repeat(auto-fill, minmax(480px, 1fr)); gap: 8px; padding: 10px; }
-.pool-empty { padding: 24px; text-align: center; color: var(--text-muted); font-size: 12px; }
-
-/* Node cards */
-.nd { background: var(--surface-hover); padding: 16px 18px; border-radius: 8px; border: 1px solid var(--border); transition: all 0.2s; display: flex; flex-direction: column; }
-.nd.dimmed { opacity: 0.15; }
-.nd.highlight { background: var(--accent-soft); border-color: var(--accent); }
-.nd-top { display: flex; align-items: center; gap: 8px; margin-bottom: 10px; flex-wrap: wrap; }
-.nd-instance { font-size: 15px; font-weight: 800; font-family: var(--mono); }
-.nd-tag { font-size: 10px; padding: 2px 7px; border-radius: 4px; font-weight: 600; border: 1px solid; }
-.nd-tag.spot { background: rgba(91,95,246,0.08); color: var(--accent); border-color: rgba(91,95,246,0.2); }
-.nd-tag.od { background: var(--amber-soft); color: var(--amber); border-color: rgba(255,179,64,0.2); }
-.nd-tag.warm { background: var(--green-soft); color: var(--green); border-color: rgba(61,220,132,0.2); }
-.nd-tag.new { background: var(--green-soft); color: var(--green); border-color: rgba(61,220,132,0.3); animation: fadeIn 0.5s; }
-.nd-host { margin-left: auto; font-size: 11px; color: var(--text-muted); font-family: var(--mono); }
-
-/* Pods */
-.nd-pods { display: flex; flex-wrap: wrap; gap: 5px; }
-.pd { height: 24px; padding: 0 9px; border-radius: 5px; font-size: 11px; font-family: var(--mono); display: flex; align-items: center; font-weight: 500; cursor: default; border: 1px solid; }
-.pd.inf { background: rgba(45,212,191,0.12); color: #2dd4bf; border-color: rgba(45,212,191,0.25); }
-.pd.plat { background: var(--accent-soft); color: #818cf8; border-color: rgba(91,95,246,0.2); }
-.pd.gpu-op { background: var(--green-soft); color: var(--green); border-color: rgba(61,220,132,0.2); }
-.pd.kuberay { background: rgba(103,232,249,0.1); color: var(--cyan); border-color: rgba(103,232,249,0.2); }
-.pd.sys { background: rgba(255,255,255,0.03); color: var(--text-muted); border-color: var(--border); }
-.pd.new { background: var(--green-soft); color: var(--green); border-color: rgba(61,220,132,0.3); animation: fadeIn 0.4s; }
-
-/* Namespace legend — margin-top:auto pushes it to the bottom of the .nd flex
-   column so the namespace-dots row aligns across tiles in the same grid row,
-   regardless of how many workload-pod chips sit above. When followed by
-   .gpu-m, only the legend gets the auto margin (see .ns-legend + .gpu-m
-   below) — the gpu block sits its natural 12px below the legend. */
-.ns-legend { display: flex; flex-wrap: wrap; gap: 10px; margin-top: auto; padding-top: 8px; border-top: 1px solid var(--border); }
-.ns-leg-item { display: flex; align-items: center; gap: 5px; font-size: 10px; color: var(--text-muted); font-family: var(--mono); }
-.ns-leg-dot { width: 8px; height: 8px; border-radius: 3px; }
-
-/* GPU meter — margin-top:auto pushes the GPU slot block to the bottom of the
-   .nd flex column so blocks align across tiles in the same grid row regardless
-   of how many workload-pod chips sit above. The .gpu-m's own background tint
-   and border provide visual separation when the tile is dense and the
-   auto-margin collapses to 0. */
-.gpu-m { margin-top: auto; padding: 12px 14px; background: rgba(167,139,250,0.04); border-radius: var(--radius-sm); border: 1px solid rgba(167,139,250,0.1); }
-/* When .ns-legend is also present, IT consumes the auto-space (anchored to
-   the bottom). The gpu block sits 12px below the legend — a fixed gap, not
-   auto — so legend + gpu block move as a single bottom-anchored group. */
-.ns-legend + .gpu-m { margin-top: 12px; }
-.gpu-m-label { font-size: 10px; font-weight: 700; color: var(--purple); margin-bottom: 8px; text-transform: uppercase; letter-spacing: 0.5px; font-family: var(--mono); }
-.gpu-slots { display: flex; gap: 5px; }
-.gs { flex: 1; min-height: 44px; border-radius: 6px; display: flex; align-items: center; justify-content: center; font-size: 11px; font-weight: 700; font-family: var(--mono); padding: 6px 8px; text-align: center; word-break: break-all; line-height: 1.3; }
-.gs.used { background: linear-gradient(135deg, #7c3aed, #6366f1); color: #fff; box-shadow: 0 2px 8px rgba(124,58,237,0.3); flex-direction: column; gap: 2px; }
-.gs.used.multi { box-shadow: 0 2px 6px rgba(124,58,237,0.25); }
-.gs-pos { font-size: 9px; font-weight: 600; opacity: 0.75; letter-spacing: 0.3px; }
-.gs.free { background: rgba(167,139,250,0.05); border: 1px dashed rgba(167,139,250,0.25); color: var(--text-muted); }
-
-@keyframes pulse { 0%,100%{opacity:1;}50%{opacity:0.3;} }
-@keyframes fadeIn { from{opacity:0;transform:translateY(-3px);}to{opacity:1;transform:translateY(0);} }
-
-/* ─── Platform Health Agent approvals UI ─────────────────────────────────────── */
-.approvals-btn {
-  background: var(--surface); border: 1px solid var(--border);
-  border-radius: var(--radius-sm); padding: 5px 10px; cursor: pointer;
-  font-size: 13px; font-weight: 600; color: var(--text);
-  display: flex; align-items: center; gap: 6px; transition: all 0.2s;
-}
-.approvals-btn:hover { background: var(--surface-hover); border-color: var(--accent); }
-.approvals-btn.has-pending { border-color: var(--amber); color: var(--amber); animation: approvals-pulse 2s infinite; }
-@keyframes approvals-pulse {
-  0%,100% { box-shadow: 0 0 0 0 rgba(255,179,64,0); }
-  50%     { box-shadow: 0 0 0 6px rgba(255,179,64,0.15); }
-}
-
-.approvals-modal {
-  position: fixed; inset: 0; background: rgba(0,0,0,0.6);
-  display: none; align-items: flex-start; justify-content: center;
-  z-index: 100; padding-top: 80px;
-}
-.approvals-modal.open { display: flex; }
-.approvals-panel {
-  background: var(--surface); border: 1px solid var(--border);
-  border-radius: var(--radius); width: 760px; max-width: 92vw;
-  max-height: 78vh; overflow: hidden; display: flex; flex-direction: column;
-  box-shadow: 0 20px 60px rgba(0,0,0,0.4);
-}
-.approvals-header {
-  display: flex; align-items: center; justify-content: space-between;
-  padding: 14px 20px; border-bottom: 1px solid var(--border);
-}
-.approvals-header h2 { font-size: 14px; font-weight: 700; letter-spacing: -0.2px; }
-.approvals-close {
-  background: none; border: none; color: var(--text-secondary);
-  font-size: 22px; cursor: pointer; padding: 0 6px; line-height: 1;
-}
-.approvals-close:hover { color: var(--text); }
-
-#approvals-list { padding: 4px 0; }
-.approvals-tab-content { display: none; overflow: auto; flex: 1; padding: 4px 0; }
-.approvals-tab-content.active { display: block; }
-.approval-item { padding: 14px 20px; border-bottom: 1px solid var(--border); animation: fadeIn 0.2s ease; }
-.approval-item:last-child { border-bottom: none; }
-.approval-meta { display: flex; gap: 8px; align-items: center; font-size: 11px; color: var(--text-muted); margin-bottom: 8px; font-family: var(--mono); }
-.approval-meta .sev { font-weight: 700; padding: 2px 6px; border-radius: 3px; font-family: var(--font); }
-.approval-meta .sev-CRITICAL,
-.approval-meta .sev-HIGH    { background: var(--red-soft);   color: var(--red); }
-.approval-meta .sev-MEDIUM  { background: var(--amber-soft); color: var(--amber); }
-.approval-meta .sev-LOW     { background: var(--green-soft); color: var(--green); }
-.approval-summary { font-size: 13px; color: var(--text); margin-bottom: 8px; line-height: 1.5; }
-.approval-fix {
-  background: var(--bg); padding: 8px 10px; border-radius: var(--radius-sm);
-  font-family: var(--mono); font-size: 11px; line-height: 1.5;
-  white-space: pre; overflow-x: auto; max-height: 220px; color: var(--text-secondary);
-  border: 1px solid var(--border);
-}
-.approval-actions { display: flex; gap: 8px; margin-top: 10px; }
-.approval-actions button {
-  border: 1px solid var(--border); border-radius: var(--radius-sm);
-  padding: 6px 14px; font-size: 12px; font-weight: 600; cursor: pointer;
-  background: var(--surface); color: var(--text); transition: all 0.15s;
-  font-family: var(--font);
-}
-.approval-actions button.approve { background: var(--green-soft); color: var(--green); border-color: var(--green); }
-.approval-actions button.approve:hover { background: var(--green); color: white; }
-.approval-actions button.dismiss { background: var(--red-soft); color: var(--red); border-color: var(--red); }
-.approval-actions button.dismiss:hover { background: var(--red); color: white; }
-.approval-actions button:disabled { opacity: 0.5; cursor: not-allowed; }
-.approvals-empty { padding: 32px 20px; text-align: center; color: var(--text-muted); font-size: 13px; }
-
-/* Richer card sections */
-.approval-section { padding: 12px 0; border-top: 1px solid var(--border); }
-.approval-section:first-of-type { border-top: none; padding-top: 0; }
-.approval-section-title {
-  font-size: 11px; font-weight: 700; letter-spacing: 0.6px;
-  text-transform: uppercase; color: var(--text-muted); margin-bottom: 8px;
-}
-.approval-section-fix {
-  background: var(--accent-soft); border-radius: var(--radius-sm);
-  padding: 14px 16px; margin: 12px 0; border-left: 3px solid var(--accent);
-}
-.approval-section-fix .approval-section-title { color: var(--accent); font-size: 13px; }
-.approval-section-risk {
-  background: var(--amber-soft); border-radius: var(--radius-sm);
-  padding: 12px 14px; margin: 10px 0; border-left: 3px solid var(--amber);
-}
-.approval-section-risk .approval-section-title { color: var(--amber); font-size: 13px; }
-.fix-step { margin-bottom: 12px; }
-.fix-step:last-child { margin-bottom: 0; }
-.fix-step-num {
-  display: inline-block; width: 18px; height: 18px; line-height: 18px;
-  background: var(--accent); color: white; font-size: 10px; font-weight: 700;
-  text-align: center; border-radius: 50%; margin-right: 6px;
-}
-.fix-step-desc { font-size: 13px; color: var(--text); margin-bottom: 6px; font-weight: 600; }
-.fix-step-cmd {
-  background: var(--bg); padding: 8px 10px; border-radius: 4px;
-  font-family: var(--mono); font-size: 11px; line-height: 1.5;
-  white-space: pre-wrap; word-break: break-all; overflow-x: auto;
-  max-height: 220px; color: var(--text); border: 1px solid var(--border-light);
-}
-/* Impact grid */
-.impact-grid { display: grid; gap: 10px; }
-.impact-row {
-  display: grid; grid-template-columns: 110px 1fr; gap: 14px; align-items: start;
-  font-size: 12px;
-}
-.impact-label { color: var(--text-muted); padding-top: 2px; font-weight: 600; }
-.impact-resources, .impact-chips { display: flex; flex-wrap: wrap; gap: 6px; }
-.impact-empty { color: var(--text-muted); font-size: 12px; font-style: italic; }
-.resource-pill {
-  display: inline-flex; gap: 8px; align-items: center;
-  background: var(--surface-hover); border: 1px solid var(--border);
-  border-radius: 4px; padding: 4px 10px; font-size: 11px;
-}
-.resource-pill .resource-kind {
-  font-weight: 700; color: var(--accent); font-family: var(--mono);
-  font-size: 10px; letter-spacing: 0.3px;
-}
-.resource-pill .resource-name { font-family: var(--mono); color: var(--text); }
-.impact-chip {
-  display: inline-flex; gap: 4px; align-items: center;
-  background: var(--accent-soft); color: var(--accent);
-  border-radius: 4px; padding: 3px 8px; font-size: 11px; font-weight: 600;
-}
-.impact-chip.destructive { background: var(--red-soft); color: var(--red); }
-.impact-rev-reversible  { color: var(--green); }
-.impact-rev-destructive { color: var(--red); font-weight: 700; }
-.impact-rev-partial     { color: var(--amber); }
-.impact-rev-unknown     { color: var(--text-muted); }
-.manual-review-banner {
-  margin: 10px 0; padding: 10px 14px; background: var(--amber-soft);
-  border: 1px solid var(--amber); border-radius: var(--radius-sm);
-  color: var(--amber); font-size: 12px; font-weight: 600;
-}
-.approval-trigger { font-family: var(--font); }
-.approval-time    { margin-left: auto; }
-
-/* Tabs */
-.approvals-tabs { display: flex; gap: 4px; }
-.approvals-tab {
-  background: none; border: none; padding: 6px 12px; cursor: pointer;
-  font-size: 12px; font-weight: 600; color: var(--text-muted);
-  border-radius: var(--radius-sm); transition: all 0.15s; font-family: var(--font);
-}
-.approvals-tab:hover { background: var(--surface-hover); color: var(--text); }
-.approvals-tab.active { background: var(--accent-soft); color: var(--accent); }
-.approvals-tab .badge {
-  display: inline-block; min-width: 18px; padding: 0 5px; margin-left: 6px;
-  background: var(--accent); color: white; border-radius: 9px;
-  font-size: 10px; font-weight: 700; text-align: center;
-}
-.approvals-tab.active .badge { background: var(--accent); }
-.approvals-tab-content { display: none; }
-.approvals-tab-content.active { display: block; }
-
-/* Post-approve in-place state */
-.approval-remediating {
-  padding: 14px 16px; background: var(--accent-soft); border-radius: var(--radius-sm);
-  border-left: 3px solid var(--accent);
-  font-size: 13px; color: var(--accent); display: flex; align-items: center; gap: 10px;
-}
-.approval-remediating::before {
-  content: ''; width: 14px; height: 14px;
-  border: 2px solid var(--accent); border-top-color: transparent;
-  border-radius: 50%; animation: spin 0.8s linear infinite;
-}
-@keyframes spin { to { transform: rotate(360deg); } }
-
-/* History */
-.history-item {
-  padding: 12px 20px; border-bottom: 1px solid var(--border); cursor: pointer;
-  transition: background 0.1s;
-}
-.history-item:hover { background: var(--surface-hover); }
-.history-item:last-child { border-bottom: none; }
-/* In-flight (running / remediating) rows stand out from terminal history. */
-.history-item.in-flight { border-left: 2px solid var(--accent); }
-.history-row1 { display: flex; align-items: center; gap: 10px; font-size: 12px; }
-.history-row1 .outcome {
-  font-weight: 700; padding: 2px 8px; border-radius: 4px; font-size: 11px;
-}
-.outcome-applied  { background: var(--green-soft);  color: var(--green); }
-.outcome-failed   { background: var(--red-soft);    color: var(--red); }
-.outcome-dismissed{ background: rgba(150,150,150,0.12); color: var(--text-muted); }
-.outcome-expired  { background: rgba(150,150,150,0.12); color: var(--text-muted); }
-.outcome-pending  { background: var(--amber-soft);  color: var(--amber); }
-.outcome-running  { background: var(--accent-soft); color: var(--accent); }
-.outcome-oos      { background: var(--purple-soft); color: var(--purple); }
-.oos-tag {
-  display: inline-block; font-weight: 700; font-size: 10px; text-transform: uppercase;
-  letter-spacing: 0.4px; padding: 1px 6px; border-radius: 4px; margin-right: 6px;
-  background: var(--purple-soft); color: var(--purple);
-}
-.history-row2 {
-  font-size: 11px; color: var(--text-muted); margin-top: 4px;
-  font-family: var(--mono);
-}
-.history-summary { margin-top: 6px; font-size: 12px; color: var(--text-secondary); }
-.history-detail {
-  margin-top: 10px; padding: 10px; background: var(--bg);
-  border-radius: 4px; font-size: 11px; display: none;
-}
-.history-item.expanded .history-detail { display: block; }
-.history-detail pre {
-  font-family: var(--mono); white-space: pre-wrap; word-break: break-all;
-  background: var(--surface); padding: 6px 8px; border-radius: 3px; margin: 4px 0;
-}
-.history-detail .post-fix-row {
-  display: flex; gap: 8px; margin: 2px 0; font-family: var(--mono); font-size: 10px;
-}
-.history-detail .post-fix-row .ok  { color: var(--green); }
-.history-detail .post-fix-row .bad { color: var(--red); }
-
-.history-delete {
-  position: absolute; top: 8px; right: 12px;
-  background: none; border: none; color: var(--text-muted);
-  font-size: 18px; line-height: 1; cursor: pointer; padding: 4px 6px;
-  border-radius: 4px; transition: all 0.15s; opacity: 0;
-}
-.history-item { position: relative; }
-.history-item:hover .history-delete { opacity: 1; }
-.history-delete:hover { background: var(--red-soft); color: var(--red); }
-
-/* Dismiss button for stale (stuck) in-flight investigations — always visible,
-   unlike the hover-only delete ×, so the user notices a stuck investigation. */
-.history-dismiss-stale {
-  position: absolute; top: 8px; right: 12px;
-  background: var(--surface); border: 1px solid var(--border);
-  color: var(--text-secondary); font-family: var(--font);
-  font-size: 11px; font-weight: 600; line-height: 1;
-  padding: 5px 9px; border-radius: var(--radius-sm);
-  cursor: pointer; transition: all 0.15s; z-index: 1;
-}
-.history-dismiss-stale:hover { background: var(--red-soft); color: var(--red); border-color: var(--red); }
-
-.history-toolbar {
-  display: flex; align-items: center; justify-content: flex-end;
-  padding: 10px 20px; border-bottom: 1px solid var(--border);
-}
-.history-dismiss-all {
-  background: var(--surface); border: 1px solid var(--border);
-  border-radius: var(--radius-sm); padding: 5px 12px; cursor: pointer;
-  font-size: 12px; font-weight: 600; color: var(--text-secondary);
-  font-family: var(--font); transition: all 0.15s;
-}
-.history-dismiss-all:hover { background: var(--red-soft); color: var(--red); border-color: var(--red); }
-.history-dismiss-all:disabled { opacity: 0.5; cursor: not-allowed; }
+.main{overflow-y:auto;padding:22px 26px}
+.view{display:none}.view.active{display:block}
+.vhead{display:flex;align-items:baseline;gap:12px;margin-bottom:18px}
+.vtitle{font-size:20px;font-weight:800;letter-spacing:-.4px}
+.vsub{font-size:12px;color:var(--text-muted)}
+.sec-title{font-size:11px;font-weight:700;text-transform:uppercase;letter-spacing:1px;color:var(--text-muted);margin:24px 0 12px}
+.sec-title:first-child{margin-top:0}
+/* KPI cards */
+.kpis{display:grid;grid-template-columns:repeat(6,1fr);gap:12px}
+.kpi{background:var(--surface);border:1px solid var(--border);border-radius:var(--r);padding:14px 15px;position:relative;overflow:hidden}
+.kpi-label{font-size:10px;font-weight:700;text-transform:uppercase;letter-spacing:.7px;color:var(--text-muted)}
+.kpi-val{font-size:26px;font-weight:800;margin-top:6px;font-family:var(--mono);line-height:1}
+.kpi-sub{font-size:11px;color:var(--text-2);margin-top:6px}
+.kpi-sub .up{color:var(--green)}.kpi-sub .down{color:var(--red)}
+.kpi .spark{position:absolute;right:8px;bottom:6px;opacity:.5}
+.kpi.good .kpi-val{color:var(--green)} .kpi.warn .kpi-val{color:var(--amber)}
+/* Grid layouts */
+.cols{display:grid;grid-template-columns:1fr 1fr;gap:16px}
+.cols-3{display:grid;grid-template-columns:1.6fr 1fr;gap:16px}
+.card{background:var(--surface);border:1px solid var(--border);border-radius:var(--r);padding:16px}
+.card-h{display:flex;align-items:center;justify-content:space-between;margin-bottom:12px}
+.card-h h3{font-size:13px;font-weight:700}
+.card-h a{font-size:11px;color:var(--accent);text-decoration:none}
+/* Table */
+table{width:100%;border-collapse:collapse;font-size:12.5px}
+th{text-align:left;font-size:10px;font-weight:700;text-transform:uppercase;letter-spacing:.5px;color:var(--text-muted);padding:0 10px 9px;border-bottom:1px solid var(--border)}
+th.num,td.num{text-align:right;font-family:var(--mono)}
+td{padding:11px 10px;border-bottom:1px solid var(--border)}
+tr:last-child td{border-bottom:none}
+tbody tr{cursor:pointer}
+tbody tr:hover{background:var(--surface-2)}
+.m-name{font-weight:700}
+.m-id{font-size:11px;color:var(--text-muted);font-family:var(--mono)}
+.dot{display:inline-block;width:8px;height:8px;border-radius:50%;margin-right:7px;vertical-align:middle}
+.dot.ok{background:var(--green);box-shadow:0 0 6px rgba(52,211,153,.5)}
+.dot.warn{background:var(--amber);animation:pulse 1.5s infinite}
+.dot.bad{background:var(--red)}
+/* Badges */
+.badge2{font-size:9.5px;font-weight:700;text-transform:uppercase;letter-spacing:.4px;padding:3px 7px;border-radius:5px;white-space:nowrap}
+.b-bedrock{background:var(--orange-soft);color:var(--orange)}
+.b-vllm{background:var(--green-soft);color:var(--green)}
+.b-llmd{background:var(--purple-soft);color:var(--purple)}
+.b-ft{background:var(--cyan-soft);color:var(--cyan)}
+.b-ray{background:rgba(255,255,255,.06);color:var(--text-muted)}
+.st{font-size:10px;font-weight:700;padding:3px 8px;border-radius:5px}
+.st.ok{background:var(--green-soft);color:var(--green)}
+.st.warn{background:var(--amber-soft);color:var(--amber)}
+.st.bad{background:var(--red-soft);color:var(--red)}
+.act{display:inline-flex;gap:5px}
+.act button{background:var(--surface-2);border:1px solid var(--border);border-radius:5px;color:var(--text-2);cursor:pointer;font-size:11px;padding:4px 7px}
+.act button:hover{border-color:var(--accent);color:var(--text)}
+.muted{color:var(--text-muted)}
+/* progress bars */
+.bar{height:7px;border-radius:4px;background:var(--surface-2);overflow:hidden}
+.bar>i{display:block;height:100%;border-radius:4px}
+.bar-lbl{display:flex;justify-content:space-between;font-size:11px;margin-bottom:5px;font-family:var(--mono)}
+/* filter tabs */
+.tabs{display:flex;gap:6px;margin-bottom:14px}
+.tab{padding:6px 13px;border:1px solid var(--border);border-radius:20px;font-size:12px;font-weight:600;color:var(--text-2);cursor:pointer;background:var(--surface)}
+.tab.active{background:var(--accent-soft);border-color:var(--accent);color:#c7d2fe}
+.tab .cnt{color:var(--text-muted);margin-left:5px}
+/* cost split */
+.stack{display:flex;height:12px;border-radius:6px;overflow:hidden;margin:8px 0}
+.stack>i{height:100%}
+.legend{display:flex;flex-wrap:wrap;gap:12px;font-size:11px;color:var(--text-2)}
+.legend span{display:flex;align-items:center;gap:6px}.legend i{width:9px;height:9px;border-radius:2px}
+/* health/activity */
+.alert{display:flex;gap:11px;padding:11px 0;border-bottom:1px solid var(--border)}
+.alert:last-child{border-bottom:none}
+.alert .ai{font-size:16px}
+.alert .at{font-weight:600;font-size:12.5px}.alert .ad{font-size:11px;color:var(--text-muted);margin-top:2px}
+.alert .ax{margin-left:auto;display:flex;gap:6px}
+.btn{border-radius:var(--r-sm);padding:5px 11px;font-size:11px;font-weight:600;cursor:pointer;border:1px solid var(--border);font-family:var(--font)}
+.btn.approve{background:var(--green-soft);color:var(--green);border-color:var(--green)}
+.btn.dismiss{background:var(--surface-2);color:var(--text-2)}
+.feed{font-size:12px;font-family:var(--mono)}
+.feed .fr{display:flex;gap:9px;padding:6px 0;border-bottom:1px solid rgba(255,255,255,.03);color:var(--text-2)}
+.feed .ft{color:var(--text-muted)}
+.savings{background:linear-gradient(135deg,var(--green-soft),transparent);border:1px solid rgba(52,211,153,.25);border-radius:var(--r);padding:16px}
+.savings .big{font-size:22px;font-weight:800;color:var(--green);font-family:var(--mono)}
+/* drawer */
+.drawer{position:fixed;top:0;right:-560px;width:540px;max-width:92vw;height:100vh;background:var(--surface);border-left:1px solid var(--border);box-shadow:-20px 0 60px rgba(0,0,0,.5);transition:right .25s;z-index:50;overflow-y:auto;padding:22px 24px}
+.drawer.open{right:0}
+.drawer-x{position:absolute;top:18px;right:20px;background:none;border:none;color:var(--text-2);font-size:22px;cursor:pointer}
+.scrim{position:fixed;inset:0;background:rgba(0,0,0,.5);opacity:0;pointer-events:none;transition:opacity .25s;z-index:49}
+.scrim.open{opacity:1;pointer-events:auto}
+.kv{display:grid;grid-template-columns:120px 1fr;gap:8px 14px;font-size:12.5px;margin:10px 0}
+.kv .k{color:var(--text-muted)}.kv .v{font-family:var(--mono)}
+.code{background:var(--bg);border:1px solid var(--border);border-radius:var(--r-sm);padding:11px 13px;font-family:var(--mono);font-size:11.5px;color:var(--text-2);white-space:pre-wrap;line-height:1.6;margin-top:8px}
+.mini-kpi{display:grid;grid-template-columns:repeat(3,1fr);gap:10px;margin:14px 0}
+.mini-kpi .mk{background:var(--surface-2);border-radius:var(--r-sm);padding:10px 12px}
+.mini-kpi .mkv{font-size:18px;font-weight:800;font-family:var(--mono)}
+.mini-kpi .mkl{font-size:10px;color:var(--text-muted);text-transform:uppercase;letter-spacing:.5px;margin-top:3px}
+.gpuslots{display:flex;gap:5px;margin-top:8px}
+.gs{flex:1;height:34px;border-radius:6px;display:flex;align-items:center;justify-content:center;font-size:10px;font-weight:700;font-family:var(--mono)}
+.gs.used{background:linear-gradient(135deg,#7c3aed,#6366f1);color:#fff}
+.gs.free{background:rgba(167,139,250,.06);border:1px dashed rgba(167,139,250,.25);color:var(--text-muted)}
+.util{font-size:10px;color:var(--text-muted);font-family:var(--mono)}
+.mock-tag{position:fixed;bottom:12px;right:16px;background:var(--amber-soft);color:var(--amber);border:1px solid rgba(251,191,36,.35);font-size:10px;font-weight:700;padding:4px 10px;border-radius:20px;letter-spacing:.5px;z-index:60}
 </style>
 </head>
-<body data-theme="dark">
-<div class="shell">
-  <div class="topbar">
+<body>
+<div class="app">
+  <div class="top">
     <div class="logo"><span>AI</span> Platform</div>
-    <div class="topbar-sep"></div>
-    <div class="banner-stats">
-      <div class="bstat"><span class="bstat-val" id="s-nodes">–</span><span class="bstat-label">nodes</span></div>
-      <div class="bstat"><span class="bstat-val purple" id="s-gpus">–</span><span class="bstat-label">GPU slots</span></div>
-      <div class="bstat"><span class="bstat-val" id="s-models">–</span><span class="bstat-label">models</span></div>
-    </div>
-    <div class="topbar-sep"></div>
-    <div class="banner-cost" title="Estimate — eu-central-1 on-demand list price; spot approximated at 0.35×">
-      <div class="bcost-top"><span id="cost-hr">$0.00</span><span class="cost-unit">/hr</span></div>
-      <div class="bcost-sub">~<span id="cost-mo">$0</span>/mo · GPU <span id="cost-gpu">$0</span> · platform <span id="cost-plat">$0</span></div>
-    </div>
-    <div class="topbar-spacer"></div>
-    <div class="banner-links" id="banner-links"></div>
-    <button class="theme-toggle" onclick="toggleTheme()" title="Toggle light/dark mode">◐</button>
-    <button class="approvals-btn" id="approvals-btn" onclick="openApprovals()" style="display:none" title="Platform Health Agent — pending approvals">🔔 <span id="approvals-count">0</span></button>
-    <div class="live-badge" id="live-badge">Live</div>
+    <div class="top-sep"></div>
+    <div class="search">🔎 <input placeholder="Search models, teams, nodes…"></div>
+    <div class="spacer"></div>
+    <div class="pill" id="top-cost" title="Realtime cluster cost — estimate">💲 —</div>
+    <div class="pill" id="top-health" title="Health"></div>
+    <button class="icon-btn" title="Theme" onclick="toggleTheme()">◐</button>
+    <div class="live" id="live">Live</div>
   </div>
 
-  <div class="sidebar">
-    <div class="sidebar-resizer" id="sidebar-resizer"></div>
-    <div class="card card-models">
-      <div class="card-title">Models <span class="models-count" id="models-count"></span></div>
-      <div id="models-list"><div class="model-empty">No models deployed</div></div>
-    </div>
-    <div class="card card-activity">
-      <div class="card-title">Activity</div>
-      <div class="event-list" id="event-log"><div class="ev"><span class="ev-time">--:--</span> waiting...</div></div>
-    </div>
+  <div class="nav">
+    <div class="nav-item active" onclick="go('overview',this)"><span class="ni">◈</span> Overview</div>
+    <div class="nav-item" onclick="go('models',this)"><span class="ni">▣</span> Models <span class="cnt muted" id="nav-mcount" style="margin-left:auto;font-size:11px"></span></div>
+    <div class="nav-item" onclick="go('teams',this)"><span class="ni">◐</span> Teams</div>
+    <div class="nav-item" onclick="go('cost',this)"><span class="ni">＄</span> Cost</div>
+    <div class="nav-item" onclick="go('infra',this)"><span class="ni">▤</span> Infrastructure</div>
+    <div class="nav-item" onclick="go('health',this)"><span class="ni">♥</span> Health <span class="badge" id="nav-hbadge"></span></div>
+    <div class="nav-foot" id="nav-links"></div>
   </div>
 
-  <div class="main" id="main-scroll">
-    <div id="infra"></div>
+  <div class="main">
+    <!-- OVERVIEW -->
+    <div class="view active" id="v-overview">
+      <div class="vhead"><div class="vtitle">Overview</div><div class="vsub">ai-euc-eu-central · eu-central-1 · updated just now</div></div>
+      <div class="kpis" id="kpis"></div>
+      <div class="cols-3" style="margin-top:22px">
+        <div class="card">
+          <div class="card-h"><h3>Top models by traffic</h3><a onclick="go('models',document.querySelectorAll('.nav-item')[1])">View all →</a></div>
+          <table><thead><tr><th>Model</th><th>Tier</th><th class="num">req/min</th><th class="num">p95</th><th class="num">$/hr</th></tr></thead><tbody id="ov-models"></tbody></table>
+        </div>
+        <div style="display:flex;flex-direction:column;gap:16px">
+          <div class="card">
+            <div class="card-h"><h3>Cost</h3><a onclick="go('cost',document.querySelectorAll('.nav-item')[3])">Breakdown →</a></div>
+            <div style="font-size:24px;font-weight:800;font-family:var(--mono);color:var(--green)"><span id="cost-hr-mini">$0.00</span><span style="font-size:12px;color:var(--text-2)">/hr</span></div>
+            <div class="muted" style="font-size:11px" id="cost-mo-mini">~$0/mo if steady</div>
+            <div class="stack" id="cost-stack"></div>
+            <div class="legend" id="cost-legend"></div>
+          </div>
+          <div class="card">
+            <div class="card-h"><h3>GPU utilization</h3><a onclick="go('infra',document.querySelectorAll('.nav-item')[4])">Nodes →</a></div>
+            <div id="gpu-bars"></div>
+          </div>
+        </div>
+      </div>
+      <div class="cols" style="margin-top:16px">
+        <div class="card">
+          <div class="card-h"><h3>Health &amp; Self-Healing</h3><a onclick="go('health',document.querySelectorAll('.nav-item')[5])">All →</a></div>
+          <div id="ov-health"></div>
+        </div>
+        <div class="card">
+          <div class="card-h"><h3>Activity</h3></div>
+          <div class="feed" id="ov-feed"></div>
+        </div>
+      </div>
+    </div>
+
+    <!-- MODELS -->
+    <div class="view" id="v-models">
+      <div class="vhead"><div class="vtitle">Models</div><div class="vsub">Every model behind one LiteLLM <code>/v1</code> API · click a row for details</div></div>
+      <div class="tabs" id="model-tabs"></div>
+      <div class="card" style="padding:6px 10px">
+        <table><thead><tr><th>Model</th><th>Tier</th><th>Status</th><th class="num">GPU</th><th class="num">req/min</th><th class="num">p50 / p95</th><th class="num">tok/s</th><th class="num">err</th><th class="num">$/hr</th><th>Actions</th></tr></thead><tbody id="models-body"></tbody></table>
+      </div>
+    </div>
+
+    <!-- TEAMS -->
+    <div class="view" id="v-teams">
+      <div class="vhead"><div class="vtitle">Teams</div><div class="vsub">Per-team namespaces, budgets, rate limits &amp; scoped API keys (AITeam)</div></div>
+      <div class="cols" id="teams-grid"></div>
+    </div>
+
+    <!-- COST -->
+    <div class="view" id="v-cost">
+      <div class="vhead"><div class="vtitle">Cost</div><div class="vsub">eu-central-1 on-demand estimate · spot ≈0.35× · GPU is the driver</div></div>
+      <div class="kpis" id="cost-kpis" style="grid-template-columns:repeat(4,1fr)"></div>
+      <div class="cols-3" style="margin-top:20px">
+        <div class="card"><div class="card-h"><h3>Cost by model</h3></div><div id="cost-by-model"></div></div>
+        <div style="display:flex;flex-direction:column;gap:16px">
+          <div class="card"><div class="card-h"><h3>By team</h3></div><div id="cost-by-team"></div></div>
+          <div class="card"><div class="card-h"><h3>Spend trend</h3></div><div id="cost-trend"></div></div>
+        </div>
+      </div>
+    </div>
+
+    <!-- INFRASTRUCTURE -->
+    <div class="view" id="v-infra">
+      <div class="vhead"><div class="vtitle">Infrastructure</div><div class="vsub">Karpenter GPU pools scale to zero · real GPU utilization (DCGM)</div></div>
+      <div id="infra-pools"></div>
+    </div>
+
+    <!-- HEALTH -->
+    <div class="view" id="v-health">
+      <div class="vhead"><div class="vtitle">Health &amp; Self-Healing</div><div class="vsub">Degradations, GitOps sync &amp; Platform Health Agent approvals</div></div>
+      <div class="cols-3">
+        <div class="card"><div class="card-h"><h3>Alerts &amp; investigations</h3></div><div id="health-alerts"></div></div>
+        <div class="card"><div class="card-h"><h3>ArgoCD sync</h3></div><div id="argo-sync"></div></div>
+      </div>
+    </div>
   </div>
 </div>
 
+<!-- Model detail drawer -->
+<div class="scrim" id="scrim" onclick="closeDrawer()"></div>
+<div class="drawer" id="drawer"></div>
+
+
 <script>
-const POOLS = [
-  { key:'gpu-shared', cls:'gpu-shared', label:'KARPENTER', name:'gpu-shared', desc:'Spot/On-demand · Time-sliced · EBS Snapshot' },
-  { key:'gpu-inference', cls:'gpu-inference', label:'KARPENTER', name:'gpu-inference', desc:'Spot/On-demand · Dedicated GPU · Scales to zero' },
-  { key:'default', cls:'default', label:'KARPENTER', name:'default', desc:'Spot/On-demand · Platform services' },
-  { key:'__mng__', cls:'mng', label:'MNG', name:'CriticalAddons', desc:'Managed · Graviton · Always-on' },
-];
-const DAEMONSETS = ['aws-node','kube-proxy','ebs-csi-node','eks-pod-identity-agent','aws-for-fluent-bit','cloudwatch-agent','fluent-bit','prometheus-node-exporter','nfd-worker','dcgm-exporter'];
-const SKIP_POD = ['-register','cleanup'];
-const NS_CLS = {'inference':'inf','ai-platform':'plat','kuberay':'kuberay','gpu-operator':'gpu-op','external-secrets':'sys','grafana-operator':'sys'};
-const NS_COLORS = {'inference':['rgba(45,212,191,0.3)','#2dd4bf'],'ai-platform':['rgba(91,95,246,0.3)','#818cf8'],'kuberay':['rgba(103,232,249,0.3)','var(--cyan)'],'gpu-operator':['rgba(61,220,132,0.3)','var(--green)']};
-
-let prevNodes=new Set(),prevPods=new Set(),prevEps=new Set(),prevEpSt={};
-let events=[],connected=false,selectedModel=null,lastData=null;
-
-function short(n){return n.replace(/-[a-z0-9]{5,10}(-[a-z0-9]{5})?$/,'').replace(/-[0-9]+$/,'');}
-function isDS(n){return DAEMONSETS.some(d=>n.startsWith(d));}
-function skipEv(n){return SKIP_POD.some(s=>n.includes(s));}
-function ts(){return new Date().toLocaleTimeString('en-GB',{hour:'2-digit',minute:'2-digit',second:'2-digit'});}
-
-function log(type,msg){
-  events.unshift({t:ts(),c:type==='add'?'ev-add':type==='del'?'ev-del':'ev-mod',m:msg});
-  if(events.length>25)events.pop();
-  document.getElementById('event-log').innerHTML=events.map(e=>`<div class="ev"><span class="ev-time">${e.t}</span> <span class="${e.c}">${e.m}</span></div>`).join('');
-}
-
-function selectModel(name){selectedModel=selectedModel===name?null:name;renderAll();}
-
-function renderModels(eps){
-  const el=document.getElementById('models-list'); if(!el)return;
-  const cnt=document.getElementById('models-count'); if(cnt) cnt.textContent=eps.length||'';
-  const MODE_LABEL={ray:'Ray',vllm:'vLLM','llm-d':'llm-d'},MODE_CLS={ray:'ray',vllm:'vllm','llm-d':'llmd'};
-  if(!eps.length){
-    if(el.dataset.sig!=='__empty__'){el.innerHTML='<div class="model-empty">No models deployed — commit a VLLMEndpoint or LLMDEndpoint to workloads/ and push.</div>';el.dataset.sig='__empty__';}
-    return;
-  }
-  // Signature excludes the live timer so a card only ticking its elapsed time
-  // isn't torn down every poll (which would drop hover/selection).
-  const sig=eps.map(ep=>`${ep.name}|${ep.mode}|${ep.ready}|${ep.status||ep.modelStatus}|${ep.availableReplicas}|${ep.replicas}|${ep.routerHealth}|${selectedModel===ep.name}|${ep.shared}|${ep.gpuCount}|${ep.tp}|${ep.pp}|${ep.model}`).join('~');
-  if(el.dataset.sig!==sig){
-    el.innerHTML=eps.map(ep=>{
-      const ready=ep.ready==='True',st=ep.status||ep.modelStatus||'Pending',cls=ready?'running':'deploying';
-      const sel=selectedModel===ep.name?'selected':'';
-      const timer=ready?'':`<div class="mtimer" data-created="${ep.created}">⏱ </div>`;
-      const gpuCount=ep.gpuCount||1,tp=ep.tp||1,pp=ep.pp||1;
-      const strat=ep.shared?'shared GPU':gpuCount===1?'1 GPU':tp>1&&pp>1?`TP${tp}×PP${pp}`:tp>1?`TP=${tp}`:pp>1?`PP=${pp}`:`${gpuCount} GPU`;
-      let router='';
-      if(ep.mode==='llm-d'&&ep.routerHealth){const ok=ep.routerHealth==='Healthy';router=` · <span class="${ok?'router-ok':'router-warn'}">router ${ep.routerHealth}</span>`;}
-      const modeLabel=MODE_LABEL[ep.mode]||ep.mode||'?',modeCls=MODE_CLS[ep.mode]||'ray';
-      return `<div class="model-item ${sel}" title="${ep.name} · ${ep.model}" onclick="selectModel('${ep.name}')">
-        <div class="model-top"><span class="mdot ${cls}"></span><span class="mname">${ep.name}</span><span class="mstatus ${cls}">${st}</span></div>
-        <div class="model-sub"><span class="mode-badge ${modeCls}">${modeLabel}</span><span class="mdetail">${ep.model}</span></div>
-        <div class="mmeta">${strat} · ${ep.availableReplicas||0}/${ep.replicas||1} ready${router}</div>${timer}</div>`;
-    }).join('');
-    el.dataset.sig=sig;
-  }
-  for(const t of el.querySelectorAll('.mtimer[data-created]')){
-    const elapsed=Math.floor((Date.now()-new Date(t.dataset.created).getTime())/1000);
-    t.textContent=`⏱ ${Math.floor(elapsed/60)}m ${elapsed%60}s`;
-  }
-}
-
-function renderLinks(links){
-  const el=document.getElementById('banner-links');
-  if(!el)return;
-  const html=(!links||!links.length) ? ''
-    : links.map(l=>
-      `<a class="blink" href="${l.url}" target="_blank" rel="noopener noreferrer" title="${l.desc||l.label} — ${l.url}"><span class="blink-icon">${l.icon||'🔗'}</span>${l.label}</a>`).join('');
-  if(el.dataset.sig!==html){el.innerHTML=html;el.dataset.sig=html;}  // skip rebuild when unchanged
-}
-
-function renderAll(){if(!lastData)return;renderModels(lastData.endpoints);renderLinks(lastData.links);renderInfra(lastData.nodes,lastData.pods);}
-
-function renderInfra(nodes,pods){
-  const pools={};
-  for(const n of nodes){const p=n.pool||'__mng__';(pools[p]=pools[p]||[]).push(n);}
-  const podsByNode={};
-  for(const p of pods){if(!p.node||isDS(p.name))continue;(podsByNode[p.node]=podsByNode[p.node]||[]).push(p);}
-  const modelNodes=new Set();
-  if(selectedModel)for(const p of pods)if(p.namespace==='inference'&&p.name.startsWith(selectedModel)&&p.node)modelNodes.add(p.node);
-  // Build endpoint lookup by name for TP/PP badge on GPU slots
-  const epByName={};
-  if(lastData)for(const ep of lastData.endpoints)epByName[ep.name]=ep;
-
-  let html='';
-  for(const pool of POOLS){
-    const pNodes=pools[pool.key]||[];
-    const poolHasModel=!selectedModel||pNodes.some(n=>modelNodes.has(n.name));
-    html+=`<div class="pool ${pool.cls} ${selectedModel&&!poolHasModel?'dimmed':''}">`;
-    html+=`<div class="pool-hdr"><span class="badge">${pool.label}</span><span class="pool-name">${pool.name}</span><span class="cnt">${pNodes.length}</span><span class="desc">${pool.desc}</span></div>`;
-    if(!pNodes.length){html+=`<div class="pool-empty">No nodes — scales from zero when workloads arrive</div>`;}
-    else{
-      html+=`<div class="pool-body">`;
-      for(const node of pNodes){
-        const ndPods=podsByNode[node.name]||[];
-        const isNew=(Date.now()-new Date(node.created).getTime())<120000;
-        const isWarm=ndPods.some(p=>p.name.includes('warmup'));
-        const cap=node.capacity==='spot'?'spot':'od';
-        const capLbl=node.capacity==='spot'?'spot':'on-demand';
-        const host=node.name.split('.')[0];
-        const zone=node.zone.replace(/eu-central-/,'');
-        const nodeDim=selectedModel&&!modelNodes.has(node.name)?'dimmed':'';
-        const nodeHL=selectedModel&&modelNodes.has(node.name)?'highlight':'';
-
-        html+=`<div class="nd ${nodeDim} ${nodeHL}">`;
-        html+=`<div class="nd-top"><span class="nd-instance">${node.instance}</span><span class="nd-tag ${cap}">${capLbl}</span>`;
-        if(isWarm)html+=`<span class="nd-tag warm">warm pool</span>`;
-        if(isNew)html+=`<span class="nd-tag new">new</span>`;
-        html+=`<span class="nd-host">${host} · ${zone}</span></div>`;
-
-        if(ndPods.length){
-          html+=`<div class="nd-pods">`;
-          const nsUsed=new Set();
-          for(const p of ndPods){
-            const isNewP=(Date.now()-new Date(p.created).getTime())<30000;
-            let c=NS_CLS[p.namespace]||'sys';if(isNewP)c='new';
-            nsUsed.add(p.namespace);
-            html+=`<span class="pd ${c}" title="${p.namespace}/${p.name}">${short(p.name)}</span>`;
-          }
-          html+=`</div>`;
-          const legendNs=[...nsUsed].filter(ns=>NS_COLORS[ns]);
-          if(legendNs.length>0){
-            html+=`<div class="ns-legend">`;
-            for(const ns of legendNs){const[bg,fg]=NS_COLORS[ns];html+=`<div class="ns-leg-item"><div class="ns-leg-dot" style="background:${bg};"></div>${ns}</div>`;}
-            html+=`</div>`;
-          }
-        }
-
-        if(node.gpu>0){
-          const gpuPods=ndPods.filter(p=>p.gpu>0);
-          const gpuLabel=node.gpuProduct||node.instance;
-          html+=`<div class="gpu-m"><div class="gpu-m-label">${gpuLabel} · ${node.gpu} GPU slot${node.gpu>1?'s':''}</div><div class="gpu-slots">`;
-          let slotIdx=0;
-          for(const gp of gpuPods){
-            const podName=gp.name;
-            let label;
-            if(podName.includes('warmup')) label='warmup';
-            else label=Object.keys(epByName).filter(en=>podName.startsWith(en+'-')).sort((a,b)=>b.length-a.length)[0]
-                       || podName.replace(/-[a-z0-9]{5}-(?:gpu-workers-worker|head).*$/,'').replace(/-gpu-workers.*$/,'').replace(/-head.*$/,'').replace(/-vllm-[a-z0-9]{5,10}(-[a-z0-9]{5})?$/,'');
-            const gpuCount=gp.gpu||1;
-            // Look up parallelism strategy from InferenceEndpoint
-            const ep=epByName[label];
-            let stratLabel='';
-            if(gpuCount>1&&ep){
-              const tp=ep.tp||1,pp=ep.pp||1;
-              stratLabel=tp>1&&pp>1?`TP${tp}×PP${pp}`:tp>1?`TP=${tp}`:pp>1?`PP=${pp}`:`${gpuCount}GPU`;
-            } else if(gpuCount>1){
-              stratLabel=`${gpuCount}GPU`;
-            }
-            for(let g=0;g<gpuCount&&slotIdx<node.gpu;g++,slotIdx++){
-              if(gpuCount>1){
-                const pos=`${stratLabel} · ${g+1}/${gpuCount}`;
-                html+=`<div class="gs used multi">${label}<div class="gs-pos">${pos}</div></div>`;
-              } else {
-                html+=`<div class="gs used">${label}</div>`;
-              }
-            }
-          }
-          for(;slotIdx<node.gpu;slotIdx++) html+=`<div class="gs free">free</div>`;
-          html+=`</div></div>`;
-        }
-        html+=`</div>`;
-      }
-      html+=`</div>`;
-    }
-    html+=`</div>`;
-  }
-  // Skip the rebuild when the rendered infra is identical — a 2s poll that
-  // changes nothing must not tear down and re-lay-out the whole view (which
-  // dropped hover/selection state). The "new" badges are time-thresholded
-  // booleans, so the signature flips exactly when a badge appears/clears.
-  const el=document.getElementById('infra');
-  if(el.dataset.sig!==html){el.innerHTML=html;el.dataset.sig=html;}
-}
-
-function diff(data){
-  const nN=new Set(data.nodes.map(n=>n.name)),pK=new Set(data.pods.map(p=>`${p.namespace}/${p.name}`)),eN=new Set(data.endpoints.map(e=>e.name));
-  if(connected){
-    for(const n of data.nodes)if(!prevNodes.has(n.name))log('add',`Node ${n.name.split('.')[0]} (${n.instance}) joined`);
-    for(const n of prevNodes)if(!nN.has(n))log('del',`Node ${n.split('.')[0]} removed`);
-    for(const p of data.pods){const k=`${p.namespace}/${p.name}`;if(!prevPods.has(k)&&p.namespace==='inference'&&!isDS(p.name)&&!skipEv(p.name))log('add',`Pod ${short(p.name)} → ${p.node?p.node.split('.')[0]:'pending'}`);}
-    for(const k of prevPods){if(!pK.has(k)&&k.startsWith('inference/')){const n=k.split('/')[1];if(!skipEv(n))log('del',`Pod ${short(n)} removed`);}}
-    for(const e of data.endpoints){if(!prevEps.has(e.name))log('add',`Model "${e.name}" deployed → ${e.modelStatus}`);else if(prevEpSt[e.name]!==e.modelStatus){const isFlap=prevEpSt[e.name]==='RUNNING'&&(!e.modelStatus||e.modelStatus==='Pending');if(!isFlap)log(e.ready==='True'?'add':'mod',`Model "${e.name}" → ${e.modelStatus}${e.ready==='True'?' ✓':''}`);}}
-    for(const n of prevEps)if(!eN.has(n))log('del',`Model "${n}" removed`);
-  }
-  prevNodes=nN;prevPods=pK;prevEps=eN;prevEpSt={};
-  for(const e of data.endpoints)prevEpSt[e.name]=e.modelStatus;
-}
+const TIERS={bedrock:['Bedrock','b-bedrock'],vllm:['vLLM','b-vllm'],'llm-d':['llm-d','b-llmd'],ft:['fine-tuned','b-ft'],ray:['Ray','b-ray']};
+const MTABS=[['all','All'],['bedrock','Bedrock'],['vllm','vLLM'],['llm-d','llm-d'],['ft','Fine-tuned']];
+let D={models:[],teams:[],gpu:[],argocd:[],nodes:[],pods:[],cost:{},costExt:{},sources:{},links:[]};
+let mtab='all', selected=null, prevM={}, activity=[], invs=[];
+const hist={rpm:[],tok:[],cost:[],gpu:[]};
+const $=id=>document.getElementById(id);
+const esc=s=>String(s==null?'':s).replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
+const num=n=>(n==null||n==='—')?'—':(typeof n==='number'?(n>=1000?(n/1000).toFixed(n>=10000?0:1)+'k':(Number.isInteger(n)?n:n.toFixed(1))):n);
+const ms=v=>v==null?'—':v+'ms';
+const tierLabel=t=>(TIERS[t]||['?'])[0];
+const tierBadge=t=>{const x=TIERS[t]||['?','b-ray'];return `<span class="badge2 ${x[1]}">${x[0]}</span>`};
+const modeCls=t=>t==='ft'?'b-ft':(TIERS[t]||['','b-ray'])[1];
+const spark=(pts,c='var(--accent)',w=54,h=18)=>{const p=(pts||[]).filter(x=>x!=null);if(p.length<2)return '';const mx=Math.max(...p),mn=Math.min(...p);const pk=p.map((v,i)=>`${(i/(p.length-1))*w},${(h-((v-mn)/((mx-mn)||1))*h).toFixed(1)}`).join(' ');return `<svg class="spark" width="${w}" height="${h}"><polyline points="${pk}" fill="none" stroke="${c}" stroke-width="1.5"/></svg>`};
+const push=(a,v,n=32)=>{a.push(v);while(a.length>n)a.shift();};
 
 async function poll(){
   try{
-    const r=await fetch('/data.json');if(!r.ok)throw 0;
-    const data=await r.json();lastData=data;diff(data);
-    document.getElementById('s-nodes').textContent=data.nodes.length;
-    document.getElementById('s-gpus').textContent=data.nodes.reduce((s,n)=>s+n.gpu,0);
-    document.getElementById('s-models').textContent=data.endpoints.length;
-    const c=data.cost||{};
-    document.getElementById('cost-hr').textContent='$'+(c.hourly||0).toFixed(2);
-    document.getElementById('cost-mo').textContent='$'+Math.round(c.monthly||0).toLocaleString();
-    document.getElementById('cost-gpu').textContent='$'+(c.gpuHourly||0).toFixed(2)+'/hr';
-    document.getElementById('cost-plat').textContent='$'+(c.platformHourly||0).toFixed(2)+'/hr';
-    updateApprovalsBadge(data);
-    renderAll();
-    if(!connected){connected=true;log('mod','Connected to cluster');}
-  }catch(e){/* keep last snapshot on a transient fetch error; the Live badge reflects connection */}
+    const r=await fetch('/data.json');if(!r.ok)throw 0;D=await r.json();
+    diffActivity();pushHist();
+    try{const ri=await fetch('/investigations');if(ri.ok)invs=(await ri.json()).items||[];}catch(e){}
+    renderAll();$('live').textContent='Live';
+  }catch(e){$('live').textContent='reconnecting…';}
 }
-poll();setInterval(poll,2000);
+function pushHist(){const m=D.models||[];push(hist.rpm,m.reduce((s,x)=>s+(x.rpm||0),0));push(hist.tok,Math.round(m.reduce((s,x)=>s+(x.tps||0),0)*60));push(hist.cost,(D.cost||{}).hourly||0);const g=(D.gpu||[]).flatMap(x=>x.util||[]);push(hist.gpu,g.length?Math.round(g.reduce((a,b)=>a+b,0)/g.length):0);}
+function diffActivity(){const t=new Date().toLocaleTimeString('en-GB',{hour:'2-digit',minute:'2-digit',second:'2-digit'});const cur={};(D.models||[]).forEach(m=>cur[m.name]=m.status);for(const n in cur){if(!(n in prevM))activity.unshift([t,`Model "${n}" appeared → ${cur[n]}`]);else if(prevM[n]!==cur[n])activity.unshift([t,`Model "${n}" → ${cur[n]}`]);}for(const n in prevM){if(!(n in cur))activity.unshift([t,`Model "${n}" removed`]);}prevM=cur;while(activity.length>18)activity.pop();if(!activity.length)activity=[[t,'Connected to cluster']];}
 
-function toggleTheme(){
-  const body=document.body;
-  const current=body.getAttribute('data-theme');
-  const next=current==='dark'?'light':'dark';
-  body.setAttribute('data-theme',next);
-  localStorage.setItem('theme',next);
-}
-// Restore saved theme
-const saved=localStorage.getItem('theme');
-if(saved)document.body.setAttribute('data-theme',saved);
+function alertList(){const out=[];(D.models||[]).forEach(m=>{if(m.status!=='running')out.push({icon:'⚠',sev:'warn',t:`${m.name} · ${m.status}`,d:`${tierLabel(m.tier)} · ${m.availableReplicas||0}/${m.replicas||1} replicas ready`});else if(m.tier==='llm-d'&&m.router&&m.router!=='Healthy')out.push({icon:'⚠',sev:'warn',t:`${m.name} · router ${m.router}`,d:'llm-d EPP/router not yet Healthy'});else if(m.health&&m.health.toLowerCase()!=='healthy')out.push({icon:'⚠',sev:'warn',t:`${m.name} · ${m.health}`,d:'LiteLLM health check'});});(D.argocd||[]).forEach(a=>{if(a.sync!=='Synced'||a.health!=='Healthy')out.push({icon:'🚢',sev:'warn',t:`ArgoCD · ${a.name}`,d:`${a.sync} · ${a.health}`});});return out;}
 
-// Resizable sidebar
-(function(){
-  const resizer=document.getElementById('sidebar-resizer');
-  const shell=document.querySelector('.shell');
-  let dragging=false;
-  resizer.addEventListener('mousedown',e=>{
-    dragging=true;
-    resizer.classList.add('active');
-    document.body.style.cursor='col-resize';
-    document.body.style.userSelect='none';
-    e.preventDefault();
-  });
-  document.addEventListener('mousemove',e=>{
-    if(!dragging)return;
-    const w=Math.max(220,Math.min(420,e.clientX));
-    shell.style.gridTemplateColumns=w+'px 1fr';
-  });
-  document.addEventListener('mouseup',()=>{
-    if(!dragging)return;
-    dragging=false;
-    resizer.classList.remove('active');
-    document.body.style.cursor='';
-    document.body.style.userSelect='';
-    localStorage.setItem('sidebar-w',shell.style.gridTemplateColumns);
-  });
-  const savedW=localStorage.getItem('sidebar-w');
-  if(savedW)shell.style.gridTemplateColumns=savedW;
-})();
+function renderAll(){kpis();topbar();ovModels();costMini();gpuBars();ovHealth();ovFeed();modelTabs();modelsBody();teamsView();costViews();infra();healthView();links();if(selected)openModel(selected,true);}
 
-</script>
+function topbar(){const c=D.cost||{};$('top-cost').innerHTML=`💲 <b class="cg">$${(c.hourly||0).toFixed(2)}</b>/hr · ~$${Math.round((c.monthly||0)/1000)}k/mo`;const al=alertList().length,ap=D.approvals_pending||0;const p=$('top-health');p.className='pill'+(al||ap?' warn':'');p.innerHTML=(al||ap)?`<span class="cw">⚠ ${al}</span> alerts · <b>${ap}</b> approval${ap===1?'':'s'}`:`✓ healthy`;const nm=$('nav-mcount');if(nm)nm.textContent=(D.models||[]).length||'';const hb=$('nav-hbadge');if(hb){const n=al+ap;hb.textContent=n||'';hb.style.display=n?'':'none';}}
 
-<!-- ─── Platform Health Agent approvals modal ──────────────────────────────────── -->
-<div class="approvals-modal" id="approvals-modal" onclick="if(event.target===this)closeApprovals()">
-  <div class="approvals-panel">
-    <div class="approvals-header">
-      <h2>Platform Health Agent</h2>
-      <div class="approvals-tabs">
-        <button class="approvals-tab active" data-tab="pending" onclick="switchTab('pending')">Pending<span class="badge" id="tab-pending-count">0</span></button>
-        <button class="approvals-tab" data-tab="history" onclick="switchTab('history')">History</button>
-      </div>
-      <button class="approvals-close" onclick="closeApprovals()" title="Close">×</button>
-    </div>
-    <div id="approvals-list" class="approvals-tab-content active"></div>
-    <div id="history-list" class="approvals-tab-content"></div>
-  </div>
-</div>
+function kpis(){const m=D.models||[],c=D.cost||{},s=D.sources||{};const live=m.filter(x=>x.status==='running').length,dep=m.length-live;const al=alertList().length,ap=D.approvals_pending||0;
+  const cards=[
+   {l:'Models',v:m.length,s:`${live} live${dep?` · ${dep} deploying`:''}`,c:'var(--accent)'},
+   {l:'Requests',v:s.litellm?num(hist.rpm.at(-1)||0):'—',s:s.litellm?'/min':'metrics unavailable',sp:s.litellm?hist.rpm:null,c:'var(--green)'},
+   {l:'Tokens',v:s.litellm?num(hist.tok.at(-1)||0):'—',s:s.litellm?'/min':'',sp:s.litellm?hist.tok:null,c:'var(--cyan)'},
+   {l:'Cost',v:'$'+(c.hourly||0).toFixed(2),s:`/hr · ~$${Math.round((c.monthly||0)/1000)}k/mo`,sp:hist.cost,c:'var(--green)',cls:'good'},
+   {l:'GPU util',v:s.dcgm&&(D.gpu||[]).length?(hist.gpu.at(-1)||0)+'%':'—',s:s.dcgm&&(D.gpu||[]).length?`${(D.gpu||[]).length} GPU node(s)`:'no GPU nodes',sp:s.dcgm?hist.gpu:null,c:'var(--purple)'},
+   {l:'Health',v:al,s:ap?`<span class="down">${ap} fix ready</span>`:(al?'needs attention':'all clear'),c:'var(--amber)',cls:al?'warn':''},
+  ];
+  $('kpis').innerHTML=cards.map(k=>`<div class="kpi ${k.cls||''}"><div class="kpi-label">${k.l}</div><div class="kpi-val">${k.v}</div><div class="kpi-sub">${k.s}</div>${k.sp?spark(k.sp,k.c):''}</div>`).join('');}
 
-<script>
-// ─── Platform Health Agent approvals UI ────────────────────────────────────────
-function escapeHtml(s){
-  return String(s ?? '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
-}
+function ovModels(){const rows=(D.models||[]).slice(0,6);$('ov-models').innerHTML=rows.length?rows.map(m=>`<tr onclick="openModel('${esc(m.name)}')"><td><span class="dot ${m.status==='running'?'ok':'warn'}"></span><span class="m-name">${esc(m.name)}</span></td><td>${tierBadge(m.tier)}</td><td class="num">${num(m.rpm)}</td><td class="num">${ms(m.p95)}</td><td class="num">$${(m.costHr||0).toFixed(2)}</td></tr>`).join(''):'<tr><td colspan=5 class="muted" style="padding:16px">No models deployed</td></tr>';}
 
-function updateApprovalsBadge(data){
-  const btn   = document.getElementById('approvals-btn');
-  const count = document.getElementById('approvals-count');
-  const tabBadge = document.getElementById('tab-pending-count');
-  if(!btn || !count) return;
-  if(!data.approvals_available){
-    btn.style.display = 'none';
-    return;
-  }
-  btn.style.display = 'flex';
-  const n = data.approvals_pending || 0;
-  count.textContent = n;
-  if(tabBadge) tabBadge.textContent = n;
-  btn.classList.toggle('has-pending', n > 0);
-}
+function costMini(){const c=D.cost||{},bd=(D.models||[]).filter(m=>m.tier==='bedrock').reduce((s,m)=>s+(m.costHr||0),0);const segs=[['GPU',c.gpuHourly||0,'var(--purple)'],['Bedrock',bd,'var(--orange)'],['platform',c.platformHourly||0,'var(--accent)']].filter(x=>x[1]>0);const tot=segs.reduce((s,x)=>s+x[1],0)||1;$('cost-hr-mini').textContent='$'+(c.hourly||0).toFixed(2);$('cost-mo-mini').textContent='~$'+((c.monthly||0)).toLocaleString(undefined,{maximumFractionDigits:0})+'/mo if steady';$('cost-stack').innerHTML=segs.map(x=>`<i style="width:${x[1]/tot*100}%;background:${x[2]}"></i>`).join('');$('cost-legend').innerHTML=segs.map(x=>`<span><i style="background:${x[2]}"></i>${x[0]} $${x[1].toFixed(2)}</span>`).join('');}
 
-async function openApprovals(){
-  document.getElementById('approvals-modal').classList.add('open');
-  await loadApprovals();
-  // Auto-refresh the Pending list every 5s while the modal is open.
-  // SKIP if any "Applying fix…" banner is present — would clobber it
-  // and leave the pollUntilDone() target without a DOM element.
-  if(window._approvalsRefreshTimer) clearInterval(window._approvalsRefreshTimer);
-  window._approvalsRefreshTimer = setInterval(() => {
-    const pendingActive = document.querySelector('.approvals-tab[data-tab="pending"]')?.classList.contains('active');
-    const modalOpen = document.getElementById('approvals-modal')?.classList.contains('open');
-    const hasInflight = document.querySelector('.approval-remediating') !== null;
-    if(modalOpen && pendingActive && !hasInflight){
-      loadApprovals(true);  // silent: no "Loading…" flash, no rebuild if unchanged
-    } else if(!modalOpen) {
-      clearInterval(window._approvalsRefreshTimer);
-      window._approvalsRefreshTimer = null;
-    }
-    // If there's an inflight banner, skip silently — pollUntilDone()
-    // will handle UI updates for that row.
-  }, 5000);
-}
-function closeApprovals(){
-  document.getElementById('approvals-modal').classList.remove('open');
-  if(window._approvalsRefreshTimer){
-    clearInterval(window._approvalsRefreshTimer);
-    window._approvalsRefreshTimer = null;
-  }
-}
-document.addEventListener('keydown', e => { if(e.key === 'Escape') closeApprovals(); });
+function gpuBars(){const g=D.gpu||[];if(!(D.sources||{}).dcgm){$('gpu-bars').innerHTML='<div class="muted" style="font-size:12px">GPU metrics unavailable (dcgm-exporter unreachable)</div>';return;}if(!g.length){$('gpu-bars').innerHTML='<div class="muted" style="font-size:12px">No GPU nodes — scales from zero on demand</div>';return;}$('gpu-bars').innerHTML=g.map(n=>{const u=n.util&&n.util.length?Math.round(n.util.reduce((a,b)=>a+b,0)/n.util.length):0;const c=u===0?'var(--text-muted)':u>85?'var(--amber)':'var(--green)';const lbl=n.model?('· '+esc(n.model)):'<span class="muted">idle</span>';return `<div style="margin-bottom:9px"><div class="bar-lbl"><span>${esc(n.instance)} ${lbl}</span><span>${u}%</span></div><div class="bar"><i style="width:${u||2}%;background:${c}"></i></div></div>`}).join('');}
 
-// `silent` = background auto-refresh: never show the "Loading…" flash, and skip
-// the DOM rebuild when nothing changed (so the user's scroll position and any
-// expanded detail are preserved while they read a pending issue).
-async function loadApprovals(silent){
-  const list = document.getElementById('approvals-list');
-  if(!silent){
-    // Writing the placeholder changes the DOM, so the cached signature no longer
-    // describes what's on screen. Invalidate it — otherwise, if the fetched items
-    // are unchanged since the last open, the `dataset.sig !== html` guard below
-    // would skip the rebuild and leave "Loading…" on screen forever.
-    list.innerHTML = '<div class="approvals-empty">Loading…</div>';
-    list.dataset.sig = '__loading__';
-  }
-  try{
-    const r = await fetch('/investigations');
-    if(!r.ok) throw new Error('HTTP ' + r.status);
-    const { items } = await r.json();
-    const html = (!items || !items.length)
-      ? '<div class="approvals-empty">No pending approvals.</div>'
-      : items.map(renderApproval).join('');
-    // Only touch the DOM if the content actually changed — a no-op refresh must
-    // not reset the view the user is looking at.
-    if(list.dataset.sig !== html){
-      list.innerHTML = html;
-      list.dataset.sig = html;
-    }
-  }catch(e){
-    if(silent) return;  // background refresh failed — keep the current view, don't flash an error
-    list.innerHTML = '<div class="approvals-empty">Failed to load. The agent may be unavailable.<br><span style="font-family:var(--mono);font-size:11px">' + escapeHtml(String(e)) + '</span></div>';
-  }
-}
+function alertRow(a){return `<div class="alert"><span class="ai">${a.icon}</span><div><div class="at">${esc(a.t)}</div><div class="ad">${esc(a.d)}</div></div></div>`}
+function ovHealth(){const al=alertList();$('ov-health').innerHTML=al.length?al.slice(0,4).map(alertRow).join(''):'<div class="muted" style="font-size:12px;padding:8px 0">✓ All models and apps healthy</div>';}
+function ovFeed(){$('ov-feed').innerHTML=activity.map(f=>`<div class="fr"><span class="ft">${f[0]}</span><span>${esc(f[1])}</span></div>`).join('');}
 
-function renderApproval(inv){
-  const findings = inv.findings || {};
-  const sev = findings.severity || '?';
-  const summary = findings.summary || '(no summary)';
-  const risk = findings.risk_assessment || '';
-  const manualReview = !!findings.requires_manual_review;
-  const ts = inv.created_at ? new Date(inv.created_at).toLocaleString() : '?';
-  const where = inv.resource_namespace ? `${inv.resource_namespace}/${inv.resource_name}` : inv.resource_name;
-  const affected = findings.affected_resources || [];
-  const fixCommands = inv.fix_commands || [];
-  const impact = analyzeImpact(fixCommands);
+function modelTabs(){const m=D.models||[];$('model-tabs').innerHTML=MTABS.map(t=>{const n=t[0]==='all'?m.length:m.filter(x=>x.tier===t[0]).length;return `<div class="tab ${t[0]===mtab?'active':''}" onclick="mtab='${t[0]}';modelTabs();modelsBody()">${t[1]}<span class="cnt">${n}</span></div>`}).join('');}
+function modelsBody(){const rows=(D.models||[]).filter(m=>mtab==='all'||m.tier===mtab);const mu=(D.sources||{}).litellm;$('models-body').innerHTML=rows.length?rows.map(m=>`<tr onclick="openModel('${esc(m.name)}')"><td><div class="m-name">${esc(m.name)}</div><div class="m-id">${esc(m.model)}</div></td><td>${tierBadge(m.tier)}</td><td>${m.status==='running'?'<span class="st ok">running</span>':'<span class="st warn">deploying</span>'}</td><td class="num">${esc(m.gpu)}</td><td class="num">${mu?num(m.rpm):'—'}</td><td class="num">${mu?(m.p50==null?'—':m.p50+' / '+m.p95+'ms'):'—'}</td><td class="num">${mu?num(m.tps):'—'}</td><td class="num">${mu&&m.errPct!=null?m.errPct+'%':'—'}</td><td class="num">$${(m.costHr||0).toFixed(2)}</td><td><div class="act"><button title="Copy curl" onclick="event.stopPropagation();copyCurl('${esc(m.name)}')">⧉ call</button><button title="Langfuse" onclick="event.stopPropagation();openLink('langfuse')">📊</button><button title="WebUI" onclick="event.stopPropagation();openLink('webui')">💬</button></div></td></tr>`).join(''):'<tr><td colspan=10 class="muted" style="padding:20px">No models in this tier</td></tr>';}
 
-  const fixStepsHtml = fixCommands.length === 0
-    ? '<div class="impact-empty">No commands proposed.</div>'
-    : fixCommands.map((fc, i) => `
-        <div class="fix-step">
-          <div class="fix-step-desc"><span class="fix-step-num">${i+1}</span>${escapeHtml(fc.description || 'Step ' + (i+1))}</div>
-          <pre class="fix-step-cmd">${escapeHtml((fc.commands || []).join('\n'))}</pre>
-        </div>`).join('');
+function teamsView(){const t=D.teams||[];if(!(D.sources||{}).litellm){$('teams-grid').innerHTML='<div class="muted">Team metrics unavailable (LiteLLM DB unreachable)</div>';return;}$('teams-grid').innerHTML=t.length?t.map(x=>{const pct=x.limit?Math.min(100,Math.round(x.budget/x.limit*100)):0;const c=pct>80?'var(--amber)':'var(--green)';const bl=x.limit?`$${x.budget.toFixed(2)} / $${x.limit.toFixed(0)} · ${pct}%`:`$${x.budget.toFixed(2)} · no cap`;return `<div class="card"><div class="card-h"><h3>${esc(x.name)}</h3><span class="m-id">${x.failed?x.failed+' failed today':''}</span></div><div class="bar-lbl"><span>budget</span><span>${bl}</span></div><div class="bar"><i style="width:${x.limit?pct:4}%;background:${c}"></i></div><div class="mini-kpi"><div class="mk"><div class="mkv">${num(x.reqsToday)}</div><div class="mkl">req today</div></div><div class="mk"><div class="mkv">$${(x.spendToday||0).toFixed(2)}</div><div class="mkl">spend today</div></div><div class="mk"><div class="mkv">${x.keys||0}</div><div class="mkl">API keys</div></div></div></div>`}).join(''):'<div class="muted">No teams onboarded yet (create an AITeam)</div>';}
 
-  const affectedHtml = affected.length === 0
-    ? '<div class="impact-empty">None reported</div>'
-    : affected.map(r => `
-        <span class="resource-pill">
-          <span class="resource-kind">${escapeHtml(r.kind || '?')}</span>
-          <span class="resource-name">${escapeHtml((r.namespace ? r.namespace + '/' : '') + (r.name || '?'))}</span>
-        </span>`).join('');
+function costViews(){const c=D.cost||{},ce=D.costExt||{};$('cost-kpis').innerHTML=[
+  {l:'Now',v:'$'+(c.hourly||0).toFixed(2)+'<span style="font-size:12px">/hr</span>',s:`GPU $${(c.gpuHourly||0).toFixed(2)} · platform $${(c.platformHourly||0).toFixed(2)}`,cls:'good'},
+  {l:'Monthly (24×7)',v:'$'+Math.round((c.monthly||0)/1000)+'k',s:'projected'},
+  {l:'Bedrock (tokens)',v:'$'+((D.models||[]).filter(m=>m.tier==='bedrock').reduce((s,m)=>s+(m.costHr||0),0)).toFixed(2)+'<span style="font-size:12px">/hr</span>',s:'pay-per-token, no GPU'},
+  {l:'Spend today',v:'$'+((ce.byTeam||[]).reduce((s,x)=>s+x[1],0)).toFixed(2),s:'across teams (LiteLLM)'},
+ ].map(k=>`<div class="kpi ${k.cls||''}"><div class="kpi-label">${k.l}</div><div class="kpi-val">${k.v}</div><div class="kpi-sub">${k.s}</div></div>`).join('');
+  const bm=ce.byModel||[];const mx=Math.max(1,...bm.map(x=>x[1]));$('cost-by-model').innerHTML=bm.length?bm.map(x=>`<div style="margin-bottom:10px"><div class="bar-lbl"><span>${tierBadge(x[2])} ${esc(x[0])}</span><span>$${x[1].toFixed(2)}/hr</span></div><div class="bar"><i style="width:${x[1]/mx*100}%;background:var(--purple)"></i></div></div>`).join(''):'<div class="muted">No GPU-backed models running</div>';
+  const bt=ce.byTeam||[];const mt=Math.max(1,...bt.map(x=>x[1]));$('cost-by-team').innerHTML=bt.length?bt.map(x=>`<div style="margin-bottom:10px"><div class="bar-lbl"><span>${esc(x[0])}</span><span>$${x[1].toFixed(2)}</span></div><div class="bar"><i style="width:${x[1]/mt*100}%;background:var(--accent)"></i></div></div>`).join(''):'<div class="muted">No team spend today</div>';
+  const tr=ce.trend||[];$('cost-trend').innerHTML=tr.length>1?spark(tr.map(x=>x[1]),'var(--green)',360,60)+`<div class="muted" style="font-size:11px;margin-top:6px">last ${tr.length} days · spend/day</div>`:'<div class="muted">trend builds as usage accrues</div>';}
 
-  const actionsHtml = impact.actions.length === 0
-    ? '<span class="impact-empty">No write operations detected</span>'
-    : impact.actions.map(a => `<span class="impact-chip ${a.cls||''}">${a.icon} ${escapeHtml(a.text)}</span>`).join('');
+const POOLMAP={'gpu-inference':'GPU · dedicated','gpu-shared':'GPU · time-sliced','default':'platform services','__mng__':'critical addons'};
+function infra(){const nodes=D.nodes||[],pods=D.pods||[],gpu=D.gpu||[];const utilByHost={};gpu.forEach(g=>utilByHost[g.node]=g);const pools={};nodes.forEach(n=>{(pools[n.pool||'__mng__']=pools[n.pool||'__mng__']||[]).push(n)});let h='';for(const p of Object.keys(pools)){const pl=(p==='__mng__')?'Managed node group':p;const pd=POOLMAP[p]||'';h+=`<div class="sec-title">${esc(pl)}${pd?' · '+esc(pd):''} · ${pools[p].length} node(s)</div><div class="cols">`;h+=pools[p].map(n=>{const host=n.name.split('.')[0];const g=utilByHost[host];const mdl=g&&g.model;const slots=(n.gpu>0)?`<div class="gpuslots">${(g&&g.util||Array(n.gpu).fill(0)).map(u=>u===0&&!mdl?'<div class="gs free">free</div>':`<div class="gs used">${u}%</div>`).join('')}</div>`:'';return `<div class="card"><div class="card-h"><h3>${esc(n.instance)} <span class="badge2 b-ray" style="background:var(--accent-soft);color:#c7d2fe">${esc(n.capacity||'')}</span></h3><span class="util">$${(n.hourly||0).toFixed(2)}/hr</span></div>${slots}<div class="util" style="margin-top:8px">${mdl?'serving '+esc(mdl):(n.gpu>0?'idle':esc(n.zone||''))}</div></div>`}).join('');h+='</div>';}$('infra-pools').innerHTML=h||'<div class="muted">No nodes</div>';}
 
-  return `<div class="approval-item" id="approval-${escapeHtml(inv.id)}">
-    <div class="approval-meta">
-      <span class="sev sev-${escapeHtml(sev)}">${escapeHtml(sev)}</span>
-      <span class="approval-trigger">${escapeHtml(inv.trigger_kind)} · ${escapeHtml(where)}</span>
-      <span class="approval-time">${escapeHtml(ts)}</span>
-    </div>
+function healthView(){const al=alertList();$('health-alerts').innerHTML=(invs.length?invs.map(iv=>`<div class="alert"><span class="ai">🔧</span><div style="flex:1"><div class="at">${esc(iv.resource_kind||'')} ${esc(iv.resource_name||'')} — fix ready</div><div class="ad">${esc((iv.findings||'').slice(0,160))}</div></div><div class="ax"><button class="btn approve" onclick="approve('${iv.id}',this)">Approve fix</button><button class="btn dismiss" onclick="dismiss('${iv.id}',this)">Dismiss</button></div></div>`).join(''):'')+(al.length?al.map(alertRow).join(''):(invs.length?'':'<div class="muted" style="padding:8px 0">✓ All models and apps healthy · no pending fixes</div>'));
+  const a=D.argocd||[];$('argo-sync').innerHTML=(D.sources||{}).argocd?(a.length?a.map(x=>`<div class="alert"><span class="ai">${x.health==='Healthy'&&x.sync==='Synced'?'🟢':'🟡'}</span><div><div class="at">${esc(x.name)}</div><div class="ad">${esc(x.sync)} · ${esc(x.health)}</div></div></div>`).join(''):'<div class="muted">no applications</div>'):'<div class="muted">ArgoCD status unavailable</div>';}
+async function approve(id,b){b.disabled=true;b.textContent='…';try{await fetch('/investigations/'+id+'/approve',{method:'POST'});}catch(e){}poll();}
+async function dismiss(id,b){b.disabled=true;try{await fetch('/investigations/'+id+'/dismiss',{method:'POST'});}catch(e){}poll();}
 
-    <div class="approval-section">
-      <div class="approval-section-title">Root cause</div>
-      <div class="approval-summary">${escapeHtml(summary)}</div>
-    </div>
+function links(){const l=D.links||[];$('nav-links').innerHTML=l.map(x=>`<a class="nav-link" href="${esc(x.url)}" target="_blank" rel="noopener" title="${esc(x.desc||'')}">${x.icon||'🔗'} ${esc(x.label)} ↗</a>`).join('');}
+function linkFor(kind){return (D.links||[]).find(l=>l.label.toLowerCase().includes(kind))||{}}
+function openLink(kind){const u=linkFor(kind).url;if(u&&u!=='#')window.open(u,'_blank');}
+function copyCurl(name){const u=(linkFor('litellm').url||'$LITELLM').replace(/\/ui.*/,'');const t=`curl ${u}/v1/chat/completions -H "Authorization: Bearer $LITELLM_KEY" -H "Content-Type: application/json" -d '{"model":"${name}","messages":[{"role":"user","content":"Hello"}]}'`;navigator.clipboard&&navigator.clipboard.writeText(t);}
 
-    <div class="approval-section-fix">
-      <div class="approval-section-title">⚙️  Proposed fix</div>
-      ${fixStepsHtml}
-    </div>
+function openModel(name,keep){const m=(D.models||[]).find(x=>x.name===name);if(!m){closeDrawer();return;}selected=name;const s=(D.sources||{}).litellm;
+  $('drawer').innerHTML=`<button class="drawer-x" onclick="closeDrawer()">×</button>
+   <div style="display:flex;align-items:center;gap:10px"><span class="dot ${m.status==='running'?'ok':'warn'}"></span><span style="font-size:19px;font-weight:800">${esc(m.name)}</span>${tierBadge(m.tier)}</div>
+   <div class="m-id" style="margin-top:4px">${esc(m.model)}</div>
+   <div class="mini-kpi"><div class="mk"><div class="mkv" style="color:var(--green)">${s?num(m.rpm):'—'}</div><div class="mkl">req/min</div></div><div class="mk"><div class="mkv">${s?ms(m.p95):'—'}</div><div class="mkl">p95</div></div><div class="mk"><div class="mkv">$${(m.costHr||0).toFixed(2)}</div><div class="mkl">$/hr</div></div></div>
+   <div class="sec-title">Configuration</div>
+   <div class="kv"><span class="k">Serving tier</span><span class="v">${tierLabel(m.tier)}</span><span class="k">GPU</span><span class="v">${esc(m.gpu)}</span>${m.replicas!=null?`<span class="k">Replicas</span><span class="v">${m.availableReplicas||0} / ${m.replicas} ready</span>`:''}${m.router?`<span class="k">llm-d router</span><span class="v">${esc(m.router)}</span>`:''}${s?`<span class="k">Error rate</span><span class="v">${m.errPct==null?'—':m.errPct+'%'}</span><span class="k">Tokens/s</span><span class="v">${num(m.tps)}</span>`:''}${m.health?`<span class="k">Health</span><span class="v">${esc(m.health)}</span>`:''}</div>
+   <div class="sec-title">Call it (via LiteLLM)</div>
+   <div class="code">curl $LITELLM/v1/chat/completions \
+  -H "Authorization: Bearer $KEY" \
+  -d '{"model":"${esc(m.name)}","messages":[{"role":"user","content":"Hi"}]}'</div>
+   <div style="display:flex;gap:8px;margin-top:18px"><button class="btn approve" style="flex:1" onclick="openLink('langfuse')">📊 Langfuse</button><button class="btn dismiss" style="flex:1" onclick="openLink('webui')">💬 WebUI</button></div>`;
+  if(!keep){$('drawer').classList.add('open');$('scrim').classList.add('open');}}
+function closeDrawer(){selected=null;$('drawer').classList.remove('open');$('scrim').classList.remove('open');}
+function go(v,el){document.querySelectorAll('.view').forEach(x=>x.classList.remove('active'));$('v-'+v).classList.add('active');document.querySelectorAll('.nav-item').forEach(x=>x.classList.remove('active'));if(el)el.classList.add('active');document.querySelector('.main').scrollTop=0;}
+function toggleTheme(){const b=document.body,n=b.getAttribute('data-theme')==='light'?'dark':'light';b.setAttribute('data-theme',n);localStorage.setItem('theme',n);}
+const saved=localStorage.getItem('theme');if(saved)document.body.setAttribute('data-theme',saved);
+poll();setInterval(poll,5000);
 
-    <div class="approval-section">
-      <div class="approval-section-title">📊  Impact analysis</div>
-      <div class="impact-grid">
-        <div class="impact-row">
-          <div class="impact-label">Affects</div>
-          <div class="impact-resources">${affectedHtml}</div>
-        </div>
-        <div class="impact-row">
-          <div class="impact-label">Operations</div>
-          <div class="impact-chips">${actionsHtml}</div>
-        </div>
-        <div class="impact-row">
-          <div class="impact-label">Reversibility</div>
-          <div class="impact-rev-${impact.reversibility.cls}">${impact.reversibility.icon} ${escapeHtml(impact.reversibility.text)}</div>
-        </div>
-        <div class="impact-row">
-          <div class="impact-label">Disruption</div>
-          <div>${escapeHtml(impact.disruption)}</div>
-        </div>
-      </div>
-    </div>
-
-    ${risk ? `<div class="approval-section-risk">
-      <div class="approval-section-title">⚠️  Risk</div>
-      <div class="approval-summary">${escapeHtml(risk)}</div>
-    </div>` : ''}
-
-    ${manualReview ? `<div class="manual-review-banner">⚠️  Flagged for careful manual review — verify the commands above before approving.</div>` : ''}
-
-    <div class="approval-actions">
-      <button class="approve" onclick="actOn('${escapeHtml(inv.id)}','approve')">✓ Approve &amp; apply</button>
-      <button class="dismiss" onclick="actOn('${escapeHtml(inv.id)}','dismiss')">✕ Dismiss</button>
-    </div>
-  </div>`;
-}
-
-function analyzeImpact(fixCommands){
-  // Parse kubectl verbs from each command, classify reversibility + disruption
-  const verbs = new Set();
-  const cmdMap = {
-    'patch':           { icon: '✏️',  text: 'Patch',          cls: 'reversible',   disrupt: 'rolling' },
-    'apply':           { icon: '📝', text: 'Apply YAML',     cls: 'reversible',   disrupt: 'rolling' },
-    'set':             { icon: '🔧', text: 'Update field',   cls: 'reversible',   disrupt: 'rolling' },
-    'scale':           { icon: '📏', text: 'Scale replicas', cls: 'reversible',   disrupt: 'minimal' },
-    'rollout-restart': { icon: '🔄', text: 'Rolling restart',cls: 'reversible',   disrupt: 'rolling' },
-    'rollout-undo':    { icon: '↩️',  text: 'Rollback',        cls: 'reversible',   disrupt: 'rolling' },
-    'delete':          { icon: '🗑️',  text: 'Delete',          cls: 'destructive',  disrupt: 'variable'},
-    'edit':            { icon: '✏️',  text: 'Edit',            cls: 'reversible',   disrupt: 'rolling' },
-    'label':           { icon: '🏷️',  text: 'Set labels',     cls: 'reversible',   disrupt: 'none' },
-    'annotate':        { icon: '🏷️',  text: 'Set annotations',cls: 'reversible',   disrupt: 'none' },
-    'cordon':          { icon: '🚧', text: 'Cordon node',    cls: 'reversible',   disrupt: 'minimal' },
-    'drain':           { icon: '🚪', text: 'Drain node',     cls: 'partial',      disrupt: 'high' },
-    'taint':           { icon: '🔖', text: 'Taint node',     cls: 'reversible',   disrupt: 'minimal' },
-  };
-  (fixCommands || []).forEach(fc => (fc.commands || []).forEach(cmd => {
-    const m = String(cmd).trim().match(/^kubectl\s+(\S+)(?:\s+(\S+))?/);
-    if(!m) return;
-    let v = m[1];
-    if(v === 'rollout'){
-      const sm = String(cmd).match(/kubectl\s+rollout\s+(\S+)/);
-      v = sm ? `rollout-${sm[1]}` : 'rollout';
-    }
-    verbs.add(v);
-  }));
-
-  const actions = [...verbs].map(v => cmdMap[v] || { icon: '•', text: 'kubectl ' + v, cls: '', disrupt: 'unknown' });
-
-  // Reversibility roll-up
-  let reversibility;
-  const hasDestr = actions.some(a => a.cls === 'destructive');
-  const allRev   = actions.length > 0 && actions.every(a => a.cls === 'reversible');
-  if(actions.length === 0){
-    reversibility = { cls: 'unknown', icon: '❓', text: 'No write operations to apply' };
-  } else if(hasDestr){
-    reversibility = { cls: 'destructive', icon: '⛔', text: 'Includes deletion — recovery may require restoring from backup or git' };
-  } else if(allRev){
-    reversibility = { cls: 'reversible', icon: '✓', text: 'Fully reversible (kubectl rollout undo or re-apply previous spec)' };
-  } else {
-    reversibility = { cls: 'partial', icon: '⚠', text: 'Partially reversible — review each command' };
-  }
-
-  // Disruption roll-up — pick the worst
-  const order = { none: 0, minimal: 1, rolling: 2, variable: 3, high: 4, unknown: 5 };
-  const worst = actions.map(a => a.disrupt).reduce((acc, d) => (order[d] > order[acc] ? d : acc), 'none');
-  const disruptionText = {
-    none:     'None — config-only change, no pod restart',
-    minimal:  'Minimal — replicas adjust gradually',
-    rolling:  'Brief — affected pods restart in a rolling update',
-    variable: 'Variable — depends on which resources are deleted',
-    high:     'High — node workloads will be evicted',
-    unknown:  'Unknown',
-  };
-  return { actions, reversibility, disruption: disruptionText[worst] || 'Unknown' };
-}
-
-async function actOn(id, action){
-  const item = document.getElementById('approval-' + id);
-  if(item) item.querySelectorAll('button').forEach(b => b.disabled = true);
-  try{
-    const r = await fetch(`/investigations/${id}/${action}`, { method: 'POST' });
-    const body = await r.json().catch(() => ({}));
-    if(!r.ok){
-      // 409 means the row was mutated server-side (auto-dismissed by the
-      // out-of-scope path, expired, already approved, etc.). Silently
-      // remove the stale row from the UI and refresh the list.
-      if(r.status === 409){
-        if(item){
-          item.style.opacity = '0.4';
-          item.style.pointerEvents = 'none';
-          setTimeout(() => { item.remove(); refreshIfEmpty(); }, 200);
-        }
-        setTimeout(() => loadApprovals(), 300);
-        return;
-      }
-      alert(`${action} failed: HTTP ${r.status} — ${body.error || ''}`);
-      if(item) item.querySelectorAll('button').forEach(b => b.disabled = false);
-      return;
-    }
-    if(action === 'approve' && item){
-      // Replace the action buttons + risk section with a remediating banner,
-      // then poll until status is terminal.
-      const actions = item.querySelector('.approval-actions');
-      if(actions){
-        actions.outerHTML = `<div class="approval-remediating" id="remediating-${id}">Applying fix… (verifying with kiro-cli; usually completes in 1-2 min)</div>`;
-      }
-      pollUntilDone(id);
-    } else if(item){
-      // Dismiss — fade out
-      item.style.opacity = '0.4';
-      item.style.pointerEvents = 'none';
-      setTimeout(() => { item.remove(); refreshIfEmpty(); }, 250);
-    }
-  }catch(e){
-    alert(`${action} failed: ${e}`);
-    if(item) item.querySelectorAll('button').forEach(b => b.disabled = false);
-  }
-}
-
-async function pollUntilDone(id){
-  // Poll /investigations/<id> every 3s until the row reaches a terminal status,
-  // then replace the in-place banner with the outcome (success / failure +
-  // post-fix verification + rollback hint).
-  for(let i = 0; i < 100; i++){            // up to ~5 min
-    await new Promise(r => setTimeout(r, 3000));
-    let inv;
-    try{
-      const r = await fetch(`/investigations/${id}`);
-      if(!r.ok){ continue; }
-      inv = await r.json();
-    }catch(e){ continue; }
-    if(['done','failed','dismissed','expired'].includes(inv.status)){
-      const banner = document.getElementById(`remediating-${id}`);
-      if(!banner) return;
-      banner.outerHTML = renderRemediationOutcome(inv);
-      return;
-    }
-  }
-  // Timeout: leave a notice
-  const banner = document.getElementById(`remediating-${id}`);
-  if(banner){
-    banner.outerHTML = `<div class="approval-remediating" style="background:var(--amber-soft);color:var(--amber);border-left-color:var(--amber)">⏱ Remediation taking longer than expected. Check the History tab.</div>`;
-  }
-}
-
-function renderRemediationOutcome(inv){
-  const result = inv.remediation_result || {};
-  const applied = !!result.applied;
-  const verified = !!result.verification_pass;
-  const err = result.error_summary || inv.error_message;
-  let outcome, cls, body;
-  if(inv.status === 'failed'){
-    outcome = '✕ Remediation FAILED'; cls = 'outcome-failed';
-    body = err ? `<pre>${escapeHtml(err)}</pre>` : '<em>No error message captured.</em>';
-  } else if(applied && verified){
-    outcome = '✓ Fix applied & verified'; cls = 'outcome-applied';
-    body = renderPostFixStatus(result);
-  } else if(applied && !verified){
-    outcome = '⚠ Fix applied but verification failed'; cls = 'outcome-failed';
-    body = renderPostFixStatus(result) + (err ? `<pre>${escapeHtml(err)}</pre>` : '');
-  } else if(!applied){
-    outcome = '✕ Could not apply fix'; cls = 'outcome-failed';
-    body = err ? `<pre>${escapeHtml(err)}</pre>` : '<em>Fix did not apply.</em>';
-  } else {
-    outcome = inv.status; cls = 'outcome-' + inv.status;
-    body = '';
-  }
-  return `<div class="approval-section">
-    <div class="approval-section-title">Outcome <span class="outcome ${cls}" style="margin-left:8px">${escapeHtml(outcome)}</span></div>
-    <div class="history-detail" style="display:block">${body}</div>
-  </div>`;
-}
-
-function renderPostFixStatus(result){
-  const post = result.post_fix_status || [];
-  const rb = result.rollback_commands || [];
-  let html = '';
-  if(post.length){
-    html += '<div style="margin-bottom:6px;font-weight:600;font-size:11px;color:var(--text-muted)">POST-FIX STATUS</div>';
-    html += post.map(r => `<div class="post-fix-row"><span class="${(/ready|running|true/i).test(r.status||'') ? 'ok' : 'bad'}">●</span> ${escapeHtml(r.kind||'?')}/${escapeHtml(r.namespace||'')}/${escapeHtml(r.name||'?')} → ${escapeHtml(r.status||'?')}</div>`).join('');
-  }
-  if(rb.length){
-    html += '<div style="margin:8px 0 4px;font-weight:600;font-size:11px;color:var(--text-muted)">ROLLBACK (if needed)</div>';
-    html += `<pre>${escapeHtml(rb.join('\n'))}</pre>`;
-  }
-  return html || '<em>No post-fix status reported.</em>';
-}
-
-function refreshIfEmpty(){
-  const list = document.getElementById('approvals-list');
-  if(!list.querySelector('.approval-item')){
-    list.innerHTML = '<div class="approvals-empty">No pending approvals.</div>';
-  }
-}
-
-// ─── Tab switching ────────────────────────────────────────────────────
-async function switchTab(name){
-  document.querySelectorAll('.approvals-tab').forEach(t => t.classList.toggle('active', t.dataset.tab === name));
-  document.querySelectorAll('.approvals-tab-content').forEach(c => c.classList.remove('active'));
-  if(name === 'pending'){
-    document.getElementById('approvals-list').classList.add('active');
-  } else {
-    const hist = document.getElementById('history-list');
-    hist.classList.add('active');
-    await loadHistory();
-  }
-}
-
-async function loadHistory(){
-  const list = document.getElementById('history-list');
-  list.innerHTML = '<div class="approvals-empty">Loading…</div>';
-  try{
-    const r = await fetch('/investigations/all');
-    if(!r.ok) throw new Error('HTTP ' + r.status);
-    const { items } = await r.json();
-    const past = (items || []).filter(i => i.status !== 'awaiting_approval');
-    if(!past.length){
-      list.innerHTML = '<div class="approvals-empty">No history yet.</div>';
-      return;
-    }
-    const toolbar = `<div class="history-toolbar">
-      <button class="history-dismiss-all" onclick="dismissAllHistory()">🗑 Dismiss all (${past.length})</button>
-    </div>`;
-    list.innerHTML = toolbar + past.map(renderHistoryItem).join('');
-  }catch(e){
-    list.innerHTML = '<div class="approvals-empty">Failed to load history.</div>';
-  }
-}
-
-async function dismissAllHistory(){
-  const list = document.getElementById('history-list');
-  const count = list.querySelectorAll('.history-item').length;
-  if(!confirm(`Delete all ${count} item${count===1?'':'s'} from history? This is permanent and cannot be undone. (In-flight investigations are kept.)`)) return;
-  const btn = list.querySelector('.history-dismiss-all');
-  if(btn){ btn.disabled = true; btn.textContent = 'Dismissing…'; }
-  try{
-    const r = await fetch('/investigations', { method: 'DELETE' });
-    const body = await r.json().catch(() => ({}));
-    if(!r.ok){
-      alert(`Dismiss all failed: HTTP ${r.status} — ${body.error || ''}`);
-      if(btn){ btn.disabled = false; btn.textContent = `🗑 Dismiss all (${count})`; }
-      return;
-    }
-    // Reload so any preserved in-flight rows (and the empty state) render correctly.
-    await loadHistory();
-  }catch(e){
-    alert(`Dismiss all failed: ${e}`);
-    if(btn){ btn.disabled = false; btn.textContent = `🗑 Dismiss all (${count})`; }
-  }
-}
-
-function renderHistoryItem(inv){
-  const findings = inv.findings || {};
-  const result = inv.remediation_result || {};
-  const sev = findings.severity || '?';
-  const summary = findings.summary || '';
-  const where = inv.resource_namespace ? `${inv.resource_namespace}/${inv.resource_name}` : inv.resource_name;
-  const ts = inv.completed_at || inv.approved_at || inv.created_at;
-  const tsText = ts ? new Date(ts).toLocaleString() : '';
-  let outcome, cls;
-  if(inv.status === 'done'){
-    if(result.applied && result.verification_pass){ outcome = '✓ Applied'; cls = 'outcome-applied'; }
-    else if(result.applied)                       { outcome = '⚠ Applied (verify failed)'; cls = 'outcome-failed'; }
-    else                                          { outcome = '✕ Apply failed'; cls = 'outcome-failed'; }
-  } else if(inv.status === 'failed')    { outcome = '✕ Failed';    cls = 'outcome-failed'; }
-   else if(inv.status === 'dismissed' && inv.out_of_scope){ outcome = 'Out of scope'; cls = 'outcome-oos'; }
-   else if(inv.status === 'dismissed')   { outcome = 'Dismissed';  cls = 'outcome-dismissed'; }
-   else if(inv.status === 'expired')     { outcome = 'Expired';    cls = 'outcome-expired'; }
-   else if(inv.status === 'remediating') { outcome = '⟳ Applying fix…'; cls = 'outcome-running'; }
-   else if(inv.status === 'running' || inv.status === 'pending'){
-     outcome = '⟳ Event observed, running investigation…'; cls = 'outcome-running';
-   }
-   else                                   { outcome = inv.status;   cls = 'outcome-pending'; }
-
-  const fix = (inv.fix_commands || []).map(fc =>
-    (fc.description ? '# ' + fc.description + '\n' : '') + (fc.commands || []).join('\n')
-  ).join('\n\n');
-
-  // Out-of-scope rows: surface WHY the agent declined to act. Prefer the
-  // dedicated reason; fall back to the summary for rows from before that field.
-  const oosReason = inv.out_of_scope
-    ? (findings.out_of_scope_reason || summary || 'No reason recorded.')
-    : '';
-
-  // Corner control:
-  //  - terminal rows  → permanent delete (×)
-  //  - in-flight rows → no control while fresh (a live investigation can't be
-  //    dropped); once stale (Job died without a result) a Dismiss button appears.
-  const inFlight = ['pending','running','remediating'].includes(inv.status);
-  let cornerCtrl;
-  if(!inFlight){
-    cornerCtrl = `<button class="history-delete" title="Delete from history (permanent)" onclick="event.stopPropagation(); deleteHistoryItem('${escapeHtml(inv.id)}')">×</button>`;
-  } else if(inv.stale){
-    cornerCtrl = `<button class="history-dismiss-stale" title="This investigation has been running too long and is likely stuck — dismiss it" onclick="event.stopPropagation(); dismissStale('${escapeHtml(inv.id)}')">✕ Dismiss</button>`;
-  } else {
-    cornerCtrl = '';
-  }
-
-  return `<div class="history-item${inFlight ? ' in-flight' : ''}" id="history-${escapeHtml(inv.id)}" onclick="this.classList.toggle('expanded')">
-    ${cornerCtrl}
-    <div class="history-row1">
-      <span class="sev sev-${escapeHtml(sev)}">${escapeHtml(sev)}</span>
-      <span class="outcome ${cls}">${escapeHtml(outcome)}</span>
-      <span style="margin-left:auto;font-family:var(--mono);font-size:11px;color:var(--text-muted);padding-right:24px">${escapeHtml(tsText)}</span>
-    </div>
-    <div class="history-row2">${escapeHtml(inv.trigger_kind)} · ${escapeHtml(where)}${inv.approved_by ? ' · approved via dashboard' : ''}</div>
-    ${oosReason
-      ? `<div class="history-summary"><span class="oos-tag">Out of scope</span> ${escapeHtml(oosReason)}</div>`
-      : `<div class="history-summary">${escapeHtml(summary)}</div>`}
-    <div class="history-detail">
-      ${fix ? '<div style="font-weight:600;font-size:11px;color:var(--text-muted);margin-bottom:4px">PROPOSED FIX</div><pre>' + escapeHtml(fix) + '</pre>' : ''}
-      ${result.applied !== undefined ? renderPostFixStatus(result) : ''}
-      ${inv.error_message ? '<div style="font-weight:600;font-size:11px;color:var(--red);margin-top:6px">ERROR</div><pre>' + escapeHtml(inv.error_message) + '</pre>' : ''}
-    </div>
-  </div>`;
-}
-
-async function dismissStale(id){
-  // Stale in-flight investigation (Job died without writing a result). POST the
-  // existing /dismiss endpoint — the backend only honours it past the staleness
-  // threshold, so a genuinely active investigation can't be cleared here.
-  if(!confirm('This investigation has been running far longer than expected and is likely stuck. Dismiss it?')) return;
-  try{
-    const r = await fetch(`/investigations/${id}/dismiss`, { method: 'POST' });
-    const body = await r.json().catch(() => ({}));
-    if(!r.ok){
-      if(r.status === 409){
-        // Raced with the Job finishing, or no longer stale — just refresh.
-        await loadHistory();
-        return;
-      }
-      alert(`Dismiss failed: HTTP ${r.status} — ${body.error || ''}`);
-      return;
-    }
-    await loadHistory();
-  }catch(e){
-    alert(`Dismiss failed: ${e}`);
-  }
-}
-
-async function deleteHistoryItem(id){
-  if(!confirm('Delete this investigation from history? This is permanent and cannot be undone.')) return;
-  try{
-    const r = await fetch(`/investigations/${id}`, { method: 'DELETE' });
-    const body = await r.json().catch(() => ({}));
-    if(!r.ok){
-      alert(`Delete failed: HTTP ${r.status} — ${body.error || ''}`);
-      return;
-    }
-    const item = document.getElementById('history-' + id);
-    if(item){
-      item.style.transition = 'opacity 0.2s';
-      item.style.opacity = '0';
-      setTimeout(() => {
-        item.remove();
-        // If the list is now empty, show the empty state.
-        const list = document.getElementById('history-list');
-        if(list && !list.querySelector('.history-item')){
-          list.innerHTML = '<div class="approvals-empty">No history yet.</div>';
-        }
-      }, 200);
-    }
-  }catch(e){
-    alert(`Delete failed: ${e}`);
-  }
-}
 </script>
 </body>
 </html>

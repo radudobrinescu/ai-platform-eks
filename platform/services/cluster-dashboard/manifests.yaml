@@ -35,6 +35,14 @@ rules:
   - apiGroups: ["kro.run"]
     resources: ["inferenceendpoints", "vllmendpoints", "llmdendpoints"]
     verbs: ["list"]
+  # Read the litellm-config ConfigMap (Bedrock model_list) for the unified model list.
+  - apiGroups: [""]
+    resources: ["configmaps"]
+    verbs: ["get", "list"]
+  # Read ArgoCD Applications for the Health view's GitOps sync status.
+  - apiGroups: ["argoproj.io"]
+    resources: ["applications"]
+    verbs: ["get", "list"]
   # Read the shared ALB ingress to discover its hostname for the Quick Links panel.
   - apiGroups: ["networking.k8s.io"]
     resources: ["ingresses"]
@@ -88,7 +96,7 @@ spec:
               # psycopg is optional from the backend's POV — if pip fails
               # (e.g. air-gapped), the dashboard still serves the topology
               # view, just without approvals.
-              pip install --no-cache-dir --target=/pydeps psycopg[binary]==3.2.3 || true
+              pip install --no-cache-dir --target=/pydeps psycopg[binary]==3.2.3 pyyaml==6.0.2 || true
           volumeMounts:
             - name: pydeps
               mountPath: /pydeps

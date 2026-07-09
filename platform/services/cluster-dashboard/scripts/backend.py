@@ -506,6 +506,229 @@ def _build_k8s_snapshot() -> dict:
     }
 
 
+# ---------------------------------------------------------------------------
+# v2 metrics layer — LiteLLM DB (traffic/latency/spend/teams/health) + DCGM GPU
+# utilization + ArgoCD sync + Bedrock model list. All in-cluster; each source is
+# best-effort and reported in `sources` for graceful degradation in the UI.
+# ---------------------------------------------------------------------------
+
+LITELLM_DB_NAME    = os.environ.get("LITELLM_DB_NAME", "litellm")
+DCGM_URL           = os.environ.get("DCGM_URL", "http://nvidia-dcgm-exporter.gpu-operator.svc.cluster.local:9400/metrics")
+LITELLM_CONFIG_CM  = os.environ.get("LITELLM_CONFIG_CM", "litellm-config")
+LITELLM_NAMESPACE  = os.environ.get("LITELLM_NAMESPACE", "ai-platform")
+METRICS_INTERVAL   = int(os.environ.get("METRICS_INTERVAL", "25"))
+
+try:
+    import yaml as _yaml
+    HAVE_YAML = True
+except Exception:
+    HAVE_YAML = False
+
+metrics = {"models": [], "teams": [], "gpu": [], "argocd": [],
+           "costExt": {}, "sources": {}, "mts": 0}
+metrics_lock = threading.Lock()
+
+
+def _lldb_connect():  # type: ignore[no-untyped-def]
+    return psycopg.connect(host=DB_HOST, port=DB_PORT, dbname=LITELLM_DB_NAME,
+                           user=DB_USER, password=DB_PASSWORD,
+                           autocommit=True, connect_timeout=5)
+
+
+def _litellm_metrics() -> dict:
+    """Per-model 5-min metrics + model health + per-team spend/budgets + cost trend."""
+    out = {"perModel": {}, "teams": [], "trend": [], "health": {}, "byTeam": []}
+    if not (HAVE_PSYCOPG and DB_USER and DB_PASSWORD):
+        return out
+    with _lldb_connect() as conn, conn.cursor() as cur:
+        cur.execute("""
+          SELECT model_group, custom_llm_provider, count(*)/5.0,
+                 percentile_cont(0.5)  WITHIN GROUP (ORDER BY extract(epoch FROM ("endTime"-"startTime"))*1000),
+                 percentile_cont(0.95) WITHIN GROUP (ORDER BY extract(epoch FROM ("endTime"-"startTime"))*1000),
+                 COALESCE(sum(total_tokens),0)/300.0, COALESCE(sum(spend),0),
+                 100.0*avg(CASE WHEN status='success' THEN 0 ELSE 1 END)
+          FROM "LiteLLM_SpendLogs" WHERE "startTime" > now() - interval '5 minutes'
+          GROUP BY model_group, custom_llm_provider""")
+        for r in cur.fetchall():
+            out["perModel"][r[0]] = {"provider": r[1], "rpm": round(r[2], 1),
+                "p50": round(r[3]) if r[3] is not None else None,
+                "p95": round(r[4]) if r[4] is not None else None,
+                "tps": round(r[5], 1), "spend5m": float(r[6]),
+                "errPct": round(r[7], 1) if r[7] is not None else 0}
+        try:
+            cur.execute('SELECT DISTINCT ON (model_name) model_name,status,response_time_ms FROM "LiteLLM_HealthCheckTable" ORDER BY model_name,checked_at DESC')
+            for r in cur.fetchall():
+                out["health"][r[0]] = {"status": r[1], "rt": r[2]}
+        except Exception:
+            pass
+        try:
+            cur.execute("""
+              SELECT t.team_id, COALESCE(t.team_alias, left(t.team_id::text,8)), t.max_budget, COALESCE(t.spend,0),
+                     COALESCE(sum(s.api_requests),0), COALESCE(sum(s.failed_requests),0),
+                     COALESCE(sum(s.spend),0), COALESCE(sum(s.prompt_tokens+s.completion_tokens),0)
+              FROM "LiteLLM_TeamTable" t
+              LEFT JOIN "LiteLLM_DailyTeamSpend" s ON s.team_id=t.team_id AND s.date=CURRENT_DATE::text
+              GROUP BY t.team_id, t.team_alias, t.max_budget, t.spend""")
+            teams = {r[0]: {"id": r[0], "name": r[1], "budget": round(float(r[3]), 2),
+                            "limit": float(r[2]) if r[2] else None, "reqsToday": int(r[4]),
+                            "failed": int(r[5]), "spendToday": round(float(r[6]), 2),
+                            "tokens": int(r[7]), "keys": 0} for r in cur.fetchall()}
+            try:
+                cur.execute('SELECT team_id,count(*) FROM "LiteLLM_VerificationToken" WHERE team_id IS NOT NULL GROUP BY team_id')
+                for tid, c in cur.fetchall():
+                    if tid in teams:
+                        teams[tid]["keys"] = int(c)
+            except Exception:
+                pass
+            out["teams"] = list(teams.values())
+            out["byTeam"] = sorted([[t["name"], t["spendToday"]] for t in out["teams"] if t["spendToday"] > 0], key=lambda x: -x[1])
+        except Exception:
+            pass
+        try:
+            cur.execute('SELECT date::text, COALESCE(sum(spend),0) FROM "LiteLLM_DailyTeamSpend" GROUP BY date ORDER BY date DESC LIMIT 14')
+            out["trend"] = [[r[0], round(float(r[1]), 2)] for r in cur.fetchall()][::-1]
+        except Exception:
+            pass
+    return out
+
+
+def _dcgm_util() -> dict:
+    """Per-node GPU utilization (%) parsed from dcgm-exporter Prometheus text."""
+    import urllib.request
+    out: dict = {}
+    with urllib.request.urlopen(urllib.request.Request(DCGM_URL), timeout=5) as r:
+        text = r.read().decode("utf-8", "ignore")
+    for line in text.splitlines():
+        if not line.startswith("DCGM_FI_DEV_GPU_UTIL{"):
+            continue
+        try:
+            labels = line[line.index("{") + 1:line.index("}")]
+            val = float(line.rsplit(" ", 1)[1])
+            host = next((kv.split("=", 1)[1].strip('"') for kv in labels.split(",")
+                         if kv.startswith("Hostname=")), None)
+            if host:
+                out.setdefault(host, []).append(round(val))
+        except Exception:
+            continue
+    return out
+
+
+def _bedrock_models() -> list:
+    """Declared Bedrock (config-defined) models from the litellm-config ConfigMap."""
+    if not HAVE_YAML:
+        return []
+    cm = k8s_get(f"/api/v1/namespaces/{LITELLM_NAMESPACE}/configmaps/{LITELLM_CONFIG_CM}")
+    if not cm:
+        return []
+    try:
+        cfg = _yaml.safe_load((cm.get("data") or {}).get("config.yaml", "")) or {}
+        out = []
+        for m in (cfg.get("model_list") or []):
+            mdl = str((m.get("litellm_params") or {}).get("model", ""))
+            if mdl.startswith("bedrock/"):
+                out.append({"name": m.get("model_name", ""), "model": mdl})
+        return out
+    except Exception:
+        return []
+
+
+def _build_metrics(nodes: list, pods: list) -> dict:
+    endpoints = _fetch_endpoints()
+    src: dict = {}
+    try:
+        met = _litellm_metrics(); src["litellm"] = True
+    except Exception:
+        met = {"perModel": {}, "teams": [], "trend": [], "health": {}, "byTeam": []}; src["litellm"] = False
+    try:
+        bedrock = _bedrock_models(); src["bedrock"] = True
+    except Exception:
+        bedrock = []; src["bedrock"] = False
+
+    node_by_name = {n["name"]: n for n in nodes}
+    def cost_for(name: str) -> float:
+        c = 0.0
+        for p in pods:
+            if p.get("namespace") == "inference" and p["name"].startswith(name + "-") and p.get("gpu", 0) > 0:
+                nd = node_by_name.get(p.get("node"))
+                if nd and nd.get("gpu"):
+                    c += nd.get("hourly", 0) * p["gpu"] / nd["gpu"]
+        return round(c, 2)
+
+    models = []
+    for ep in endpoints:
+        tier = "ft" if ep.get("modelSource") else ep["mode"]
+        models.append({"name": ep["name"], "model": ep["model"], "tier": tier,
+            "status": "running" if ep["ready"] == "True" else "deploying",
+            "gpu": ("shared" if ep.get("shared") else f'{ep["gpuCount"]}×GPU'),
+            "replicas": ep.get("replicas"), "availableReplicas": ep.get("availableReplicas"),
+            "router": ep.get("routerHealth", ""), "costHr": cost_for(ep["name"]),
+            "created": ep.get("created")})
+    for b in bedrock:
+        models.append({"name": b["name"], "model": b["model"], "tier": "bedrock",
+            "status": "running", "gpu": "—", "replicas": None, "availableReplicas": None,
+            "router": "", "costHr": 0.0, "created": None})
+    for m in models:
+        pm = met["perModel"].get(m["name"])
+        m["rpm"] = pm["rpm"] if pm else 0
+        m["p50"] = pm["p50"] if pm else None
+        m["p95"] = pm["p95"] if pm else None
+        m["tps"] = pm["tps"] if pm else 0
+        m["errPct"] = pm["errPct"] if pm else 0
+        if pm and m["tier"] == "bedrock":
+            m["costHr"] = round(pm["spend5m"] * 12, 2)
+        h = met["health"].get(m["name"])
+        m["health"] = h["status"] if h else ""
+    models.sort(key=lambda x: (-(x.get("rpm") or 0), x["name"]))
+
+    gpu = []
+    try:
+        util = _dcgm_util(); src["dcgm"] = True
+        for n in nodes:
+            if n.get("gpu", 0) > 0:
+                host = n["name"].split(".")[0]
+                us = util.get(host) or util.get(n["name"]) or [0] * n["gpu"]
+                mdl = next((e["name"] for e in endpoints for p in pods
+                            if p.get("node") == n["name"] and p.get("gpu", 0) > 0
+                            and p["name"].startswith(e["name"] + "-")), None)
+                gpu.append({"node": host, "instance": n["instance"], "util": us, "model": mdl})
+    except Exception:
+        src["dcgm"] = False
+
+    argo = []
+    try:
+        d = k8s_get("/apis/argoproj.io/v1alpha1/namespaces/argocd/applications")
+        if d is not None:
+            for a in d.get("items", []):
+                st = a.get("status", {})
+                argo.append({"name": a["metadata"]["name"],
+                             "sync": st.get("sync", {}).get("status", "?"),
+                             "health": st.get("health", {}).get("status", "?")})
+            src["argocd"] = True
+        else:
+            src["argocd"] = False
+    except Exception:
+        src["argocd"] = False
+
+    by_model = sorted([[m["name"], m["costHr"], m["tier"]] for m in models if m["costHr"] > 0], key=lambda x: -x[1])
+    cost_ext = {"byModel": by_model, "byTeam": met.get("byTeam", []), "trend": met.get("trend", [])}
+    return {"models": models, "teams": met.get("teams", []), "gpu": gpu, "argocd": argo,
+            "costExt": cost_ext, "sources": src, "mts": time.time()}
+
+
+def metrics_loop() -> None:
+    global metrics
+    while True:
+        try:
+            with snapshot_lock:
+                nodes = list(snapshot.get("nodes", [])); pods = list(snapshot.get("pods", []))
+            m = _build_metrics(nodes, pods)
+            with metrics_lock:
+                metrics = m
+        except Exception:
+            pass
+        time.sleep(METRICS_INTERVAL)
+
+
 def poll_loop() -> None:
     global snapshot
     while True:
@@ -757,7 +980,10 @@ class Handler(http.server.SimpleHTTPRequestHandler):
 
         if self.path == "/data.json":
             with snapshot_lock:
-                data = json.dumps(snapshot).encode("utf-8")
+                base = dict(snapshot)
+            with metrics_lock:
+                base.update(metrics)
+            data = json.dumps(base).encode("utf-8")
             self.send_response(200)
             self.send_header("Content-Type", "application/json")
             self.send_header("Cache-Control", "no-cache")
@@ -839,6 +1065,7 @@ class _ThreadingHTTPServer(http.server.ThreadingHTTPServer):
 
 def main() -> int:
     threading.Thread(target=poll_loop, daemon=True).start()
+    threading.Thread(target=metrics_loop, daemon=True).start()
     time.sleep(3)  # wait for first snapshot
     print(f"dashboard backend on :{PORT} (psycopg={'yes' if HAVE_PSYCOPG else 'no'}, db={DB_NAME})", flush=True)
     _ThreadingHTTPServer(("", PORT), Handler).serve_forever()
