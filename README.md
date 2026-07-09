@@ -12,12 +12,15 @@ provisioning, serving, routing, and observability. A frontier model
 - **One gateway, every model.** LiteLLM puts Bedrock, vLLM-served open models, and
   fine-tuned models behind a single `/v1/chat/completions` endpoint — with team
   isolation, budgets, and Langfuse tracing built in.
-- **Proven, extendable templates.** Three [KRO](https://kro.run) resources
-  (`InferenceEndpoint`, `AITeam`, `FineTuneJob`) capture the hard parts —
-  tensor-parallelism, GPU sizing, scale-to-zero, fine-tune→deploy — as a few lines
-  of YAML. They're the platform's API: fork and extend them, don't reinvent them.
+- **Proven, extendable templates.** Four [KRO](https://kro.run) resources
+  (`InferenceEndpoint`, `VLLMEndpoint`, `AITeam`, `FineTuneJob`) capture the hard
+  parts — tensor-parallelism, GPU sizing, scale-to-zero, fine-tune→deploy — as a
+  few lines of YAML. They're the platform's API: fork and extend them, don't
+  reinvent them.
 
-**Stack:** EKS Managed Capabilities (ArgoCD · KRO · ACK) · Karpenter · Ray Serve · vLLM · LiteLLM · Langfuse
+**Stack:** EKS Managed Capabilities (ArgoCD · KRO · ACK) · Karpenter · vLLM ·
+Ray Serve · LiteLLM · Langfuse — with an optional **llm-d + Gateway API Inference
+Extension** scale tier.
 
 ![Cluster dashboard — live topology of nodes, GPU slots, and deployed models](docs/img/cluster-dashboard.png)
 
@@ -31,11 +34,12 @@ git push → ArgoCD syncs → KRO expands your YAML into K8s + AWS resources
          → LiteLLM registers it → available via API, Open WebUI, and Langfuse
 ```
 
-The three custom resources **are** the self-service interface:
+The custom resources **are** the self-service interface:
 
 | Resource | What it does |
 |---|---|
-| **`InferenceEndpoint`** | Serve a model — HuggingFace ID, or a fine-tuned model from S3 |
+| **`InferenceEndpoint`** | Serve a model on Ray Serve + vLLM — HuggingFace ID, or a fine-tuned model from S3 |
+| **`VLLMEndpoint`** | Serve a model on plain vLLM (no Ray) — a simpler, more modern alternative |
 | **`AITeam`** | Onboard a team: namespace, RBAC, budget, rate limits, scoped API key |
 | **`FineTuneJob`** | QLoRA fine-tune (Unsloth), optionally `autoDeploy` the result |
 
@@ -54,18 +58,24 @@ Bedrock models need no resource — they're a few lines of LiteLLM config, live 
 moment the cluster is up. KRO definitions live in `platform/config/kro/`; extend
 them there and every model/team inherits the change.
 
+**Two serving tiers, one front door.** Every model — Bedrock, `VLLMEndpoint`,
+`InferenceEndpoint` — answers through the same LiteLLM `/v1` API (governance,
+budgets, tracing). For high-throughput workloads an optional **llm-d** scale tier
+adds KV-cache-, prefix-, and load-aware routing across replicas (via the Gateway
+API Inference Extension); LiteLLM forwards to it internally, so governance still
+applies. See **[docs/llm-d-and-ingress-architecture.md](docs/llm-d-and-ingress-architecture.md)**.
+
 ---
 
 ## Quick start
 
-Full walkthrough — provision → use Opus 4.8 with zero GPUs → deploy a model →
-fine-tune → prove the savings — is in **[docs/quickstart.md](docs/quickstart.md)**.
-It covers the prerequisites that matter (forking, the IP allowlist, gated-model
-tokens, the Langfuse login URL). The shape of it:
+Provision → use Opus 4.8 with zero GPUs → deploy a self-hosted model → fine-tune →
+prove the savings. Mind the prerequisites that matter: fork the repo, set the IP
+allowlist, and supply gated-model tokens where needed. The shape of it:
 
 ```bash
 # 1. Configure: copy a tfvars, set your Identity Center ARN + gitops repo URL.
-cd terraform/00.global/vars && cp example.tfvars dev.tfvars   # edit per quickstart.md
+cd terraform/00.global/vars && cp example.tfvars dev.tfvars   # set ARN + gitops repo URL
 
 # 2. Provision everything (VPC → EKS + capabilities → Karpenter → secrets).
 export AWS_REGION=eu-central-1
@@ -100,8 +110,15 @@ prints the **cost crossover** (daily volume above which self-hosting wins):
 ./platformctl compare    # → ops/compare-models.py, traced as a Langfuse dataset run
 ```
 
-Fine-tune with the same `git push` loop (upload a dataset, commit a `FineTuneJob`,
-`autoDeploy: true` → live endpoint): **[docs/fine-tuning-getting-started.md](docs/fine-tuning-getting-started.md)**.
+Fine-tune with the same `git push` loop: upload a dataset, commit a `FineTuneJob`
+with `autoDeploy: true`, and the tuned model goes live as an endpoint.
+
+**Scale-tier routing (llm-d).** For high-QPS or long, multi-turn/agentic
+workloads, the optional llm-d tier schedules requests across vLLM replicas using
+live KV-cache, prefix, and queue-depth signals, and supports prefill/decode
+disaggregation. Architecture and the ALB-vs-Envoy ingress decision are in
+**[docs/llm-d-and-ingress-architecture.md](docs/llm-d-and-ingress-architecture.md)**;
+disaggregation roadmap in **[docs/roadmap/disaggregated-inference.md](docs/roadmap/disaggregated-inference.md)**.
 
 **Fast cold starts.** New GPU deployments avoid the multi-minute cold start via
 three layers: EBS image snapshots (0s image pull), SOCI lazy-loading, and an S3
@@ -140,7 +157,7 @@ steps below. The script does **not** touch the bootstrap state (S3
 # 1. Drain the cluster from the gitops side so destroy doesn't race ArgoCD.
 kubectl delete applicationset --all -n argocd --wait=false
 kubectl delete application    --all -n argocd --wait=false
-kubectl delete inferenceendpoints,aiteams,finetunejobs --all -A --wait=false
+kubectl delete inferenceendpoints,vllmendpoints,aiteams,finetunejobs --all -A --wait=false
 kubectl delete ingress --all -A --wait=false      # → ALB controller cleans up the ALB
 
 # 2. Empty the training-datasets bucket (force_destroy=false by design — real
@@ -205,13 +222,15 @@ aws iam list-roles --query "Roles[?contains(RoleName, '<cluster-name>')].RoleNam
 ```
 argocd/bootstrap/   ApplicationSets (platform services + self-service workloads)
 platform/
-  config/kro/       InferenceEndpoint · AITeam · FineTuneJob definitions (the API)
+  config/kro/       InferenceEndpoint · VLLMEndpoint · AITeam · FineTuneJob (the API)
   services/         litellm, open-webui, langfuse, gpu-operator, kuberay,
                     cluster-dashboard (+ Platform Health Agent component)
 workloads/          Self-service YAMLs: models/ · teams/ · fine-tuning/
 ops/                Operational scripts (ops/demo/ holds demo-only scripts)
-terraform/          Infrastructure modules (VPC → IAM → EKS → observability)
-docs/               quickstart · fine-tuning · demo-walkthrough · platform-evolution-plan
+terraform/          Infrastructure modules (VPC → IAM → EKS → observability,
+                    + optional gated inference-gateway / GIE substrate)
+docs/               demo-walkthrough · platform-product-report ·
+                    llm-d-and-ingress-architecture · roadmap/
 ```
 
 ## Acknowledgments
