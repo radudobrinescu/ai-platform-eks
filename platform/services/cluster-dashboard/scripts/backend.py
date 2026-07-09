@@ -350,27 +350,69 @@ SERVING_KINDS = [
 # Shared) from the AWS Pricing API. Spot nodes are approximated at SPOT_FACTOR of
 # on-demand (real spot price varies). Unknown instance types are counted as
 # `unpriced` so the total stays honest rather than silently undercounting.
-NODE_PRICES = {
-    "g6.xlarge": 1.0064, "g6.2xlarge": 1.2225, "g6.4xlarge": 1.6547, "g6.8xlarge": 2.519,
-    "g6.12xlarge": 5.7543, "g6.16xlarge": 4.2477, "g6.24xlarge": 8.3473, "g6.48xlarge": 16.6946,
-    "g5.xlarge": 1.258, "g5.2xlarge": 1.5156, "g5.4xlarge": 2.0308, "g5.8xlarge": 3.0612,
-    "g5.12xlarge": 7.0928, "g5.48xlarge": 20.3681,
-    "c5.large": 0.097, "c5.xlarge": 0.194, "c5.2xlarge": 0.388,
-    "c5a.large": 0.087, "c5a.xlarge": 0.174,
-    "c7i.large": 0.1018, "c7i.xlarge": 0.2037, "c7a.large": 0.1171, "c7a.xlarge": 0.2343,
-    "m6g.large": 0.092, "m6g.xlarge": 0.184, "m5.large": 0.115, "m5.xlarge": 0.23, "r5.large": 0.152,
+# On-demand $/hr by region → instance type. Ships with eu-central-1 (the
+# reference deployment). Other regions are supplied at runtime via an optional
+# ConfigMap (see _prices_by_region) so the estimate works in any account/region
+# without code changes. Unpriced instance types are counted and surfaced in the
+# UI rather than guessed.
+DEFAULT_PRICES_BY_REGION = {
+    "eu-central-1": {
+        "g6.xlarge": 1.0064, "g6.2xlarge": 1.2225, "g6.4xlarge": 1.6547, "g6.8xlarge": 2.519,
+        "g6.12xlarge": 5.7543, "g6.16xlarge": 4.2477, "g6.24xlarge": 8.3473, "g6.48xlarge": 16.6946,
+        "g5.xlarge": 1.258, "g5.2xlarge": 1.5156, "g5.4xlarge": 2.0308, "g5.8xlarge": 3.0612,
+        "g5.12xlarge": 7.0928, "g5.48xlarge": 20.3681,
+        "c5.large": 0.097, "c5.xlarge": 0.194, "c5.2xlarge": 0.388,
+        "c5a.large": 0.087, "c5a.xlarge": 0.174,
+        "c7i.large": 0.1018, "c7i.xlarge": 0.2037, "c7a.large": 0.1171, "c7a.xlarge": 0.2343,
+        "m6g.large": 0.092, "m6g.xlarge": 0.184, "m5.large": 0.115, "m5.xlarge": 0.23, "r5.large": 0.152,
+    },
 }
 SPOT_FACTOR = 0.35        # rough spot discount vs on-demand
 HOURS_PER_MONTH = 730
+NODE_PRICES_CM = os.environ.get("NODE_PRICES_CM", "cluster-dashboard-node-prices")
+_price_cache: dict = {"ts": 0.0, "data": None}
+
+
+def _prices_by_region() -> dict:
+    """Region -> {instance: $/hr}. Merges the shipped defaults with an optional
+    operator/Terraform-supplied ConfigMap (data['prices.json'] =
+    {"<region>": {"<instance>": <usd_hourly>}}) so the cost estimate is not tied
+    to a single account or region. Cached for an hour; best-effort."""
+    now = time.time()
+    if _price_cache["data"] is not None and now - _price_cache["ts"] < 3600:
+        return _price_cache["data"]
+    merged = {r: dict(v) for r, v in DEFAULT_PRICES_BY_REGION.items()}
+    try:
+        cm = k8s_get(f"/api/v1/namespaces/{LITELLM_NAMESPACE}/configmaps/{NODE_PRICES_CM}")
+        raw = ((cm or {}).get("data") or {}).get("prices.json", "")
+        for region, table in (json.loads(raw) if raw else {}).items():
+            merged.setdefault(region, {}).update({k: float(v) for k, v in table.items()})
+    except Exception:
+        pass
+    _price_cache.update(ts=now, data=merged)
+    return merged
+
+
+def _detect_region(nodes: list) -> str:
+    """Most common node region label, falling back to the AWS_REGION env."""
+    counts: dict = {}
+    for n in nodes:
+        r = n.get("region")
+        if r:
+            counts[r] = counts.get(r, 0) + 1
+    return max(counts, key=counts.get) if counts else os.environ.get("AWS_REGION", "")
 
 
 def _compute_cost(nodes: list) -> dict:
-    """Sum the running nodes' hourly rates → realtime $/hr + 730h monthly
-    projection, split GPU vs platform. Annotates each node with its `hourly`."""
+    """Sum the running nodes' hourly rates -> realtime $/hr + 730h monthly
+    projection, split GPU vs platform. Region-aware; annotates each node with
+    its `hourly`. Instance types with no price data are counted (`unpriced`)."""
+    region = _detect_region(nodes)
+    prices = _prices_by_region().get(region, {})
     hourly = gpu_hourly = 0.0
     unpriced = 0
     for n in nodes:
-        base = NODE_PRICES.get(n["instance"])
+        base = prices.get(n["instance"])
         if base is None:
             unpriced += 1
             n["hourly"] = 0.0
@@ -386,6 +428,7 @@ def _compute_cost(nodes: list) -> dict:
         "gpuHourly": round(gpu_hourly, 4),
         "platformHourly": round(hourly - gpu_hourly, 4),
         "unpriced": unpriced,
+        "region": region,
     }
 
 
@@ -450,20 +493,30 @@ def _build_k8s_snapshot() -> dict:
     pods_data = k8s_get("/api/v1/pods")
 
     nodes = []
+    node_alerts = []
     if nodes_data:
         for n in nodes_data.get("items", []):
             labels = n.get("metadata", {}).get("labels", {})
+            nm = n["metadata"]["name"]
             conditions = n.get("status", {}).get("conditions", [])
             ready = any(c.get("type") == "Ready" and c.get("status") == "True" for c in conditions)
+            # EKS node health: surface resource pressures + NotReady as alerts.
+            for c in conditions:
+                t = c.get("type")
+                if t in ("MemoryPressure", "DiskPressure", "PIDPressure") and c.get("status") == "True":
+                    node_alerts.append({"node": nm, "issue": t, "sev": "warn"})
             if not ready:
+                node_alerts.append({"node": nm, "issue": "NotReady", "sev": "warn"})
                 continue
             allocatable = n.get("status", {}).get("allocatable", {})
+            zone = labels.get("topology.kubernetes.io/zone", "")
             nodes.append({
-                "name": n["metadata"]["name"],
+                "name": nm,
                 "instance": labels.get("node.kubernetes.io/instance-type", "unknown"),
                 "pool": labels.get("karpenter.sh/nodepool",
                                    "__mng__" if labels.get("eks.amazonaws.com/nodegroup") else "__mng__"),
-                "zone": labels.get("topology.kubernetes.io/zone", ""),
+                "zone": zone,
+                "region": labels.get("topology.kubernetes.io/region", zone[:-1] if zone else ""),
                 "capacity": labels.get("karpenter.sh/capacity-type",
                                        labels.get("eks.amazonaws.com/capacityType", "on-demand")),
                 "gpu": int(allocatable.get("nvidia.com/gpu", "0")),
@@ -505,7 +558,7 @@ def _build_k8s_snapshot() -> dict:
             approvals_available = False
 
     return {
-        "nodes": nodes, "pods": pods, "endpoints": endpoints,
+        "nodes": nodes, "pods": pods, "endpoints": endpoints, "nodeAlerts": node_alerts,
         "cost": cost,
         "approvals_available": approvals_available,
         "approvals_pending": approvals_pending,
