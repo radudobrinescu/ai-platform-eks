@@ -1,0 +1,14 @@
+apiVersion: kro.run/v1alpha1
+kind: VLLMEndpoint
+metadata:
+  name: gemma-4-12b-it
+  namespace: inference
+spec:
+  model: "google/gemma-4-12B-it"
+  gpuCount: 4
+  tensorParallelSize: 4
+  maxModelLen: 8192
+  minVramPerGpuGiB: 10
+  workerMemory: "27Gi"
+  # maxNumSeqs: 64
+  replicas: 1
