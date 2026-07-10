@@ -49,7 +49,7 @@ spec:
         apiVersion: batch/v1
         kind: Job
         metadata:
-          name: ${schema.metadata.name}-register
+          name: ${schema.metadata.name}-ray-register
         spec:
           backoffLimit: 10
           ttlSecondsAfterFinished: 300

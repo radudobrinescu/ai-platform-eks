@@ -538,6 +538,18 @@ def _normalize_endpoint(ep: dict, mode: str) -> dict:
         if is_disagg else int(status.get("availableReplicas", 0) or 0)
     norm_status = status.get("modelStatus", "Pending") if mode == "ray" \
         else ("Running" if ready == "True" else "Pending")
+    # KRO reconcile state (CR-level). An ERROR CR — e.g. a name collision where a
+    # generated resource belongs to another endpoint's ApplySet — can still read
+    # a colliding resource's replicas, so surface the real state rather than a
+    # false "ready". Capture the failing Ready/ResourcesReady condition message.
+    kro_state = str(status.get("state", "") or "")
+    recon_err = ""
+    if kro_state == "ERROR":
+        norm_status = "Error"
+        for c in (status.get("conditions", []) or []):
+            if c.get("type") in ("Ready", "ResourcesReady") and str(c.get("status")) == "False":
+                recon_err = " ".join((c.get("message", "") or "").split())[:300]
+                break
     return {
         "name": ep["metadata"]["name"],
         "model": spec.get("model", ""),
@@ -555,6 +567,8 @@ def _normalize_endpoint(ep: dict, mode: str) -> dict:
         "status": norm_status,
         "routerHealth": str(status.get("routerHealth", "")) if mode in ("llm-d", "llm-d-disagg") else "",
         "message": status.get("message", "") if mode == "ray" else "",
+        "kroState": kro_state,
+        "reconcileError": recon_err,
         "prefillReplicas": prefill_n,
         "decodeReplicas": decode_n,
         "created": ep["metadata"].get("creationTimestamp", ""),
@@ -1019,10 +1033,11 @@ def _build_metrics(nodes: list, pods: list) -> dict:
     for ep in endpoints:
         tier = "ft" if ep.get("modelSource") else ep["mode"]
         models.append({"name": ep["name"], "model": ep["model"], "tier": tier,
-            "status": "running" if ep["ready"] == "True" else "deploying",
+            "status": "error" if ep.get("kroState") == "ERROR" else ("running" if ep["ready"] == "True" else "deploying"),
             "gpu": ("shared" if ep.get("shared") else f'{ep["gpuCount"]}×GPU'),
             "replicas": ep.get("replicas"), "availableReplicas": ep.get("availableReplicas"),
             "router": ep.get("routerHealth", ""), "costHr": cost_for(ep["name"]),
+            "reconcileError": ep.get("reconcileError", ""),
             "prefillReplicas": ep.get("prefillReplicas"), "decodeReplicas": ep.get("decodeReplicas"),
             "created": ep.get("created")})
     for b in bedrock:
