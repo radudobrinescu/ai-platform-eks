@@ -166,6 +166,14 @@ tbody tr:hover{background:var(--surface-2)}
 .np-name{overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-family:ui-monospace,monospace}
 .np-meta{margin-left:auto;color:var(--text-muted,#8b93a7);font-size:11px;flex:none}
 .np-sub{font-size:10.5px;color:var(--text-muted,#8b93a7);margin-top:3px}
+.alert.crit{box-shadow:inset 3px 0 0 var(--red,#f87171)}
+.alert.crit .ai{color:var(--red,#f87171)}
+.sev{font-size:10px;font-weight:700;padding:1px 6px;border-radius:6px;margin-left:6px;letter-spacing:.04em}
+.inv-detail{margin-top:8px;padding-top:8px;border-top:1px solid var(--border,#242c3a)}
+.inv-k{font-size:11px;font-weight:700;color:var(--text-muted,#8b93a7);margin-top:6px}
+.inv-v{font-size:12px;margin-top:2px}
+.inv-cmds{font-family:ui-monospace,monospace;font-size:11px;background:var(--bg,#0b0e14);padding:8px 10px;border-radius:8px;white-space:pre-wrap;margin-top:4px;overflow-x:auto}
+.inv-more{font-size:11px;cursor:pointer;color:var(--accent,#818cf8);display:inline-block;margin-top:4px}
 </style>
 </head>
 <body>
@@ -309,7 +317,7 @@ async function poll(){
 function pushHist(){const m=D.models||[];push(hist.rpm,m.reduce((s,x)=>s+(x.rpm||0),0));push(hist.tok,Math.round(m.reduce((s,x)=>s+(x.tps||0),0)*60));push(hist.cost,(D.cost||{}).hourly||0);const g=(D.gpu||[]).flatMap(x=>x.util||[]);push(hist.gpu,g.length?Math.round(g.reduce((a,b)=>a+b,0)/g.length):0);}
 function diffActivity(){const t=new Date().toLocaleTimeString('en-GB',{hour:'2-digit',minute:'2-digit',second:'2-digit'});const cur={};(D.models||[]).forEach(m=>cur[m.name]=m.status);for(const n in cur){if(!(n in prevM))activity.unshift([t,`Model "${n}" appeared → ${cur[n]}`]);else if(prevM[n]!==cur[n])activity.unshift([t,`Model "${n}" → ${cur[n]}`]);}for(const n in prevM){if(!(n in cur))activity.unshift([t,`Model "${n}" removed`]);}prevM=cur;while(activity.length>18)activity.pop();if(!activity.length)activity=[[t,'Connected to cluster']];}
 
-function alertList(){const out=[];(D.models||[]).forEach(m=>{if(m.status!=='running')out.push({icon:'⚠',sev:'warn',t:`${m.name} · ${m.status}`,d:`${tierLabel(m.tier)} · ${m.availableReplicas||0}/${m.replicas||1} replicas ready`});else if(m.tier==='llm-d'&&m.router&&m.router!=='Healthy')out.push({icon:'⚠',sev:'warn',t:`${m.name} · router ${m.router}`,d:'llm-d EPP/router not yet Healthy'});else if(m.health&&m.health.toLowerCase()!=='healthy')out.push({icon:'⚠',sev:'warn',t:`${m.name} · ${m.health}`,d:'LiteLLM health check'});});(D.argocd||[]).forEach(a=>{if(a.sync!=='Synced'||a.health!=='Healthy')out.push({icon:'🚢',sev:'warn',t:`ArgoCD · ${a.name}`,d:`${a.sync} · ${a.health}`});});(D.nodeAlerts||[]).forEach(a=>out.push({icon:'🖥',sev:a.sev||'warn',t:`Node ${a.node} · ${a.issue}`,d:'EKS node condition'}));return out;}
+function alertList(){const out=[];(D.models||[]).forEach(m=>{if(m.status!=='running')out.push({icon:'⚠',sev:'warn',t:`${m.name} · ${m.status}`,d:`${tierLabel(m.tier)} · ${m.availableReplicas||0}/${m.replicas||1} replicas ready`});else if(m.tier==='llm-d'&&m.router&&m.router!=='Healthy')out.push({icon:'⚠',sev:'warn',t:`${m.name} · router ${m.router}`,d:'llm-d EPP/router not yet Healthy'});else if(m.health&&m.health.toLowerCase()!=='healthy')out.push({icon:'⚠',sev:'warn',t:`${m.name} · ${m.health}`,d:'LiteLLM health check'});});(D.argocd||[]).forEach(a=>{if(a.sync!=='Synced'||a.health!=='Healthy')out.push({icon:'🚢',sev:(a.health==='Degraded'||a.health==='Missing')?'crit':'warn',t:`ArgoCD · ${a.name}`,d:`${a.sync} · ${a.health}`});});(D.nodeAlerts||[]).forEach(a=>out.push({icon:'🖥',sev:(a.issue==='NotReady'?'crit':'warn'),t:`Node ${a.node} · ${a.issue}`,d:'EKS node condition'}));return out;}
 
 function renderAll(){kpis();topbar();ovModels();costMini();gpuBars();ovHealth();ovFeed();modelTabs();modelsBody();teamsView();costViews();infra();healthView();links();if(selected)openModel(selected,true);if(selectedNode)openNode(selectedNode,true);if(selectedTeam)openTeam(selectedTeam,true);}
 
@@ -332,7 +340,7 @@ function costMini(){const c=D.cost||{},bd=(D.models||[]).filter(m=>m.tier==='bed
 
 function gpuBars(){const g=D.gpu||[];if(!(D.sources||{}).dcgm){$('gpu-bars').innerHTML='<div class="muted" style="font-size:12px">GPU metrics unavailable (dcgm-exporter unreachable)</div>';return;}if(!g.length){$('gpu-bars').innerHTML='<div class="muted" style="font-size:12px">No GPU nodes — scales from zero on demand</div>';return;}$('gpu-bars').innerHTML=g.map(n=>{const u=n.util&&n.util.length?Math.round(n.util.reduce((a,b)=>a+b,0)/n.util.length):0;const mmA=(n.mem||[]).filter(x=>x!=null);const mm=mmA.length?Math.round(mmA.reduce((s,x)=>s+x,0)/mmA.length):null;const c=u===0?'var(--text-muted)':u>85?'var(--amber)':'var(--green)';const lbl=n.model?('· '+esc(n.model)):'<span class="muted">idle</span>';return `<div style="margin-bottom:9px"><div class="bar-lbl"><span>${esc(n.instance)} ${lbl}</span><span>${u}% util${mm!=null?' · '+mm+'% mem':''}</span></div><div class="bar"><i style="width:${u||2}%;background:${c}"></i></div></div>`}).join('');}
 
-function alertRow(a){return `<div class="alert"><span class="ai">${a.icon}</span><div><div class="at">${esc(a.t)}</div><div class="ad">${esc(a.d)}</div></div></div>`}
+function alertRow(a){return `<div class="alert${a.sev==='crit'?' crit':''}"><span class="ai">${a.icon}</span><div><div class="at">${esc(a.t)}</div><div class="ad">${esc(a.d)}</div></div></div>`}
 function ovHealth(){const al=alertList();$('ov-health').innerHTML=al.length?al.slice(0,4).map(alertRow).join(''):'<div class="muted" style="font-size:12px;padding:8px 0">✓ All models and apps healthy</div>';}
 function ovFeed(){$('ov-feed').innerHTML=activity.map(f=>`<div class="fr"><span class="ft">${f[0]}</span><span>${esc(f[1])}</span></div>`).join('');}
 
