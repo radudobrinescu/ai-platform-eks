@@ -770,36 +770,39 @@ def _litellm_metrics() -> dict:
 
 
 def _dcgm_util() -> dict:
-    """Per-node GPU utilization (%) parsed from dcgm-exporter Prometheus text.
+    """Per-node GPU utilization AND framebuffer-memory % from dcgm-exporter.
 
-    Scrapes EVERY dcgm-exporter pod directly (one per GPU node), not the
-    round-robin Service VIP — the VIP returns only whichever pod it load-balanced
-    to, so a multi-GPU-node cluster would show just one node. Falls back to the
-    Service URL if pod discovery yields nothing (e.g. missing pods RBAC)."""
+    Returns {host: {"util": [pct-per-gpu], "mem": [pct-per-gpu]}}. Scrapes EVERY
+    exporter pod directly (one per GPU node), not the round-robin Service VIP —
+    the VIP returns only one pod's GPUs per scrape. Falls back to the Service URL
+    if pod discovery yields nothing."""
     import urllib.request
+    METRICS = ("DCGM_FI_DEV_GPU_UTIL", "DCGM_FI_DEV_FB_USED", "DCGM_FI_DEV_FB_FREE")
 
-    def _parse(text: str, out: dict) -> None:
+    def _parse(text: str, acc: dict) -> None:
         for line in text.splitlines():
-            if not line.startswith("DCGM_FI_DEV_GPU_UTIL{"):
-                continue
-            try:
-                labels = line[line.index("{") + 1:line.index("}")]
-                val = float(line.rsplit(" ", 1)[1])
-                host = next((kv.split("=", 1)[1].strip('"') for kv in labels.split(",")
-                             if kv.startswith("Hostname=")), None)
-                if host:
-                    out.setdefault(host, []).append(round(val))
-            except Exception:
-                continue
+            for m in METRICS:
+                if line.startswith(m + "{"):
+                    try:
+                        labels = line[line.index("{") + 1:line.index("}")]
+                        val = float(line.rsplit(" ", 1)[1])
+                        kv = dict(x.split("=", 1) for x in labels.split(",") if "=" in x)
+                        host = kv.get("Hostname", "").strip('"')
+                        gpu = kv.get("gpu", "0").strip('"')
+                        if host:
+                            acc.setdefault(host, {}).setdefault(gpu, {})[m] = val
+                    except Exception:
+                        pass
+                    break
 
-    def _scrape(url: str, out: dict) -> None:
+    def _scrape(url: str, acc: dict) -> None:
         try:
             with urllib.request.urlopen(urllib.request.Request(url), timeout=4) as r:
-                _parse(r.read().decode("utf-8", "ignore"), out)
+                _parse(r.read().decode("utf-8", "ignore"), acc)
         except Exception:
             pass
 
-    out: dict = {}
+    acc: dict = {}
     urls = []
     try:
         pods = k8s_get(f"/api/v1/namespaces/{DCGM_NAMESPACE}/pods"
@@ -810,11 +813,21 @@ def _dcgm_util() -> dict:
                 urls.append(f"http://{st['podIP']}:{DCGM_PORT}/metrics")
     except Exception:
         urls = []
-
     for url in urls:
-        _scrape(url, out)
-    if not out:            # discovery failed or pods unreachable → Service VIP
-        _scrape(DCGM_URL, out)
+        _scrape(url, acc)
+    if not acc:
+        _scrape(DCGM_URL, acc)
+
+    out: dict = {}
+    for host, gpus in acc.items():
+        util, mem = [], []
+        for g in sorted(gpus, key=lambda x: int(x) if str(x).isdigit() else 0):
+            d = gpus[g]
+            util.append(round(d.get("DCGM_FI_DEV_GPU_UTIL", 0)))
+            used, free = d.get("DCGM_FI_DEV_FB_USED"), d.get("DCGM_FI_DEV_FB_FREE")
+            mem.append(round(used / (used + free) * 100)
+                       if (used is not None and free is not None and (used + free) > 0) else None)
+        out[host] = {"util": util, "mem": mem}
     return out
 
 
@@ -891,11 +904,13 @@ def _build_metrics(nodes: list, pods: list) -> dict:
         for n in nodes:
             if n.get("gpu", 0) > 0:
                 host = n["name"].split(".")[0]
-                us = util.get(host) or util.get(n["name"]) or [0] * n["gpu"]
-                mdl = next((e["name"] for e in endpoints for p in pods
+                e = util.get(host) or util.get(n["name"]) or {}
+                us = e.get("util") or [0] * n["gpu"]
+                mem = e.get("mem") or [None] * n["gpu"]
+                mdl = next((ep["name"] for ep in endpoints for p in pods
                             if p.get("node") == n["name"] and p.get("gpu", 0) > 0
-                            and p["name"].startswith(e["name"] + "-")), None)
-                gpu.append({"node": host, "instance": n["instance"], "util": us, "model": mdl})
+                            and p["name"].startswith(ep["name"] + "-")), None)
+                gpu.append({"node": host, "instance": n["instance"], "util": us, "mem": mem, "model": mdl})
     except Exception:
         src["dcgm"] = False
 

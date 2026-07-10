@@ -328,7 +328,7 @@ function ovModels(){const rows=(D.models||[]).slice(0,6);$('ov-models').innerHTM
 
 function costMini(){const c=D.cost||{},bd=(D.models||[]).filter(m=>m.tier==='bedrock').reduce((s,m)=>s+(m.costHr||0),0);const segs=[['GPU',c.gpuHourly||0,'var(--purple)'],['Bedrock',bd,'var(--orange)'],['platform',c.platformHourly||0,'var(--accent)']].filter(x=>x[1]>0);const tot=segs.reduce((s,x)=>s+x[1],0)||1;$('cost-hr-mini').textContent='$'+(c.hourly||0).toFixed(2);$('cost-mo-mini').textContent='~$'+((c.monthly||0)).toLocaleString(undefined,{maximumFractionDigits:0})+'/mo if steady';$('cost-stack').innerHTML=segs.map(x=>`<i style="width:${x[1]/tot*100}%;background:${x[2]}"></i>`).join('');$('cost-legend').innerHTML=segs.map(x=>`<span><i style="background:${x[2]}"></i>${x[0]} $${x[1].toFixed(2)}</span>`).join('');}
 
-function gpuBars(){const g=D.gpu||[];if(!(D.sources||{}).dcgm){$('gpu-bars').innerHTML='<div class="muted" style="font-size:12px">GPU metrics unavailable (dcgm-exporter unreachable)</div>';return;}if(!g.length){$('gpu-bars').innerHTML='<div class="muted" style="font-size:12px">No GPU nodes — scales from zero on demand</div>';return;}$('gpu-bars').innerHTML=g.map(n=>{const u=n.util&&n.util.length?Math.round(n.util.reduce((a,b)=>a+b,0)/n.util.length):0;const c=u===0?'var(--text-muted)':u>85?'var(--amber)':'var(--green)';const lbl=n.model?('· '+esc(n.model)):'<span class="muted">idle</span>';return `<div style="margin-bottom:9px"><div class="bar-lbl"><span>${esc(n.instance)} ${lbl}</span><span>${u}%</span></div><div class="bar"><i style="width:${u||2}%;background:${c}"></i></div></div>`}).join('');}
+function gpuBars(){const g=D.gpu||[];if(!(D.sources||{}).dcgm){$('gpu-bars').innerHTML='<div class="muted" style="font-size:12px">GPU metrics unavailable (dcgm-exporter unreachable)</div>';return;}if(!g.length){$('gpu-bars').innerHTML='<div class="muted" style="font-size:12px">No GPU nodes — scales from zero on demand</div>';return;}$('gpu-bars').innerHTML=g.map(n=>{const u=n.util&&n.util.length?Math.round(n.util.reduce((a,b)=>a+b,0)/n.util.length):0;const mmA=(n.mem||[]).filter(x=>x!=null);const mm=mmA.length?Math.round(mmA.reduce((s,x)=>s+x,0)/mmA.length):null;const c=u===0?'var(--text-muted)':u>85?'var(--amber)':'var(--green)';const lbl=n.model?('· '+esc(n.model)):'<span class="muted">idle</span>';return `<div style="margin-bottom:9px"><div class="bar-lbl"><span>${esc(n.instance)} ${lbl}</span><span>${u}% util${mm!=null?' · '+mm+'% mem':''}</span></div><div class="bar"><i style="width:${u||2}%;background:${c}"></i></div></div>`}).join('');}
 
 function alertRow(a){return `<div class="alert"><span class="ai">${a.icon}</span><div><div class="at">${esc(a.t)}</div><div class="ad">${esc(a.d)}</div></div></div>`}
 function ovHealth(){const al=alertList();$('ov-health').innerHTML=al.length?al.slice(0,4).map(alertRow).join(''):'<div class="muted" style="font-size:12px;padding:8px 0">✓ All models and apps healthy</div>';}
@@ -394,6 +394,7 @@ function openNode(name,keep){
   const host=n.name.split('.')[0];
   const g=(D.gpu||[]).find(x=>x.node===host);
   const gutil=g&&g.util&&g.util.length?Math.round(g.util.reduce((a,b)=>a+b,0)/g.util.length):null;
+  const gmemA=(g&&g.mem||[]).filter(x=>x!=null);const gmem=gmemA.length?Math.round(gmemA.reduce((s,x)=>s+x,0)/gmemA.length):null;
   const np=(D.pods||[]).filter(p=>p.node===name);
   const cpuReq=np.reduce((s,p)=>s+(p.cpuReqM||0),0),memReq=np.reduce((s,p)=>s+(p.memReqMi||0),0);
   const cpuA=n.cpuAllocM||0,memA=n.memAllocMi||0;
@@ -406,6 +407,7 @@ function openNode(name,keep){
   const usage=`<div class="sec-title">Usage</div>`
     +`<div class="bar-lbl"><span>GPU util${g&&g.model?' · '+esc(g.model):''}</span><span>${gutil==null?'—':gutil+'%'}</span></div>`
     +(n.gpu>0?bar(gutil||0,(gutil||0)>85?'var(--amber)':'var(--green)'):'<div class="util" style="margin:2px 0 4px">no GPU on this node</div>')
+    +(n.gpu>0?`<div class="bar-lbl" style="margin-top:8px"><span>GPU memory</span><span>${gmem==null?'—':gmem+'%'}</span></div>`+bar(gmem||0,(gmem||0)>90?'var(--amber)':'var(--purple)'):'')
     +`<div class="bar-lbl" style="margin-top:11px"><span>CPU${cpuUsedPct!=null?'':' requested'}</span><span>${cpuUsedPct!=null?`${(cpuUsed/1000).toFixed(2)} / ${(cpuA/1000).toFixed(1)} cores · ${cpuUsedPct}%`:`${(cpuReq/1000).toFixed(1)} / ${(cpuA/1000).toFixed(1)} cores · ${cpuPct}%`}</span></div>`
     +bar(cpuUsedPct!=null?cpuUsedPct:cpuPct,(cpuUsedPct||cpuPct)>85?'var(--amber)':'var(--accent)')
     +(cpuUsedPct!=null?`<div class="np-sub">requested ${(cpuReq/1000).toFixed(1)} cores · ${cpuPct}%</div>`:'')
