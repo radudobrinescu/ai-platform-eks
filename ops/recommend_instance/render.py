@@ -876,11 +876,16 @@ def build_endpoint_yaml(
         lines.append(f"  decodeReplicas: {decode_n}")
         lines.append(f"  routingProfile: {profile}   # EPP KV/prefix/load-aware weights for this workload")
     elif is_llmd:
-        # Scale tier: a fixed replica pool the EPP routes across, with the
-        # scorer weights tuned to this workload's access pattern.
+        # Scale tier: KEDA autoscales the pool on vLLM queue depth and the EPP
+        # routes across the live replicas. The recommender sizes the *peak*
+        # (maxReplicas) for the target load; minReplicas stays at 1 for cost
+        # (scale up on demand — raise it for a warm baseline). targetQueueDepth is
+        # the per-pod scale trigger (matches the RGD default).
         profile = pick_routing_profile(args)
-        replicas = llmd_replicas(min_replicas, profile) if scaling else max(2, min_replicas)
-        lines.append(f"  replicas: {replicas}")
+        peak = llmd_replicas(min_replicas, profile) if scaling else max(2, min_replicas)
+        lines.append("  minReplicas: 1")
+        lines.append(f"  maxReplicas: {peak}")
+        lines.append("  targetQueueDepth: 20")
         lines.append(f"  routingProfile: {profile}   # EPP KV/prefix/load-aware weights for this workload")
     elif kind == "VLLMEndpoint":
         # vLLM is the fixed-size tier — no built-in autoscaler, so a single
