@@ -771,6 +771,21 @@ def llmd_replicas(min_replicas: int, profile: str) -> int:
     return max(2, math.ceil(min_replicas * ROUTING_EFFICIENCY.get(profile, 0.85)))
 
 
+# Long prompts make prefill (compute-bound) contend with decode (bandwidth-bound)
+# on the same replicas, hurting TTFT. Prefill/decode disaggregation splits them
+# into separate pools. We recommend it above this typical-context threshold.
+DISAGG_CONTEXT_THRESHOLD = 8192
+
+
+def disagg_context(args) -> int:
+    """Typical per-request context used for the disaggregation decision."""
+    return getattr(args, "avg_context", None) or (getattr(args, "seq", 0) // 4)
+
+
+def should_disaggregate(args) -> bool:
+    return disagg_context(args) >= DISAGG_CONTEXT_THRESHOLD
+
+
 def build_endpoint_yaml(
     kind: str,
     model: ModelSpec, vram: VramEstimate, best: Option,
@@ -842,6 +857,12 @@ def build_endpoint_yaml(
         replicas = llmd_replicas(min_replicas, profile) if scaling else max(2, min_replicas)
         lines.append(f"  replicas: {replicas}")
         lines.append(f"  routingProfile: {profile}   # EPP KV/prefix/load-aware weights for this workload")
+        if should_disaggregate(args):
+            lines.append(f"  # RECOMMENDED: prefill/decode disaggregation for this long-context")
+            lines.append(f"  #   workload (~{disagg_context(args)} tok/req) — separates compute-bound")
+            lines.append(f"  #   prefill from bandwidth-bound decode for better TTFT + throughput.")
+            lines.append(f"  #   Not yet a first-class LLMDEndpoint field; see")
+            lines.append(f"  #   docs/roadmap/disaggregated-inference.md")
     else:
         lines.append(f"  # maxNumSeqs: {max_num_seqs}")
         lines.append(f"  minReplicas: {min_replicas}")
@@ -880,6 +901,9 @@ def _print_yaml_snippet(model: ModelSpec, vram: VramEstimate, best: Option,
                 pct = int((1 - ROUTING_EFFICIENCY.get(prof, 0.85)) * 100)
                 print(f"{C.DIM}  routing efficiency (~{pct}% for '{prof}'): "
                       f"{eff} replicas vs {base} for round-robin vLLM.{C.RESET}")
+        if should_disaggregate(args):
+            print(f"{C.BOLD}  ⚑ long context (~{disagg_context(args)} tok): consider prefill/decode "
+                  f"disaggregation{C.RESET} {C.DIM}(roadmap — see docs/roadmap/disaggregated-inference.md).{C.RESET}")
 
     # --deploy/--undeploy do the git work for you; the copy-paste block is the
     # manual path. Point at the automated one so users know it exists.

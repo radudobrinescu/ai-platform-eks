@@ -59,6 +59,12 @@ Examples:
   # Recommend AND deploy: write the YAML, commit, and push (ArgoCD picks it up)
   ./ops/recommend-instance.py Qwen/Qwen2.5-3B-Instruct --deploy
 
+  # Choose the serving tier (default auto: a fleet -> LLMDEndpoint, a single
+  # replica -> VLLMEndpoint, Ray only on request). The llm-d scale tier bakes
+  # in KV/prefix/load-aware routing, with the routingProfile picked from the
+  # workload (chat/rag/code/agentic -> prefix; batch/summarization -> throughput):
+  ./ops/recommend-instance.py Qwen/Qwen2.5-32B-Instruct --workload agentic --users 100 --tier llm-d
+
   # Remove a deployed model: delete its YAML, commit, push (ArgoCD prunes it,
   # LiteLLM deregisters it). No model lookup — just the name.
   ./ops/recommend-instance.py --undeploy qwen2-5-3b-instruct"""
