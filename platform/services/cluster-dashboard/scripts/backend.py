@@ -610,17 +610,28 @@ def _build_k8s_snapshot() -> dict:
     node_alerts = []
     if nodes_data:
         for n in nodes_data.get("items", []):
-            labels = n.get("metadata", {}).get("labels", {})
-            nm = n["metadata"]["name"]
+            meta = n.get("metadata", {}) or {}
+            labels = meta.get("labels", {})
+            nm = meta["name"]
+            # A node being deprovisioned goes NotReady/unreachable by design:
+            # Karpenter cordons + drains it (taint karpenter.sh/disrupted) and
+            # sets a deletionTimestamp. Alerting on that false-positives on every
+            # scale-down/consolidation, so skip health alerts while it terminates.
+            terminating = bool(meta.get("deletionTimestamp")) or any(
+                tt.get("key") == "karpenter.sh/disrupted"
+                for tt in ((n.get("spec", {}) or {}).get("taints") or [])
+            )
             conditions = n.get("status", {}).get("conditions", [])
             ready = any(c.get("type") == "Ready" and c.get("status") == "True" for c in conditions)
             # EKS node health: surface resource pressures + NotReady as alerts.
-            for c in conditions:
-                t = c.get("type")
-                if t in ("MemoryPressure", "DiskPressure", "PIDPressure") and c.get("status") == "True":
-                    node_alerts.append({"node": nm, "issue": t, "sev": "warn"})
+            if not terminating:
+                for c in conditions:
+                    t = c.get("type")
+                    if t in ("MemoryPressure", "DiskPressure", "PIDPressure") and c.get("status") == "True":
+                        node_alerts.append({"node": nm, "issue": t, "sev": "warn"})
             if not ready:
-                node_alerts.append({"node": nm, "issue": "NotReady", "sev": "warn"})
+                if not terminating:
+                    node_alerts.append({"node": nm, "issue": "NotReady", "sev": "warn"})
                 continue
             allocatable = n.get("status", {}).get("allocatable", {})
             zone = labels.get("topology.kubernetes.io/zone", "")
