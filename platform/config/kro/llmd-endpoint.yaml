@@ -26,6 +26,10 @@ spec:
       modelSource:          "string  | default="
       gpuCount:             "integer | default=1"
       tensorParallelSize:   "integer | default=0"
+      # DEPRECATED — superseded by minReplicas/maxReplicas; ignored by this RGD.
+      # Retained (not removed) to avoid a breaking CRD change (KRO refuses to
+      # drop schema properties in place).
+      replicas:             "integer | default=1 minimum=0"
       minReplicas:          "integer | default=1 minimum=0"   # floor; 0 = scale-to-zero (arrival wake-up lands in stage 4)
       maxReplicas:          "integer | default=3 minimum=1"   # ceiling; > minReplicas enables KEDA autoscaling
       targetQueueDepth:     "integer | default=20"            # per-pod vllm:num_requests_waiting scale target
