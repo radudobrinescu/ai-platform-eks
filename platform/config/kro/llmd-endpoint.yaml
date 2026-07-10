@@ -65,7 +65,10 @@ spec:
             app.kubernetes.io/name: ${schema.metadata.name}
             ai-platform/serving-mode: llm-d
         spec:
-          replicas: ${schema.spec.minReplicas}
+          # NOTE: replicas is intentionally NOT set — the KEDA ScaledObject/HPA
+          # owns the replica count. Setting it here makes KRO reconcile it back
+          # and fight the autoscaler. Initial count comes from the ScaledObject's
+          # minReplicaCount once KEDA reconciles.
           selector:
             matchLabels:
               app.kubernetes.io/name: ${schema.metadata.name}
@@ -187,14 +190,13 @@ spec:
                     medium: Memory
                     sizeLimit: 8Gi
 
-    # --- KEDA autoscaler (rendered only when maxReplicas > minReplicas) ---
-    # Scales the model-server Deployment on vLLM saturation (per-pod queue depth
-    # from the autoscaling Prometheus). Scale-up is responsive, scale-down
-    # conservative (GPU pods are slow to start). If KEDA isn't installed the
-    # ScaledObject simply sits unprocessed — the Deployment keeps minReplicas.
+    # --- KEDA autoscaler (always rendered; KEDA owns the replica count) ---
+    # min==max pins a fixed size; max>minReplicas autoscales on vLLM saturation
+    # (per-pod queue depth from the autoscaling Prometheus). Scale-up responsive,
+    # scale-down conservative (GPU pods are slow to start). Requires the
+    # autoscaling capability (KEDA); if absent the Deployment stays at the K8s
+    # default until KEDA is installed.
     - id: scaledobject
-      includeWhen:
-        - ${schema.spec.maxReplicas > schema.spec.minReplicas}
       template:
         apiVersion: keda.sh/v1alpha1
         kind: ScaledObject
@@ -228,7 +230,8 @@ spec:
               metricType: AverageValue
               metadata:
                 serverAddress: http://autoscaling-prometheus.inference.svc.cluster.local:9090
-                query: 'sum(vllm:num_requests_waiting{pool="${schema.metadata.name}"}) or vector(0)'
+                query: |-
+                  sum(max_over_time(vllm:num_requests_waiting{pool="${schema.metadata.name}"}[1m])) or vector(0)
                 threshold: "${string(schema.spec.targetQueueDepth)}"
                 activationThreshold: "1"
 
