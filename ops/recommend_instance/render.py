@@ -882,7 +882,13 @@ def build_endpoint_yaml(
         replicas = llmd_replicas(min_replicas, profile) if scaling else max(2, min_replicas)
         lines.append(f"  replicas: {replicas}")
         lines.append(f"  routingProfile: {profile}   # EPP KV/prefix/load-aware weights for this workload")
+    elif kind == "VLLMEndpoint":
+        # vLLM is the fixed-size tier — no built-in autoscaler, so a single
+        # replica count (not min/max). The llm-d tier is the scale path.
+        lines.append(f"  # maxNumSeqs: {max_num_seqs}")
+        lines.append(f"  replicas: {min_replicas}")
     else:
+        # Ray (InferenceEndpoint): Ray Serve autoscales between min and max.
         lines.append(f"  # maxNumSeqs: {max_num_seqs}")
         lines.append(f"  minReplicas: {min_replicas}")
         lines.append(f"  maxReplicas: {max_replicas}")

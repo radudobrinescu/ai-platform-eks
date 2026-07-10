@@ -523,7 +523,7 @@ def _normalize_endpoint(ep: dict, mode: str) -> dict:
     pp = int(spec.get("pipelineParallelSize", 1) or 1)
     if tp == 0:
         tp = gpu_count if pp == 1 else 1
-    # Desired replicas: llm-d uses `replicas`; ray/vllm use `minReplicas`;
+    # Desired replicas: llm-d + vLLM use `replicas`; Ray uses `minReplicas`;
     # llm-d-disagg splits into prefill + decode pools.
     is_disagg = mode == "llm-d-disagg"
     if is_disagg:
