@@ -33,6 +33,7 @@ spec:
       workerCpu:            "string  | default=8"
       vllmImage:            "string  | default=vllm/vllm-openai:v0.24.0"
       routerChartVersion:   "string  | default=v0.9.0"
+      routingProfile:       "string  | default=balanced"   # balanced|prefix|throughput|latency -> EPP scorer weights
     status:
       ready:             "${vllmdeployment.status.?availableReplicas.orValue(0) > 0 ? 'True' : 'False'}"
       availableReplicas: ${vllmdeployment.status.?availableReplicas.orValue(0)}
@@ -219,13 +220,13 @@ spec:
                         - name: default
                           plugins:
                           - pluginRef: queue-scorer
-                            weight: 2
+                            weight: ${string(schema.spec.routingProfile == 'throughput' ? 3 : (schema.spec.routingProfile == 'latency' ? 4 : (schema.spec.routingProfile == 'prefix' ? 1 : 2)))}
                           - pluginRef: kv-cache-utilization-scorer
-                            weight: 2
+                            weight: ${string(schema.spec.routingProfile == 'latency' ? 1 : (schema.spec.routingProfile == 'balanced' ? 2 : 3))}
                           - pluginRef: prefix-cache-scorer
-                            weight: 3
+                            weight: ${string(schema.spec.routingProfile == 'prefix' ? 4 : (schema.spec.routingProfile == 'throughput' ? 1 : (schema.spec.routingProfile == 'latency' ? 2 : 3)))}
                           - pluginRef: no-hit-lru-scorer
-                            weight: 2
+                            weight: ${string((schema.spec.routingProfile == 'prefix' || schema.spec.routingProfile == 'latency') ? 1 : 2)}
                     resources:
                       requests:
                         cpu: "1"

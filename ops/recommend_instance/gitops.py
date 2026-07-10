@@ -31,6 +31,13 @@ MODELS_DIR = "workloads/models"
 # everything under workloads/models/ — the sync target for deploy/undeploy.
 ARGOCD_NAMESPACE = "argocd"
 ARGOCD_MODELS_APP = "models"
+# The llm-d scale tier lives in a separate dir owned by its own ArgoCD app.
+SCALE_MODELS_DIR = "workloads/scale-models"
+ARGOCD_SCALE_MODELS_APP = "scale-models"
+
+
+def _app_for_path(yaml_path: str) -> str:
+    return ARGOCD_SCALE_MODELS_APP if yaml_path.startswith(SCALE_MODELS_DIR) else ARGOCD_MODELS_APP
 
 
 def _run(args: list[str], cwd: str) -> subprocess.CompletedProcess:
@@ -101,7 +108,7 @@ def _pushed_sha(root: str) -> str | None:
     return r.stdout.strip() if r.returncode == 0 and r.stdout.strip() else None
 
 
-def _argocd_sync(root: str, C: type) -> None:
+def _argocd_sync(root: str, C: type, app: str = ARGOCD_MODELS_APP) -> None:
     """Best-effort: trigger an explicit ArgoCD sync of the `models` app, pinned to
     the just-pushed commit, via `kubectl patch ... operation`.
 
@@ -134,7 +141,7 @@ def _argocd_sync(root: str, C: type) -> None:
     }}
 
     patch = _run(
-        ["kubectl", "patch", "application", ARGOCD_MODELS_APP,
+        ["kubectl", "patch", "application", app,
          "-n", ARGOCD_NAMESPACE, "--type", "merge", "-p", json.dumps(operation)],
         cwd=root,
     )
@@ -143,7 +150,7 @@ def _argocd_sync(root: str, C: type) -> None:
               f"({patch.stderr.strip() or 'kubectl failed'}).")
         print(f"{C.DIM}Not fatal — ArgoCD reconciles on its next git poll "
               f"(~3 min), or run: "
-              f"argocd app sync {ARGOCD_MODELS_APP} --prune{C.RESET}")
+              f"argocd app sync {app} --prune{C.RESET}")
         return
 
     pin = f" @ {sha[:7]}" if sha else ""
@@ -172,9 +179,9 @@ def deploy_model(name: str, yaml_path: str, yaml_body: str, commit_msg: str,
 
     rc = _git_commit_push(root, yaml_path, commit_msg, C)
     if rc == 0:
-        _argocd_sync(root, C)
+        _argocd_sync(root, C, _app_for_path(yaml_path))
         print(f"\n{C.DIM}Watch it come up:{C.RESET} "
-              f"kubectl get inferenceendpoints -n inference -w")
+              f"kubectl get inferenceendpoints,vllmendpoints,llmdendpoints -n inference -w")
         print(f"{C.DIM}Remove it later:{C.RESET} "
               f"./ops/recommend-instance.py --undeploy {name}")
     return rc
@@ -186,19 +193,19 @@ def undeploy_model(name: str, args) -> int:
     Needs no model lookup — operates purely on the file by name."""
     C = _palette(_should_use_colour(args))
     root = _repo_root()
-    rel_path = f"{MODELS_DIR}/{name}.yaml"
-    abs_path = os.path.join(root, rel_path)
-
-    if not os.path.exists(abs_path):
-        print(f"{C.RED}No such model file:{C.RESET} {rel_path}")
-        existing = _list_models(root)
-        if existing:
-            print(f"{C.DIM}Deployed models in {MODELS_DIR}:{C.RESET}")
-            for m in existing:
-                print(f"  {m}")
-        else:
-            print(f"{C.DIM}No model YAMLs found in {MODELS_DIR}.{C.RESET}")
+    rel_path = next((f"{d}/{name}.yaml" for d in (MODELS_DIR, SCALE_MODELS_DIR)
+                     if os.path.exists(os.path.join(root, f"{d}/{name}.yaml"))), None)
+    if rel_path is None:
+        print(f"{C.RED}No such model file:{C.RESET} {name}.yaml "
+              f"(searched {MODELS_DIR}/ and {SCALE_MODELS_DIR}/)")
+        for d in (MODELS_DIR, SCALE_MODELS_DIR):
+            existing = _list_models(root, d)
+            if existing:
+                print(f"{C.DIM}Deployed in {d}:{C.RESET}")
+                for m in existing:
+                    print(f"  {m}")
         return 2
+    abs_path = os.path.join(root, rel_path)
 
     print(f"\n{C.BOLD}Delete {rel_path}{C.RESET} and push so ArgoCD removes "
           f"{C.BOLD}{name}{C.RESET} (the InferenceEndpoint is pruned and LiteLLM "
@@ -222,14 +229,14 @@ def undeploy_model(name: str, args) -> int:
         # The push alone is NOT enough on undeploy: if this was the last model,
         # workloads/models/ renders empty and ArgoCD's automated sync won't prune
         # to zero. The explicit sync below is what actually removes the endpoint.
-        _argocd_sync(root, C)
+        _argocd_sync(root, C, _app_for_path(rel_path))
         print(f"\n{C.DIM}Confirm removal:{C.RESET} "
-              f"kubectl get inferenceendpoints -n inference")
+              f"kubectl get inferenceendpoints,vllmendpoints,llmdendpoints -n inference")
     return rc
 
 
-def _list_models(root: str) -> list[str]:
-    d = os.path.join(root, MODELS_DIR)
+def _list_models(root: str, subdir: str = MODELS_DIR) -> list[str]:
+    d = os.path.join(root, subdir)
     if not os.path.isdir(d):
         return []
     return sorted(

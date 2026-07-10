@@ -717,62 +717,105 @@ def model_name_from_id(model_id: str) -> str:
     return model_id.split("/")[-1].lower().replace(".", "-").replace("_", "-")
 
 
-def build_inference_yaml(
+# --------------------------------------------------------------------------- #
+# Serving-tier selection + per-kind manifest rendering                         #
+# --------------------------------------------------------------------------- #
+#
+# Each tier is a different KRO CRD in front of the SAME vLLM engine, so the
+# sizing math is identical — only the emitted manifest (kind, a few field
+# names, target directory) differs.
+TIER_KIND = {"ray": "InferenceEndpoint", "vllm": "VLLMEndpoint", "llm-d": "LLMDEndpoint"}
+KIND_DIR = {
+    "InferenceEndpoint": "workloads/models",
+    "VLLMEndpoint": "workloads/models",
+    "LLMDEndpoint": "workloads/scale-models",
+}
+# Workload -> llm-d EPP routing profile (LLMDEndpoint.spec.routingProfile).
+# Shared-prefix / multi-turn workloads win most from prefix+KV-aware routing;
+# high-volume independent workloads want queue (load) balancing.
+ROUTING_PROFILE_BY_WORKLOAD = {
+    "chat": "prefix", "rag": "prefix", "code": "prefix", "agentic": "prefix",
+    "summarization": "throughput", "batch": "throughput",
+}
+
+
+def pick_tier(args, best, scaling) -> str:
+    """Choose the serving CRD. Explicit --tier wins; otherwise a fleet (2+
+    replicas) goes to the llm-d scale tier for KV/prefix/load-aware routing, and
+    a single replica goes to plain vLLM. Ray (InferenceEndpoint) is legacy —
+    only on explicit request. Pipeline parallelism forces vLLM/Ray (the
+    LLMDEndpoint RGD is single-node tensor-parallel only)."""
+    t = (getattr(args, "tier", "auto") or "auto")
+    if t != "auto":
+        return t
+    pp = getattr(best, "pp_degree", 1) or 1
+    if scaling and scaling[0].replicas >= 2 and pp <= 1:
+        return "llm-d"
+    return "vllm"
+
+
+def pick_routing_profile(args) -> str:
+    """llm-d routing profile from the workload preset (default: balanced)."""
+    return ROUTING_PROFILE_BY_WORKLOAD.get(getattr(args, "workload", None) or "", "balanced")
+
+
+# Fraction of round-robin replicas an llm-d fleet needs to hit the same SLO:
+# KV/prefix-aware routing raises the cache hit rate and load-aware routing avoids
+# hot replicas, so a shared-prefix workload needs fewer. Conservative first-order
+# estimate (like the throughput model's ±25%) — validate with `vllm bench serve`.
+ROUTING_EFFICIENCY = {"prefix": 0.75, "throughput": 0.90, "latency": 0.85, "balanced": 0.85}
+
+
+def llmd_replicas(min_replicas: int, profile: str) -> int:
+    """Replica count for an llm-d fleet after applying routing efficiency."""
+    return max(2, math.ceil(min_replicas * ROUTING_EFFICIENCY.get(profile, 0.85)))
+
+
+def build_endpoint_yaml(
+    kind: str,
     model: ModelSpec, vram: VramEstimate, best: Option,
     args: argparse.Namespace,
     scaling: list[ScalingRecommendation] | None = None,
 ) -> tuple[str, str, str, str]:
-    """Build the InferenceEndpoint manifest for the recommended config.
-
-    Returns (name, yaml_path, yaml_body, commit_msg). Used both to print the
-    copy-paste snippet and to write the file directly with --deploy, so the two
-    paths can never drift.
-    """
+    """Build the serving manifest (InferenceEndpoint | VLLMEndpoint |
+    LLMDEndpoint) for the recommended config. All three front the same vLLM
+    engine, so the sizing is identical — only the CRD kind, a few field names,
+    and the target directory differ. Returns (name, yaml_path, yaml_body,
+    commit_msg); used for both the printed snippet and --deploy so they can't
+    drift."""
     name = model_name_from_id(model.model_id)
     max_len = args.seq
-
-    # In fleet mode, the YAML must reflect the fleet pick (which may differ
-    # from `best` — the cheapest single-instance fitter). Otherwise the user
-    # copy-pastes a YAML for the wrong instance/parallelism config.
     if scaling:
         best = scaling[0].option
 
-    # Suggest shared: true only in single-instance mode when the model is
-    # shared-eligible. Fleet mode must NOT use shared — throughput estimates
-    # assume dedicated bandwidth, and shared gives 1/4 of that.
-    shared = (not scaling) and best.total_gpus == 1 and best.shared_eligible
-    yaml_path  = f"workloads/models/{name}.yaml"
-    commit_msg = f"feat: deploy {name}"
+    is_llmd = kind == "LLMDEndpoint"
+    # shared time-slicing is a single-replica, non-llm-d feature.
+    shared = (not scaling) and (not is_llmd) and best.total_gpus == 1 and best.shared_eligible
 
-    # Compute a conservative VRAM hint in GiB that Karpenter's
-    # `instance-gpu-memory` label (reported in MiB) will compare against with `Gt`.
-    # The goal: exclude GPUs too small for the model, WITHOUT locking Karpenter
-    # to a single instance family. Based on the model's actual per-GPU need plus
-    # a 15% headroom — not the recommended instance's full VRAM (which would
-    # e.g. pin a 48 GB L40S-class selection even when a 16 GB T4 would fit).
-    # When `shared: true`, the requirement scales by TIME_SLICE_REPLICAS because
-    # all co-tenants compete for the same physical VRAM.
+    directory  = KIND_DIR[kind]
+    yaml_path  = f"{directory}/{name}.yaml"
+    commit_msg = f"feat: deploy {name} ({kind})"
+
     if shared:
-        min_vram_gib = max(1, math.ceil(
-            best.per_gpu_need_gb * TIME_SLICE_REPLICAS * 1.10
-        ))
+        min_vram_gib = max(1, math.ceil(best.per_gpu_need_gb * TIME_SLICE_REPLICAS * 1.10))
     else:
         min_vram_gib = max(1, math.ceil(best.per_gpu_need_gb * 1.15))
-
-    # Size the Ray worker pod's CPU memory request based on model weights.
-    # During vLLM startup the weights are briefly held in CPU RAM before being
-    # transferred to the GPU — that's the peak. After startup, workers use
-    # ~2-3Gi. We size for the startup peak + overhead:
-    #   weights_gb (CPU copy) + 4Gi (Python, Ray, vLLM, HF tokenizer, buffers)
-    # Rounded up with a floor of 8Gi so tiny models still have headroom for
-    # Ray's own footprint on cold start.
     worker_mem_gib = max(8, math.ceil(vram.weights_gb + 4))
 
-    # Build the YAML body. Intentionally flush-left so copy-paste into a shell
-    # heredoc produces a clean file (no stray indentation).
+    # Replica sizing — same math for every kind.
+    if scaling:
+        best_scaling = scaling[0]
+        min_replicas = best_scaling.replicas
+        max_replicas = max(min_replicas, math.ceil(min_replicas * 1.5))
+        max_num_seqs = max(64, math.ceil(best_scaling.effective_capacity * 1.5))
+    else:
+        min_replicas = 1
+        max_replicas = 2
+        max_num_seqs = max(64, args.users * 2)
+
     lines: list[str] = [
         "apiVersion: kro.run/v1alpha1",
-        "kind: InferenceEndpoint",
+        f"kind: {kind}",
         "metadata:",
         f"  name: {name}",
         "  namespace: inference",
@@ -780,46 +823,63 @@ def build_inference_yaml(
         f'  model: "{model.model_id}"',
         f"  gpuCount: {best.total_gpus}",
     ]
-    if best.tp_degree > 1 or best.pp_degree > 1:
+    if best.tp_degree > 1:
         lines.append(f"  tensorParallelSize: {best.tp_degree}")
-    if best.pp_degree > 1:
+    # Pipeline parallelism: IE/vLLM only (the llm-d RGD is single-node TP).
+    if best.pp_degree > 1 and not is_llmd:
         lines.append(f"  pipelineParallelSize: {best.pp_degree}")
     if shared:
-        lines.append("  shared: true          "
-                     "# fits with headroom — up to 4 models share the GPU")
-    # Determine replica counts — use scaling recommendation if available.
-    if scaling:
-        best_scaling = scaling[0]
-        min_replicas = best_scaling.replicas
-        max_replicas = max(min_replicas, math.ceil(min_replicas * 1.5))
-        # PR 6: cap vLLM batch size at the per-instance effective capacity
-        # we actually planned for. Anyscale recommends 128-256 typical;
-        # we use the larger of (effective_capacity × 1.5, 64) to leave headroom
-        # without setting absurd defaults that risk OOM.
-        max_num_seqs = max(64, math.ceil(best_scaling.effective_capacity * 1.5))
-    else:
-        min_replicas = 1
-        max_replicas = 2
-        # Single-instance mode: size for the user's --users count + headroom.
-        max_num_seqs = max(64, args.users * 2)
+        lines.append("  shared: true          # fits with headroom — up to 4 models share the GPU")
 
-    lines.extend([
-        f"  maxModelLen: {max_len}",
-        f"  minVramPerGpuGiB: {min_vram_gib}",
-        f"  workerMemory: \"{worker_mem_gib}Gi\"",
-        f"  # maxNumSeqs: {max_num_seqs}",
-        f"  minReplicas: {min_replicas}",
-        f"  maxReplicas: {max_replicas}",
-    ])
+    lines.append(f"  maxModelLen: {max_len}")
+    lines.append(f"  minVramPerGpuGiB: {min_vram_gib}")
+    lines.append(f'  workerMemory: "{worker_mem_gib}Gi"')
+
+    if is_llmd:
+        # Scale tier: a fixed replica pool the EPP routes across, with the
+        # scorer weights tuned to this workload's access pattern.
+        profile = pick_routing_profile(args)
+        replicas = llmd_replicas(min_replicas, profile) if scaling else max(2, min_replicas)
+        lines.append(f"  replicas: {replicas}")
+        lines.append(f"  routingProfile: {profile}   # EPP KV/prefix/load-aware weights for this workload")
+    else:
+        lines.append(f"  # maxNumSeqs: {max_num_seqs}")
+        lines.append(f"  minReplicas: {min_replicas}")
+        lines.append(f"  maxReplicas: {max_replicas}")
+
     yaml_body = "\n".join(lines) + "\n"
     return name, yaml_path, yaml_body, commit_msg
+
+
+def build_inference_yaml(model, vram, best, args, scaling=None):
+    """Backward-compatible wrapper — emits an InferenceEndpoint (Ray tier)."""
+    return build_endpoint_yaml("InferenceEndpoint", model, vram, best, args, scaling)
+
 
 
 def _print_yaml_snippet(model: ModelSpec, vram: VramEstimate, best: Option,
                         args: argparse.Namespace, C: type,
                         scaling: list[ScalingRecommendation] | None = None) -> None:
-    name, yaml_path, yaml_body, commit_msg = build_inference_yaml(
-        model, vram, best, args, scaling)
+    tier = pick_tier(args, best, scaling)
+    kind = TIER_KIND[tier]
+    name, yaml_path, yaml_body, commit_msg = build_endpoint_yaml(
+        kind, model, vram, best, args, scaling)
+
+    why = {"llm-d": "fleet of 2+ replicas -> llm-d scale tier (KV/prefix/load-aware routing)",
+           "vllm": "single replica -> plain vLLM (simplest, no router)",
+           "ray": "Ray Serve tier (legacy / explicit)"}.get(tier, tier)
+    print(f"\n{C.BOLD}Serving tier:{C.RESET} {C.BOLD}{kind}{C.RESET} {C.DIM}- {why}{C.RESET}")
+    if kind == "LLMDEndpoint":
+        print(f"{C.DIM}  routingProfile '{pick_routing_profile(args)}' baked into the manifest "
+              f"(EPP scorer weights tuned for this workload).{C.RESET}")
+        if scaling:
+            prof = pick_routing_profile(args)
+            base = scaling[0].replicas
+            eff = llmd_replicas(base, prof)
+            if eff < base:
+                pct = int((1 - ROUTING_EFFICIENCY.get(prof, 0.85)) * 100)
+                print(f"{C.DIM}  routing efficiency (~{pct}% for '{prof}'): "
+                      f"{eff} replicas vs {base} for round-robin vLLM.{C.RESET}")
 
     # --deploy/--undeploy do the git work for you; the copy-paste block is the
     # manual path. Point at the automated one so users know it exists.
@@ -839,7 +899,9 @@ def _print_yaml_snippet(model: ModelSpec, vram: VramEstimate, best: Option,
     print("git push")
     print()
     print(f"{C.DIM}# Watch the deployment come up:{C.RESET}")
-    print("kubectl get inferenceendpoints -n inference -w")
+    plural = {"InferenceEndpoint": "inferenceendpoints", "VLLMEndpoint": "vllmendpoints",
+              "LLMDEndpoint": "llmdendpoints"}[kind]
+    print(f"kubectl get {plural} -n inference -w")
     print(f"{C.DIM}# Later, to remove it (ArgoCD deletes the model + LiteLLM "
           f"deregisters):{C.RESET}")
     print(f"./ops/recommend-instance.py --undeploy {name}")
