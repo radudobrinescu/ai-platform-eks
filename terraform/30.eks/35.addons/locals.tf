@@ -5,6 +5,9 @@ locals {
 
   capabilities = {
     loadbalancing = try(var.cluster_config.capabilities.loadbalancing, !local.eks_auto_mode, true)
+    # KEDA-based replica autoscaling for the llm-d serving tier. On by default;
+    # set cluster_config.capabilities.autoscaling = false to keep fixed replicas.
+    autoscaling = try(var.cluster_config.capabilities.autoscaling, true)
   }
 
   critical_addons_tolerations = {
