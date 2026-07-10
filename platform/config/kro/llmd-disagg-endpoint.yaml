@@ -16,13 +16,19 @@
 #   Request path: LiteLLM -> llm-d router (Envoy + EPP) -> InferencePool
 #                 -> prefill pod (KV producer) --NIXL--> decode pod (KV consumer)
 #
-# ── EXPERIMENTAL / runtime-validation gates ─────────────────────────────────
-#   1. The vLLM image (spec.vllmImage) MUST contain the `nixl` library + UCX.
-#      Stock vllm/vllm-openai may not; use an llm-d/nixl-enabled image or add an
-#      init step. Validated by a GPU smoke test, not by KRO.
-#   2. Prefill-first P/D scheduling depends on the llm-d router chart version's
-#      EPP capabilities. This RGD wires the pools + NIXL correctly; end-to-end
-#      P/D correctness is confirmed by the smoke test.
+# ── EXPERIMENTAL — GPU smoke-test findings (2026-07) ────────────────────────
+#   1. [PASS] NIXL is bundled in vllm/vllm-openai:v0.24.0 — both pools init the
+#      NixlPullConnector + NIXL Scheduler with no extra image work.
+#   2. [PASS] Deploys + serves end to end: both role-labeled pools become Ready,
+#      the model registers in LiteLLM, and requests return correct completions.
+#   3. [TODO] NOT yet truly disaggregated. The llm-d router EPP defaults to
+#      `single-profile-handler`, which load-balances WHOLE requests across the
+#      combined pool — both prefill and decode pods showed prompt+generation
+#      throughput. Strict prefill→decode routing needs a P/D-aware profile
+#      handler + separate prefill/decode scheduling profiles that filter on the
+#      `llm-d.ai/role` labels (see the llm-d-router EPP plugin registry). Until
+#      that is configured + smoke-tested, this behaves like a 2-pool
+#      load-balanced deployment (no P/D benefit over a 2-replica LLMDEndpoint).
 # See docs/roadmap/disaggregated-inference.md.
 apiVersion: kro.run/v1alpha1
 kind: ResourceGraphDefinition
