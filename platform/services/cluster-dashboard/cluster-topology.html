@@ -281,7 +281,9 @@ tbody tr:hover{background:var(--surface-2)}
 const TIERS={bedrock:['Bedrock','b-bedrock'],vllm:['vLLM','b-vllm'],'llm-d':['llm-d','b-llmd'],ft:['fine-tuned','b-ft'],ray:['Ray','b-ray']};
 const MTABS=[['all','All'],['bedrock','Bedrock'],['vllm','vLLM'],['llm-d','llm-d'],['ft','Fine-tuned']];
 let D={models:[],teams:[],gpu:[],argocd:[],nodes:[],pods:[],cost:{},costExt:{},sources:{},links:[]};
-let mtab='all', selected=null, selectedNode=null, prevM={}, activity=[], invs=[], lastSearch=[];
+let mtab='all', selected=null, selectedNode=null, selectedTeam=null, curV='overview', prevM={}, activity=[], invs=[], lastSearch=[];
+const NAVIX={overview:0,models:1,teams:2,cost:3,infra:4,health:5};
+let routed=false;
 const NS_COLORS=['#818cf8','#34d399','#fbbf24','#f472b6','#22d3ee','#a78bfa','#fb923c','#4ade80','#e879f9','#60a5fa','#f87171','#2dd4bf'];
 function nsColor(ns){let h=0;for(let i=0;i<(ns||'').length;i++)h=(h*31+ns.charCodeAt(i))>>>0;return NS_COLORS[h%NS_COLORS.length];}
 function relTime(iso){if(!iso)return'';const d=(Date.now()-new Date(iso).getTime())/1000;if(d<3600)return Math.max(1,Math.round(d/60))+'m';if(d<86400)return Math.round(d/3600)+'h';return Math.round(d/86400)+'d';}
@@ -301,7 +303,7 @@ async function poll(){
     const r=await fetch('/data.json');if(!r.ok)throw 0;D=await r.json();
     diffActivity();pushHist();
     try{const ri=await fetch('/investigations');if(ri.ok)invs=(await ri.json()).items||[];}catch(e){}
-    renderAll();$('live').textContent='Live';
+    renderAll();$('live').textContent='Live';if(!routed){routed=true;routeFromHash();}
   }catch(e){$('live').textContent='reconnecting…';}
 }
 function pushHist(){const m=D.models||[];push(hist.rpm,m.reduce((s,x)=>s+(x.rpm||0),0));push(hist.tok,Math.round(m.reduce((s,x)=>s+(x.tps||0),0)*60));push(hist.cost,(D.cost||{}).hourly||0);const g=(D.gpu||[]).flatMap(x=>x.util||[]);push(hist.gpu,g.length?Math.round(g.reduce((a,b)=>a+b,0)/g.length):0);}
@@ -309,7 +311,7 @@ function diffActivity(){const t=new Date().toLocaleTimeString('en-GB',{hour:'2-d
 
 function alertList(){const out=[];(D.models||[]).forEach(m=>{if(m.status!=='running')out.push({icon:'⚠',sev:'warn',t:`${m.name} · ${m.status}`,d:`${tierLabel(m.tier)} · ${m.availableReplicas||0}/${m.replicas||1} replicas ready`});else if(m.tier==='llm-d'&&m.router&&m.router!=='Healthy')out.push({icon:'⚠',sev:'warn',t:`${m.name} · router ${m.router}`,d:'llm-d EPP/router not yet Healthy'});else if(m.health&&m.health.toLowerCase()!=='healthy')out.push({icon:'⚠',sev:'warn',t:`${m.name} · ${m.health}`,d:'LiteLLM health check'});});(D.argocd||[]).forEach(a=>{if(a.sync!=='Synced'||a.health!=='Healthy')out.push({icon:'🚢',sev:'warn',t:`ArgoCD · ${a.name}`,d:`${a.sync} · ${a.health}`});});(D.nodeAlerts||[]).forEach(a=>out.push({icon:'🖥',sev:a.sev||'warn',t:`Node ${a.node} · ${a.issue}`,d:'EKS node condition'}));return out;}
 
-function renderAll(){kpis();topbar();ovModels();costMini();gpuBars();ovHealth();ovFeed();modelTabs();modelsBody();teamsView();costViews();infra();healthView();links();if(selected)openModel(selected,true);if(selectedNode)openNode(selectedNode,true);}
+function renderAll(){kpis();topbar();ovModels();costMini();gpuBars();ovHealth();ovFeed();modelTabs();modelsBody();teamsView();costViews();infra();healthView();links();if(selected)openModel(selected,true);if(selectedNode)openNode(selectedNode,true);if(selectedTeam)openTeam(selectedTeam,true);}
 
 function topbar(){const c=D.cost||{};$('top-cost').innerHTML=`💲 <b class="cg">$${(c.hourly||0).toFixed(2)}</b>/hr · ~$${Math.round(c.monthly||0).toLocaleString()}/mo`;const al=alertList().length,ap=D.approvals_pending||0;const p=$('top-health');p.className='pill'+(al||ap?' warn':'');p.innerHTML=(al||ap)?`<span class="cw">⚠ ${al}</span> alerts · <b>${ap}</b> approval${ap===1?'':'s'}`:`✓ healthy`;const nm=$('nav-mcount');if(nm)nm.textContent=(D.models||[]).length||'';const hb=$('nav-hbadge');if(hb){const n=al+ap;hb.textContent=n||'';hb.style.display=n?'':'none';}}
 
@@ -337,7 +339,7 @@ function ovFeed(){$('ov-feed').innerHTML=activity.map(f=>`<div class="fr"><span 
 function modelTabs(){const m=D.models||[];$('model-tabs').innerHTML=MTABS.map(t=>{const n=t[0]==='all'?m.length:m.filter(x=>x.tier===t[0]).length;return `<div class="tab ${t[0]===mtab?'active':''}" onclick="mtab='${t[0]}';modelTabs();modelsBody()">${t[1]}<span class="cnt">${n}</span></div>`}).join('');}
 function modelsBody(){const rows=(D.models||[]).filter(m=>mtab==='all'||m.tier===mtab);const mu=(D.sources||{}).litellm;$('models-body').innerHTML=rows.length?rows.map(m=>`<tr onclick="openModel('${esc(m.name)}')"><td><div class="m-name">${esc(m.name)}</div><div class="m-id">${esc(m.model)}</div></td><td>${tierBadge(m.tier)}</td><td>${m.status==='running'?'<span class="st ok">running</span>':'<span class="st warn">deploying</span>'}</td><td class="num">${esc(m.gpu)}</td><td class="num">${mu?num(m.rpm):'—'}</td><td class="num">${mu?(m.p50==null?'—':m.p50+' / '+m.p95+'ms'):'—'}</td><td class="num">${mu?num(m.tps):'—'}</td><td class="num">${mu&&m.errPct!=null?m.errPct+'%':'—'}</td><td class="num">$${(m.costHr||0).toFixed(2)}</td><td><div class="act"><button title="Copy a ready-to-run curl for this model" onclick="event.stopPropagation();copyCurl('${esc(m.name)}',event)">⧉ curl</button><button title="Langfuse" onclick="event.stopPropagation();openLink('langfuse')">📊</button><button title="WebUI" onclick="event.stopPropagation();openLink('webui')">💬</button></div></td></tr>`).join(''):'<tr><td colspan=10 class="muted" style="padding:20px">No models in this tier</td></tr>';}
 
-function teamsView(){const t=D.teams||[];if(!(D.sources||{}).litellm){$('teams-grid').innerHTML='<div class="muted">Team metrics unavailable (LiteLLM DB unreachable)</div>';return;}$('teams-grid').innerHTML=t.length?t.map(x=>{const pct=x.limit?Math.min(100,Math.round(x.budget/x.limit*100)):0;const c=pct>80?'var(--amber)':'var(--green)';const bl=x.limit?`$${x.budget.toFixed(2)} / $${x.limit.toFixed(0)} · ${pct}%`:`$${x.budget.toFixed(2)} · no cap`;return `<div class="card"><div class="card-h"><h3>${esc(x.name)}</h3><span class="m-id">${x.failed?x.failed+' failed today':''}</span></div><div class="bar-lbl"><span>budget</span><span>${bl}</span></div><div class="bar"><i style="width:${x.limit?pct:4}%;background:${c}"></i></div><div class="mini-kpi"><div class="mk"><div class="mkv">${num(x.reqsToday)}</div><div class="mkl">req today</div></div><div class="mk"><div class="mkv">$${(x.spendToday||0).toFixed(2)}</div><div class="mkl">spend today</div></div><div class="mk"><div class="mkv">${x.keys||0}</div><div class="mkl">API keys</div></div></div></div>`}).join(''):'<div class="muted">No teams onboarded yet (create an AITeam)</div>';}
+function teamsView(){const t=D.teams||[];if(!(D.sources||{}).litellm){$('teams-grid').innerHTML='<div class="muted">Team metrics unavailable (LiteLLM DB unreachable)</div>';return;}$('teams-grid').innerHTML=t.length?t.map(x=>{const pct=x.limit?Math.min(100,Math.round(x.budget/x.limit*100)):0;const c=pct>80?'var(--amber)':'var(--green)';const bl=x.limit?`$${x.budget.toFixed(2)} / $${x.limit.toFixed(0)} · ${pct}%`:`$${x.budget.toFixed(2)} · no cap`;return `<div class="card" style="cursor:pointer" onclick="openTeam('${esc(x.name)}')"><div class="card-h"><h3>${esc(x.name)}</h3><span class="m-id">${x.failed?x.failed+' failed today':''}</span></div><div class="bar-lbl"><span>budget</span><span>${bl}</span></div><div class="bar"><i style="width:${x.limit?pct:4}%;background:${c}"></i></div><div class="mini-kpi"><div class="mk"><div class="mkv">${num(x.reqsToday)}</div><div class="mkl">req today</div></div><div class="mk"><div class="mkv">$${(x.spendToday||0).toFixed(2)}</div><div class="mkl">spend today</div></div><div class="mk"><div class="mkv">${x.keys||0}</div><div class="mkl">API keys</div></div></div></div>`}).join(''):'<div class="muted">No teams onboarded yet (create an AITeam)</div>';}
 
 function costViews(){const c=D.cost||{},ce=D.costExt||{};const src=c.priceSource==='aws-price-list'?'live AWS pricing':'on-demand estimate';const cs=$('cost-sub');if(cs)cs.textContent=(c.region?c.region+' ':'')+src+' · spot ≈0.35× · GPU is the driver'+(c.unpriced?' · '+c.unpriced+' node(s) unpriced':'');$('cost-kpis').innerHTML=[
   {l:'Now',v:'$'+(c.hourly||0).toFixed(2)+'<span style="font-size:12px">/hr</span>',s:`GPU $${(c.gpuHourly||0).toFixed(2)} · platform $${(c.platformHourly||0).toFixed(2)}`,cls:'good'},
@@ -374,7 +376,7 @@ function linkFor(kind){return (D.links||[]).find(l=>l.label.toLowerCase().includ
 function openLink(kind){const u=linkFor(kind).url;if(u&&u!=='#')window.open(u,'_blank');}
 function copyCurl(name,ev){const u=(linkFor('litellm').url||'$LITELLM').replace(/\/ui.*/,'');const t=`curl ${u}/v1/chat/completions -H "Authorization: Bearer $LITELLM_KEY" -H "Content-Type: application/json" -d '{"model":"${name}","messages":[{"role":"user","content":"Hello"}]}'`;const fb=()=>{try{const b=ev&&ev.target&&ev.target.closest('button');if(b){const o=b.innerHTML;b.innerHTML='✓ copied';setTimeout(()=>{b.innerHTML=o;},1200);}}catch(e){}};if(navigator.clipboard&&navigator.clipboard.writeText){navigator.clipboard.writeText(t).then(fb,fb);}else{fb();}}
 
-function openModel(name,keep){const m=(D.models||[]).find(x=>x.name===name);if(!m){closeDrawer();return;}selected=name;selectedNode=null;const s=(D.sources||{}).litellm;
+function openModel(name,keep){const m=(D.models||[]).find(x=>x.name===name);if(!m){closeDrawer();return;}selected=name;selectedNode=null;selectedTeam=null;if(!keep)history.replaceState(null,'','#models/model/'+encodeURIComponent(name));const s=(D.sources||{}).litellm;
   $('drawer').innerHTML=`<button class="drawer-x" onclick="closeDrawer()">×</button>
    <div style="display:flex;align-items:center;gap:10px"><span class="dot ${m.status==='running'?'ok':'warn'}"></span><span style="font-size:19px;font-weight:800">${esc(m.name)}</span>${tierBadge(m.tier)}</div>
    <div class="m-id" style="margin-top:4px">${esc(m.model)}</div>
@@ -387,10 +389,10 @@ function openModel(name,keep){const m=(D.models||[]).find(x=>x.name===name);if(!
   -d '{"model":"${esc(m.name)}","messages":[{"role":"user","content":"Hi"}]}'</div>
    <div style="display:flex;gap:8px;margin-top:18px"><button class="btn approve" style="flex:1" onclick="openLink('langfuse')">📊 Langfuse</button><button class="btn dismiss" style="flex:1" onclick="openLink('webui')">💬 WebUI</button></div>`;
   if(!keep){$('drawer').classList.add('open');$('scrim').classList.add('open');}}
-function closeDrawer(){selected=null;selectedNode=null;$('drawer').classList.remove('open');$('scrim').classList.remove('open');}
+function closeDrawer(){selected=null;selectedNode=null;selectedTeam=null;$('drawer').classList.remove('open');$('scrim').classList.remove('open');history.replaceState(null,'','#'+curV);}
 function openNode(name,keep){
   const n=(D.nodes||[]).find(x=>x.name===name);if(!n){closeDrawer();return;}
-  selectedNode=name;selected=null;
+  selectedNode=name;selected=null;selectedTeam=null;if(!keep)history.replaceState(null,'','#infra/node/'+encodeURIComponent(name));
   const host=n.name.split('.')[0];
   const g=(D.gpu||[]).find(x=>x.node===host);
   const gutil=g&&g.util&&g.util.length?Math.round(g.util.reduce((a,b)=>a+b,0)/g.util.length):null;
@@ -427,6 +429,24 @@ function openNode(name,keep){
    <div class="sec-title">Pods by namespace <span class="muted" style="font-weight:500;text-transform:none;letter-spacing:0">· ${np.length} on node</span></div>
    ${legend}${podsHtml}`;
   if(!keep){$('drawer').classList.add('open');$('scrim').classList.add('open');}}
+function openTeam(name,keep){const t=(D.teams||[]).find(x=>x.name===name||x.id===name);if(!t){closeDrawer();return;}
+  selectedTeam=t.name;selected=null;selectedNode=null;if(!keep)history.replaceState(null,'','#teams/team/'+encodeURIComponent(t.name));
+  const pct=t.limit?Math.min(100,Math.round(t.budget/t.limit*100)):null;
+  const bar=(p,col)=>`<div class="bar" style="margin-top:5px"><i style="width:${Math.min(100,Math.max(2,p))}%;background:${col}"></i></div>`;
+  $('drawer').innerHTML=`<button class="drawer-x" onclick="closeDrawer()">×</button>
+   <div style="display:flex;align-items:center;gap:10px"><span style="font-size:17px">◐</span><span style="font-size:19px;font-weight:800">${esc(t.name)}</span></div>
+   <div class="m-id" style="margin-top:4px">namespace: team-${esc(t.name)}</div>
+   <div class="mini-kpi"><div class="mk"><div class="mkv" style="color:var(--green)">${num(t.reqsToday||0)}</div><div class="mkl">req today</div></div><div class="mk"><div class="mkv">$${(t.spendToday||0).toFixed(2)}</div><div class="mkl">spend today</div></div><div class="mk"><div class="mkv">${t.keys||0}</div><div class="mkl">API keys</div></div></div>
+   <div class="sec-title">Budget</div>
+   <div class="bar-lbl"><span>${t.limit?'used of cap':'spend (no cap set)'}</span><span>${t.limit?`$${(t.budget||0).toFixed(2)} / $${t.limit.toFixed(0)} · ${pct}%`:`$${(t.budget||0).toFixed(2)}`}</span></div>
+   ${t.limit?bar(pct,pct>80?'var(--amber)':'var(--green)'):''}
+   <div class="sec-title">Today</div>
+   <div class="kv"><span class="k">Requests</span><span class="v">${num(t.reqsToday||0)}</span><span class="k">Failed</span><span class="v">${t.failed||0}</span><span class="k">Tokens</span><span class="v">${num(t.tokens||0)}</span><span class="k">Spend</span><span class="v">$${(t.spendToday||0).toFixed(2)}</span><span class="k">API keys</span><span class="v">${t.keys||0}</span></div>
+   <div class="sec-title">Call it (via LiteLLM)</div>
+   <div class="code">curl $LITELLM/v1/chat/completions \\
+  -H "Authorization: Bearer $TEAM_KEY" \\
+  -d '{"model":"<model>","messages":[{"role":"user","content":"Hi"}]}'</div>`;
+  if(!keep){$('drawer').classList.add('open');$('scrim').classList.add('open');}}
 function doSearch(q){q=(q||'').trim().toLowerCase();const res=$('q-res');if(!res)return;if(!q){res.className='q-res';res.innerHTML='';lastSearch=[];return;}
   const items=[];
   (D.models||[]).forEach(m=>{if((m.name||'').toLowerCase().includes(q)||(m.model||'').toLowerCase().includes(q))items.push({type:'model',name:m.name,label:m.name,sub:m.model||''});});
@@ -438,13 +458,15 @@ function doSearch(q){q=(q||'').trim().toLowerCase();const res=$('q-res');if(!res
 function pickSearch(i){const it=lastSearch[i];if(!it)return;const inp=$('q');if(inp)inp.value='';$('q-res').className='q-res';
   if(it.type==='model'){go('models',document.querySelectorAll('.nav-item')[1]);openModel(it.name);}
   else if(it.type==='node'){go('infra',document.querySelectorAll('.nav-item')[4]);openNode(it.name);}
-  else if(it.type==='team'){go('teams',document.querySelectorAll('.nav-item')[2]);}}
+  else if(it.type==='team'){go('teams',document.querySelectorAll('.nav-item')[2]);openTeam(it.name);}}
 function searchGo(){if(lastSearch.length)pickSearch(0);}
-function go(v,el){document.querySelectorAll('.view').forEach(x=>x.classList.remove('active'));$('v-'+v).classList.add('active');document.querySelectorAll('.nav-item').forEach(x=>x.classList.remove('active'));if(el)el.classList.add('active');document.querySelector('.main').scrollTop=0;}
+function go(v,el){document.querySelectorAll('.view').forEach(x=>x.classList.remove('active'));$('v-'+v).classList.add('active');document.querySelectorAll('.nav-item').forEach(x=>x.classList.remove('active'));if(el)el.classList.add('active');document.querySelector('.main').scrollTop=0;curV=v;history.replaceState(null,'','#'+v);}
 function toggleTheme(){const b=document.body,n=b.getAttribute('data-theme')==='light'?'dark':'light';b.setAttribute('data-theme',n);localStorage.setItem('theme',n);}
 const saved=localStorage.getItem('theme');if(saved)document.body.setAttribute('data-theme',saved);
 poll();setInterval(poll,5000);
 document.addEventListener('keydown',e=>{if(e.key==='Escape'){const r=document.getElementById('q-res');if(r&&r.classList.contains('open')){r.className='q-res';}else{closeDrawer();}}});
+function routeFromHash(){const parts=(location.hash||'').replace(/^#/,'').split('/');const v=parts[0];if(!NAVIX.hasOwnProperty(v))return;go(v,document.querySelectorAll('.nav-item')[NAVIX[v]]);const type=parts[1],name=parts[2]?decodeURIComponent(parts[2]):null;if(type&&name){if(type==='model')openModel(name);else if(type==='node')openNode(name);else if(type==='team')openTeam(name);}}
+window.addEventListener('hashchange',routeFromHash);
 
 </script>
 </body>
