@@ -19,16 +19,27 @@ Two distinct signals, used for two distinct jobs:
   KV-cache utilization. Closed-loop: only rises when the current replicas can't
   keep up. **Used for right-sizing** (how many replicas). Self-calibrates to real
   per-model/per-GPU capacity — no brittle "requests-per-replica" assumption.
-- **Arrival** — a request-present/rate signal from the always-on EPP. Open-loop.
-  **Used only to wake a pool from zero** (0→1), because at 0 replicas there is no
-  saturation to measure. Never used as a continuous sizing target.
+- **Arrival** — a per-model request-rate signal from the always-on **LiteLLM
+  gateway**. Open-loop. **Used only to wake a pool from zero** (0→1), because at
+  0 replicas there is no saturation to measure. Never used as a continuous
+  sizing target.
 
-Source: the llm-d **EPP is always-on and already tracks per-replica queue depth
-+ KV utilization** (it uses them for routing), so it can be the single Prometheus
-source for both signals. If the EPP does not publish pool-aggregated saturation
-gauges in a scaler-friendly form (VERIFY — see gate below), fall back to scraping
-the vLLM replicas directly for saturation and use the EPP only for the arrival/
-wake-up signal. Same design shape either way.
+Source: **saturation** comes from scraping the vLLM replicas directly
+(`vllm:num_requests_waiting` by `llm-d.ai/pool` label). **Arrival** comes from
+**LiteLLM**, not the EPP.
+
+> **VALIDATED (2026-07-11): the EPP cannot be the wake-from-zero source.** The
+> GIE EPP returns an immediate **503** for a request that arrives with zero ready
+> endpoints and does **not** increment its request counter
+> (`llm_d_epp_request_total` held flat across repeated 503s in a live test). A
+> metric that never moves can't tell KEDA to wake. **LiteLLM sits upstream of the
+> EPP and counts the request before it 503s** — verified live that a request to a
+> zero'd pool moves `litellm_proxy_total_requests_metric_total{requested_model=<name>}`
+> from 0. LiteLLM is also the uniform front door for *every* model, so this makes
+> scale-to-zero signalling consistent rather than llm-d-specific. (The EPP's
+> `llm_d_epp_*` gauges — queue size, KV-cache, ready endpoints — are still useful
+> for the dashboard; scraping them needs the EPP SA granted `system:auth-delegator`
+> so its metrics-endpoint TokenReview works.)
 
 ## Components
 
@@ -92,11 +103,12 @@ spec:
         threshold: "${targetQueueDepth}"
         activationThreshold: "1"                # don't wake GPUs on a trickle
     # (optional) SATURATION guardrail — p95 latency
-    # (v2) ARRIVAL — wake from zero, sourced from the always-on EPP
+    # (v2) ARRIVAL — wake from zero, sourced from the always-on LiteLLM gateway
     - type: prometheus
       metadata:
         serverAddress: http://<autoscaling-prometheus>.inference.svc:9090
-        query: 'sum(rate(<epp_request_total>{pool="<name>"}[1m])) or vector(0)'
+        query: 'sum(rate(litellm_proxy_total_requests_metric_total{requested_model="<name>"}[1m])) or vector(0)'
+        threshold: "1000"                       # high => contributes at most ~1
         activationThreshold: "0"                # any arriving request wakes 0->1
 ```
 Asymmetric behavior: responsive scale-up, conservative scale-down (GPU pods are
@@ -105,11 +117,15 @@ slow to start).
 ### 5. Scale-to-zero + wake-up (v2)
 - `minReplicaCount: 0` drains the pool when idle; Karpenter then reclaims the GPU
   node → real cost savings.
-- The **arrival trigger from the always-on EPP** wakes 0→1 on the first request.
-- Cold start ~1–2 min (Karpenter node + model load from the S3 cache); the first
-  request must be **held/retried** while the pool wakes. Confirm EPP behavior with
-  an empty pool (does it 503, queue, or hold?) and configure gateway/EPP retry so
-  the caller doesn't just get an error. Opt-in per endpoint.
+- The **arrival trigger from the always-on LiteLLM gateway** wakes 0→1 on the
+  first request. `requested_model` = the endpoint name, so it maps 1:1 to the pool.
+  The high `threshold` means this trigger only ever asks for ~1 replica; the
+  queue-depth trigger owns right-sizing above 1.
+- Cold start ~1–2 min (Karpenter node + model load from the S3 cache). The
+  triggering request is **held via LiteLLM retries** (`num_retries` +
+  `request_timeout`) while the pool wakes — the EPP 503s an empty pool, so the
+  retry (not the EPP) covers the gap: cold start becomes added latency, not an
+  error. Opt-in per endpoint (`minReplicas: 0`).
 
 ### 6. Karpenter interaction (already works)
 Replicas→0 empties the GPU node → Karpenter deprovisions. Replicas 0→N creates
