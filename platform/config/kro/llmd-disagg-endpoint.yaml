@@ -1,0 +1,470 @@
+# LLMDDisaggEndpoint — prefill/decode DISAGGREGATED scale-tier serving via llm-d.
+#
+# The disaggregated sibling of LLMDEndpoint. Long prompts make prefill
+# (compute-bound) contend with decode (bandwidth-bound) on the same GPUs,
+# spiking inter-token latency under load. This RGD splits them into two pools:
+#
+#   - prefill pool  (llm-d.ai/role: prefill): processes prompts, PRODUCES KV
+#     cache  → vLLM --kv-transfer-config kv_role=kv_producer (NIXL connector)
+#   - decode pool   (llm-d.ai/role: decode):  generates tokens, CONSUMES KV
+#     cache  → vLLM --kv-transfer-config kv_role=kv_consumer (NIXL connector)
+#
+# KV cache blocks move prefill→decode over NIXL (RDMA/NVLink/TCP via UCX). The
+# llm-d router (EPP + InferencePool) selects the pool (llm-d.ai/pool=<name>) and
+# schedules prefill→prefill pods, decode→decode pods.
+#
+#   Request path: LiteLLM -> llm-d router (Envoy + EPP) -> InferencePool
+#                 -> prefill pod (KV producer) --NIXL--> decode pod (KV consumer)
+#
+# ── EXPERIMENTAL / runtime-validation gates ─────────────────────────────────
+#   1. The vLLM image (spec.vllmImage) MUST contain the `nixl` library + UCX.
+#      Stock vllm/vllm-openai may not; use an llm-d/nixl-enabled image or add an
+#      init step. Validated by a GPU smoke test, not by KRO.
+#   2. Prefill-first P/D scheduling depends on the llm-d router chart version's
+#      EPP capabilities. This RGD wires the pools + NIXL correctly; end-to-end
+#      P/D correctness is confirmed by the smoke test.
+# See docs/roadmap/disaggregated-inference.md.
+apiVersion: kro.run/v1alpha1
+kind: ResourceGraphDefinition
+metadata:
+  name: llmd-disagg-endpoint
+spec:
+  schema:
+    apiVersion: v1alpha1
+    kind: LLMDDisaggEndpoint
+    spec:
+      model:                "string"
+      modelSource:          "string  | default="
+      gpuCount:             "integer | default=1"
+      tensorParallelSize:   "integer | default=0"
+      prefillReplicas:      "integer | default=1 minimum=1"
+      decodeReplicas:       "integer | default=2 minimum=1"
+      maxModelLen:          "integer | default=16384"
+      minVramPerGpuGiB:     "integer | default=0"
+      workerMemory:         "string  | default=16Gi"
+      workerCpu:            "string  | default=8"
+      vllmImage:            "string  | default=vllm/vllm-openai:v0.24.0"
+      routerChartVersion:   "string  | default=v0.9.0"
+      routingProfile:       "string  | default=prefix"   # balanced|prefix|throughput|latency
+    status:
+      ready:             "${decodedeployment.status.?availableReplicas.orValue(0) > 0 ? 'True' : 'False'}"
+      prefillReplicas:   ${prefilldeployment.status.?availableReplicas.orValue(0)}
+      decodeReplicas:    ${decodedeployment.status.?availableReplicas.orValue(0)}
+      routerHealth:      "${routerapp.status.?health.?status.orValue('Unknown')}"
+
+  resources:
+    - id: platformConfig
+      externalRef:
+        apiVersion: v1
+        kind: ConfigMap
+        metadata:
+          name: platform-config
+
+    # ── Prefill pool: KV producer ───────────────────────────────────────────
+    - id: prefilldeployment
+      readyWhen:
+        - ${prefilldeployment.status.?availableReplicas.orValue(0) > 0}
+      template:
+        apiVersion: apps/v1
+        kind: Deployment
+        metadata:
+          name: ${schema.metadata.name}-prefill
+          labels:
+            app.kubernetes.io/name: ${schema.metadata.name}
+            ai-platform/serving-mode: llm-d-disagg
+            llm-d.ai/role: prefill
+        spec:
+          replicas: ${schema.spec.prefillReplicas}
+          selector:
+            matchLabels:
+              app.kubernetes.io/name: ${schema.metadata.name}
+              llm-d.ai/pool: ${schema.metadata.name}
+              llm-d.ai/role: prefill
+          template:
+            metadata:
+              labels:
+                app.kubernetes.io/name: ${schema.metadata.name}
+                llm-d.ai/pool: ${schema.metadata.name}
+                llm-d.ai/role: prefill
+              annotations:
+                karpenter.sh/do-not-disrupt: "true"
+            spec:
+              serviceAccountName: inference-worker
+              nodeSelector:
+                workload-type: gpu-inference
+              tolerations:
+                - key: nvidia.com/gpu
+                  operator: Exists
+                  effect: NoSchedule
+              affinity:
+                nodeAffinity:
+                  requiredDuringSchedulingIgnoredDuringExecution:
+                    nodeSelectorTerms:
+                      - matchExpressions:
+                          - key: karpenter.k8s.aws/instance-gpu-memory
+                            operator: Gt
+                            values:
+                              - "${string(schema.spec.minVramPerGpuGiB > 0 ? ((schema.spec.minVramPerGpuGiB - 1) * 1024) - 1 : 0)}"
+              initContainers:
+                - name: hf-cache-download
+                  image: peakcom/s5cmd:v2.3.0
+                  env:
+                    - name: MODEL_ID
+                      value: ${schema.spec.model}
+                    - name: CACHE_BUCKET
+                      value: ${platformConfig.data.?modelCacheBucket.orValue("")}
+                    - name: AWS_REGION
+                      value: ${platformConfig.data.?region.orValue("us-east-1")}
+                  command:
+                    - sh
+                    - -c
+                    - |
+                      set -u
+                      if [ -z "$CACHE_BUCKET" ]; then echo "no cache bucket"; exit 0; fi
+                      PREFIX="hf/$MODEL_ID"
+                      LOCAL="/hf-cache/hub/models--$(echo "$MODEL_ID" | sed 's#/#--#g')"
+                      if /s5cmd ls "s3://$CACHE_BUCKET/$PREFIX/" >/dev/null 2>&1; then
+                        mkdir -p "$LOCAL"; /s5cmd sync "s3://$CACHE_BUCKET/$PREFIX/*" "$LOCAL/" || rm -rf "$LOCAL"
+                      fi
+                  volumeMounts:
+                    - name: hf-cache
+                      mountPath: /hf-cache
+              containers:
+                - name: modelserver
+                  image: ${platformConfig.data.?vllmImage.orValue(schema.spec.vllmImage)}
+                  command: ["vllm", "serve"]
+                  args:
+                    - "${schema.spec.modelSource != '' ? '/hf-cache/finetuned' : schema.spec.model}"
+                    - "--served-model-name"
+                    - "${schema.spec.model}"
+                    - "--tensor-parallel-size"
+                    - "${string(schema.spec.tensorParallelSize > 0 ? schema.spec.tensorParallelSize : schema.spec.gpuCount)}"
+                    - "--max-model-len"
+                    - "${string(schema.spec.maxModelLen)}"
+                    - "--gpu-memory-utilization"
+                    - "0.9"
+                    - "--kv-transfer-config"
+                    - '{"kv_connector":"NixlConnector","kv_role":"kv_producer"}'
+                    - "--port"
+                    - "8000"
+                    - "--disable-access-log-for-endpoints=/health,/metrics,/v1/models"
+                  env:
+                    - name: HF_TOKEN
+                      valueFrom:
+                        secretKeyRef:
+                          name: hf-token
+                          key: token
+                          optional: true
+                    - name: HF_HOME
+                      value: /hf-cache
+                    - name: VLLM_NIXL_SIDE_CHANNEL_PORT
+                      value: "5600"
+                    - name: VLLM_NIXL_SIDE_CHANNEL_HOST
+                      valueFrom:
+                        fieldRef:
+                          fieldPath: status.podIP
+                    - name: UCX_TLS
+                      value: "all"
+                  ports:
+                    - name: modelserver
+                      containerPort: 8000
+                    - name: nixl
+                      containerPort: 5600
+                  readinessProbe:
+                    httpGet:
+                      path: /health
+                      port: 8000
+                    initialDelaySeconds: 30
+                    periodSeconds: 15
+                    failureThreshold: 80
+                  resources:
+                    requests:
+                      cpu: ${schema.spec.workerCpu}
+                      memory: ${schema.spec.workerMemory}
+                      nvidia.com/gpu: ${schema.spec.gpuCount}
+                    limits:
+                      cpu: ${schema.spec.workerCpu}
+                      memory: ${schema.spec.workerMemory}
+                      nvidia.com/gpu: ${schema.spec.gpuCount}
+                  volumeMounts:
+                    - name: hf-cache
+                      mountPath: /hf-cache
+                    - name: shm
+                      mountPath: /dev/shm
+              volumes:
+                - name: hf-cache
+                  emptyDir:
+                    sizeLimit: 100Gi
+                - name: shm
+                  emptyDir:
+                    medium: Memory
+                    sizeLimit: 8Gi
+
+    # ── Decode pool: KV consumer ────────────────────────────────────────────
+    - id: decodedeployment
+      readyWhen:
+        - ${decodedeployment.status.?availableReplicas.orValue(0) > 0}
+      template:
+        apiVersion: apps/v1
+        kind: Deployment
+        metadata:
+          name: ${schema.metadata.name}-decode
+          labels:
+            app.kubernetes.io/name: ${schema.metadata.name}
+            ai-platform/serving-mode: llm-d-disagg
+            llm-d.ai/role: decode
+        spec:
+          replicas: ${schema.spec.decodeReplicas}
+          selector:
+            matchLabels:
+              app.kubernetes.io/name: ${schema.metadata.name}
+              llm-d.ai/pool: ${schema.metadata.name}
+              llm-d.ai/role: decode
+          template:
+            metadata:
+              labels:
+                app.kubernetes.io/name: ${schema.metadata.name}
+                llm-d.ai/pool: ${schema.metadata.name}
+                llm-d.ai/role: decode
+              annotations:
+                karpenter.sh/do-not-disrupt: "true"
+            spec:
+              serviceAccountName: inference-worker
+              nodeSelector:
+                workload-type: gpu-inference
+              tolerations:
+                - key: nvidia.com/gpu
+                  operator: Exists
+                  effect: NoSchedule
+              affinity:
+                nodeAffinity:
+                  requiredDuringSchedulingIgnoredDuringExecution:
+                    nodeSelectorTerms:
+                      - matchExpressions:
+                          - key: karpenter.k8s.aws/instance-gpu-memory
+                            operator: Gt
+                            values:
+                              - "${string(schema.spec.minVramPerGpuGiB > 0 ? ((schema.spec.minVramPerGpuGiB - 1) * 1024) - 1 : 0)}"
+              initContainers:
+                - name: hf-cache-download
+                  image: peakcom/s5cmd:v2.3.0
+                  env:
+                    - name: MODEL_ID
+                      value: ${schema.spec.model}
+                    - name: CACHE_BUCKET
+                      value: ${platformConfig.data.?modelCacheBucket.orValue("")}
+                    - name: AWS_REGION
+                      value: ${platformConfig.data.?region.orValue("us-east-1")}
+                  command:
+                    - sh
+                    - -c
+                    - |
+                      set -u
+                      if [ -z "$CACHE_BUCKET" ]; then echo "no cache bucket"; exit 0; fi
+                      PREFIX="hf/$MODEL_ID"
+                      LOCAL="/hf-cache/hub/models--$(echo "$MODEL_ID" | sed 's#/#--#g')"
+                      if /s5cmd ls "s3://$CACHE_BUCKET/$PREFIX/" >/dev/null 2>&1; then
+                        mkdir -p "$LOCAL"; /s5cmd sync "s3://$CACHE_BUCKET/$PREFIX/*" "$LOCAL/" || rm -rf "$LOCAL"
+                      fi
+                  volumeMounts:
+                    - name: hf-cache
+                      mountPath: /hf-cache
+              containers:
+                - name: modelserver
+                  image: ${platformConfig.data.?vllmImage.orValue(schema.spec.vllmImage)}
+                  command: ["vllm", "serve"]
+                  args:
+                    - "${schema.spec.modelSource != '' ? '/hf-cache/finetuned' : schema.spec.model}"
+                    - "--served-model-name"
+                    - "${schema.spec.model}"
+                    - "--tensor-parallel-size"
+                    - "${string(schema.spec.tensorParallelSize > 0 ? schema.spec.tensorParallelSize : schema.spec.gpuCount)}"
+                    - "--max-model-len"
+                    - "${string(schema.spec.maxModelLen)}"
+                    - "--gpu-memory-utilization"
+                    - "0.9"
+                    - "--kv-transfer-config"
+                    - '{"kv_connector":"NixlConnector","kv_role":"kv_consumer"}'
+                    - "--port"
+                    - "8000"
+                    - "--disable-access-log-for-endpoints=/health,/metrics,/v1/models"
+                  env:
+                    - name: HF_TOKEN
+                      valueFrom:
+                        secretKeyRef:
+                          name: hf-token
+                          key: token
+                          optional: true
+                    - name: HF_HOME
+                      value: /hf-cache
+                    - name: VLLM_NIXL_SIDE_CHANNEL_PORT
+                      value: "5600"
+                    - name: VLLM_NIXL_SIDE_CHANNEL_HOST
+                      valueFrom:
+                        fieldRef:
+                          fieldPath: status.podIP
+                    - name: UCX_TLS
+                      value: "all"
+                  ports:
+                    - name: modelserver
+                      containerPort: 8000
+                    - name: nixl
+                      containerPort: 5600
+                  readinessProbe:
+                    httpGet:
+                      path: /health
+                      port: 8000
+                    initialDelaySeconds: 30
+                    periodSeconds: 15
+                    failureThreshold: 80
+                  resources:
+                    requests:
+                      cpu: ${schema.spec.workerCpu}
+                      memory: ${schema.spec.workerMemory}
+                      nvidia.com/gpu: ${schema.spec.gpuCount}
+                    limits:
+                      cpu: ${schema.spec.workerCpu}
+                      memory: ${schema.spec.workerMemory}
+                      nvidia.com/gpu: ${schema.spec.gpuCount}
+                  volumeMounts:
+                    - name: hf-cache
+                      mountPath: /hf-cache
+                    - name: shm
+                      mountPath: /dev/shm
+              volumes:
+                - name: hf-cache
+                  emptyDir:
+                    sizeLimit: 100Gi
+                - name: shm
+                  emptyDir:
+                    medium: Memory
+                    sizeLimit: 8Gi
+
+    # ── llm-d router: EPP + InferencePool over BOTH role-labeled pools ───────
+    - id: routerapp
+      readyWhen:
+        - ${routerapp.status.?health.?status.orValue('') == "Healthy"}
+      template:
+        apiVersion: argoproj.io/v1alpha1
+        kind: Application
+        metadata:
+          name: ${schema.metadata.name}-llmd-router
+          namespace: argocd
+          finalizers:
+            - resources-finalizer.argocd.argoproj.io
+        spec:
+          project: default
+          source:
+            repoURL: ghcr.io/llm-d/charts
+            chart: llm-d-router-standalone
+            targetRevision: ${schema.spec.routerChartVersion}
+            helm:
+              releaseName: ${schema.metadata.name}
+              valuesObject:
+                router:
+                  epp:
+                    replicas: 1
+                    flags:
+                      v: 2
+                    pluginsConfigFile: "disagg-plugins.yaml"
+                    pluginsCustomConfig:
+                      disagg-plugins.yaml: |
+                        apiVersion: llm-d.ai/v1alpha1
+                        kind: EndpointPickerConfig
+                        plugins:
+                        - type: queue-scorer
+                        - type: kv-cache-utilization-scorer
+                        - type: prefix-cache-scorer
+                        - type: no-hit-lru-scorer
+                        schedulingProfiles:
+                        - name: default
+                          plugins:
+                          - pluginRef: queue-scorer
+                            weight: ${string(schema.spec.routingProfile == 'throughput' ? 3 : (schema.spec.routingProfile == 'latency' ? 4 : (schema.spec.routingProfile == 'prefix' ? 1 : 2)))}
+                          - pluginRef: kv-cache-utilization-scorer
+                            weight: ${string(schema.spec.routingProfile == 'latency' ? 1 : (schema.spec.routingProfile == 'balanced' ? 2 : 3))}
+                          - pluginRef: prefix-cache-scorer
+                            weight: ${string(schema.spec.routingProfile == 'prefix' ? 4 : (schema.spec.routingProfile == 'throughput' ? 1 : (schema.spec.routingProfile == 'latency' ? 2 : 3)))}
+                          - pluginRef: no-hit-lru-scorer
+                            weight: ${string((schema.spec.routingProfile == 'prefix' || schema.spec.routingProfile == 'latency') ? 1 : 2)}
+                  inferencePool:
+                    failureMode: "FailOpen"
+                  modelServers:
+                    protocol: http
+                    matchLabels:
+                      llm-d.ai/pool: ${schema.metadata.name}
+                  extraServicePorts:
+                    - name: http
+                      port: 80
+                      protocol: TCP
+                      targetPort: 8081
+                  proxy:
+                    args:
+                      - "--service-node"
+                      - "envoy-sidecar"
+                      - "--log-level"
+                      - "warn"
+                      - "--concurrency"
+                      - "4"
+                      - "-c"
+                      - "/etc/envoy/envoy.yaml"
+                    resources:
+                      requests:
+                        cpu: "1"
+                        memory: 2Gi
+                      limits:
+                        memory: 4Gi
+          destination:
+            name: local-cluster
+            namespace: ${schema.metadata.namespace}
+          syncPolicy:
+            automated:
+              prune: true
+              selfHeal: true
+            syncOptions:
+              - CreateNamespace=true
+              - ServerSideApply=true
+
+    - id: litellmregister
+      template:
+        apiVersion: batch/v1
+        kind: Job
+        metadata:
+          name: ${schema.metadata.name}-register
+        spec:
+          backoffLimit: 20
+          ttlSecondsAfterFinished: 300
+          template:
+            spec:
+              restartPolicy: OnFailure
+              containers:
+                - name: register
+                  image: curlimages/curl:8.12.1
+                  command: ["sh", "-c"]
+                  args:
+                    - |
+                      until curl -sf http://litellm.ai-platform.svc.cluster.local:4000/health/liveliness; do
+                        echo "Waiting for LiteLLM..."; sleep 5
+                      done
+                      if curl -sf http://litellm.ai-platform.svc.cluster.local:4000/v1/models \
+                        -H "Authorization: Bearer $LITELLM_MASTER_KEY" | grep -q "\"id\":\"$MODEL_NAME\""; then
+                        echo "Model $MODEL_NAME already registered."
+                      else
+                        curl -sf -X POST http://litellm.ai-platform.svc.cluster.local:4000/model/new \
+                          -H "Content-Type: application/json" \
+                          -H "Authorization: Bearer $LITELLM_MASTER_KEY" \
+                          -d "{\"model_name\":\"$MODEL_NAME\",\"litellm_params\":{\"model\":\"openai/$MODEL_ID\",\"api_base\":\"http://$MODEL_NAME-epp.$NAMESPACE.svc.cluster.local:80/v1\",\"api_key\":\"no-key\"}}" \
+                        && echo "Registered."
+                      fi
+                  env:
+                    - name: LITELLM_MASTER_KEY
+                      valueFrom:
+                        secretKeyRef:
+                          name: litellm-api-key
+                          key: master-key
+                    - name: MODEL_NAME
+                      value: ${schema.metadata.name}
+                    - name: MODEL_ID
+                      value: ${schema.spec.model}
+                    - name: NAMESPACE
+                      value: ${schema.metadata.namespace}

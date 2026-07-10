@@ -724,11 +724,13 @@ def model_name_from_id(model_id: str) -> str:
 # Each tier is a different KRO CRD in front of the SAME vLLM engine, so the
 # sizing math is identical — only the emitted manifest (kind, a few field
 # names, target directory) differs.
-TIER_KIND = {"ray": "InferenceEndpoint", "vllm": "VLLMEndpoint", "llm-d": "LLMDEndpoint"}
+TIER_KIND = {"ray": "InferenceEndpoint", "vllm": "VLLMEndpoint", "llm-d": "LLMDEndpoint",
+             "llm-d-disagg": "LLMDDisaggEndpoint"}
 KIND_DIR = {
     "InferenceEndpoint": "workloads/models",
     "VLLMEndpoint": "workloads/models",
     "LLMDEndpoint": "workloads/scale-models",
+    "LLMDDisaggEndpoint": "workloads/scale-models",
 }
 # Workload -> llm-d EPP routing profile (LLMDEndpoint.spec.routingProfile).
 # Shared-prefix / multi-turn workloads win most from prefix+KV-aware routing;
@@ -786,6 +788,15 @@ def should_disaggregate(args) -> bool:
     return disagg_context(args) >= DISAGG_CONTEXT_THRESHOLD
 
 
+def resolve_kind(tier: str, args, scaling) -> str:
+    """Map the chosen tier to a CRD kind. The llm-d tier auto-splits into
+    aggregated (LLMDEndpoint) vs disaggregated (LLMDDisaggEndpoint): a
+    long-context fleet benefits from prefill/decode disaggregation."""
+    if tier == "llm-d":
+        return "LLMDDisaggEndpoint" if (scaling and should_disaggregate(args)) else "LLMDEndpoint"
+    return TIER_KIND[tier]
+
+
 def build_endpoint_yaml(
     kind: str,
     model: ModelSpec, vram: VramEstimate, best: Option,
@@ -803,9 +814,11 @@ def build_endpoint_yaml(
     if scaling:
         best = scaling[0].option
 
+    is_disagg = kind == "LLMDDisaggEndpoint"
     is_llmd = kind == "LLMDEndpoint"
+    is_llmd_family = is_llmd or is_disagg
     # shared time-slicing is a single-replica, non-llm-d feature.
-    shared = (not scaling) and (not is_llmd) and best.total_gpus == 1 and best.shared_eligible
+    shared = (not scaling) and (not is_llmd_family) and best.total_gpus == 1 and best.shared_eligible
 
     directory  = KIND_DIR[kind]
     yaml_path  = f"{directory}/{name}.yaml"
@@ -841,7 +854,7 @@ def build_endpoint_yaml(
     if best.tp_degree > 1:
         lines.append(f"  tensorParallelSize: {best.tp_degree}")
     # Pipeline parallelism: IE/vLLM only (the llm-d RGD is single-node TP).
-    if best.pp_degree > 1 and not is_llmd:
+    if best.pp_degree > 1 and not is_llmd_family:
         lines.append(f"  pipelineParallelSize: {best.pp_degree}")
     if shared:
         lines.append("  shared: true          # fits with headroom — up to 4 models share the GPU")
@@ -850,19 +863,25 @@ def build_endpoint_yaml(
     lines.append(f"  minVramPerGpuGiB: {min_vram_gib}")
     lines.append(f'  workerMemory: "{worker_mem_gib}Gi"')
 
-    if is_llmd:
+    if is_disagg:
+        # Disaggregated scale tier: split into a prefill pool (KV producer) and a
+        # decode pool (KV consumer). Decode holds the sessions (bandwidth-bound)
+        # so it gets the majority; prefill (compute-bound) finishes fast, so fewer
+        # replicas suffice. ~1/3 prefill : 2/3 decode as a first-order split.
+        profile = pick_routing_profile(args)
+        total = llmd_replicas(min_replicas, profile) if scaling else 3
+        decode_n = max(1, math.ceil(total * 0.66))
+        prefill_n = max(1, total - decode_n)
+        lines.append(f"  prefillReplicas: {prefill_n}")
+        lines.append(f"  decodeReplicas: {decode_n}")
+        lines.append(f"  routingProfile: {profile}   # EPP KV/prefix/load-aware weights for this workload")
+    elif is_llmd:
         # Scale tier: a fixed replica pool the EPP routes across, with the
         # scorer weights tuned to this workload's access pattern.
         profile = pick_routing_profile(args)
         replicas = llmd_replicas(min_replicas, profile) if scaling else max(2, min_replicas)
         lines.append(f"  replicas: {replicas}")
         lines.append(f"  routingProfile: {profile}   # EPP KV/prefix/load-aware weights for this workload")
-        if should_disaggregate(args):
-            lines.append(f"  # RECOMMENDED: prefill/decode disaggregation for this long-context")
-            lines.append(f"  #   workload (~{disagg_context(args)} tok/req) — separates compute-bound")
-            lines.append(f"  #   prefill from bandwidth-bound decode for better TTFT + throughput.")
-            lines.append(f"  #   Not yet a first-class LLMDEndpoint field; see")
-            lines.append(f"  #   docs/roadmap/disaggregated-inference.md")
     else:
         lines.append(f"  # maxNumSeqs: {max_num_seqs}")
         lines.append(f"  minReplicas: {min_replicas}")
@@ -882,28 +901,29 @@ def _print_yaml_snippet(model: ModelSpec, vram: VramEstimate, best: Option,
                         args: argparse.Namespace, C: type,
                         scaling: list[ScalingRecommendation] | None = None) -> None:
     tier = pick_tier(args, best, scaling)
-    kind = TIER_KIND[tier]
+    kind = resolve_kind(tier, args, scaling)
     name, yaml_path, yaml_body, commit_msg = build_endpoint_yaml(
         kind, model, vram, best, args, scaling)
 
-    why = {"llm-d": "fleet of 2+ replicas -> llm-d scale tier (KV/prefix/load-aware routing)",
-           "vllm": "single replica -> plain vLLM (simplest, no router)",
-           "ray": "Ray Serve tier (legacy / explicit)"}.get(tier, tier)
+    why = {"LLMDDisaggEndpoint": "long-context fleet -> disaggregated llm-d (prefill/decode split + KV/prefix routing)",
+           "LLMDEndpoint": "fleet of 2+ replicas -> llm-d scale tier (KV/prefix/load-aware routing)",
+           "VLLMEndpoint": "single replica -> plain vLLM (simplest, no router)",
+           "InferenceEndpoint": "Ray Serve tier (legacy / explicit)"}.get(kind, kind)
     print(f"\n{C.BOLD}Serving tier:{C.RESET} {C.BOLD}{kind}{C.RESET} {C.DIM}- {why}{C.RESET}")
-    if kind == "LLMDEndpoint":
-        print(f"{C.DIM}  routingProfile '{pick_routing_profile(args)}' baked into the manifest "
-              f"(EPP scorer weights tuned for this workload).{C.RESET}")
-        if scaling:
-            prof = pick_routing_profile(args)
+    if kind in ("LLMDEndpoint", "LLMDDisaggEndpoint"):
+        prof = pick_routing_profile(args)
+        print(f"{C.DIM}  routingProfile '{prof}' baked into the manifest (EPP scorer weights).{C.RESET}")
+        if kind == "LLMDDisaggEndpoint":
+            print(f"{C.BOLD}  ⚑ disaggregated: separate prefill (KV producer) + decode (KV consumer) pools "
+                  f"for long context (~{disagg_context(args)} tok).{C.RESET}")
+            print(f"{C.DIM}    Runtime P/D needs a NIXL-enabled vLLM image — see docs/roadmap/disaggregated-inference.md.{C.RESET}")
+        elif scaling:
             base = scaling[0].replicas
             eff = llmd_replicas(base, prof)
             if eff < base:
                 pct = int((1 - ROUTING_EFFICIENCY.get(prof, 0.85)) * 100)
                 print(f"{C.DIM}  routing efficiency (~{pct}% for '{prof}'): "
                       f"{eff} replicas vs {base} for round-robin vLLM.{C.RESET}")
-        if should_disaggregate(args):
-            print(f"{C.BOLD}  ⚑ long context (~{disagg_context(args)} tok): consider prefill/decode "
-                  f"disaggregation{C.RESET} {C.DIM}(roadmap — see docs/roadmap/disaggregated-inference.md).{C.RESET}")
 
     # --deploy/--undeploy do the git work for you; the copy-paste block is the
     # manual path. Point at the automated one so users know it exists.
@@ -924,7 +944,7 @@ def _print_yaml_snippet(model: ModelSpec, vram: VramEstimate, best: Option,
     print()
     print(f"{C.DIM}# Watch the deployment come up:{C.RESET}")
     plural = {"InferenceEndpoint": "inferenceendpoints", "VLLMEndpoint": "vllmendpoints",
-              "LLMDEndpoint": "llmdendpoints"}[kind]
+              "LLMDEndpoint": "llmdendpoints", "LLMDDisaggEndpoint": "llmddisaggendpoints"}[kind]
     print(f"kubectl get {plural} -n inference -w")
     print(f"{C.DIM}# Later, to remove it (ArgoCD deletes the model + LiteLLM "
           f"deregisters):{C.RESET}")

@@ -96,10 +96,11 @@ def main(argv: list[str] | None = None) -> int:
                         "throughput — forces escalation to faster GPUs if needed.")
     p.add_argument("--hf-token", default=os.environ.get("HF_TOKEN"),
                    help="HuggingFace token (also $HF_TOKEN). Required for gated models.")
-    p.add_argument("--tier", choices=["auto", "vllm", "llm-d", "ray"], default="auto",
+    p.add_argument("--tier", choices=["auto", "vllm", "llm-d", "llm-d-disagg", "ray"], default="auto",
                    help="Serving CRD to emit: vllm=VLLMEndpoint, llm-d=LLMDEndpoint "
-                        "(scale tier, KV/prefix/load-aware routing), ray=InferenceEndpoint "
-                        "(legacy). Default auto: 2+ replicas -> llm-d, single -> vllm.")
+                        "(scale tier), llm-d-disagg=LLMDDisaggEndpoint (prefill/decode split), "
+                        "ray=InferenceEndpoint (legacy). Default auto: single->vllm, fleet->llm-d, "
+                        "long-context fleet->llm-d-disagg.")
     p.add_argument("--deploy", action="store_true",
                    help="Write the recommended InferenceEndpoint YAML to "
                         "workloads/models/, then git commit + push so ArgoCD "
@@ -219,8 +220,8 @@ def main(argv: list[str] | None = None) -> int:
                              "the given constraints (raise --max-price or adjust flags).\n")
             return 2
         from .gitops import deploy_model
-        from .render import build_endpoint_yaml, pick_tier, TIER_KIND
-        kind = TIER_KIND[pick_tier(args, best, scaling)]
+        from .render import build_endpoint_yaml, pick_tier, resolve_kind
+        kind = resolve_kind(pick_tier(args, best, scaling), args, scaling)
         name, yaml_path, yaml_body, commit_msg = build_endpoint_yaml(
             kind, model, vram, best, args, scaling)
         return deploy_model(name, yaml_path, yaml_body, commit_msg, args)
