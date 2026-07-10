@@ -173,12 +173,12 @@ tbody tr:hover{background:var(--surface-2)}
   <div class="top">
     <div class="logo"><span>AI</span> Platform</div>
     <div class="top-sep"></div>
-    <div class="search">🔎 <input id="q" autocomplete="off" placeholder="Search models, teams, nodes…" oninput="doSearch(this.value)" onkeydown="if(event.key==='Enter'){searchGo();}else if(event.key==='Escape'){this.value='';doSearch('');}" onblur="setTimeout(()=>{const r=document.getElementById('q-res');if(r)r.className='q-res'},150)"><div id="q-res" class="q-res"></div></div>
+    <div class="search">🔎 <input id="q" autocomplete="off" aria-label="Search models, teams, and nodes" role="combobox" aria-expanded="false" placeholder="Search models, teams, nodes…" oninput="doSearch(this.value)" onkeydown="if(event.key==='Enter'){searchGo();}else if(event.key==='Escape'){this.value='';doSearch('');}" onblur="setTimeout(()=>{const r=document.getElementById('q-res');if(r)r.className='q-res'},150)"><div id="q-res" class="q-res"></div></div>
     <div class="spacer"></div>
     <div class="pill" id="top-cost" title="Realtime cluster cost — estimate">💲 —</div>
     <div class="pill" id="top-health" title="Health — click for details" style="cursor:pointer" onclick="go('health',document.querySelectorAll('.nav-item')[5])"></div>
     <button class="icon-btn" title="Theme" onclick="toggleTheme()">◐</button>
-    <div class="live" id="live">Live</div>
+    <div class="live" id="live" aria-live="polite" role="status">connecting…</div>
   </div>
 
   <div class="nav">
@@ -274,7 +274,7 @@ tbody tr:hover{background:var(--surface-2)}
 
 <!-- Model detail drawer -->
 <div class="scrim" id="scrim" onclick="closeDrawer()"></div>
-<div class="drawer" id="drawer"></div>
+<div class="drawer" id="drawer" role="dialog" aria-modal="true" aria-label="Detail panel" tabindex="-1"></div>
 
 
 <script>
@@ -388,8 +388,9 @@ function openModel(name,keep){const m=(D.models||[]).find(x=>x.name===name);if(!
   -H "Authorization: Bearer $KEY" \
   -d '{"model":"${esc(m.name)}","messages":[{"role":"user","content":"Hi"}]}'</div>
    <div style="display:flex;gap:8px;margin-top:18px"><button class="btn approve" style="flex:1" onclick="openLink('langfuse')">📊 Langfuse</button><button class="btn dismiss" style="flex:1" onclick="openLink('webui')">💬 WebUI</button></div>`;
-  if(!keep){$('drawer').classList.add('open');$('scrim').classList.add('open');}}
-function closeDrawer(){selected=null;selectedNode=null;selectedTeam=null;$('drawer').classList.remove('open');$('scrim').classList.remove('open');history.replaceState(null,'','#'+curV);}
+  if(!keep){showDrawer();}}
+function closeDrawer(){selected=null;selectedNode=null;selectedTeam=null;$('drawer').classList.remove('open');$('scrim').classList.remove('open');history.replaceState(null,'','#'+curV);const nv=document.querySelector('.nav-item.active');if(nv&&nv.focus)nv.focus();}
+function showDrawer(){$('drawer').classList.add('open');$('scrim').classList.add('open');const c=$('drawer').querySelector('.drawer-x');if(c)c.focus();}
 function openNode(name,keep){
   const n=(D.nodes||[]).find(x=>x.name===name);if(!n){closeDrawer();return;}
   selectedNode=name;selected=null;selectedTeam=null;if(!keep)history.replaceState(null,'','#infra/node/'+encodeURIComponent(name));
@@ -428,7 +429,7 @@ function openNode(name,keep){
    ${usage}
    <div class="sec-title">Pods by namespace <span class="muted" style="font-weight:500;text-transform:none;letter-spacing:0">· ${np.length} on node</span></div>
    ${legend}${podsHtml}`;
-  if(!keep){$('drawer').classList.add('open');$('scrim').classList.add('open');}}
+  if(!keep){showDrawer();}}
 function openTeam(name,keep){const t=(D.teams||[]).find(x=>x.name===name||x.id===name);if(!t){closeDrawer();return;}
   selectedTeam=t.name;selected=null;selectedNode=null;if(!keep)history.replaceState(null,'','#teams/team/'+encodeURIComponent(t.name));
   const pct=t.limit?Math.min(100,Math.round(t.budget/t.limit*100)):null;
@@ -446,7 +447,7 @@ function openTeam(name,keep){const t=(D.teams||[]).find(x=>x.name===name||x.id==
    <div class="code">curl $LITELLM/v1/chat/completions \\
   -H "Authorization: Bearer $TEAM_KEY" \\
   -d '{"model":"<model>","messages":[{"role":"user","content":"Hi"}]}'</div>`;
-  if(!keep){$('drawer').classList.add('open');$('scrim').classList.add('open');}}
+  if(!keep){showDrawer();}}
 function doSearch(q){q=(q||'').trim().toLowerCase();const res=$('q-res');if(!res)return;if(!q){res.className='q-res';res.innerHTML='';lastSearch=[];return;}
   const items=[];
   (D.models||[]).forEach(m=>{if((m.name||'').toLowerCase().includes(q)||(m.model||'').toLowerCase().includes(q))items.push({type:'model',name:m.name,label:m.name,sub:m.model||''});});
@@ -467,6 +468,8 @@ poll();setInterval(poll,5000);
 document.addEventListener('keydown',e=>{if(e.key==='Escape'){const r=document.getElementById('q-res');if(r&&r.classList.contains('open')){r.className='q-res';}else{closeDrawer();}}});
 function routeFromHash(){const parts=(location.hash||'').replace(/^#/,'').split('/');const v=parts[0];if(!NAVIX.hasOwnProperty(v))return;go(v,document.querySelectorAll('.nav-item')[NAVIX[v]]);const type=parts[1],name=parts[2]?decodeURIComponent(parts[2]):null;if(type&&name){if(type==='model')openModel(name);else if(type==='node')openNode(name);else if(type==='team')openTeam(name);}}
 window.addEventListener('hashchange',routeFromHash);
+document.querySelectorAll('.nav-item').forEach(n=>{n.tabIndex=0;n.setAttribute('role','button');n.addEventListener('keydown',e=>{if(e.key==='Enter'||e.key===' '){e.preventDefault();n.click();}});});
+document.addEventListener('keydown',function(e){if(e.key!=='Tab')return;var dr=document.getElementById('drawer');if(!dr.classList.contains('open'))return;var f=Array.prototype.slice.call(dr.querySelectorAll('button,a[href],input,[tabindex]')).filter(function(x){return x.offsetParent!==null;});if(!f.length)return;var first=f[0],last=f[f.length-1];if(e.shiftKey&&document.activeElement===first){e.preventDefault();last.focus();}else if(!e.shiftKey&&document.activeElement===last){e.preventDefault();first.focus();}});
 
 </script>
 </body>
