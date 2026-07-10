@@ -32,6 +32,14 @@ rules:
   - apiGroups: [""]
     resources: ["nodes", "pods"]
     verbs: ["get", "list"]
+  # Deployment diagnostics: pod/NodeClaim events (scheduling + Karpenter
+  # capacity failures) and pod log tails (model-loading progress).
+  - apiGroups: [""]
+    resources: ["events"]
+    verbs: ["get", "list"]
+  - apiGroups: [""]
+    resources: ["pods/log"]
+    verbs: ["get"]
   - apiGroups: ["kro.run"]
     resources: ["inferenceendpoints", "vllmendpoints", "llmdendpoints", "llmddisaggendpoints"]
     verbs: ["list"]

@@ -146,6 +146,19 @@ def k8s_get(path: str) -> dict | None:
     return data if status == 200 else None
 
 
+def k8s_get_text(path: str) -> str:
+    """GET a plain-text K8s endpoint (e.g. pod logs). Returns '' on any error."""
+    try:
+        ctx = ssl.create_default_context(cafile=CA_PATH)
+        conn = http.client.HTTPSConnection(K8S_HOST, K8S_PORT, context=ctx, timeout=10)
+        conn.request("GET", path, headers={"Authorization": f"Bearer {get_token()}"})
+        resp = conn.getresponse()
+        raw = resp.read()
+        return raw.decode("utf-8", "replace") if resp.status == 200 else ""
+    except Exception:
+        return ""
+
+
 def k8s_post(path: str, body: dict) -> tuple[int, dict | None]:
     return _k8s_request("POST", path, body=body)
 
@@ -862,6 +875,113 @@ def _bedrock_models() -> list:
         return []
 
 
+# Karpenter/provisioning Warning reasons that explain a stuck GPU deploy.
+_PROVISION_HINT = ("capacity", "fulfill", "launch", "zonal", "quota")
+
+
+def _events_list(path: str, kind: str = "") -> list:
+    """Fetch + flatten K8s Events at `path`, optionally filtered to a kind."""
+    d = k8s_get(path)
+    out = []
+    for e in (d or {}).get("items", []):
+        io = e.get("involvedObject", {}) or {}
+        if kind and io.get("kind") != kind:
+            continue
+        out.append({
+            "type": e.get("type", ""),
+            "reason": e.get("reason", ""),
+            "message": " ".join((e.get("message", "") or "").split())[:220],
+            "count": int(e.get("count", 1) or 1),
+            "obj": io.get("name", ""),
+            "ts": e.get("lastTimestamp") or e.get("eventTime") or "",
+            "by": (e.get("source", {}) or {}).get("component", "") or e.get("reportingComponent", ""),
+        })
+    return out
+
+
+def _deploy_diagnostics(models: list, pods: list) -> list:
+    """Explain why non-running self-hosted models aren't serving yet. Attaches a
+    `deploy` block to each (pod phase, container waiting reason, recent
+    scheduling events, model-load log tail) and returns cluster-level GPU
+    provisioning warnings (Karpenter capacity errors) for the alert feed.
+
+    All calls are best-effort; a failing source degrades to empty, never raises.
+    Targeted per-pod GETs only run for models that aren't running (typically
+    0-2 at a time), so this stays cheap on the poll loop."""
+    # Cluster GPU provisioning warnings — durable NodeClaim events survive the
+    # create->UnfulfillableCapacity->delete retry loop that Karpenter runs.
+    provisioning, seen = [], set()
+    for e in _events_list("/api/v1/events?fieldSelector=involvedObject.kind=NodeClaim", "NodeClaim"):
+        if e["type"] != "Warning" or not any(h in e["reason"].lower() for h in _PROVISION_HINT):
+            continue
+        key = (e["reason"], e["message"][:60])
+        if key in seen:
+            continue
+        seen.add(key)
+        provisioning.append(e)
+    provisioning = provisioning[:5]
+
+    # Pod events in the inference namespace, indexed by pod name.
+    ev_index: dict = {}
+    for e in _events_list("/api/v1/namespaces/inference/events?fieldSelector=involvedObject.kind=Pod", "Pod"):
+        ev_index.setdefault(e["obj"], []).append(e)
+
+    for m in models:
+        if m.get("status") == "running" or m.get("tier") == "bedrock":
+            continue
+        name = m["name"]
+        # The serving pod(s) — skip the transient LiteLLM register job pod.
+        cand = [p for p in pods if p.get("namespace") == "inference"
+                and p["name"].startswith(name + "-") and "-register" not in p["name"]]
+        cand.sort(key=lambda p: ((p.get("gpu", 0) or 0) > 0, p.get("created", "")), reverse=True)
+        dep = {"phase": "NoPod", "pod": "", "waiting": None, "events": [],
+               "provisioning": [], "log": []}
+        if cand:
+            pod = cand[0]
+            dep["pod"] = pod["name"]
+            dep["phase"] = pod.get("phase", "")
+            gpu_pod = (pod.get("gpu", 0) or 0) > 0
+            evs = ev_index.get(pod["name"], [])
+            unschedulable = any(e["reason"] == "FailedScheduling" for e in evs)
+            # Keep the most useful few events: warnings first, newest first,
+            # deduped by reason.
+            evs_sorted = sorted(evs, key=lambda e: (e["type"] != "Warning", e["ts"]), reverse=True)
+            picked, reasons = [], set()
+            for e in evs_sorted:
+                if e["reason"] in reasons:
+                    continue
+                reasons.add(e["reason"])
+                picked.append(e)
+                if len(picked) >= 4:
+                    break
+            dep["events"] = picked
+            # A Pending, unschedulable GPU pod is stuck on capacity — surface it.
+            if pod.get("phase") == "Pending" and unschedulable and gpu_pod and provisioning:
+                dep["provisioning"] = provisioning
+            # Container waiting reason + model-loading log tail (best-effort).
+            pj = k8s_get(f"/api/v1/namespaces/inference/pods/{pod['name']}")
+            if pj:
+                st = pj.get("status", {}) or {}
+                cstats = st.get("containerStatuses", []) or []
+                ready = False
+                cname = cstats[0].get("name") if cstats else ""
+                for c in cstats:
+                    w = (c.get("state", {}) or {}).get("waiting")
+                    if w and not dep["waiting"]:
+                        dep["waiting"] = {"reason": w.get("reason", ""),
+                                          "message": " ".join((w.get("message", "") or "").split())[:200]}
+                    ready = ready or bool(c.get("ready"))
+                # Pod is up but the model isn't serving yet → show load progress.
+                if st.get("phase") == "Running" and not ready and cname:
+                    txt = k8s_get_text(
+                        f"/api/v1/namespaces/inference/pods/{pod['name']}/log"
+                        f"?tailLines=14&container={cname}")
+                    if txt:
+                        dep["log"] = [ln for ln in txt.splitlines() if ln.strip()][-14:]
+        m["deploy"] = dep
+    return provisioning
+
+
 def _build_metrics(nodes: list, pods: list) -> dict:
     endpoints = _fetch_endpoints()
     src: dict = {}
@@ -942,10 +1062,17 @@ def _build_metrics(nodes: list, pods: list) -> dict:
     except Exception:
         src["argocd"] = False
 
+    # Deployment diagnostics: explain any not-yet-running model + collect
+    # cluster GPU provisioning warnings. Best-effort; never blocks the payload.
+    try:
+        provisioning = _deploy_diagnostics(models, pods)
+    except Exception:
+        provisioning = []
+
     by_model = sorted([[m["name"], m["costHr"], m["tier"]] for m in models if m["costHr"] > 0], key=lambda x: -x[1])
     cost_ext = {"byModel": by_model, "byTeam": met.get("byTeam", []), "trend": met.get("trend", [])}
     return {"models": models, "teams": met.get("teams", []), "gpu": gpu, "argocd": argo,
-            "costExt": cost_ext, "sources": src, "mts": time.time()}
+            "costExt": cost_ext, "provisioning": provisioning, "sources": src, "mts": time.time()}
 
 
 def metrics_loop() -> None:

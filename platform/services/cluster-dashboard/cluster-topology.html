@@ -93,6 +93,16 @@ tbody tr:hover{background:var(--surface-2)}
 .b-vllm{background:var(--green-soft);color:var(--green)}
 .b-llmd{background:var(--purple-soft);color:var(--purple)}
 .b-disagg{background:var(--purple-soft);color:var(--purple);box-shadow:inset 0 0 0 1px var(--purple)}
+.dep-warn{margin:8px 0;padding:10px 12px;border-radius:8px;background:var(--orange-soft);color:var(--orange);font-size:13px}
+.dep-warn ul{margin:6px 0 0;padding-left:18px}
+.dep-warn li{margin:2px 0}
+.sub-title{font-size:12px;text-transform:uppercase;letter-spacing:.5px;color:var(--text-muted);margin:14px 0 6px}
+.ev-list{display:flex;flex-direction:column;gap:4px}
+.ev{font-size:13px;padding:6px 8px;border-radius:6px;background:rgba(255,255,255,.03)}
+.ev.warn{background:var(--orange-soft)}
+.ev-r{font-weight:700;color:var(--text)}
+.ev-m{color:var(--text-muted)}
+.logtail{max-height:180px;overflow:auto;white-space:pre-wrap;font-size:12px;line-height:1.45}
 .b-ft{background:var(--cyan-soft);color:var(--cyan)}
 .b-ray{background:rgba(255,255,255,.06);color:var(--text-muted)}
 .st{font-size:10px;font-weight:700;padding:3px 8px;border-radius:5px}
@@ -318,7 +328,7 @@ async function poll(){
 function pushHist(){const m=D.models||[];push(hist.rpm,m.reduce((s,x)=>s+(x.rpm||0),0));push(hist.tok,Math.round(m.reduce((s,x)=>s+(x.tps||0),0)*60));push(hist.cost,(D.cost||{}).hourly||0);const g=(D.gpu||[]).flatMap(x=>x.util||[]);push(hist.gpu,g.length?Math.round(g.reduce((a,b)=>a+b,0)/g.length):0);}
 function diffActivity(){const t=new Date().toLocaleTimeString('en-GB',{hour:'2-digit',minute:'2-digit',second:'2-digit'});const cur={};(D.models||[]).forEach(m=>cur[m.name]=m.status);for(const n in cur){if(!(n in prevM))activity.unshift([t,`Model "${n}" appeared → ${cur[n]}`]);else if(prevM[n]!==cur[n])activity.unshift([t,`Model "${n}" → ${cur[n]}`]);}for(const n in prevM){if(!(n in cur))activity.unshift([t,`Model "${n}" removed`]);}prevM=cur;while(activity.length>18)activity.pop();if(!activity.length)activity=[[t,'Connected to cluster']];}
 
-function alertList(){const out=[];(D.models||[]).forEach(m=>{if(m.status!=='running')out.push({icon:'⚠',sev:'warn',t:`${m.name} · ${m.status}`,d:`${tierLabel(m.tier)} · ${m.availableReplicas||0}/${m.replicas||1} replicas ready`});else if((m.tier==='llm-d'||m.tier==='llm-d-disagg')&&m.router&&m.router!=='Healthy')out.push({icon:'⚠',sev:'warn',t:`${m.name} · router ${m.router}`,d:'llm-d EPP/router not yet Healthy'});else if(m.health&&m.health.toLowerCase()!=='healthy')out.push({icon:'⚠',sev:'warn',t:`${m.name} · ${m.health}`,d:'LiteLLM health check'});});(D.argocd||[]).forEach(a=>{if(a.sync!=='Synced'||a.health!=='Healthy')out.push({icon:'🚢',sev:(a.health==='Degraded'||a.health==='Missing')?'crit':'warn',t:`ArgoCD · ${a.name}`,d:`${a.sync} · ${a.health}`});});(D.nodeAlerts||[]).forEach(a=>out.push({icon:'🖥',sev:(a.issue==='NotReady'?'crit':'warn'),t:`Node ${a.node} · ${a.issue}`,d:'EKS node condition'}));return out;}
+function alertList(){const out=[];(D.models||[]).forEach(m=>{if(m.status!=='running'){const d=m.deploy||{};let reason='';if(d.provisioning&&d.provisioning.length)reason='waiting for GPU node — '+d.provisioning[0].reason;else if(d.waiting&&d.waiting.reason)reason=d.waiting.reason;else if(d.events&&d.events.length){const w=d.events.find(e=>e.type==='Warning')||d.events[0];reason=w.reason;}const sev=(d.provisioning&&d.provisioning.length)?'crit':'warn';out.push({icon:'⚠',sev,t:`${m.name} · ${m.status}`,d:reason?`${tierLabel(m.tier)} · ${reason}`:`${tierLabel(m.tier)} · ${m.availableReplicas||0}/${m.replicas||1} replicas ready`});}else if((m.tier==='llm-d'||m.tier==='llm-d-disagg')&&m.router&&m.router!=='Healthy')out.push({icon:'⚠',sev:'warn',t:`${m.name} · router ${m.router}`,d:'llm-d EPP/router not yet Healthy'});else if(m.health&&m.health.toLowerCase()!=='healthy')out.push({icon:'⚠',sev:'warn',t:`${m.name} · ${m.health}`,d:'LiteLLM health check'});});(D.provisioning||[]).slice(0,1).forEach(e=>out.push({icon:'☁',sev:'crit',t:`GPU capacity · ${e.reason}`,d:e.message}));(D.argocd||[]).forEach(a=>{if(a.sync!=='Synced'||a.health!=='Healthy')out.push({icon:'🚢',sev:(a.health==='Degraded'||a.health==='Missing')?'crit':'warn',t:`ArgoCD · ${a.name}`,d:`${a.sync} · ${a.health}`});});(D.nodeAlerts||[]).forEach(a=>out.push({icon:'🖥',sev:(a.issue==='NotReady'?'crit':'warn'),t:`Node ${a.node} · ${a.issue}`,d:'EKS node condition'}));return out;}
 
 function renderAll(){kpis();topbar();ovModels();costMini();gpuBars();ovHealth();ovFeed();modelTabs();modelsBody();teamsView();costViews();infra();healthView();links();if(selected)openModel(selected,true);if(selectedNode)openNode(selectedNode,true);if(selectedTeam)openTeam(selectedTeam,true);}
 
@@ -385,6 +395,19 @@ function linkFor(kind){return (D.links||[]).find(l=>l.label.toLowerCase().includ
 function openLink(kind){const u=linkFor(kind).url;if(u&&u!=='#')window.open(u,'_blank');}
 function copyCurl(name,ev){const u=(linkFor('litellm').url||'$LITELLM').replace(/\/ui.*/,'');const t=`curl ${u}/v1/chat/completions -H "Authorization: Bearer $LITELLM_KEY" -H "Content-Type: application/json" -d '{"model":"${name}","messages":[{"role":"user","content":"Hello"}]}'`;const fb=()=>{try{const b=ev&&ev.target&&ev.target.closest('button');if(b){const o=b.innerHTML;b.innerHTML='✓ copied';setTimeout(()=>{b.innerHTML=o;},1200);}}catch(e){}};if(navigator.clipboard&&navigator.clipboard.writeText){navigator.clipboard.writeText(t).then(fb,fb);}else{fb();}}
 
+function deployHTML(m){
+  const d=m&&m.deploy; if(!d) return '';
+  const rows=[`<span class="k">Pod phase</span><span class="v">${esc(d.phase||'—')}${d.pod?` · <span class="muted">${esc(d.pod)}</span>`:''}</span>`];
+  if(d.waiting) rows.push(`<span class="k">Container</span><span class="v" style="color:var(--orange)">${esc(d.waiting.reason||'')}${d.waiting.message?` — ${esc(d.waiting.message)}`:''}</span>`);
+  let h=`<div class="sec-title">Deployment</div><div class="kv">${rows.join('')}</div>`;
+  if(d.provisioning&&d.provisioning.length)
+    h+=`<div class="dep-warn"><b>⚠ GPU capacity</b> — Karpenter can't launch a node:<ul>${d.provisioning.map(e=>`<li>${esc(e.reason)}: ${esc(e.message)}</li>`).join('')}</ul></div>`;
+  if(d.events&&d.events.length)
+    h+=`<div class="sub-title">Recent events</div><div class="ev-list">${d.events.map(e=>`<div class="ev ${e.type==='Warning'?'warn':''}"><span class="ev-r">${esc(e.reason)}</span> <span class="ev-m">${esc(e.message)}</span>${e.count>1?` <span class="muted">×${e.count}</span>`:''}</div>`).join('')}</div>`;
+  if(d.log&&d.log.length)
+    h+=`<div class="sub-title">Model loading · log tail</div><div class="code logtail">${d.log.map(l=>esc(l)).join('\n')}</div>`;
+  return h;
+}
 function openModel(name,keep){const m=(D.models||[]).find(x=>x.name===name);if(!m){closeDrawer();return;}selected=name;selectedNode=null;selectedTeam=null;if(!keep)history.replaceState(null,'','#models/model/'+encodeURIComponent(name));const s=(D.sources||{}).litellm;
   $('drawer').innerHTML=`<button class="drawer-x" onclick="closeDrawer()">×</button>
    <div style="display:flex;align-items:center;gap:10px"><span class="dot ${m.status==='running'?'ok':'warn'}"></span><span style="font-size:19px;font-weight:800">${esc(m.name)}</span>${tierBadge(m.tier)}</div>
@@ -392,6 +415,7 @@ function openModel(name,keep){const m=(D.models||[]).find(x=>x.name===name);if(!
    <div class="mini-kpi"><div class="mk"><div class="mkv" style="color:var(--green)">${s?num(m.rpm):'—'}</div><div class="mkl">req/min</div></div><div class="mk"><div class="mkv">${s?ms(m.p95):'—'}</div><div class="mkl">p95</div></div><div class="mk"><div class="mkv">$${(m.costHr||0).toFixed(2)}</div><div class="mkl">$/hr</div></div></div>
    <div class="sec-title">Configuration</div>
    <div class="kv"><span class="k">Serving tier</span><span class="v">${tierLabel(m.tier)}</span><span class="k">GPU</span><span class="v">${esc(m.gpu)}</span>${m.prefillReplicas!=null?`<span class="k">Prefill / Decode</span><span class="v">${m.prefillReplicas} / ${m.decodeReplicas} replicas</span>`:(m.replicas!=null?`<span class="k">Replicas</span><span class="v">${m.availableReplicas||0} / ${m.replicas} ready</span>`:'')}${m.router?`<span class="k">llm-d router</span><span class="v">${esc(m.router)}</span>`:''}${s?`<span class="k">Error rate</span><span class="v">${m.errPct==null?'—':m.errPct+'%'}</span><span class="k">Tokens/s</span><span class="v">${num(m.tps)}</span>`:''}${m.health?`<span class="k">Health</span><span class="v">${esc(m.health)}</span>`:''}</div>
+   ${deployHTML(m)}
    <div class="sec-title">Call it (via LiteLLM)</div>
    <div class="code">curl $LITELLM/v1/chat/completions \
   -H "Authorization: Bearer $KEY" \
