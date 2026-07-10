@@ -126,6 +126,19 @@ data:
       # With langfuse listed, LiteLLM picks up LANGFUSE_PUBLIC_KEY / SECRET_KEY /
       # HOST from the env wired in the Deployment and traces every request.
       success_callback: ["langfuse"]
+      # Prometheus metrics (per-model request counters) power llm-d scale-to-zero.
+      # LiteLLM is the front door: it sees every request BEFORE it reaches the
+      # llm-d EPP, so its request counter increments even when the pool is scaled
+      # to zero (the EPP 503s before it would count anything). The autoscaling
+      # Prometheus scrapes /metrics and KEDA uses the per-model arrival rate to
+      # wake a zero'd pool. `callbacks` applies to success AND failure, so a
+      # request that arrives while the pool is cold is still counted.
+      callbacks: ["prometheus"]
+      # Cold-start hold: when a pool is at zero, the request that triggers the
+      # wake-up retries while KEDA scales it up (Karpenter node + model load,
+      # ~1-2 min) — turning the cold start into added latency rather than an error.
+      num_retries: 5
+      request_timeout: 120
     general_settings:
       master_key: os.environ/LITELLM_MASTER_KEY
 ---

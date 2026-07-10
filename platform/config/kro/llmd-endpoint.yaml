@@ -226,6 +226,9 @@ spec:
                       value: 1
                       periodSeconds: 120
           triggers:
+            # Right-sizing above zero: scale on the real vLLM queue depth. This
+            # cannot wake a zero'd pool (no vLLM pod means no metric), so it is
+            # paired with the arrival trigger below for scale-from-zero.
             - type: prometheus
               metricType: AverageValue
               metadata:
@@ -234,6 +237,21 @@ spec:
                   sum(max_over_time(vllm:num_requests_waiting{pool="${schema.metadata.name}"}[1m])) or vector(0)
                 threshold: "${string(schema.spec.targetQueueDepth)}"
                 activationThreshold: "1"
+            # Wake-from-zero: LiteLLM (the always-on front door) counts every
+            # request for this model BEFORE it reaches the EPP — including a
+            # request that arrives while the pool is scaled to zero (the EPP
+            # 503s before it would count anything). activationThreshold "0"
+            # means any request flips the pool 0->1; the high threshold keeps
+            # this trigger from driving scale beyond 1 (the queue-depth trigger
+            # above owns right-sizing once the pool is warm).
+            - type: prometheus
+              metricType: AverageValue
+              metadata:
+                serverAddress: http://autoscaling-prometheus.inference.svc.cluster.local:9090
+                query: |-
+                  sum(rate(litellm_proxy_total_requests_metric_total{requested_model="${schema.metadata.name}"}[1m])) or vector(0)
+                threshold: "1000"
+                activationThreshold: "0"
 
     - id: routerapp
       readyWhen:
