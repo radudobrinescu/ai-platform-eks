@@ -92,9 +92,15 @@ spec:
         - key: karpenter.k8s.aws/instance-family
           operator: NotIn
           values: ["g4dn", "g4ad", "p3", "p2"]
-        - key: karpenter.k8s.aws/instance-size
-          operator: In
-          values: ["xlarge", "2xlarge", "4xlarge", "8xlarge"]
+        # No instance-size cap. Multi-GPU serving (tensor/pipeline parallelism,
+        # i.e. gpuCount 2/4/8) needs the multi-GPU node sizes: for g5/g6/g6e the
+        # 4-GPU variant is *.12xlarge and the 8-GPU is *.48xlarge. Capping at
+        # 8xlarge restricted these families to their single-GPU sizes, so ANY
+        # gpuCount>1 pod was unschedulable ("no instance type has enough
+        # resources"). We omit the size constraint instead of enumerating sizes
+        # (same rationale as families above): Karpenter bin-packs cheapest-fit,
+        # so a 1-GPU pod still lands on a 1-GPU xlarge and a 4-GPU pod on a
+        # 12xlarge, while total spend stays bounded by limits.nvidia.com/gpu.
   # Cost cap: max 16 NVIDIA GPUs provisioned by this NodePool at any time.
   # With P5 at 8 GPUs/node this caps worst-case hourly spend; raise/lower to taste.
   limits:
