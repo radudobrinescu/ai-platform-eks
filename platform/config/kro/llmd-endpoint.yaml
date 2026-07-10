@@ -279,7 +279,6 @@ spec:
           name: ${schema.metadata.name}-llmd-register
         spec:
           backoffLimit: 20
-          ttlSecondsAfterFinished: 300
           template:
             spec:
               restartPolicy: OnFailure

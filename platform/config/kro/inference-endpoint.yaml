@@ -52,7 +52,6 @@ spec:
           name: ${schema.metadata.name}-ray-register
         spec:
           backoffLimit: 10
-          ttlSecondsAfterFinished: 300
           template:
             spec:
               restartPolicy: OnFailure

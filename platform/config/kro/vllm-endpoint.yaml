@@ -212,7 +212,6 @@ spec:
           name: ${schema.metadata.name}-register
         spec:
           backoffLimit: 10
-          ttlSecondsAfterFinished: 300
           template:
             spec:
               restartPolicy: OnFailure

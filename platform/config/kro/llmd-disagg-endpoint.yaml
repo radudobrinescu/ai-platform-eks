@@ -439,7 +439,6 @@ spec:
           name: ${schema.metadata.name}-disagg-register
         spec:
           backoffLimit: 20
-          ttlSecondsAfterFinished: 300
           template:
             spec:
               restartPolicy: OnFailure

@@ -295,7 +295,6 @@ spec:
           name: ${schema.metadata.name}-validate
         spec:
           backoffLimit: 0
-          ttlSecondsAfterFinished: 600
           template:
             spec:
               restartPolicy: Never
@@ -346,7 +345,6 @@ spec:
         spec:
           backoffLimit: 2
           activeDeadlineSeconds: ${schema.spec.timeoutHours * 3600}
-          ttlSecondsAfterFinished: 60
           template:
             metadata:
               annotations:

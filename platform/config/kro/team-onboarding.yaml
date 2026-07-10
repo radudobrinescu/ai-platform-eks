@@ -189,7 +189,6 @@ spec:
           namespace: ai-platform
         spec:
           backoffLimit: 10
-          ttlSecondsAfterFinished: 600
           template:
             metadata:
               labels:
