@@ -33,7 +33,7 @@ rules:
     resources: ["nodes", "pods"]
     verbs: ["get", "list"]
   - apiGroups: ["kro.run"]
-    resources: ["inferenceendpoints", "vllmendpoints", "llmdendpoints"]
+    resources: ["inferenceendpoints", "vllmendpoints", "llmdendpoints", "llmddisaggendpoints"]
     verbs: ["list"]
   # Read the litellm-config ConfigMap (Bedrock model_list) for the unified model list.
   - apiGroups: [""]

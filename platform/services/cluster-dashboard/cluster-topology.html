@@ -92,6 +92,7 @@ tbody tr:hover{background:var(--surface-2)}
 .b-bedrock{background:var(--orange-soft);color:var(--orange)}
 .b-vllm{background:var(--green-soft);color:var(--green)}
 .b-llmd{background:var(--purple-soft);color:var(--purple)}
+.b-disagg{background:var(--purple-soft);color:var(--purple);box-shadow:inset 0 0 0 1px var(--purple)}
 .b-ft{background:var(--cyan-soft);color:var(--cyan)}
 .b-ray{background:rgba(255,255,255,.06);color:var(--text-muted)}
 .st{font-size:10px;font-weight:700;padding:3px 8px;border-radius:5px}
@@ -286,8 +287,8 @@ tbody tr:hover{background:var(--surface-2)}
 
 
 <script>
-const TIERS={bedrock:['Bedrock','b-bedrock'],vllm:['vLLM','b-vllm'],'llm-d':['llm-d','b-llmd'],ft:['fine-tuned','b-ft'],ray:['Ray','b-ray']};
-const MTABS=[['all','All'],['bedrock','Bedrock'],['vllm','vLLM'],['llm-d','llm-d'],['ft','Fine-tuned']];
+const TIERS={bedrock:['Bedrock','b-bedrock'],vllm:['vLLM','b-vllm'],'llm-d':['llm-d','b-llmd'],'llm-d-disagg':['llm-d P/D','b-disagg'],ft:['fine-tuned','b-ft'],ray:['Ray','b-ray']};
+const MTABS=[['all','All'],['bedrock','Bedrock'],['vllm','vLLM'],['llm-d','llm-d'],['llm-d-disagg','llm-d P/D'],['ft','Fine-tuned']];
 let D={models:[],teams:[],gpu:[],argocd:[],nodes:[],pods:[],cost:{},costExt:{},sources:{},links:[]};
 let mtab='all', selected=null, selectedNode=null, selectedTeam=null, curV='overview', prevM={}, activity=[], invs=[], lastSearch=[];
 const NAVIX={overview:0,models:1,teams:2,cost:3,infra:4,health:5};
@@ -317,7 +318,7 @@ async function poll(){
 function pushHist(){const m=D.models||[];push(hist.rpm,m.reduce((s,x)=>s+(x.rpm||0),0));push(hist.tok,Math.round(m.reduce((s,x)=>s+(x.tps||0),0)*60));push(hist.cost,(D.cost||{}).hourly||0);const g=(D.gpu||[]).flatMap(x=>x.util||[]);push(hist.gpu,g.length?Math.round(g.reduce((a,b)=>a+b,0)/g.length):0);}
 function diffActivity(){const t=new Date().toLocaleTimeString('en-GB',{hour:'2-digit',minute:'2-digit',second:'2-digit'});const cur={};(D.models||[]).forEach(m=>cur[m.name]=m.status);for(const n in cur){if(!(n in prevM))activity.unshift([t,`Model "${n}" appeared → ${cur[n]}`]);else if(prevM[n]!==cur[n])activity.unshift([t,`Model "${n}" → ${cur[n]}`]);}for(const n in prevM){if(!(n in cur))activity.unshift([t,`Model "${n}" removed`]);}prevM=cur;while(activity.length>18)activity.pop();if(!activity.length)activity=[[t,'Connected to cluster']];}
 
-function alertList(){const out=[];(D.models||[]).forEach(m=>{if(m.status!=='running')out.push({icon:'⚠',sev:'warn',t:`${m.name} · ${m.status}`,d:`${tierLabel(m.tier)} · ${m.availableReplicas||0}/${m.replicas||1} replicas ready`});else if(m.tier==='llm-d'&&m.router&&m.router!=='Healthy')out.push({icon:'⚠',sev:'warn',t:`${m.name} · router ${m.router}`,d:'llm-d EPP/router not yet Healthy'});else if(m.health&&m.health.toLowerCase()!=='healthy')out.push({icon:'⚠',sev:'warn',t:`${m.name} · ${m.health}`,d:'LiteLLM health check'});});(D.argocd||[]).forEach(a=>{if(a.sync!=='Synced'||a.health!=='Healthy')out.push({icon:'🚢',sev:(a.health==='Degraded'||a.health==='Missing')?'crit':'warn',t:`ArgoCD · ${a.name}`,d:`${a.sync} · ${a.health}`});});(D.nodeAlerts||[]).forEach(a=>out.push({icon:'🖥',sev:(a.issue==='NotReady'?'crit':'warn'),t:`Node ${a.node} · ${a.issue}`,d:'EKS node condition'}));return out;}
+function alertList(){const out=[];(D.models||[]).forEach(m=>{if(m.status!=='running')out.push({icon:'⚠',sev:'warn',t:`${m.name} · ${m.status}`,d:`${tierLabel(m.tier)} · ${m.availableReplicas||0}/${m.replicas||1} replicas ready`});else if((m.tier==='llm-d'||m.tier==='llm-d-disagg')&&m.router&&m.router!=='Healthy')out.push({icon:'⚠',sev:'warn',t:`${m.name} · router ${m.router}`,d:'llm-d EPP/router not yet Healthy'});else if(m.health&&m.health.toLowerCase()!=='healthy')out.push({icon:'⚠',sev:'warn',t:`${m.name} · ${m.health}`,d:'LiteLLM health check'});});(D.argocd||[]).forEach(a=>{if(a.sync!=='Synced'||a.health!=='Healthy')out.push({icon:'🚢',sev:(a.health==='Degraded'||a.health==='Missing')?'crit':'warn',t:`ArgoCD · ${a.name}`,d:`${a.sync} · ${a.health}`});});(D.nodeAlerts||[]).forEach(a=>out.push({icon:'🖥',sev:(a.issue==='NotReady'?'crit':'warn'),t:`Node ${a.node} · ${a.issue}`,d:'EKS node condition'}));return out;}
 
 function renderAll(){kpis();topbar();ovModels();costMini();gpuBars();ovHealth();ovFeed();modelTabs();modelsBody();teamsView();costViews();infra();healthView();links();if(selected)openModel(selected,true);if(selectedNode)openNode(selectedNode,true);if(selectedTeam)openTeam(selectedTeam,true);}
 
@@ -390,7 +391,7 @@ function openModel(name,keep){const m=(D.models||[]).find(x=>x.name===name);if(!
    <div class="m-id" style="margin-top:4px">${esc(m.model)}</div>
    <div class="mini-kpi"><div class="mk"><div class="mkv" style="color:var(--green)">${s?num(m.rpm):'—'}</div><div class="mkl">req/min</div></div><div class="mk"><div class="mkv">${s?ms(m.p95):'—'}</div><div class="mkl">p95</div></div><div class="mk"><div class="mkv">$${(m.costHr||0).toFixed(2)}</div><div class="mkl">$/hr</div></div></div>
    <div class="sec-title">Configuration</div>
-   <div class="kv"><span class="k">Serving tier</span><span class="v">${tierLabel(m.tier)}</span><span class="k">GPU</span><span class="v">${esc(m.gpu)}</span>${m.replicas!=null?`<span class="k">Replicas</span><span class="v">${m.availableReplicas||0} / ${m.replicas} ready</span>`:''}${m.router?`<span class="k">llm-d router</span><span class="v">${esc(m.router)}</span>`:''}${s?`<span class="k">Error rate</span><span class="v">${m.errPct==null?'—':m.errPct+'%'}</span><span class="k">Tokens/s</span><span class="v">${num(m.tps)}</span>`:''}${m.health?`<span class="k">Health</span><span class="v">${esc(m.health)}</span>`:''}</div>
+   <div class="kv"><span class="k">Serving tier</span><span class="v">${tierLabel(m.tier)}</span><span class="k">GPU</span><span class="v">${esc(m.gpu)}</span>${m.prefillReplicas!=null?`<span class="k">Prefill / Decode</span><span class="v">${m.prefillReplicas} / ${m.decodeReplicas} replicas</span>`:(m.replicas!=null?`<span class="k">Replicas</span><span class="v">${m.availableReplicas||0} / ${m.replicas} ready</span>`:'')}${m.router?`<span class="k">llm-d router</span><span class="v">${esc(m.router)}</span>`:''}${s?`<span class="k">Error rate</span><span class="v">${m.errPct==null?'—':m.errPct+'%'}</span><span class="k">Tokens/s</span><span class="v">${num(m.tps)}</span>`:''}${m.health?`<span class="k">Health</span><span class="v">${esc(m.health)}</span>`:''}</div>
    <div class="sec-title">Call it (via LiteLLM)</div>
    <div class="code">curl $LITELLM/v1/chat/completions \
   -H "Authorization: Bearer $KEY" \

@@ -882,6 +882,7 @@ def watch_stuck_resources(conn_factory) -> None:
       - inferenceendpoints.kro.run        (in `inference` ns; Ray, legacy)
       - vllmendpoints.kro.run             (in `inference` ns; simple vLLM)
       - llmdendpoints.kro.run             (in `inference` ns; llm-d scale tier)
+      - llmddisaggendpoints.kro.run       (in `inference` ns; llm-d P/D disaggregated)
       - aiteams.kro.run                   (cluster-wide, in `ai-platform` ns)
       - rayservices.ray.io                (cluster-wide)
     """
@@ -924,6 +925,7 @@ def watch_stuck_resources(conn_factory) -> None:
             for plural, kind, stuck_fn in (
                 ("vllmendpoints", "VLLMEndpoint", _is_stuck_vllmendpoint),
                 ("llmdendpoints", "LLMDEndpoint", _is_stuck_llmdendpoint),
+                ("llmddisaggendpoints", "LLMDDisaggEndpoint", _is_stuck_llmdendpoint),
             ):
                 try:
                     items = custom.list_namespaced_custom_object(

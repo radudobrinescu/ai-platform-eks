@@ -349,6 +349,7 @@ SERVING_KINDS = [
     ("inferenceendpoints", "ray"),
     ("vllmendpoints", "vllm"),
     ("llmdendpoints", "llm-d"),
+    ("llmddisaggendpoints", "llm-d-disagg"),
 ]
 
 
@@ -509,10 +510,19 @@ def _normalize_endpoint(ep: dict, mode: str) -> dict:
     pp = int(spec.get("pipelineParallelSize", 1) or 1)
     if tp == 0:
         tp = gpu_count if pp == 1 else 1
-    # Desired replicas: llm-d uses `replicas`; ray/vllm use `minReplicas`.
-    replicas = int(spec.get("replicas", spec.get("minReplicas", 1)) or 1)
+    # Desired replicas: llm-d uses `replicas`; ray/vllm use `minReplicas`;
+    # llm-d-disagg splits into prefill + decode pools.
+    is_disagg = mode == "llm-d-disagg"
+    if is_disagg:
+        prefill_n = int(spec.get("prefillReplicas", 1) or 1)
+        decode_n = int(spec.get("decodeReplicas", 1) or 1)
+        replicas = prefill_n + decode_n
+    else:
+        prefill_n = decode_n = None
+        replicas = int(spec.get("replicas", spec.get("minReplicas", 1)) or 1)
     ready = str(status.get("ready", "False"))
-    avail = int(status.get("availableReplicas", 0) or 0)
+    avail = (int(status.get("prefillReplicas", 0) or 0) + int(status.get("decodeReplicas", 0) or 0)) \
+        if is_disagg else int(status.get("availableReplicas", 0) or 0)
     norm_status = status.get("modelStatus", "Pending") if mode == "ray" \
         else ("Running" if ready == "True" else "Pending")
     return {
@@ -530,8 +540,10 @@ def _normalize_endpoint(ep: dict, mode: str) -> dict:
         # the normalized, mode-agnostic label the reworked UI should use.
         "modelStatus": norm_status,
         "status": norm_status,
-        "routerHealth": str(status.get("routerHealth", "")) if mode == "llm-d" else "",
+        "routerHealth": str(status.get("routerHealth", "")) if mode in ("llm-d", "llm-d-disagg") else "",
         "message": status.get("message", "") if mode == "ray" else "",
+        "prefillReplicas": prefill_n,
+        "decodeReplicas": decode_n,
         "created": ep["metadata"].get("creationTimestamp", ""),
     }
 
@@ -880,6 +892,7 @@ def _build_metrics(nodes: list, pods: list) -> dict:
             "gpu": ("shared" if ep.get("shared") else f'{ep["gpuCount"]}×GPU'),
             "replicas": ep.get("replicas"), "availableReplicas": ep.get("availableReplicas"),
             "router": ep.get("routerHealth", ""), "costHr": cost_for(ep["name"]),
+            "prefillReplicas": ep.get("prefillReplicas"), "decodeReplicas": ep.get("decodeReplicas"),
             "created": ep.get("created")})
     for b in bedrock:
         models.append({"name": b["name"], "model": b["model"], "tier": "bedrock",
