@@ -4,10 +4,11 @@
 # (compute-bound) contend with decode (bandwidth-bound) on the same GPUs,
 # spiking inter-token latency under load. This RGD splits them into two pools:
 #
-#   - prefill pool  (llm-d.ai/role: prefill): processes prompts, PRODUCES KV
-#     cache  → vLLM --kv-transfer-config kv_role=kv_producer (NIXL connector)
-#   - decode pool   (llm-d.ai/role: decode):  generates tokens, CONSUMES KV
-#     cache  → vLLM --kv-transfer-config kv_role=kv_consumer (NIXL connector)
+#   - prefill pool  (llm-d.ai/role: prefill): processes prompts, produces KV cache
+#   - decode pool   (llm-d.ai/role: decode):  pulls that KV + generates tokens,
+#     and carries the routing-sidecar that orchestrates the P/D split
+#   Both vLLMs run --kv-transfer-config kv_role=kv_both (NIXL); the decode
+#   sidecar decides which prefill pod (if any) serves each request.
 #
 # KV cache blocks move prefill→decode over NIXL (RDMA/NVLink/TCP via UCX). The
 # llm-d router (EPP + InferencePool) selects the pool (llm-d.ai/pool=<name>) and
@@ -21,14 +22,14 @@
 #      NixlPullConnector + NIXL Scheduler with no extra image work.
 #   2. [PASS] Deploys + serves end to end: both role-labeled pools become Ready,
 #      the model registers in LiteLLM, and requests return correct completions.
-#   3. [TODO] NOT yet truly disaggregated. The llm-d router EPP defaults to
-#      `single-profile-handler`, which load-balances WHOLE requests across the
-#      combined pool — both prefill and decode pods showed prompt+generation
-#      throughput. Strict prefill→decode routing needs a P/D-aware profile
-#      handler + separate prefill/decode scheduling profiles that filter on the
-#      `llm-d.ai/role` labels (see the llm-d-router EPP plugin registry). Until
-#      that is configured + smoke-tested, this behaves like a 2-pool
-#      load-balanced deployment (no P/D benefit over a 2-replica LLMDEndpoint).
+#   3. [DONE] TRUE P/D routing. The EPP runs the `disagg-profile-handler` with
+#      separate `prefill`/`decode` scheduling profiles (prefill-filter/decode-
+#      filter on `llm-d.ai/role`) + a PD decider (pdDisaggregation: prefix-based
+#      default, or always). The decode pods carry the llm-d routing-sidecar
+#      (8000) which reverse-proxies local vLLM (8200) and, when the EPP selects a
+#      prefill pod, dispatches a remote prefill (max_tokens=1) there and pulls the
+#      KV over NIXL — so prefill runs only on prefill pods, decode only on decode
+#      pods. Both vLLMs use kv_role=kv_both (the sidecar drives per-request P/D).
 # See docs/roadmap/disaggregated-inference.md.
 apiVersion: kro.run/v1alpha1
 kind: ResourceGraphDefinition
@@ -63,6 +64,15 @@ spec:
       vllmImage:            "string  | default=vllm/vllm-openai:v0.24.0"
       routerChartVersion:   "string  | default=v0.9.0"
       routingProfile:       "string  | default=prefix"   # balanced|prefix|throughput|latency
+      # True prefill/decode disaggregation (via the decode routing-sidecar + EPP
+      # disagg-profile-handler). pdDisaggregation selects the PD decider:
+      #   prefix-based (DEFAULT, all clusters) — disaggregate only when the
+      #     non-cached prompt suffix exceeds pdNonCachedTokens (skips the network
+      #     hop for short/cached prompts);
+      #   always — force disaggregation on every request (validation/benchmark).
+      pdDisaggregation:     "string  | default=prefix-based"   # prefix-based|always
+      pdNonCachedTokens:    "integer | default=8"              # prefix-based decider threshold
+      routingSidecarImage:  "string  | default=quay.io/llm-d/llm-d-routing-sidecar:v0.3.0"
     status:
       ready:             "${decodedeployment.status.?availableReplicas.orValue(0) > 0 ? 'True' : 'False'}"
       prefillReplicas:   ${prefilldeployment.status.?availableReplicas.orValue(0)}
@@ -162,7 +172,7 @@ spec:
                     - "--gpu-memory-utilization"
                     - "0.9"
                     - "--kv-transfer-config"
-                    - '{"kv_connector":"NixlConnector","kv_role":"kv_producer"}'
+                    - '{"kv_connector":"NixlConnector","kv_role":"kv_both"}'
                     - "--port"
                     - "8000"
                     - "--disable-access-log-for-endpoints=/health,/metrics,/v1/models"
@@ -303,9 +313,9 @@ spec:
                     - "--gpu-memory-utilization"
                     - "0.9"
                     - "--kv-transfer-config"
-                    - '{"kv_connector":"NixlConnector","kv_role":"kv_consumer"}'
+                    - '{"kv_connector":"NixlConnector","kv_role":"kv_both"}'
                     - "--port"
-                    - "8000"
+                    - "8200"
                     - "--disable-access-log-for-endpoints=/health,/metrics,/v1/models"
                   env:
                     - name: HF_TOKEN
@@ -325,14 +335,17 @@ spec:
                     - name: UCX_TLS
                       value: "all"
                   ports:
+                    # vLLM stays named `modelserver` (autoscaling Prometheus keeps
+                    # scraping it by that name) but moves to 8200 — the routing
+                    # sidecar below owns the pool-facing 8000.
                     - name: modelserver
-                      containerPort: 8000
+                      containerPort: 8200
                     - name: nixl
                       containerPort: 5600
                   readinessProbe:
                     httpGet:
                       path: /health
-                      port: 8000
+                      port: 8200
                     initialDelaySeconds: 30
                     periodSeconds: 15
                     failureThreshold: 80
@@ -350,6 +363,34 @@ spec:
                       mountPath: /hf-cache
                     - name: shm
                       mountPath: /dev/shm
+                # Routing sidecar (DECODE pods only) — the pool-facing endpoint on
+                # 8000. Reverse-proxies to local vLLM (8200); when the EPP selects a
+                # prefill pod it sets x-prefiller-host-port and the sidecar dispatches
+                # a remote prefill (max_tokens=1) there, then decodes locally (KV
+                # pulled over NIXL). -secure-proxy=false => plain HTTP in-cluster.
+                - name: routing-sidecar
+                  image: ${schema.spec.routingSidecarImage}
+                  args:
+                    - "-port=8000"
+                    - "-vllm-port=8200"
+                    - "-connector=nixlv2"
+                    - "-secure-proxy=false"
+                  ports:
+                    - name: proxy
+                      containerPort: 8000
+                  readinessProbe:
+                    httpGet:
+                      path: /health
+                      port: 8000
+                    initialDelaySeconds: 35
+                    periodSeconds: 15
+                    failureThreshold: 80
+                  resources:
+                    requests:
+                      cpu: "200m"
+                      memory: 256Mi
+                    limits:
+                      memory: 512Mi
               volumes:
                 - name: hf-cache
                   emptyDir:
@@ -479,21 +520,46 @@ spec:
                         apiVersion: llm-d.ai/v1alpha1
                         kind: EndpointPickerConfig
                         plugins:
+                        - type: prefill-filter
+                        - type: decode-filter
                         - type: queue-scorer
                         - type: kv-cache-utilization-scorer
                         - type: prefix-cache-scorer
-                        - type: no-hit-lru-scorer
+                        - type: max-score-picker
+                        # PD deciders: both instantiated; the handler references one
+                        # (pdDisaggregation). prefix-based ships as the default.
+                        - type: prefix-based-pd-decider
+                          parameters:
+                            nonCachedTokens: ${string(schema.spec.pdNonCachedTokens)}
+                        - type: always-disagg-pd-decider
+                        # Entry point for P/D: decode-first, then the decider decides
+                        # whether to also pick a prefill pod (remote prefill via the
+                        # decode sidecar's x-prefiller-host-port).
+                        - type: disagg-profile-handler
+                          parameters:
+                            deciders:
+                              prefill: ${schema.spec.pdDisaggregation == 'always' ? 'always-disagg-pd-decider' : 'prefix-based-pd-decider'}
                         schedulingProfiles:
-                        - name: default
+                        # Decode profile runs first: selects the decode pod that serves
+                        # + owns the session, scored on KV/prefix/queue.
+                        - name: decode
                           plugins:
+                          - pluginRef: decode-filter
                           - pluginRef: queue-scorer
                             weight: ${string(schema.spec.routingProfile == 'throughput' ? 3 : (schema.spec.routingProfile == 'latency' ? 4 : (schema.spec.routingProfile == 'prefix' ? 1 : 2)))}
                           - pluginRef: kv-cache-utilization-scorer
                             weight: ${string(schema.spec.routingProfile == 'latency' ? 1 : (schema.spec.routingProfile == 'balanced' ? 2 : 3))}
                           - pluginRef: prefix-cache-scorer
                             weight: ${string(schema.spec.routingProfile == 'prefix' ? 4 : (schema.spec.routingProfile == 'throughput' ? 1 : (schema.spec.routingProfile == 'latency' ? 2 : 3)))}
-                          - pluginRef: no-hit-lru-scorer
-                            weight: ${string((schema.spec.routingProfile == 'prefix' || schema.spec.routingProfile == 'latency') ? 1 : 2)}
+                          - pluginRef: max-score-picker
+                        # Prefill profile (chosen when the decider warrants remote
+                        # prefill): prefix-cache-aware so shared prefixes reuse a prefiller.
+                        - name: prefill
+                          plugins:
+                          - pluginRef: prefill-filter
+                          - pluginRef: prefix-cache-scorer
+                            weight: ${string(schema.spec.routingProfile == 'prefix' ? 4 : 2)}
+                          - pluginRef: max-score-picker
                   inferencePool:
                     failureMode: "FailOpen"
                   modelServers:
