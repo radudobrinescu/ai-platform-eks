@@ -779,6 +779,13 @@ def llmd_replicas(min_replicas: int, profile: str) -> int:
 DISAGG_CONTEXT_THRESHOLD = 8192
 
 
+# Heterogeneous prefill/decode nodepools only pay off at scale: a large model
+# whose decode fleet is big enough to justify matching hardware to each phase's
+# bottleneck (prefill→compute, decode→bandwidth) and to absorb the cross-node
+# KV-transfer hop. Below this, both pools stay on the shared gpu-inference pool.
+PD_SPLIT_MIN_PARAMS = 30_000_000_000
+
+
 def disagg_context(args) -> int:
     """Typical per-request context used for the disaggregation decision."""
     return getattr(args, "avg_context", None) or (getattr(args, "seq", 0) // 4)
@@ -875,9 +882,19 @@ def build_endpoint_yaml(
         prefill_max = max(1, total - decode_max)
         lines.append("  prefillMinReplicas: 1")
         lines.append(f"  prefillMaxReplicas: {prefill_max}")
+        lines.append("  prefillTargetQueueDepth: 20   # scale prefill on vLLM queue depth (compute-bound)")
         lines.append("  decodeMinReplicas: 1")
         lines.append(f"  decodeMaxReplicas: {decode_max}")
+        lines.append("  decodeTargetKvCachePct: 85     # scale decode on KV-cache utilization (memory-bound)")
+        lines.append("  pdDisaggregation: prefix-based # disaggregate only when the non-cached prompt suffix is long enough")
         lines.append(f"  routingProfile: {profile}   # EPP KV/prefix/load-aware weights for this workload")
+        # Opt-in heterogeneous nodepools: worth it only for a large model with a
+        # sustained multi-replica decode fleet (match prefill→compute /
+        # decode→bandwidth hardware). Below the threshold, stay on the shared
+        # gpu-inference pool (schema default) to avoid the cross-node KV hop.
+        if model.params >= PD_SPLIT_MIN_PARAMS and decode_max >= 2:
+            lines.append("  prefillNodePool: gpu-prefill   # compute-optimized (prefill is FLOP-bound)")
+            lines.append("  decodeNodePool: gpu-decode     # bandwidth-optimized (decode is HBM-bound)")
     elif is_llmd:
         # Scale tier: KEDA autoscales the pool on vLLM queue depth and the EPP
         # routes across the live replicas. The recommender sizes the *peak*
