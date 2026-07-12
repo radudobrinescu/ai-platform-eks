@@ -72,7 +72,7 @@ spec:
       #   always — force disaggregation on every request (validation/benchmark).
       pdDisaggregation:     "string  | default=prefix-based"   # prefix-based|always
       pdNonCachedTokens:    "integer | default=8"              # prefix-based decider threshold
-      routingSidecarImage:  "string  | default=quay.io/llm-d/llm-d-routing-sidecar:v0.3.0"
+      routingSidecarImage:  "string  | default=ghcr.io/llm-d/llm-d-routing-sidecar:v0.7.1"
     status:
       ready:             "${decodedeployment.status.?availableReplicas.orValue(0) > 0 ? 'True' : 'False'}"
       prefillReplicas:   ${prefilldeployment.status.?availableReplicas.orValue(0)}
@@ -371,10 +371,10 @@ spec:
                 - name: routing-sidecar
                   image: ${schema.spec.routingSidecarImage}
                   args:
-                    - "-port=8000"
-                    - "-vllm-port=8200"
-                    - "-connector=nixlv2"
-                    - "-secure-proxy=false"
+                    - "--port=8000"
+                    - "--vllm-port=8200"
+                    - "--kv-connector=nixlv2"
+                    - "--secure-proxy=false"
                   ports:
                     - name: proxy
                       containerPort: 8000
