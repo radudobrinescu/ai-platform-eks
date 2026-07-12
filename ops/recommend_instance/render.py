@@ -864,16 +864,19 @@ def build_endpoint_yaml(
     lines.append(f'  workerMemory: "{worker_mem_gib}Gi"')
 
     if is_disagg:
-        # Disaggregated scale tier: split into a prefill pool (KV producer) and a
-        # decode pool (KV consumer). Decode holds the sessions (bandwidth-bound)
-        # so it gets the majority; prefill (compute-bound) finishes fast, so fewer
-        # replicas suffice. ~1/3 prefill : 2/3 decode as a first-order split.
+        # Disaggregated scale tier: prefill (compute-bound) and decode (KV-cache/
+        # bandwidth-bound) autoscale independently on their own signals. Size the
+        # *max* per pool from the target load — decode holds the sessions so it
+        # gets the majority (~1/3 prefill : 2/3 decode); min stays 1 (elastic;
+        # scale-to-zero parked).
         profile = pick_routing_profile(args)
         total = llmd_replicas(min_replicas, profile) if scaling else 3
-        decode_n = max(1, math.ceil(total * 0.66))
-        prefill_n = max(1, total - decode_n)
-        lines.append(f"  prefillReplicas: {prefill_n}")
-        lines.append(f"  decodeReplicas: {decode_n}")
+        decode_max = max(1, math.ceil(total * 0.66))
+        prefill_max = max(1, total - decode_max)
+        lines.append("  prefillMinReplicas: 1")
+        lines.append(f"  prefillMaxReplicas: {prefill_max}")
+        lines.append("  decodeMinReplicas: 1")
+        lines.append(f"  decodeMaxReplicas: {decode_max}")
         lines.append(f"  routingProfile: {profile}   # EPP KV/prefix/load-aware weights for this workload")
     elif is_llmd:
         # Scale tier: KEDA autoscales the pool on vLLM queue depth and the EPP

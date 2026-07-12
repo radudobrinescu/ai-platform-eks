@@ -75,9 +75,12 @@ data:
           - source_labels: [__meta_kubernetes_pod_phase]
             action: keep
             regex: Running
-          # expose the pool + pod as query labels (KEDA filters by pool)
+          # expose the pool + role + pod as query labels (KEDA filters by pool,
+          # and by role for the disaggregated prefill/decode pools)
           - source_labels: [__meta_kubernetes_pod_label_llm_d_ai_pool]
             target_label: pool
+          - source_labels: [__meta_kubernetes_pod_label_llm_d_ai_role]
+            target_label: role
           - source_labels: [__meta_kubernetes_pod_name]
             target_label: pod
       # LiteLLM (the always-on gateway) — per-model request counters. This is

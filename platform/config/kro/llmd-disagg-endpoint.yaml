@@ -43,8 +43,19 @@ spec:
       modelSource:          "string  | default="
       gpuCount:             "integer | default=1"
       tensorParallelSize:   "integer | default=0"
-      prefillReplicas:      "integer | default=1 minimum=1"
-      decodeReplicas:       "integer | default=2 minimum=1"
+      # DEPRECATED — superseded by prefill/decode Min/MaxReplicas; ignored by this
+      # RGD. Retained (not removed) to avoid a breaking CRD change (KRO refuses to
+      # drop schema properties in place).
+      prefillReplicas:         "integer | default=1 minimum=1"
+      decodeReplicas:          "integer | default=2 minimum=1"
+      # Prefill pool (compute-bound): autoscaled on queue depth.
+      prefillMinReplicas:      "integer | default=1 minimum=1"   # floor (>=1; scale-to-zero parked)
+      prefillMaxReplicas:      "integer | default=2 minimum=1"   # ceiling; > min enables autoscaling
+      prefillTargetQueueDepth: "integer | default=20"            # per-pod vllm:num_requests_waiting target
+      # Decode pool (KV-cache/bandwidth-bound): autoscaled on KV-cache utilization.
+      decodeMinReplicas:       "integer | default=1 minimum=1"   # floor (>=1)
+      decodeMaxReplicas:       "integer | default=4 minimum=1"   # ceiling; > min enables autoscaling
+      decodeTargetKvCachePct:  "integer | default=85"            # target avg vllm:kv_cache_usage_perc (%)
       maxModelLen:          "integer | default=16384"
       minVramPerGpuGiB:     "integer | default=0"
       workerMemory:         "string  | default=16Gi"
@@ -80,7 +91,8 @@ spec:
             ai-platform/serving-mode: llm-d-disagg
             llm-d.ai/role: prefill
         spec:
-          replicas: ${schema.spec.prefillReplicas}
+          # NOTE: replicas intentionally unset — the prefill KEDA ScaledObject/HPA
+          # owns the count. Setting it makes KRO fight the autoscaler.
           selector:
             matchLabels:
               app.kubernetes.io/name: ${schema.metadata.name}
@@ -220,7 +232,8 @@ spec:
             ai-platform/serving-mode: llm-d-disagg
             llm-d.ai/role: decode
         spec:
-          replicas: ${schema.spec.decodeReplicas}
+          # NOTE: replicas intentionally unset — the decode KEDA ScaledObject/HPA
+          # owns the count. Setting it makes KRO fight the autoscaler.
           selector:
             matchLabels:
               app.kubernetes.io/name: ${schema.metadata.name}
@@ -345,6 +358,94 @@ spec:
                   emptyDir:
                     medium: Memory
                     sizeLimit: 8Gi
+
+    # ── Prefill autoscaler: queue depth (compute-bound) ─────────────────────
+    - id: prefillscaledobject
+      template:
+        apiVersion: keda.sh/v1alpha1
+        kind: ScaledObject
+        metadata:
+          name: ${schema.metadata.name}-prefill
+          namespace: ${schema.metadata.namespace}
+        spec:
+          scaleTargetRef:
+            apiVersion: apps/v1
+            kind: Deployment
+            name: ${schema.metadata.name}-prefill
+          minReplicaCount: ${schema.spec.prefillMinReplicas}
+          maxReplicaCount: ${schema.spec.prefillMaxReplicas}
+          advanced:
+            horizontalPodAutoscalerConfig:
+              behavior:
+                scaleUp:
+                  stabilizationWindowSeconds: 30
+                  policies:
+                    - type: Pods
+                      value: 2
+                      periodSeconds: 60
+                scaleDown:
+                  stabilizationWindowSeconds: 300
+                  policies:
+                    - type: Pods
+                      value: 1
+                      periodSeconds: 120
+          triggers:
+            # Prefill is compute-bound: prompts queue when prefill throughput is
+            # saturated. Scale on the prefill pool's vLLM queue depth. Smoothed
+            # (max_over_time) + block scalar for scrape-gap and SSA robustness.
+            - type: prometheus
+              metricType: AverageValue
+              metadata:
+                serverAddress: http://autoscaling-prometheus.inference.svc.cluster.local:9090
+                query: |-
+                  sum(max_over_time(vllm:num_requests_waiting{pool="${schema.metadata.name}",role="prefill"}[1m])) or vector(0)
+                threshold: "${string(schema.spec.prefillTargetQueueDepth)}"
+                activationThreshold: "1"
+
+    # ── Decode autoscaler: KV-cache utilization (memory/bandwidth-bound) ─────
+    - id: decodescaledobject
+      template:
+        apiVersion: keda.sh/v1alpha1
+        kind: ScaledObject
+        metadata:
+          name: ${schema.metadata.name}-decode
+          namespace: ${schema.metadata.namespace}
+        spec:
+          scaleTargetRef:
+            apiVersion: apps/v1
+            kind: Deployment
+            name: ${schema.metadata.name}-decode
+          minReplicaCount: ${schema.spec.decodeMinReplicas}
+          maxReplicaCount: ${schema.spec.decodeMaxReplicas}
+          advanced:
+            horizontalPodAutoscalerConfig:
+              behavior:
+                scaleUp:
+                  stabilizationWindowSeconds: 30
+                  policies:
+                    - type: Pods
+                      value: 2
+                      periodSeconds: 60
+                scaleDown:
+                  stabilizationWindowSeconds: 300
+                  policies:
+                    - type: Pods
+                      value: 1
+                      periodSeconds: 120
+          triggers:
+            # Decode is KV-cache-capacity/bandwidth-bound: it saturates when the
+            # KV cache fills (can't admit more concurrent sequences) — the leading
+            # indicator, ahead of the queue. vllm:kv_cache_usage_perc is a 0-1
+            # fraction; *100 makes the AverageValue target an intuitive percent.
+            # avg_over_time smooths the gauge + is scrape-gap safe.
+            - type: prometheus
+              metricType: AverageValue
+              metadata:
+                serverAddress: http://autoscaling-prometheus.inference.svc.cluster.local:9090
+                query: |-
+                  sum(avg_over_time(vllm:kv_cache_usage_perc{pool="${schema.metadata.name}",role="decode"}[1m])) * 100 or vector(0)
+                threshold: "${string(schema.spec.decodeTargetKvCachePct)}"
+                activationThreshold: "1"
 
     # ── llm-d router: EPP + InferencePool over BOTH role-labeled pools ───────
     - id: routerapp
