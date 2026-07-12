@@ -43,6 +43,11 @@ rules:
   - apiGroups: ["kro.run"]
     resources: ["inferenceendpoints", "vllmendpoints", "llmdendpoints", "llmddisaggendpoints"]
     verbs: ["list"]
+  # Autoscaling visibility: read the KEDA-managed HPAs (current/desired/min/max +
+  # the driving metric value/target) so the dashboard shows per-pool scaling.
+  - apiGroups: ["autoscaling"]
+    resources: ["horizontalpodautoscalers"]
+    verbs: ["get", "list"]
   # Read the litellm-config ConfigMap (Bedrock model_list) for the unified model list.
   - apiGroups: [""]
     resources: ["configmaps"]

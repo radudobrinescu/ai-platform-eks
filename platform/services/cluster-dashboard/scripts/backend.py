@@ -924,6 +924,87 @@ def _events_list(path: str, kind: str = "") -> list:
     return out
 
 
+def _quantity(q) -> float:
+    """Parse a k8s quantity string (e.g. '144', '900m', '2') to float."""
+    s = str(q if q is not None else "0").strip()
+    try:
+        if s.endswith("m"):
+            return float(s[:-1]) / 1000.0
+        return float(s)
+    except Exception:
+        return 0.0
+
+
+def _autoscaling_status(endpoints: list, hpa_events: list) -> list:
+    """Per-pool KEDA/HPA autoscaling state — so admins see each pool scaling
+    INDEPENDENTLY and where it's bottlenecked. For every keda-hpa-* in the
+    `inference` namespace it reports current/desired within min..max, the driving
+    saturation signal vs its KEDA target (prefill & llm-d -> queue depth; decode
+    -> KV-cache %), whether it's capped at max (a real capacity bottleneck), the
+    last scale time, and recent scale events. Metric value + target come straight
+    from the HPA (KEDA publishes them there), so no extra scrape is needed.
+
+    Pool + role are derived from the scale-target Deployment suffix:
+      <pool>-prefill -> disagg prefill,  <pool>-decode -> disagg decode,
+      <pool>-llmd    -> llm-d single pool.
+    """
+    hpas = k8s_get("/apis/autoscaling/v2/namespaces/inference/horizontalpodautoscalers")
+    if not hpas:
+        return []
+    mode_by_pool = {ep["name"]: ep.get("mode", "") for ep in endpoints}
+    rescales: dict = {}
+    for e in hpa_events:
+        if e.get("reason") == "SuccessfulRescale":
+            rescales.setdefault(e.get("obj", ""), []).append({"ts": e.get("ts", ""), "msg": e.get("message", "")})
+    out = []
+    for h in hpas.get("items", []):
+        meta = h.get("metadata", {}) or {}
+        spec = h.get("spec", {}) or {}
+        st = h.get("status", {}) or {}
+        hname = meta.get("name", "")
+        dep = (spec.get("scaleTargetRef", {}) or {}).get("name", "")
+        if dep.endswith("-prefill"):
+            pool, role, sig, unit = dep[:-len("-prefill")], "prefill", "queue depth", "req"
+        elif dep.endswith("-decode"):
+            pool, role, sig, unit = dep[:-len("-decode")], "decode", "KV-cache", "%"
+        elif dep.endswith("-llmd"):
+            pool, role, sig, unit = dep[:-len("-llmd")], "", "queue depth", "req"
+        else:
+            pool, role, sig, unit = dep, "", "queue depth", "req"
+        # Driving signal = the external metric with the highest value/target ratio
+        # (the one actually pushing the scale decision — i.e. the bottleneck).
+        best = None  # (value, target, ratio)
+        m_specs = spec.get("metrics", []) or []
+        m_curs = st.get("currentMetrics", []) or []
+        for i, ms in enumerate(m_specs):
+            tgt = _quantity((((ms.get("external", {}) or {}).get("target", {}) or {}).get("averageValue")))
+            val = 0.0
+            if i < len(m_curs):
+                val = _quantity(((((m_curs[i] or {}).get("external", {}) or {}).get("current", {}) or {}).get("averageValue")))
+            ratio = (val / tgt) if tgt > 0 else 0.0
+            if best is None or ratio > best[2]:
+                best = (val, tgt, ratio)
+        val, tgt, _ratio = best or (0.0, 0.0, 0.0)
+        mn = int(spec.get("minReplicas", 1) or 1)
+        mx = int(spec.get("maxReplicas", 1) or 1)
+        cur = int(st.get("currentReplicas", 0) or 0)
+        des = int(st.get("desiredReplicas", 0) or 0)
+        out.append({
+            "pool": pool, "role": role, "mode": mode_by_pool.get(pool, ""),
+            "deployment": dep, "signal": sig, "unit": unit,
+            "value": round(val, 2), "target": round(tgt, 2),
+            "min": mn, "max": mx, "current": cur, "desired": des,
+            # atMax: pinned at ceiling AND wanting more -> add capacity here.
+            "atMax": des >= mx and mx > mn,
+            # saturated: driving signal within 10% of its target (scaling pressure).
+            "saturated": tgt > 0 and val >= 0.9 * tgt,
+            "lastScale": st.get("lastScaleTime", ""),
+            "events": sorted(rescales.get(hname, []), key=lambda x: x["ts"], reverse=True)[:6],
+        })
+    out.sort(key=lambda x: (x["pool"], x["role"]))
+    return out
+
+
 def _deploy_diagnostics(models: list, pods: list) -> list:
     """Explain why non-running self-hosted models aren't serving yet. Attaches a
     `deploy` block to each (pod phase, container waiting reason, recent
@@ -1097,7 +1178,28 @@ def _build_metrics(nodes: list, pods: list) -> dict:
 
     by_model = sorted([[m["name"], m["costHr"], m["tier"]] for m in models if m["costHr"] > 0], key=lambda x: -x[1])
     cost_ext = {"byModel": by_model, "byTeam": met.get("byTeam", []), "trend": met.get("trend", [])}
+    # Autoscaling: per-pool KEDA/HPA state + bottleneck signal, attached to each
+    # model (disagg models get two entries: prefill + decode, scaling
+    # independently). Replaces the now-deprecated spec replica counts with the
+    # live HPA reality.
+    try:
+        hpa_events = _events_list("/api/v1/namespaces/inference/events", "HorizontalPodAutoscaler")
+        autoscaling = _autoscaling_status(endpoints, hpa_events)
+        src["autoscaling"] = True
+    except Exception:
+        autoscaling, src["autoscaling"] = [], False
+    by_pool: dict = {}
+    for a in autoscaling:
+        by_pool.setdefault(a["pool"], []).append(a)
+    for m in models:
+        sc = by_pool.get(m["name"])
+        if sc:
+            m["scale"] = sc
+            m["availableReplicas"] = sum(x["current"] for x in sc)  # live running
+            m["replicas"] = sum(x["desired"] for x in sc)           # what the HPAs want now
+
     return {"models": models, "teams": met.get("teams", []), "gpu": gpu, "argocd": argo,
+            "autoscaling": autoscaling,
             "costExt": cost_ext, "provisioning": provisioning, "sources": src, "mts": time.time()}
 
 
