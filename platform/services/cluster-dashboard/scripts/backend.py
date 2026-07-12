@@ -924,6 +924,24 @@ def _events_list(path: str, kind: str = "") -> list:
     return out
 
 
+AUTOSCALING_PROM_URL = os.environ.get(
+    "AUTOSCALING_PROM_URL", "http://autoscaling-prometheus.inference.svc.cluster.local:9090")
+
+
+def _prom_query(promql: str) -> list:
+    """Instant query against the always-on autoscaling Prometheus. Returns the
+    result vector [{metric:{...}, value:[ts,'v']}] or [] on any failure."""
+    import urllib.request
+    import urllib.parse
+    url = AUTOSCALING_PROM_URL + "/api/v1/query?query=" + urllib.parse.quote(promql)
+    try:
+        with urllib.request.urlopen(urllib.request.Request(url), timeout=4) as r:
+            d = json.loads(r.read().decode("utf-8", "ignore"))
+        return d.get("data", {}).get("result", []) if d.get("status") == "success" else []
+    except Exception:
+        return []
+
+
 def _quantity(q) -> float:
     """Parse a k8s quantity string (e.g. '144', '900m', '2') to float."""
     s = str(q if q is not None else "0").strip()
@@ -952,6 +970,32 @@ def _autoscaling_status(endpoints: list, hpa_events: list) -> list:
     if not hpas:
         return []
     mode_by_pool = {ep["name"]: ep.get("mode", "") for ep in endpoints}
+    # Per-pool p95 latency attribution (prefill -> TTFT, decode -> ITL). vLLM
+    # exposes these as histograms; quantile them grouped by (pool, role).
+    def _q95(metric: str) -> dict:
+        b: dict = {}
+        for s in _prom_query(f"histogram_quantile(0.95, sum by (le,pool,role) (rate({metric}_bucket[5m])))"):
+            m = s.get("metric", {})
+            try:
+                v = float(s["value"][1])
+                if v == v:  # drop NaN (no samples in window)
+                    b[(m.get("pool", ""), m.get("role", ""))] = v
+            except Exception:
+                pass
+        return b
+
+    def _pick(b: dict, pool: str, role: str):
+        if (pool, role) in b:
+            return b[(pool, role)]
+        # llm-d single pool labels its pods role=decode while its HPA target is
+        # <name>-llmd (role ""); fall back to any role for the same pool.
+        for (p, _r), v in b.items():
+            if p == pool:
+                return v
+        return None
+
+    ttft = _q95("vllm:time_to_first_token_seconds")
+    itl = _q95("vllm:inter_token_latency_seconds")
     rescales: dict = {}
     for e in hpa_events:
         if e.get("reason") == "SuccessfulRescale":
@@ -985,6 +1029,8 @@ def _autoscaling_status(endpoints: list, hpa_events: list) -> list:
             if best is None or ratio > best[2]:
                 best = (val, tgt, ratio)
         val, tgt, _ratio = best or (0.0, 0.0, 0.0)
+        _tt = _pick(ttft, pool, role)
+        _it = _pick(itl, pool, role)
         mn = int(spec.get("minReplicas", 1) or 1)
         mx = int(spec.get("maxReplicas", 1) or 1)
         cur = int(st.get("currentReplicas", 0) or 0)
@@ -993,6 +1039,8 @@ def _autoscaling_status(endpoints: list, hpa_events: list) -> list:
             "pool": pool, "role": role, "mode": mode_by_pool.get(pool, ""),
             "deployment": dep, "signal": sig, "unit": unit,
             "value": round(val, 2), "target": round(tgt, 2),
+            "ttftMs": round(_tt * 1000) if _tt else None,
+            "itlMs": round(_it * 1000, 1) if _it else None,
             "min": mn, "max": mx, "current": cur, "desired": des,
             # atMax: pinned at ceiling AND wanting more -> add capacity here.
             "atMax": des >= mx and mx > mn,

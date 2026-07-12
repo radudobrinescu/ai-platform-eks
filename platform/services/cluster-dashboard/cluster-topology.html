@@ -437,6 +437,11 @@ function scaleHTML(m){
     h+=`<div class="scale-pool"><div class="scale-hd"><b>${esc(label)}</b>${tag}<span class="cnt">${a.current} / ${a.max}${a.current!==a.desired?' → '+a.desired:''} · min ${a.min}</span></div>`;
     h+=`<div class="scale-bar"><div class="scale-fill" style="width:${Math.min(100,Math.max(4,pct))}%;background:${col}"></div></div>`;
     h+=`<div class="scale-sig">${esc(a.signal)} &nbsp;<b style="color:${col}">${a.value}</b> / ${a.target} ${esc(a.unit)} target</div>`;
+    const L=v=>v==null?null:(v>=1000?(v/1000).toFixed(v>=10000?0:1)+'s':v+'ms');
+    const lat=a.role==='prefill'?(L(a.ttftMs)?['TTFT p95 '+L(a.ttftMs)]:[])
+             :a.role==='decode'?(L(a.itlMs)?['ITL p95 '+L(a.itlMs)]:[])
+             :[].concat(L(a.ttftMs)?['TTFT '+L(a.ttftMs)]:[], L(a.itlMs)?['ITL '+L(a.itlMs)]:[]);
+    if(lat.length)h+=`<div class="scale-sig">latency (p95) · ${lat.join(' &nbsp;·&nbsp; ')}</div>`;
     if(a.events&&a.events.length) h+=`<div class="scale-ev">${a.events.map(e=>`<div class="ev">⇅ ${esc(e.msg)} <span class="muted">${relTime(e.ts)} ago</span></div>`).join('')}</div>`;
     h+='</div>';
   });
