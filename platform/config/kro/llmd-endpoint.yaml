@@ -30,7 +30,7 @@ spec:
       # Retained (not removed) to avoid a breaking CRD change (KRO refuses to
       # drop schema properties in place).
       replicas:             "integer | default=1 minimum=0"
-      minReplicas:          "integer | default=1 minimum=0"   # floor; 0 = scale-to-zero (arrival wake-up lands in stage 4)
+      minReplicas:          "integer | default=1 minimum=1"   # floor (>=1). Scale-to-zero (minReplicas 0) is PARKED — see docs/roadmap/elastic-serving-autoscaling.md: it needs llm-d image pre-baking + a LiteLLM cooldown/hold fix that aren't worth the ~2min cold-start floor yet. The arrival trigger in the ScaledObject below is the inert foundation for it.
       maxReplicas:          "integer | default=3 minimum=1"   # ceiling; > minReplicas enables KEDA autoscaling
       targetQueueDepth:     "integer | default=20"            # per-pod vllm:num_requests_waiting scale target
       maxModelLen:          "integer | default=8192"
@@ -237,7 +237,9 @@ spec:
                   sum(max_over_time(vllm:num_requests_waiting{pool="${schema.metadata.name}"}[1m])) or vector(0)
                 threshold: "${string(schema.spec.targetQueueDepth)}"
                 activationThreshold: "1"
-            # Wake-from-zero: LiteLLM (the always-on front door) counts every
+            # Wake-from-zero (PARKED — inert while minReplicas >= 1 is enforced
+            # by the schema; kept as the validated foundation for when scale-to-
+            # zero is unparked). LiteLLM (the always-on front door) counts every
             # request for this model BEFORE it reaches the EPP — including a
             # request that arrives while the pool is scaled to zero (the EPP
             # 503s before it would count anything). activationThreshold "0"

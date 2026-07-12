@@ -1,6 +1,7 @@
 # Elastic Serving — Autoscaling + Scale-to-Zero (KEDA)
 
-**Status**: Designed — ready to implement
+**Status**: v1 (elastic 1↔N, saturation-driven) **SHIPPED + validated live**.
+Scale-to-zero (v2) is **PARKED** — see §5 for why and the unpark checklist.
 **Priority**: High (platform completeness pillar #1)
 **Date added**: 2026-07-10
 **Applies to**: the **llm-d tier** (`LLMDEndpoint`, `LLMDDisaggEndpoint`) — now the default
@@ -114,18 +115,46 @@ spec:
 Asymmetric behavior: responsive scale-up, conservative scale-down (GPU pods are
 slow to start).
 
-### 5. Scale-to-zero + wake-up (v2)
-- `minReplicaCount: 0` drains the pool when idle; Karpenter then reclaims the GPU
-  node → real cost savings.
-- The **arrival trigger from the always-on LiteLLM gateway** wakes 0→1 on the
-  first request. `requested_model` = the endpoint name, so it maps 1:1 to the pool.
-  The high `threshold` means this trigger only ever asks for ~1 replica; the
-  queue-depth trigger owns right-sizing above 1.
-- Cold start ~1–2 min (Karpenter node + model load from the S3 cache). The
-  triggering request is **held via LiteLLM retries** (`num_retries` +
-  `request_timeout`) while the pool wakes — the EPP 503s an empty pool, so the
-  retry (not the EPP) covers the gap: cold start becomes added latency, not an
-  error. Opt-in per endpoint (`minReplicas: 0`).
+### 5. Scale-to-zero + wake-up (v2) — ⛔ PARKED
+
+**Decision (2026-07-12): parked in favor of v1 elastic autoscaling + perf work.**
+The wake mechanism was proven end-to-end (a request → LiteLLM arrival counter →
+KEDA activates 0→1 → Karpenter provisions a node → the pod serves; then idle →
+1→0 → node reclaimed). What makes it *not worth shipping yet*:
+
+1. **Cold start is ~5 min today and ~2 min even fully optimized.** On this cluster
+   none of the fast-start layers engage for llm-d: the EBS image snapshot + SOCI
+   index are gated off (`docker_hub_username` unset → `run_image_optimization=false`,
+   no snapshot exists), and even when enabled they bake the **Ray** image, not the
+   llm-d `vllm/vllm-openai` image. The S3 model-weight cache bucket exists but the
+   model wasn't seeded. Optimized, the floor is still ~2 min (on-demand Karpenter
+   node bring-up + vLLM warmup).
+2. **LiteLLM's router fights an intentionally-absent backend.** During the cold
+   window the 503s trip LiteLLM's client-side health/cooldown logic, which parks
+   and then drops the deployment (`"no healthy deployments"`, model vanished from
+   `/v1/models`) — so requests through the front door fail *even after* the pool
+   is up. Fixing it needs `disable_cooldowns` (a **platform-wide** gateway change
+   affecting every model) + a hold spanning the cold start + robust re-registration.
+
+**What ships instead:** the schema enforces `minReplicas >= 1`, so scale-to-zero
+can't be enabled by accident. The v2 plumbing stays in place but inert: the
+LiteLLM prometheus metrics (useful for observability), the `litellm` scrape job,
+and the arrival trigger in the ScaledObject (`activationThreshold: 0`).
+
+**Unpark checklist (when the payoff justifies it):**
+- [ ] Extend `image-optimization.tf` to bake **and** SOCI-index the llm-d
+      `vllm/vllm-openai` image (today it's Ray-only); set `docker_hub_username`.
+- [ ] Seed each scale-to-zero model into the S3 cache (`ops/seed-model-cache.py`).
+- [ ] LiteLLM: `disable_cooldowns` (assess platform-wide blast radius) + a
+      cold-start hold + confirm the model stays in `/v1/models` through a wake.
+- [ ] Relax the schema back to `minReplicas: 0`.
+- [ ] Re-run the full 0→1→0 E2E and measure the real cold-start floor.
+
+Reference design (for the unpark): `minReplicaCount: 0` drains the pool when idle
+and Karpenter reclaims the node; the LiteLLM arrival trigger wakes 0→1 on the
+first request (`requested_model` = endpoint name → 1:1 pool mapping; high
+`threshold` so it only ever asks for ~1, the queue-depth trigger owns sizing
+above 1); the triggering request is held via LiteLLM retries while the pool wakes.
 
 ### 6. Karpenter interaction (already works)
 Replicas→0 empties the GPU node → Karpenter deprovisions. Replicas 0→N creates
