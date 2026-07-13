@@ -88,3 +88,15 @@ variable "gpu_data_volume_snapshot_id" {
   type        = string
   default     = ""
 }
+
+variable "enable_sso" {
+  description = "Ship a Cognito-backed SSO identity plane for the platform UIs (Open WebUI, LiteLLM UI, Langfuse) and per-user cost attribution. When true (and gitops is enabled), Terraform creates a Cognito user pool, hosted-UI domain, groups (admins/developers/users), three seed users (passwords surfaced as outputs), and app clients. SSO works out of the box via `platformctl tunnel` (localhost callbacks); set sso_public_urls once a public HTTPS front (CloudFront) is deployed. Optionally federate an enterprise IdP into the pool. Identity Center remains required only for ArgoCD SSO."
+  type        = bool
+  default     = true
+}
+
+variable "sso_public_urls" {
+  description = "Optional public base URLs (e.g. CloudFront) per UI, appended to the Cognito app-client callback/logout URLs. Keys: open-webui, litellm, langfuse, oauth2-proxy. Localhost tunnel callbacks always work out of the box; set these once a public HTTPS front is deployed. Example: { open-webui = \"https://d123.cloudfront.net\" }"
+  type        = map(string)
+  default     = {}
+}
