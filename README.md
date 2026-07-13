@@ -141,6 +141,20 @@ See **[its guide](platform/services/cluster-dashboard/PLATFORM-HEALTH-AGENT.md)*
 and reclaims them when workloads are removed; `shared: true` time-slices one
 physical GPU across up to 4 small models.
 
+**Single sign-on & per-user cost.** SSO ships enabled (`enable_sso`, default on):
+Terraform stands up an **Amazon Cognito** user pool with a hosted login page, role
+groups (`admins`/`developers`/`users`), and three seed users whose generated
+passwords are printed as the `sso_seed_user_passwords` output. Open WebUI, the
+LiteLLM admin UI, and Langfuse all federate to it, and Open WebUI forwards the
+signed-in identity so **cost is attributed per user** in LiteLLM's spend reports —
+no per-user API keys. It works out of the box over `./platformctl tunnel` (Cognito
+allows `localhost` callbacks); bring your own enterprise IdP by federating it into
+the pool. Cognito is the only new hard dependency — Identity Center stays required
+only for ArgoCD SSO. For **public HTTPS** access (and to protect the dashboard
+behind auth), opt in to the CloudFront edge in
+[`platform/services/edge/`](platform/services/edge/README.md) — CloudFront via ACK,
+with a free `*.cloudfront.net` certificate (no domain needed).
+
 **Presenting it?** [docs/demo-walkthrough.md](docs/demo-walkthrough.md) is a timed
 presenter's script (10/20/30-min cuts) with talk track and fallbacks.
 
@@ -168,6 +182,10 @@ steps below. The script does **not** touch the bootstrap state (S3
 kubectl delete applicationset --all -n argocd --wait=false
 kubectl delete application    --all -n argocd --wait=false
 kubectl delete inferenceendpoints,vllmendpoints,llmdendpoints,aiteams,finetunejobs --all -A --wait=false
+# If the CloudFront edge was activated (platform/services/edge): delete the
+# Distributions so ACK removes the real CloudFront distributions BEFORE the
+# cluster (and the ACK controller) are destroyed — otherwise they orphan.
+kubectl delete distributions.cloudfront.services.k8s.aws --all -n ai-platform --wait=false 2>/dev/null || true
 kubectl delete ingress --all -A --wait=false      # → ALB controller cleans up the ALB
 
 # 2. Empty the training-datasets bucket (force_destroy=false by design — real
