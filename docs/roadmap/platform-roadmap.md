@@ -1,29 +1,38 @@
 # Platform Roadmap — High-Value Improvements
 
-**Status**: Proposed
-**Date added**: 2026-07-10
+**Status**: Living backlog · **Updated**: 2026-07-13
 
 This is a prioritized backlog of improvements that would significantly increase
 the platform's value, ordered by **value-per-effort**. The platform today is
 strong on serving (Bedrock / vLLM / Ray / llm-d tiers behind one LiteLLM API),
-governance (per-team keys, budgets, rate limits), cost recommendation
-(`ops/recommend_instance`), and observability basics (cluster dashboard +
-Platform Health Agent + Langfuse). The gaps that most limit real-world value are
-**elasticity, retrieval, safety guardrails, and pre-flight validation**.
+governance (per-team keys, budgets, rate limits), **elastic autoscaling (KEDA v1,
+shipped for the llm-d tier)**, cost recommendation (`ops/recommend_instance`), and
+observability basics (cluster dashboard + Platform Health Agent + Langfuse). The
+gaps that most limit real-world value are now **retrieval, safety guardrails, and
+pre-flight validation**.
 
-Individual initiatives may graduate into their own doc under `docs/roadmap/`
-(see `disaggregated-inference.md` for an example).
+Individual initiatives may graduate into their own doc under `docs/roadmap/`:
+`elastic-serving-autoscaling.md`, `disaggregated-inference.md`,
+`semantic-routing.md`.
 
 ---
 
 ## Tier 1 — Highest leverage
 
 ### 1. Autoscaling with scale-to-zero (KEDA)
-**Status**: Planned · **Priority**: High · **Effort**: Medium
+**Status**: **v1 SHIPPED + validated live** (elastic 1↔N, saturation-driven) ·
+scale-to-zero (v2) **PARKED** · graduated to `elastic-serving-autoscaling.md` ·
+**Priority**: High · **Effort**: Medium
 
-**Why.** Every serving tier is fixed-replica today, so idle models burn GPU
-24/7 and busy ones can't absorb spikes. This is the single biggest cost and
-capability lever — it's what makes running many team models economically viable.
+**Why.** Idle models burn GPU 24/7 and busy ones can't absorb spikes. This is the
+single biggest cost and capability lever — it's what makes running many team
+models economically viable.
+
+**Shipped (v1).** The llm-d tier (`LLMDEndpoint`/`LLMDDisaggEndpoint`) scales
+replicas 1↔N on real saturation signals (queue depth / KV-cache / pending
+requests) via a KEDA `ScaledObject` per endpoint. **Scale-to-zero (v2) is parked**
+— the EPP arrival-signal path didn't pan out; see the graduated doc §5 for the
+LiteLLM-based unpark checklist.
 
 **Approach.**
 - Add KEDA as a Terraform EKS addon (`terraform/30.eks/35.addons`).
@@ -113,14 +122,16 @@ migration that broke rendering. Catch these before merge.
 
 ## Tier 3 — Round out
 
-### 7. Complete llm-d prefill/decode disaggregation routing
-**Status**: In progress (substrate only) · **Priority**: Medium · **Effort**: Medium
+### 7. llm-d prefill/decode disaggregation routing
+**Status**: **Implemented** — true P/D routing live via `disagg-profile-handler` +
+decode routing-sidecar; prefill/decode NodePools · **validation/tuning remaining** ·
+**Priority**: Medium · **Effort**: Medium.
 See **`docs/roadmap/disaggregated-inference.md`**.
 
-The `LLMDDisaggEndpoint` RGD deploys both pools and NIXL KV transfer works, but
-the EPP still uses `single-profile-handler` (pooled load-balancing) rather than
-true prefill→decode routing. Finishing the P/D-aware scheduling profile unlocks
-the tier's actual TTFT/throughput benefit for long-context / agentic workloads.
+The `LLMDDisaggEndpoint` RGD deploys both pools with NIXL KV transfer, and the EPP
+now uses `disagg-profile-handler` (true prefill→decode routing) rather than the
+earlier pooled `single-profile-handler`. Remaining: benchmark/validate the
+TTFT/throughput benefit under long-context / agentic load and tune the P/D split.
 
 ### 8. Batch / async inference tier
 **Status**: Proposed · **Priority**: Medium · **Effort**: Medium
@@ -145,12 +156,23 @@ view.
 
 ---
 
+### 11. Semantic routing (`auto` cost-efficiency layer)
+**Status**: Proposed · **evidence-gated** · **Priority**: Medium (secondary lever) ·
+**Effort**: Medium–High.
+See **`docs/roadmap/semantic-routing.md`**.
+
+An opt-in `model: auto` endpoint (vLLM Semantic Router) that routes easy queries
+to cheap models and escalates only when needed, plus semantic caching. Worth
+building only as a staged, evidence-gated component — **gate on measuring the
+actual savings opportunity from Langfuse traffic first** (Phase 0), and confirm
+per-team cost attribution. Secondary to Karpenter scale-to-zero + right-sizing.
+
 ## Suggested sequencing
 
-If picking three to move the needle most: **(1) autoscaling/scale-to-zero**
-(economics), **(2) RAG + embeddings** (applicability), and **(3) guardrails**
-(adoptability) — these change *who can use the platform and for what*. The rest
-optimize an already-working system.
-
-Autoscaling is the most self-contained next step and continues directly from the
-`minReplicas`/`maxReplicas` refactor, so it's the recommended starting point.
+**Autoscaling v1 has shipped**, so the highest-leverage *unbuilt* work is now:
+**(1) RAG + embeddings** (applicability), **(2) guardrails** (adoptability), and
+**(3) first-class evaluation & quality gates** (trust) — these change *who can use
+the platform and for what*. Guardrails (#3) and evaluation (#4) also unblock the
+semantic-routing `auto` layer (shared PII/jailbreak machinery and the Langfuse
+eval tooling its Phase 0 needs). The remaining items optimize an already-working
+system.

@@ -14,7 +14,7 @@ provisioning, serving, routing, and observability. A frontier model
   isolation, budgets, and Langfuse tracing built in.
 - **Proven, extendable templates.** Five [KRO](https://kro.run) resources
   (`InferenceEndpoint`, `VLLMEndpoint`, `LLMDEndpoint`, `AITeam`, `FineTuneJob`)
-  capture the hard parts — tensor-parallelism, GPU sizing, scale-to-zero,
+  capture the hard parts — tensor-parallelism, GPU sizing, elastic autoscaling,
   scale-tier routing, fine-tune→deploy — as a few lines of YAML. They're the
   platform's API: fork and extend them, don't reinvent them.
 

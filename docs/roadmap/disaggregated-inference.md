@@ -1,8 +1,17 @@
 # Disaggregated Prefill/Decode Inference (llm-d)
 
-**Status**: Planned  
-**Priority**: Medium — implement when running 4+ GPU replicas of the same model with ITL spikes  
+**Status**: **Implemented** (P/D routing live; validation/tuning remaining) · **Updated**: 2026-07-13
+**Priority**: Medium — for long-context / high-concurrency workloads with ITL spikes
 **Date added**: 2026-06-02
+
+> **Current state (2026-07-13).** Shipped as the **`LLMDDisaggEndpoint`** RGD
+> (`platform/config/kro/llmd-disagg-endpoint.yaml`) — not the `DisaggregatedEndpoint`
+> name sketched below. Both prefill and decode pools deploy with NIXL KV transfer
+> (`kv_role=kv_both`); the EPP uses `disagg-profile-handler` with a decode-side
+> routing-sidecar for true prefill→decode routing; and dedicated `gpu-prefill` /
+> `gpu-decode` Karpenter NodePools exist. **Remaining:** benchmark/validate the
+> TTFT/throughput gain under load and tune the P/D split. The plan below is
+> retained as design background.
 
 ## Motivation
 
