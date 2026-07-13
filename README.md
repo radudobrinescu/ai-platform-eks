@@ -12,14 +12,14 @@ provisioning, serving, routing, and observability. A frontier model
 - **One gateway, every model.** LiteLLM puts Bedrock, vLLM-served open models, and
   fine-tuned models behind a single `/v1/chat/completions` endpoint — with team
   isolation, budgets, and Langfuse tracing built in.
-- **Proven, extendable templates.** Five [KRO](https://kro.run) resources
-  (`InferenceEndpoint`, `VLLMEndpoint`, `LLMDEndpoint`, `AITeam`, `FineTuneJob`)
+- **Proven, extendable templates.** Four [KRO](https://kro.run) resources
+  (`VLLMEndpoint`, `LLMDEndpoint`, `AITeam`, `FineTuneJob`)
   capture the hard parts — tensor-parallelism, GPU sizing, elastic autoscaling,
   scale-tier routing, fine-tune→deploy — as a few lines of YAML. They're the
   platform's API: fork and extend them, don't reinvent them.
 
 **Stack:** EKS Managed Capabilities (ArgoCD · KRO · ACK) · Karpenter · vLLM ·
-Ray Serve · LiteLLM · Langfuse — with an optional **llm-d + Gateway API Inference
+LiteLLM · Langfuse — with an optional **llm-d + Gateway API Inference
 Extension** scale tier.
 
 ![Cluster dashboard — live topology of nodes, GPU slots, and deployed models](docs/img/cluster-dashboard.png)
@@ -38,8 +38,7 @@ The custom resources **are** the self-service interface:
 
 | Resource | What it does |
 |---|---|
-| **`InferenceEndpoint`** | Serve a model on Ray Serve + vLLM — HuggingFace ID, or a fine-tuned model from S3 |
-| **`VLLMEndpoint`** | Serve a model on plain vLLM (no Ray) — a simpler, more modern alternative |
+| **`VLLMEndpoint`** | Serve a model on vLLM — the simple default: one model, one pod, one instance (HuggingFace ID, or a fine-tuned model from S3) |
 | **`LLMDEndpoint`** | Serve a model on the llm-d scale tier — KV-cache/load/prefix-aware routing across replicas (opt-in; needs the `inference_gateway` capability) |
 | **`AITeam`** | Onboard a team: namespace, RBAC, budget, rate limits, scoped API key |
 | **`FineTuneJob`** | QLoRA fine-tune (Unsloth), optionally `autoDeploy` the result |
@@ -47,7 +46,7 @@ The custom resources **are** the self-service interface:
 ```yaml
 # That's the whole interface — e.g. serve a model:
 apiVersion: kro.run/v1alpha1
-kind: InferenceEndpoint
+kind: VLLMEndpoint
 metadata: { name: qwen3-3b, namespace: inference }
 spec:
   model: "Qwen/Qwen2.5-3B-Instruct"   # ungated — no token needed
@@ -59,12 +58,12 @@ Bedrock models need no resource — they're a few lines of LiteLLM config, live 
 moment the cluster is up. KRO definitions live in `platform/config/kro/`; extend
 them there and every model/team inherits the change.
 
-**Two serving tiers, one front door.** Every model — Bedrock, `VLLMEndpoint`,
-`InferenceEndpoint` — answers through the same LiteLLM `/v1` API (governance,
-budgets, tracing). For high-throughput workloads an optional **llm-d** scale tier
-adds KV-cache-, prefix-, and load-aware routing across replicas (via the Gateway
-API Inference Extension); LiteLLM forwards to it internally, so governance still
-applies. See **[docs/llm-d-and-ingress-architecture.md](docs/llm-d-and-ingress-architecture.md)**.
+**Two serving tiers, one front door.** Every model — Bedrock and self-hosted
+(`VLLMEndpoint`, the simple default) — answers through the same LiteLLM `/v1` API
+(governance, budgets, tracing). For high-throughput workloads an optional **llm-d**
+scale tier (`LLMDEndpoint`) adds KV-cache-, prefix-, and load-aware routing across
+replicas (via the Gateway API Inference Extension); LiteLLM forwards to it
+internally, so governance still applies. See **[docs/llm-d-and-ingress-architecture.md](docs/llm-d-and-ingress-architecture.md)**.
 
 ---
 
@@ -90,7 +89,7 @@ export AWS_REGION=eu-central-1
 cp workloads/models/TEMPLATE.yaml.example workloads/models/qwen3-3b.yaml
 # edit: set name + model (e.g. Qwen/Qwen2.5-3B-Instruct), then:
 git add workloads/models/qwen3-3b.yaml && git commit -m "feat: deploy qwen3-3b" && git push
-kubectl get inferenceendpoints -n inference -w
+kubectl get vllmendpoints -n inference -w
 ```
 
 `./platformctl` is a thin wrapper over `make` + `ops/` (`up · status · tunnel ·
@@ -129,8 +128,9 @@ model-weight cache (~15s load vs ~60s from HuggingFace). All automated by Terraf
 them with an LLM, and propose a one-click fix — idle until you provide a Kiro key.
 See **[its guide](platform/services/cluster-dashboard/PLATFORM-HEALTH-AGENT.md)**.
 
-**Cost control.** Karpenter right-sizes GPUs and **scales them to zero** when idle;
-`shared: true` time-slices one physical GPU across up to 4 small models.
+**Cost control.** Karpenter right-sizes and consolidates GPU nodes to match demand
+and reclaims them when workloads are removed; `shared: true` time-slices one
+physical GPU across up to 4 small models.
 
 **Presenting it?** [docs/demo-walkthrough.md](docs/demo-walkthrough.md) is a timed
 presenter's script (10/20/30-min cuts) with talk track and fallbacks.
@@ -223,8 +223,8 @@ aws iam list-roles --query "Roles[?contains(RoleName, '<cluster-name>')].RoleNam
 ```
 argocd/bootstrap/   ApplicationSets (platform services + self-service workloads)
 platform/
-  config/kro/       InferenceEndpoint · VLLMEndpoint · LLMDEndpoint · AITeam · FineTuneJob (the API)
-  services/         litellm, open-webui, langfuse, gpu-operator, kuberay,
+  config/kro/       VLLMEndpoint · LLMDEndpoint · AITeam · FineTuneJob (the API)
+  services/         litellm, open-webui, langfuse, gpu-operator,
                     cluster-dashboard (+ Platform Health Agent), inference-gateway
   images/           Container build contexts (unsloth-trainer, platform-controller)
 workloads/          Self-service YAMLs: models/ · scale-models/ · teams/ · fine-tuning/
