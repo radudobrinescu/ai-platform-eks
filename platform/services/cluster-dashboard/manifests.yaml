@@ -242,9 +242,7 @@ metadata:
     alb.ingress.kubernetes.io/scheme: internet-facing
     alb.ingress.kubernetes.io/target-type: ip
     alb.ingress.kubernetes.io/listen-ports: '[{"HTTP": 9090}]'
-    # Health check hits oauth2-proxy's /ping (no auth) — the dashboard now sits
-    # behind oauth2-proxy (see oauth2-proxy.yaml). /data.json would 302 to login.
-    alb.ingress.kubernetes.io/healthcheck-path: /ping
+    alb.ingress.kubernetes.io/healthcheck-path: /data.json
     # inbound-cidrs: operator allowlist. Must stay IDENTICAL to
     # platform/config/ingress.yaml (shared ALB group "ai-platform").
     alb.ingress.kubernetes.io/inbound-cidrs: 213.157.191.17/32
@@ -257,6 +255,6 @@ spec:
             pathType: Prefix
             backend:
               service:
-                name: oauth2-proxy
+                name: cluster-dashboard
                 port:
-                  number: 4180
+                  number: 9090
