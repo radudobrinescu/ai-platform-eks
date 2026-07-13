@@ -42,6 +42,23 @@ langfuse:
       valueFrom: { secretKeyRef: { name: langfuse-init, key: LANGFUSE_INIT_USER_NAME } }
     - name: LANGFUSE_INIT_USER_PASSWORD
       valueFrom: { secretKeyRef: { name: langfuse-init, key: LANGFUSE_INIT_USER_PASSWORD } }
+    # --- SSO (Cognito OIDC) ---
+    # Optional refs: until Terraform (enable_sso) creates `sso-secrets`, the
+    # custom provider stays disabled and the email/password (break-glass) admin
+    # login still works. ALLOW_ACCOUNT_LINKING merges the SSO identity into the
+    # existing seed admin when the email matches.
+    - name: AUTH_CUSTOM_NAME
+      value: "SSO"
+    - name: AUTH_CUSTOM_SCOPE
+      value: "openid email profile"
+    - name: AUTH_CUSTOM_ALLOW_ACCOUNT_LINKING
+      value: "true"
+    - name: AUTH_CUSTOM_CLIENT_ID
+      valueFrom: { secretKeyRef: { name: sso-secrets, key: langfuse-client-id, optional: true } }
+    - name: AUTH_CUSTOM_CLIENT_SECRET
+      valueFrom: { secretKeyRef: { name: sso-secrets, key: langfuse-client-secret, optional: true } }
+    - name: AUTH_CUSTOM_ISSUER
+      valueFrom: { secretKeyRef: { name: sso-secrets, key: issuer, optional: true } }
 
   salt:
     secretKeyRef:
