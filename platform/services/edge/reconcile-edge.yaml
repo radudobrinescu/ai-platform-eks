@@ -1,0 +1,111 @@
+# reconcile-edge — wires the CloudFront Distributions to the runtime ALB and
+# feeds the resulting *.cloudfront.net domains back into sso-secrets.
+#
+# Mirrors the langfuse-nextauth-url pattern: the ALB is created in-cluster by the
+# LB controller, so its hostname is only known at runtime. This Job reads it off
+# the ingress, patches each Distribution's origin, waits for ACK to publish the
+# CloudFront domain, then updates the app base-URL keys the UIs consume.
+#
+# It does NOT touch Cognito (Terraform-owned): it prints the sso_public_urls block
+# for you to set in tfvars + `terraform apply` (updates the Cognito callbacks).
+# Runs on sync; safe to re-run.
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: reconcile-edge
+  namespace: ai-platform
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: reconcile-edge
+  namespace: ai-platform
+rules:
+  - apiGroups: ["networking.k8s.io"]
+    resources: ["ingresses"]
+    verbs: ["get", "list"]
+  - apiGroups: ["cloudfront.services.k8s.aws"]
+    resources: ["distributions"]
+    verbs: ["get", "list", "patch"]
+  - apiGroups: [""]
+    resources: ["secrets"]
+    resourceNames: ["sso-secrets"]
+    verbs: ["get", "patch"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: reconcile-edge
+  namespace: ai-platform
+subjects:
+  - kind: ServiceAccount
+    name: reconcile-edge
+    namespace: ai-platform
+roleRef:
+  kind: Role
+  name: reconcile-edge
+  apiGroup: rbac.authorization.k8s.io
+---
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: reconcile-edge
+  namespace: ai-platform
+  annotations:
+    argocd.argoproj.io/hook: PostSync
+    argocd.argoproj.io/hook-delete-policy: BeforeHookCreation
+spec:
+  backoffLimit: 20
+  template:
+    spec:
+      serviceAccountName: reconcile-edge
+      restartPolicy: OnFailure
+      containers:
+        - name: reconcile
+          image: bitnami/kubectl:1.31
+          command: ["/bin/bash", "-c"]
+          args:
+            - |
+              set -euo pipefail
+              NS=ai-platform
+              echo "Discovering ALB hostname from the shared ingress..."
+              ALB=""
+              for i in $(seq 1 60); do
+                ALB=$(kubectl get ingress ai-platform-openwebui -n "$NS" \
+                  -o jsonpath='{.status.loadBalancer.ingress[0].hostname}' 2>/dev/null || true)
+                [ -n "$ALB" ] && break
+                echo "  waiting for ALB..."; sleep 10
+              done
+              [ -n "$ALB" ] || { echo "ALB hostname not found"; exit 1; }
+              echo "ALB: $ALB"
+
+              # Patch each Distribution's origin to the ALB hostname.
+              for d in open-webui-edge litellm-edge langfuse-edge dashboard-edge; do
+                kubectl patch distribution "$d" -n "$NS" --type=json \
+                  -p "[{\"op\":\"replace\",\"path\":\"/spec/distributionConfig/origins/items/0/domainName\",\"value\":\"$ALB\"}]"
+              done
+
+              # Wait for ACK to publish each CloudFront domain, then write the app
+              # base-URL keys the UIs read from sso-secrets.
+              declare -A APP=( [open-webui-edge]=open-webui [litellm-edge]=litellm [langfuse-edge]=langfuse )
+              echo; echo "=== sso_public_urls (copy into tfvars, then terraform apply) ==="
+              echo "sso_public_urls = {"
+              for d in open-webui-edge litellm-edge langfuse-edge dashboard-edge; do
+                CF=""
+                for i in $(seq 1 90); do
+                  CF=$(kubectl get distribution "$d" -n "$NS" -o jsonpath='{.status.domainName}' 2>/dev/null || true)
+                  [ -n "$CF" ] && break
+                  sleep 10
+                done
+                [ -n "$CF" ] || { echo "  # $d: domain not ready yet"; continue; }
+                app="${APP[$d]:-}"
+                if [ -n "$app" ]; then
+                  kubectl patch secret sso-secrets -n "$NS" --type=merge \
+                    -p "{\"stringData\":{\"${app}-public-url\":\"https://${CF}\"}}"
+                  echo "  ${app} = \"https://${CF}\""
+                fi
+              done
+              echo "}"
+              echo "Done. Restart the UI deployments to pick up the new base URLs,"
+              echo "set sso_public_urls in tfvars + terraform apply (Cognito callbacks),"
+              echo "and set --cookie-secure=true on oauth2-proxy."

@@ -1,0 +1,149 @@
+# CloudFront edge — public HTTPS front for the platform UIs, via ACK.
+#
+# OPT-IN: this directory is intentionally NOT in the platform ApplicationSet list
+# (argocd/bootstrap/platform.yaml), so ArgoCD does NOT create these by default —
+# each Distribution is a real, billable CloudFront distribution. Activate by
+# adding an element for `platform/services/edge` to that list (see README.md).
+#
+# Why ACK (not Terraform): the ALB is created in-cluster at runtime, so Terraform
+# can't reference it at apply time. As GitOps/ACK resources these reconcile after
+# the ALB exists — no two-phase apply. Validated against the live CRD with
+# `kubectl apply --dry-run=server`.
+#
+# ORIGIN: all four share the one internet-facing ALB (ingress group ai-platform),
+# differing only by port. `domainName` is set to the ALB hostname by the
+# reconcile-edge Job (reconcile-edge.yaml), which reads it off the ingress.
+#
+# CACHE: CachingDisabled (4135ea2d-...) + AllViewer origin-request policy
+# (216adef6-...) so the dynamic, auth'd apps get all headers/cookies/query and
+# nothing is cached. Viewer cert = the free *.cloudfront.net default (HTTPS with
+# no domain/ACM). After creation, feed each distribution's domain into
+# `sso_public_urls` (see README).
+---
+apiVersion: cloudfront.services.k8s.aws/v1alpha1
+kind: Distribution
+metadata:
+  name: open-webui-edge
+  namespace: ai-platform
+spec:
+  distributionConfig:
+    enabled: true
+    comment: "ai-platform open-webui"
+    priceClass: PriceClass_100
+    defaultCacheBehavior:
+      targetOriginID: alb
+      viewerProtocolPolicy: redirect-to-https
+      cachePolicyID: "4135ea2d-6df8-44a3-9df3-4b5a84be39ad"
+      originRequestPolicyID: "216adef6-5c7f-47e4-b989-5492eafa07d3"
+      allowedMethods:
+        items: ["GET", "HEAD", "OPTIONS", "PUT", "PATCH", "POST", "DELETE"]
+        cachedMethods:
+          items: ["GET", "HEAD"]
+    origins:
+      items:
+        - id: alb
+          domainName: REPLACE_WITH_ALB_HOSTNAME # set by reconcile-edge Job
+          customOriginConfig:
+            httpPort: 8080
+            httpSPort: 443
+            originProtocolPolicy: http-only
+            originSSLProtocols:
+              items: ["TLSv1.2"]
+    viewerCertificate:
+      cloudFrontDefaultCertificate: true
+---
+apiVersion: cloudfront.services.k8s.aws/v1alpha1
+kind: Distribution
+metadata:
+  name: litellm-edge
+  namespace: ai-platform
+spec:
+  distributionConfig:
+    enabled: true
+    comment: "ai-platform litellm"
+    priceClass: PriceClass_100
+    defaultCacheBehavior:
+      targetOriginID: alb
+      viewerProtocolPolicy: redirect-to-https
+      cachePolicyID: "4135ea2d-6df8-44a3-9df3-4b5a84be39ad"
+      originRequestPolicyID: "216adef6-5c7f-47e4-b989-5492eafa07d3"
+      allowedMethods:
+        items: ["GET", "HEAD", "OPTIONS", "PUT", "PATCH", "POST", "DELETE"]
+        cachedMethods:
+          items: ["GET", "HEAD"]
+    origins:
+      items:
+        - id: alb
+          domainName: REPLACE_WITH_ALB_HOSTNAME # set by reconcile-edge Job
+          customOriginConfig:
+            httpPort: 4000
+            httpSPort: 443
+            originProtocolPolicy: http-only
+            originSSLProtocols:
+              items: ["TLSv1.2"]
+    viewerCertificate:
+      cloudFrontDefaultCertificate: true
+---
+apiVersion: cloudfront.services.k8s.aws/v1alpha1
+kind: Distribution
+metadata:
+  name: langfuse-edge
+  namespace: ai-platform
+spec:
+  distributionConfig:
+    enabled: true
+    comment: "ai-platform langfuse"
+    priceClass: PriceClass_100
+    defaultCacheBehavior:
+      targetOriginID: alb
+      viewerProtocolPolicy: redirect-to-https
+      cachePolicyID: "4135ea2d-6df8-44a3-9df3-4b5a84be39ad"
+      originRequestPolicyID: "216adef6-5c7f-47e4-b989-5492eafa07d3"
+      allowedMethods:
+        items: ["GET", "HEAD", "OPTIONS", "PUT", "PATCH", "POST", "DELETE"]
+        cachedMethods:
+          items: ["GET", "HEAD"]
+    origins:
+      items:
+        - id: alb
+          domainName: REPLACE_WITH_ALB_HOSTNAME # set by reconcile-edge Job
+          customOriginConfig:
+            httpPort: 3000
+            httpSPort: 443
+            originProtocolPolicy: http-only
+            originSSLProtocols:
+              items: ["TLSv1.2"]
+    viewerCertificate:
+      cloudFrontDefaultCertificate: true
+---
+apiVersion: cloudfront.services.k8s.aws/v1alpha1
+kind: Distribution
+metadata:
+  name: dashboard-edge
+  namespace: ai-platform
+spec:
+  distributionConfig:
+    enabled: true
+    comment: "ai-platform dashboard (via oauth2-proxy)"
+    priceClass: PriceClass_100
+    defaultCacheBehavior:
+      targetOriginID: alb
+      viewerProtocolPolicy: redirect-to-https
+      cachePolicyID: "4135ea2d-6df8-44a3-9df3-4b5a84be39ad"
+      originRequestPolicyID: "216adef6-5c7f-47e4-b989-5492eafa07d3"
+      allowedMethods:
+        items: ["GET", "HEAD", "OPTIONS", "PUT", "PATCH", "POST", "DELETE"]
+        cachedMethods:
+          items: ["GET", "HEAD"]
+    origins:
+      items:
+        - id: alb
+          domainName: REPLACE_WITH_ALB_HOSTNAME # set by reconcile-edge Job
+          customOriginConfig:
+            httpPort: 9090
+            httpSPort: 443
+            originProtocolPolicy: http-only
+            originSSLProtocols:
+              items: ["TLSv1.2"]
+    viewerCertificate:
+      cloudFrontDefaultCertificate: true

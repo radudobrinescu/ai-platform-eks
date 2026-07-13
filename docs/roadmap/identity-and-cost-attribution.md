@@ -135,3 +135,41 @@ Phase 0 desk-validation complete: Open WebUI OIDC + forward-headers, LiteLLM UI
 `GENERIC_*` SSO + `extra_spend_tag_headers`, Langfuse `AUTH_CUSTOM_*`, oauth2-proxy
 Cognito groups, Cognito Hosted UI, and the shared-HTTP-ALB ingress model are all
 confirmed. No pre-existing CloudFront/Cognito/WAF/SSO code in the repo — greenfield.
+
+## Implementation status (2026-07-13)
+
+**Built + code-validated (terraform validate / YAML + embedded-config parse):**
+- `terraform/30.eks/30.cluster/cognito.tf` — pool, hosted-UI domain, 3 groups,
+  4 app clients, 3 seed users (passwords as `sso_seed_user_passwords` output),
+  `sso-secrets` + `oauth2-proxy-secrets`. Gated on `enable_sso` (default on).
+- Open WebUI, LiteLLM (+ `extra_spend_tag_headers`), Langfuse (`AUTH_CUSTOM_*`)
+  SSO wiring — all via **optional** secret refs (push-safe; apps keep local
+  login until Terraform creates the secrets).
+- `oauth2-proxy` Deployment/Service + dashboard ingress routed through it
+  (admins + developers).
+- `example.tfvars` documents `enable_sso` + `sso_public_urls`.
+
+**Out-of-the-box behavior:** on a fresh `platformctl up`, Terraform creates the
+Cognito secrets before ArgoCD syncs, so SSO activates automatically. Access is via
+**`platformctl tunnel`** (Cognito permits `http://localhost` callbacks — the
+app-client callback URLs default to the localhost tunnel ports). Per-user cost
+appears in LiteLLM spend reports once users chat through Open WebUI.
+
+**Remaining — CloudFront public HTTPS (opt-in, implemented via ACK):** the ALB is
+created by the in-cluster LB controller *after* Terraform runs, so CloudFront can't
+reference it in the same apply. Rather than a two-phase Terraform stage, the edge
+is implemented as **ACK CloudFront `Distribution` manifests** in
+`platform/services/edge/` (the CloudFront ACK CRDs ship with the managed `ack`
+capability — verified present on-cluster; the `Distribution` manifests are
+schema-validated via `kubectl apply --dry-run=server`). It is **opt-in** (not in the
+platform ApplicationSet list) because each distribution is billable. A
+`reconcile-edge` Job discovers the runtime ALB hostname, patches each distribution's
+origin, and writes the resulting `*.cloudfront.net` domains into `sso-secrets`; the
+operator then sets `sso_public_urls` + `terraform apply` to update the Cognito
+callbacks and flips oauth2-proxy to `--cookie-secure=true`. See
+`platform/services/edge/README.md`. Until activated, the temporary ALB
+`inbound-cidrs` allowlist stays.
+
+**Live end-to-end validation** (login flow + per-user spend) requires
+`terraform apply` against a real account and cannot be exercised in this
+environment; the code is structured and validated for a clean fresh-deploy.
