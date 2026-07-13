@@ -36,6 +36,52 @@ spec:
                   optional: true
             - name: WEBUI_AUTH
               value: "true"
+            # --- SSO (Cognito OIDC) + per-user cost attribution ---
+            # All secret refs are optional: until Terraform (enable_sso) creates
+            # `sso-secrets`, OAuth stays disabled and local login still works.
+            # OAuth activates automatically once the client id/secret exist.
+            - name: ENABLE_OAUTH_SIGNUP
+              value: "true"
+            - name: OAUTH_PROVIDER_NAME
+              value: "SSO"
+            - name: OAUTH_SCOPES
+              value: "openid email profile"
+            - name: OAUTH_ROLES_CLAIM
+              value: "cognito:groups"
+            - name: ENABLE_OAUTH_ROLE_MANAGEMENT
+              value: "true"
+            - name: OAUTH_ALLOWED_ROLES
+              value: "ai-platform-admins,ai-platform-developers,ai-platform-users"
+            - name: OAUTH_ADMIN_ROLES
+              value: "ai-platform-admins"
+            # Forward the authenticated user to LiteLLM so spend is attributed
+            # per user (LiteLLM captures the X-OpenWebUI-User-* headers as tags).
+            - name: ENABLE_FORWARD_USER_INFO_HEADERS
+              value: "true"
+            - name: OPENID_PROVIDER_URL
+              valueFrom:
+                secretKeyRef:
+                  name: sso-secrets
+                  key: openid-config-url
+                  optional: true
+            - name: OAUTH_CLIENT_ID
+              valueFrom:
+                secretKeyRef:
+                  name: sso-secrets
+                  key: open-webui-client-id
+                  optional: true
+            - name: OAUTH_CLIENT_SECRET
+              valueFrom:
+                secretKeyRef:
+                  name: sso-secrets
+                  key: open-webui-client-secret
+                  optional: true
+            - name: WEBUI_URL
+              valueFrom:
+                secretKeyRef:
+                  name: sso-secrets
+                  key: open-webui-public-url
+                  optional: true
           volumeMounts:
             - name: data
               mountPath: /app/backend/data

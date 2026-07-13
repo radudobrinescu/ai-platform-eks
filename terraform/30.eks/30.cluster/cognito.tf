@@ -21,7 +21,7 @@ locals {
   sso_apps = {
     "open-webui"   = { port = 8080, callback = "/oauth/oidc/callback", logout = "/" }
     "litellm"      = { port = 4000, callback = "/sso/callback", logout = "/" }
-    "langfuse"     = { port = 3000, callback = "/api/auth/callback/cognito", logout = "/" }
+    "langfuse"     = { port = 3000, callback = "/api/auth/callback/custom", logout = "/" }
     "oauth2-proxy" = { port = 9090, callback = "/oauth2/callback", logout = "/" }
   }
 
@@ -185,12 +185,18 @@ resource "kubernetes_secret" "sso_secrets" {
 
   data = merge(
     {
-      "issuer"           = local.cognito_issuer_url
-      "hosted-ui-domain" = local.cognito_hosted_ui_url
-      "authorize-url"    = "${local.cognito_hosted_ui_url}/oauth2/authorize"
-      "token-url"        = "${local.cognito_hosted_ui_url}/oauth2/token"
-      "userinfo-url"     = "${local.cognito_hosted_ui_url}/oauth2/userInfo"
-      "admin-group"      = "ai-platform-admins"
+      "issuer"            = local.cognito_issuer_url
+      "hosted-ui-domain"  = local.cognito_hosted_ui_url
+      "openid-config-url" = "${local.cognito_issuer_url}/.well-known/openid-configuration"
+      "authorize-url"     = "${local.cognito_hosted_ui_url}/oauth2/authorize"
+      "token-url"         = "${local.cognito_hosted_ui_url}/oauth2/token"
+      "userinfo-url"      = "${local.cognito_hosted_ui_url}/oauth2/userInfo"
+      "admin-group"       = "ai-platform-admins"
+      # Public base URL per UI. Defaults to the localhost tunnel URL (so SSO
+      # works out of the box via `platformctl tunnel`); overridden by CloudFront.
+      "open-webui-public-url" = try(var.sso_public_urls["open-webui"], "http://localhost:8080")
+      "litellm-public-url"    = try(var.sso_public_urls["litellm"], "http://localhost:4000")
+      "langfuse-public-url"   = try(var.sso_public_urls["langfuse"], "http://localhost:3000")
     },
     { for app in keys(local.sso_apps) : "${app}-client-id" => aws_cognito_user_pool_client.apps[app].id },
     { for app in keys(local.sso_apps) : "${app}-client-secret" => aws_cognito_user_pool_client.apps[app].client_secret },

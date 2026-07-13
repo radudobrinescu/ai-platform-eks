@@ -67,6 +67,45 @@ spec:
                   name: langfuse-litellm-keys
                   key: LANGFUSE_SECRET_KEY
                   optional: true
+            # --- Admin UI SSO (Cognito OIDC) ---
+            # Optional refs: until Terraform (enable_sso) creates `sso-secrets`,
+            # these are unset and the UI falls back to master-key login.
+            - name: GENERIC_CLIENT_ID
+              valueFrom:
+                secretKeyRef:
+                  name: sso-secrets
+                  key: litellm-client-id
+                  optional: true
+            - name: GENERIC_CLIENT_SECRET
+              valueFrom:
+                secretKeyRef:
+                  name: sso-secrets
+                  key: litellm-client-secret
+                  optional: true
+            - name: GENERIC_AUTHORIZATION_ENDPOINT
+              valueFrom:
+                secretKeyRef:
+                  name: sso-secrets
+                  key: authorize-url
+                  optional: true
+            - name: GENERIC_TOKEN_ENDPOINT
+              valueFrom:
+                secretKeyRef:
+                  name: sso-secrets
+                  key: token-url
+                  optional: true
+            - name: GENERIC_USERINFO_ENDPOINT
+              valueFrom:
+                secretKeyRef:
+                  name: sso-secrets
+                  key: userinfo-url
+                  optional: true
+            - name: PROXY_BASE_URL
+              valueFrom:
+                secretKeyRef:
+                  name: sso-secrets
+                  key: litellm-public-url
+                  optional: true
           volumeMounts:
             - name: config
               mountPath: /app/config.yaml
@@ -134,6 +173,11 @@ data:
       # wake a zero'd pool. `callbacks` applies to success AND failure, so a
       # request that arrives while the pool is cold is still counted.
       callbacks: ["prometheus"]
+      # Per-user cost attribution: capture the identity Open WebUI forwards
+      # (via ENABLE_FORWARD_USER_INFO_HEADERS) as spend tags, so spend reports
+      # break down per user without issuing per-user API keys. Inert when the
+      # headers are absent (e.g. direct API calls).
+      extra_spend_tag_headers: ["x-openwebui-user-id", "x-openwebui-user-email"]
       # Cold-start hold: when a pool is at zero, the request that triggers the
       # wake-up retries while KEDA scales it up (Karpenter node + model load,
       # ~1-2 min) — turning the cold start into added latency rather than an error.
