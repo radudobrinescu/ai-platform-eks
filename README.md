@@ -73,6 +73,15 @@ Provision → use Opus 4.8 with zero GPUs → deploy a self-hosted model → fin
 prove the savings. Mind the prerequisites that matter: fork the repo, set the IP
 allowlist, and supply gated-model tokens where needed. The shape of it:
 
+> ⚠️ **Before you deploy — this creates real, billable infrastructure in your AWS
+> account.** It provisions an EKS cluster and (on demand) GPU nodes, and exposes the
+> platform UIs behind an **internet-facing ALB**. Restrict access to your own IP
+> ranges via the **IP allowlist** before applying — never leave it open to the public
+> internet (`0.0.0.0/0`). GPU nodes and the cluster incur significant cost; use
+> [Tear down](#tear-down) to remove everything when finished. See
+> [SECURITY.md](SECURITY.md).
+
+
 ```bash
 # 1. Configure: copy a tfvars, set your Identity Center ARN + gitops repo URL.
 cd terraform/00.global/vars && cp example.tfvars dev.tfvars   # set ARN + gitops repo URL
