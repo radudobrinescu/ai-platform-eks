@@ -7,6 +7,11 @@ metadata:
     app: open-webui
 spec:
   replicas: 1
+  # Recreate (not RollingUpdate): the data PVC is ReadWriteOnce, so a rolling
+  # update deadlocks — the new pod can't mount the volume the old pod still holds
+  # (Multi-Attach). Recreate terminates the old pod first, then starts the new one.
+  strategy:
+    type: Recreate
   selector:
     matchLabels:
       app: open-webui
