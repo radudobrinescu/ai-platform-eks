@@ -20,6 +20,20 @@
   --orange:#fb923c; --orange-soft:rgba(251,146,60,0.14);
   --font:'Manrope',sans-serif; --mono:'JetBrains Mono',monospace; --r:12px; --r-sm:7px;
 }
+/* Light theme — toggled by the topbar button (sets body[data-theme="light"]). */
+body[data-theme="light"]{
+  --bg:#f5f6f8; --surface:#ffffff; --surface-2:#eef1f5; --surface-hover:#e9edf3;
+  --border:#e2e6ee; --border-light:#cfd5e1; --text:#161923; --text-2:#4c5468; --text-muted:#858ca0;
+  --accent:#4f46e5; --accent-soft:rgba(79,70,229,0.12);
+  --green:#059669; --amber:#b45309; --red:#dc2626;
+  --green-soft:rgba(5,150,105,0.12); --amber-soft:rgba(180,83,9,0.14); --red-soft:rgba(220,38,38,0.10);
+  --purple-soft:rgba(124,58,237,0.10); --cyan-soft:rgba(8,145,178,0.12);
+  --teal-soft:rgba(13,148,136,0.12); --orange-soft:rgba(234,88,12,0.12);
+}
+body[data-theme="light"] .nav-item.active{color:var(--accent)}
+/* Clickable health alerts (route to the relevant model/node/view/link). */
+.alert.clickable{cursor:pointer;border-radius:var(--r-sm);transition:background .12s;margin:0 -6px;padding-left:6px;padding-right:6px}
+.alert.clickable:hover{background:var(--surface-hover)}
 *{margin:0;padding:0;box-sizing:border-box}
 body{font-family:var(--font);background:var(--bg);color:var(--text);height:100vh;overflow:hidden;font-size:13px}
 .app{display:grid;grid-template-columns:212px 1fr;grid-template-rows:58px 1fr;height:100vh}
@@ -173,6 +187,28 @@ tbody tr:hover{background:var(--surface-2)}
 .gs.free{background:rgba(167,139,250,.06);border:1px dashed rgba(167,139,250,.25);color:var(--text-muted)}
 .util{font-size:10px;color:var(--text-muted);font-family:var(--mono)}
 .mock-tag{position:fixed;bottom:12px;right:16px;background:var(--amber-soft);color:var(--amber);border:1px solid rgba(251,191,36,.35);font-size:10px;font-weight:700;padding:4px 10px;border-radius:20px;letter-spacing:.5px;z-index:60}
+/* Responsive: collapse the sidebar to a horizontal nav, wrap KPIs, stack columns.
+   Placed at the end so these rules win over the base layout when the query matches
+   (media queries add no specificity — source order decides). */
+@media (max-width:860px){
+  body{overflow:auto}
+  .app{grid-template-columns:1fr;grid-template-rows:auto auto 1fr;height:auto;min-height:100vh}
+  .top{flex-wrap:wrap;height:auto;padding:8px 12px;gap:8px}
+  .search{order:3;flex-basis:100%;max-width:none}
+  .spacer{display:none}
+  .live{display:none}
+  .nav{flex-direction:row;overflow-x:auto;border-right:none;border-bottom:1px solid var(--border);padding:8px;gap:6px}
+  .nav-item{white-space:nowrap;flex:0 0 auto}
+  .nav-foot{display:none}
+  .main{overflow-y:visible;height:auto;padding:16px 14px}
+  .kpis{grid-template-columns:repeat(2,1fr)!important}
+  .cols,.cols-3{grid-template-columns:1fr}
+  .drawer{width:100vw;max-width:100vw}
+}
+@media (max-width:480px){
+  .kpis{grid-template-columns:1fr!important}
+  .mini-kpi{grid-template-columns:repeat(2,1fr)}
+}
 </style>
 <style>
 .search{position:relative}
@@ -341,7 +377,7 @@ async function poll(){
 function pushHist(){const m=D.models||[];push(hist.rpm,m.reduce((s,x)=>s+(x.rpm||0),0));push(hist.tok,Math.round(m.reduce((s,x)=>s+(x.tps||0),0)*60));push(hist.cost,(D.cost||{}).hourly||0);const g=(D.gpu||[]).flatMap(x=>x.util||[]);push(hist.gpu,g.length?Math.round(g.reduce((a,b)=>a+b,0)/g.length):0);}
 function diffActivity(){const t=new Date().toLocaleTimeString('en-GB',{hour:'2-digit',minute:'2-digit',second:'2-digit'});const cur={};(D.models||[]).forEach(m=>cur[m.name]=m.status);for(const n in cur){if(!(n in prevM))activity.unshift([t,`Model "${n}" appeared → ${cur[n]}`]);else if(prevM[n]!==cur[n])activity.unshift([t,`Model "${n}" → ${cur[n]}`]);}for(const n in prevM){if(!(n in cur))activity.unshift([t,`Model "${n}" removed`]);}prevM=cur;const curN={};(D.nodes||[]).forEach(nd=>curN[nd.name]=nd.instance||'node');if(prevN!==null){for(const nm in curN){if(!(nm in prevN))activity.unshift([t,`Node ${nm.split('.')[0]} (${curN[nm]}) joined`]);}for(const nm in prevN){if(!(nm in curN))activity.unshift([t,`Node ${nm.split('.')[0]} removed`]);}}prevN=curN;const curS={};(D.autoscaling||[]).forEach(a=>{const k=a.pool+(a.role?' ('+a.role+')':'');curS[k]=a.current;});for(const k in curS){if(k in prevS&&prevS[k]!==curS[k])activity.unshift([t,`⇅ ${k} scaled ${prevS[k]} → ${curS[k]} replicas`]);}prevS=curS;while(activity.length>18)activity.pop();if(!activity.length)activity=[[t,'Connected to cluster']];}
 
-function alertList(){const out=[];(D.models||[]).forEach(m=>{if(m.status!=='running'){const d=m.deploy||{};let reason='';if(m.reconcileError)reason=m.reconcileError;else if(d.provisioning&&d.provisioning.length)reason='waiting for GPU node — '+d.provisioning[0].reason;else if(d.waiting&&d.waiting.reason)reason=d.waiting.reason;else if(d.events&&d.events.length){const w=d.events.find(e=>e.type==='Warning')||d.events[0];reason=w.reason;}const sev=(m.status==='error'||(d.provisioning&&d.provisioning.length))?'crit':'warn';out.push({icon:m.status==='error'?'✗':'⚠',sev,t:`${m.name} · ${m.status}`,d:reason?`${tierLabel(m.tier)} · ${reason}`:`${tierLabel(m.tier)} · ${m.availableReplicas||0}/${m.replicas||1} replicas ready`});}else if((m.tier==='llm-d'||m.tier==='llm-d-disagg')&&m.router&&m.router!=='Healthy')out.push({icon:'⚠',sev:'warn',t:`${m.name} · router ${m.router}`,d:'llm-d EPP/router not yet Healthy'});else if(m.health&&m.health.toLowerCase()!=='healthy')out.push({icon:'⚠',sev:'warn',t:`${m.name} · ${m.health}`,d:'LiteLLM health check'});});(D.provisioning||[]).slice(0,1).forEach(e=>out.push({icon:'☁',sev:'crit',t:`GPU capacity · ${e.reason}`,d:e.message}));(D.argocd||[]).forEach(a=>{if(a.sync!=='Synced'||a.health!=='Healthy')out.push({icon:'🚢',sev:(a.health==='Degraded'||a.health==='Missing')?'crit':'warn',t:`ArgoCD · ${a.name}`,d:`${a.sync} · ${a.health}`});});(D.nodeAlerts||[]).forEach(a=>out.push({icon:'🖥',sev:(a.issue==='NotReady'?'crit':'warn'),t:`Node ${a.node} · ${a.issue}`,d:'EKS node condition'}));return out;}
+function alertList(){const out=[];(D.models||[]).forEach(m=>{if(m.status!=='running'){const d=m.deploy||{};let reason='';if(m.reconcileError)reason=m.reconcileError;else if(d.provisioning&&d.provisioning.length)reason='waiting for GPU node — '+d.provisioning[0].reason;else if(d.waiting&&d.waiting.reason)reason=d.waiting.reason;else if(d.events&&d.events.length){const w=d.events.find(e=>e.type==='Warning')||d.events[0];reason=w.reason;}const sev=(m.status==='error'||(d.provisioning&&d.provisioning.length))?'crit':'warn';out.push({icon:m.status==='error'?'✗':'⚠',sev,t:`${m.name} · ${m.status}`,d:reason?`${tierLabel(m.tier)} · ${reason}`:`${tierLabel(m.tier)} · ${m.availableReplicas||0}/${m.replicas||1} replicas ready`,open:['model',m.name]});}else if((m.tier==='llm-d'||m.tier==='llm-d-disagg')&&m.router&&m.router!=='Healthy')out.push({icon:'⚠',sev:'warn',t:`${m.name} · router ${m.router}`,d:'llm-d EPP/router not yet Healthy',open:['model',m.name]});else if(m.health&&m.health.toLowerCase()!=='healthy')out.push({icon:'⚠',sev:'warn',t:`${m.name} · ${m.health}`,d:'LiteLLM health check',open:['model',m.name]});});(D.provisioning||[]).slice(0,1).forEach(e=>out.push({icon:'☁',sev:'crit',t:`GPU capacity · ${e.reason}`,d:e.message,open:['view','infra']}));(D.argocd||[]).forEach(a=>{if(a.sync!=='Synced'||a.health!=='Healthy')out.push({icon:'🚢',sev:(a.health==='Degraded'||a.health==='Missing')?'crit':'warn',t:`ArgoCD · ${a.name}`,d:`${a.sync} · ${a.health}`,open:['link','argocd']});});(D.nodeAlerts||[]).forEach(a=>out.push({icon:'🖥',sev:(a.issue==='NotReady'?'crit':'warn'),t:`Node ${a.node} · ${a.issue}`,d:'EKS node condition',open:['node',a.node]}));return out;}
 
 function renderAll(){kpis();topbar();ovModels();costMini();gpuBars();ovHealth();ovFeed();modelTabs();modelsBody();teamsView();costViews();infra();healthView();links();if(selected)openModel(selected,true);if(selectedNode)openNode(selectedNode,true);if(selectedTeam)openTeam(selectedTeam,true);}
 
@@ -364,7 +400,8 @@ function costMini(){const c=D.cost||{},bd=(D.models||[]).filter(m=>m.tier==='bed
 
 function gpuBars(){const g=D.gpu||[];if(!(D.sources||{}).dcgm){$('gpu-bars').innerHTML='<div class="muted" style="font-size:12px">GPU metrics unavailable (dcgm-exporter unreachable)</div>';return;}if(!g.length){$('gpu-bars').innerHTML='<div class="muted" style="font-size:12px">No GPU nodes — scales from zero on demand</div>';return;}$('gpu-bars').innerHTML=g.map(n=>{const u=n.util&&n.util.length?Math.round(n.util.reduce((a,b)=>a+b,0)/n.util.length):0;const mmA=(n.mem||[]).filter(x=>x!=null);const mm=mmA.length?Math.round(mmA.reduce((s,x)=>s+x,0)/mmA.length):null;const c=u===0?'var(--text-muted)':u>85?'var(--amber)':'var(--green)';const lbl=n.model?('· '+esc(n.model)):'<span class="muted">idle</span>';return `<div style="margin-bottom:9px"><div class="bar-lbl"><span>${esc(n.instance)} ${lbl}</span><span>${u}% util${mm!=null?' · '+mm+'% mem':''}</span></div><div class="bar"><i style="width:${u||2}%;background:${c}"></i></div></div>`}).join('');}
 
-function alertRow(a){return `<div class="alert${a.sev==='crit'?' crit':''}"><span class="ai">${a.icon}</span><div><div class="at">${esc(a.t)}</div><div class="ad">${esc(a.d)}</div></div></div>`}
+function alertAction(o){if(!o)return'';if(o[0]==='model')return `openModel('${o[1]}')`;if(o[0]==='node')return `openNode('${o[1]}')`;if(o[0]==='link')return `openLink('${o[1]}')`;if(o[0]==='view')return `go('${o[1]}')`;return'';}
+function alertRow(a){const act=alertAction(a.open);return `<div class="alert${a.sev==='crit'?' crit':''}${act?' clickable':''}"${act?` onclick="${act}" role="button" tabindex="0" onkeydown="if(event.key==='Enter'||event.key===' '){event.preventDefault();this.click();}"`:''}><span class="ai">${a.icon}</span><div><div class="at">${esc(a.t)}</div><div class="ad">${esc(a.d)}</div></div></div>`}
 function ovHealth(){const al=alertList();$('ov-health').innerHTML=al.length?al.slice(0,4).map(alertRow).join(''):'<div class="muted" style="font-size:12px;padding:8px 0">✓ All models and apps healthy</div>';}
 function ovFeed(){$('ov-feed').innerHTML=activity.map(f=>`<div class="fr"><span class="ft">${f[0]}</span><span>${esc(f[1])}</span></div>`).join('');}
 
