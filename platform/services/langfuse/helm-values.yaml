@@ -59,6 +59,13 @@ langfuse:
       valueFrom: { secretKeyRef: { name: sso-secrets, key: langfuse-client-secret, optional: true } }
     - name: AUTH_CUSTOM_ISSUER
       valueFrom: { secretKeyRef: { name: sso-secrets, key: issuer, optional: true } }
+    # Auto-provision SSO users into the platform org with a baseline role.
+    # OSS Langfuse supports only ONE default role (no per-group mapping — that
+    # needs Enterprise/SCIM); the break-glass init admin remains OWNER.
+    - name: LANGFUSE_DEFAULT_ORG_ID
+      valueFrom: { secretKeyRef: { name: langfuse-init, key: LANGFUSE_INIT_ORG_ID } }
+    - name: LANGFUSE_DEFAULT_ORG_ROLE
+      value: "MEMBER"
 
   salt:
     secretKeyRef:

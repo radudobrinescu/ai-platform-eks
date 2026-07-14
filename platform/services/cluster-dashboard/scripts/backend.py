@@ -764,7 +764,7 @@ def _lldb_connect():  # type: ignore[no-untyped-def]
 
 def _litellm_metrics() -> dict:
     """Per-model 5-min metrics + model health + per-team spend/budgets + cost trend."""
-    out = {"perModel": {}, "teams": [], "trend": [], "health": {}, "byTeam": []}
+    out = {"perModel": {}, "teams": [], "trend": [], "health": {}, "byTeam": [], "byUser": []}
     if not (HAVE_PSYCOPG and DB_USER and DB_PASSWORD):
         return out
     with _lldb_connect() as conn, conn.cursor() as cur:
@@ -814,6 +814,23 @@ def _litellm_metrics() -> dict:
         try:
             cur.execute('SELECT date::text, COALESCE(sum(spend),0) FROM "LiteLLM_DailyTeamSpend" GROUP BY date ORDER BY date DESC LIMIT 14')
             out["trend"] = [[r[0], round(float(r[1]), 2)] for r in cur.fetchall()][::-1]
+        except Exception:
+            pass
+        try:
+            # Per-user cost/usage (30d). Open WebUI forwards the signed-in user
+            # as an x-openwebui-user-email request tag (ENABLE_FORWARD_USER_INFO_HEADERS
+            # + LiteLLM extra_spend_tag_headers), captured in request_tags (jsonb).
+            # NOTE: only covers interactive (Open WebUI) users; direct API callers
+            # are attributed by key/team, not user.
+            cur.execute("""
+              SELECT split_part(tag, ': ', 2), count(*),
+                     COALESCE(sum(total_tokens),0), COALESCE(sum(spend),0)
+              FROM "LiteLLM_SpendLogs", jsonb_array_elements_text(request_tags) tag
+              WHERE "startTime" > now() - interval '30 days'
+                AND tag LIKE 'x-openwebui-user-email:%'
+              GROUP BY 1 ORDER BY 4 DESC LIMIT 50""")
+            out["byUser"] = [{"user": r[0], "requests": int(r[1]), "tokens": int(r[2]),
+                              "spend": round(float(r[3]), 4)} for r in cur.fetchall()]
         except Exception:
             pass
     return out
@@ -1142,7 +1159,7 @@ def _build_metrics(nodes: list, pods: list) -> dict:
     try:
         met = _litellm_metrics(); src["litellm"] = True
     except Exception:
-        met = {"perModel": {}, "teams": [], "trend": [], "health": {}, "byTeam": []}; src["litellm"] = False
+        met = {"perModel": {}, "teams": [], "trend": [], "health": {}, "byTeam": [], "byUser": []}; src["litellm"] = False
     try:
         bedrock = _bedrock_models(); src["bedrock"] = True
     except Exception:
@@ -1225,7 +1242,7 @@ def _build_metrics(nodes: list, pods: list) -> dict:
         provisioning = []
 
     by_model = sorted([[m["name"], m["costHr"], m["tier"]] for m in models if m["costHr"] > 0], key=lambda x: -x[1])
-    cost_ext = {"byModel": by_model, "byTeam": met.get("byTeam", []), "trend": met.get("trend", [])}
+    cost_ext = {"byModel": by_model, "byTeam": met.get("byTeam", []), "trend": met.get("trend", []), "byUser": met.get("byUser", [])}
     # Autoscaling: per-pool KEDA/HPA state + bottleneck signal, attached to each
     # model (disagg models get two entries: prefill + decode, scaling
     # independently). Replaces the now-deprecated spec replica counts with the

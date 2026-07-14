@@ -115,6 +115,10 @@ spec:
                   name: sso-secrets
                   key: admin-user-id
                   optional: true
+            # Group-aligned role from userInfo (custom:role); admin/dev/user ->
+            # proxy_admin/internal_user/internal_user_view_only.
+            - name: GENERIC_USER_ROLE_ATTRIBUTE
+              value: "custom:role"
           volumeMounts:
             - name: config
               mountPath: /app/config.yaml

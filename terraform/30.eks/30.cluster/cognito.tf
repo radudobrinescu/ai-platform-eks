@@ -41,6 +41,15 @@ locals {
 
   sso_groups = ["ai-platform-admins", "ai-platform-developers", "ai-platform-users"]
 
+  # LiteLLM role per group. LiteLLM reads this from userInfo via
+  # GENERIC_USER_ROLE_ATTRIBUTE=custom:role, because Cognito does NOT return
+  # cognito:groups on the userInfo endpoint (only in the ID/access token).
+  sso_litellm_roles = {
+    "ai-platform-admins"     = "proxy_admin"
+    "ai-platform-developers" = "internal_user"
+    "ai-platform-users"      = "internal_user_view_only"
+  }
+
   # Seed users (one per role). Passwords are generated + surfaced as outputs.
   # example.com (RFC 2606 documentation domain) is used deliberately: LiteLLM's
   # SSO email validator rejects reserved/special-use domains like .local, so the
@@ -84,6 +93,21 @@ resource "aws_cognito_user_pool" "platform" {
   # Seed users are admin-created; forkers add more via the console/CLI.
   admin_create_user_config {
     allow_admin_create_user_only = true
+  }
+
+  # Custom attribute carrying the LiteLLM role. Unlike cognito:groups, custom
+  # attributes ARE returned by the userInfo endpoint, which is where LiteLLM's
+  # generic SSO reads user attributes from.
+  schema {
+    name                     = "role"
+    attribute_data_type      = "String"
+    mutable                  = true
+    developer_only_attribute = false
+    required                 = false
+    string_attribute_constraints {
+      min_length = 0
+      max_length = 64
+    }
   }
 
   account_recovery_setting {
@@ -131,8 +155,9 @@ resource "aws_cognito_user_pool_client" "apps" {
     "ALLOW_REFRESH_TOKEN_AUTH",
   ]
 
-  # Expose the group membership on tokens so each app maps cognito:groups -> role.
-  read_attributes = ["email", "email_verified"]
+  # Read attributes exposed to the app (returned by userInfo). custom:role feeds
+  # LiteLLM's GENERIC_USER_ROLE_ATTRIBUTE.
+  read_attributes = ["email", "email_verified", "custom:role"]
 }
 
 # Seed-user passwords (permanent, generated). Cognito-safe symbol set.
@@ -157,6 +182,7 @@ resource "aws_cognito_user" "seed" {
   attributes = {
     email          = each.key
     email_verified = "true"
+    "custom:role"  = local.sso_litellm_roles[each.value]
   }
 }
 
@@ -195,7 +221,7 @@ resource "kubernetes_secret" "sso_secrets" {
       "userinfo-url"      = "${local.cognito_hosted_ui_url}/oauth2/userInfo"
       "admin-group"       = "ai-platform-admins"
       # Seed admin's user_id (LiteLLM keys SSO users by email) -> PROXY_ADMIN_ID.
-      "admin-user-id"     = one([for e, g in local.sso_seed_users : e if g == "ai-platform-admins"])
+      "admin-user-id" = one([for e, g in local.sso_seed_users : e if g == "ai-platform-admins"])
       # Public base URL per UI. Defaults to the localhost tunnel URL (so SSO
       # works out of the box via `platformctl tunnel`); overridden by CloudFront.
       "open-webui-public-url" = try(var.sso_public_urls["open-webui"], "http://localhost:8080")
