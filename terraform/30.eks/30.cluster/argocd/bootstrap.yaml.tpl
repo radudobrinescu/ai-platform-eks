@@ -12,6 +12,15 @@ spec:
     repoURL: ${repo_url}
     targetRevision: ${revision}
     path: argocd/bootstrap
+    # argocd/bootstrap is a Helm chart (app-of-apps). Pass the repo URL(s) as
+    # Helm values from the SAME Terraform vars used above, so the platform +
+    # workloads ApplicationSets inherit them — the repo URL is set in exactly
+    # one place (tfvars). workloadsRepoURL empty -> workloads live in this repo.
+    helm:
+      valuesObject:
+        repoURL: ${repo_url}
+        revision: ${revision}
+        workloadsRepoURL: ${workloads_repo_url}
   destination:
     name: local-cluster
     namespace: argocd

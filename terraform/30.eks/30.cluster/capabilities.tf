@@ -386,19 +386,20 @@ resource "kubernetes_secret" "argocd_cluster" {
 
 ################################################################################
 # ArgoCD — bootstrap Application.
-# Points at argocd/bootstrap/ in the git repo, which contains ApplicationSets
-# that define all platform services and workloads. This is the ONLY ArgoCD
-# Application rendered by Terraform — everything else is in git, managed by
-# ArgoCD. Forking the platform = set var.gitops_repo_url here AND the matching
-# repoURL in argocd/bootstrap/{platform,workloads}.yaml (ArgoCD ApplicationSet
-# generators can't read a Terraform variable). See those files' headers.
+# Points at argocd/bootstrap/ in the git repo — a Helm chart (app-of-apps) whose
+# templates are the platform + workloads ApplicationSets. This is the ONLY ArgoCD
+# Application rendered by Terraform; it passes the repo URL(s) down as Helm values
+# so every ApplicationSet inherits them. Forking the platform = set
+# var.gitops_repo_url in tfvars — ONE place. (Optionally point self-service
+# workloads at a separate repo with var.gitops_workloads_repo_url.)
 ################################################################################
 resource "kubectl_manifest" "argocd_bootstrap" {
   count = local.capabilities.gitops ? 1 : 0
 
   yaml_body = templatefile("${path.module}/argocd/bootstrap.yaml.tpl", {
-    repo_url = var.gitops_repo_url
-    revision = var.gitops_revision
+    repo_url           = var.gitops_repo_url
+    revision           = var.gitops_revision
+    workloads_repo_url = var.gitops_workloads_repo_url
   })
 
   lifecycle {

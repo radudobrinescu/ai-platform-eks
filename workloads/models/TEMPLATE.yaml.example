@@ -1,16 +1,20 @@
 # VLLMEndpoint Template — the simple default: one model, one vLLM pod.
-# Copy this file, rename it to your model name (e.g. gemma-4b.yaml), and fill in spec.model.
-# Only 'model' is required — everything else has sensible defaults.
+# Copy this file into a TARGET-NAMESPACE subdirectory and rename it to your model
+# name, e.g. workloads/models/inference/gemma-4b.yaml (platform-shared) or
+# workloads/models/team-search/gemma-4b.yaml (a team's namespace). The DIRECTORY
+# name is the namespace — do NOT set metadata.namespace here. Only 'model' is
+# required; everything else has sensible defaults. See workloads/models/README.md.
 #
 # After committing, ArgoCD syncs automatically. Track progress with:
-#   kubectl get vllmendpoints -n inference -w
+#   kubectl get vllmendpoints -n <namespace> -w
 #
-# For a horizontally-scaled, KV-cache/load/prefix-aware tier, use an LLMDEndpoint instead.
+# For a horizontally-scaled, KV-cache/load/prefix-aware tier, use an LLMDEndpoint
+# (workloads/scale-models/) instead.
 apiVersion: kro.run/v1alpha1
 kind: VLLMEndpoint
 metadata:
   name: my-model              # Also becomes the LiteLLM model name for API calls
-  namespace: inference
+  # namespace: inherited from the directory (workloads/models/<namespace>/) — do NOT set it
 spec:
   model: "org/model-id"       # REQUIRED — HuggingFace model ID (e.g. google/gemma-3-4b-it)
   # gpuCount: 1               # GPUs per pod. Must be 1, 2, 4, or 8 (tensor parallelism).

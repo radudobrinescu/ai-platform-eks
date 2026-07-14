@@ -392,11 +392,24 @@ spec:
             - Budget:     $${schema.spec.maxBudget} / ${schema.spec.budgetDuration}
             - Rate limit: ${string(schema.spec.rpmLimit)} rpm, ${string(schema.spec.tpmLimit)} tpm
 
+            ## Deploy your own model (GitOps)
+
+            Commit a VLLMEndpoint YAML under your team's models directory and push:
+
+              workloads/models/team-${schema.spec.teamName}/<model>.yaml
+
+            The directory name is your namespace — the model deploys into
+            team-${schema.spec.teamName} (this team's GPU quota, RBAC, and scoped
+            key). Do NOT set metadata.namespace in the YAML. Copy
+            workloads/models/TEMPLATE.yaml.example as a starting point; see
+            workloads/models/README.md. For the llm-d scale/disaggregation tiers,
+            use workloads/scale-models/.
+
             ## Access
 
             - API endpoint: http://litellm.ai-platform.svc.cluster.local:4000
             - API key secret: ${schema.spec.teamName}-api-key (in this namespace)
-            - Open WebUI: available via ops/ssm-tunnel.sh (port 8080)
+            - Open WebUI / LiteLLM / Langfuse UIs: via `./platformctl tunnel`
 
             ## View this file
 

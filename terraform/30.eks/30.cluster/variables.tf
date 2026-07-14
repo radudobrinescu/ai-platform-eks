@@ -59,6 +59,12 @@ variable "gitops_revision" {
   default     = "main"
 }
 
+variable "gitops_workloads_repo_url" {
+  description = "Git repository URL for the SELF-SERVICE WORKLOADS (models/, teams/, scale-models/). Leave empty (default) to keep workloads in the same repo as the platform (gitops_repo_url) — simplest, single-repo. Set this to a separate, tenant-owned repo for multi-team self-service, so teams get write access to the workloads repo ONLY (never the platform repo). See workloads/README.md."
+  type        = string
+  default     = ""
+}
+
 variable "langfuse_nextauth_url" {
   description = "Browser-facing URL of the Langfuse web UI (the Host that NextAuth validates sign-in against). For the default turnkey ALB access you can leave this as-is: the langfuse-nextauth-url CronJob (platform/config/langfuse-nextauth-url.yaml) discovers the ALB hostname at runtime and sets NEXTAUTH_URL on the langfuse-web Deployment automatically. Override only matters if you pin a custom domain — and that is done in platform/services/langfuse/helm-values.yaml (nextauth.url), which the reconciler then respects. This var is retained for reference/back-compat (it feeds the langfuse-init secret's NEXTAUTH_URL key, which the chart does not consume)."
   type        = string

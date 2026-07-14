@@ -1,23 +1,23 @@
 # Platform — ArgoCD ApplicationSet defining all platform services.
 #
-# Nine applications (by default) in two shapes:
-#   - Plain-directory sources (platform-config, litellm, open-webui,
-#     cluster-dashboard, litellm-sync): manifests live in this repo and are
-#     applied as-is.
-#   - Helm multi-source (gpu-operator, kuberay-operator, langfuse):
-#       chart pulled from upstream, values file pulled from this repo.
+# Eight applications (by default) in two shapes:
+#   - Plain-directory sources (platform-config, inference-gateway, litellm,
+#     open-webui, cluster-dashboard, litellm-sync): manifests live in this repo
+#     and are applied as-is.
+#   - Helm multi-source (gpu-operator, langfuse): chart pulled from upstream,
+#     values file pulled from this repo.
 #
 # The Platform Health Agent is NOT a separate app — it ships as a component of
 # cluster-dashboard (see the note by that element below). It's always synced but
 # idles unless a Kiro API key is provisioned (Terraform, opt-in).
 #
-# FORKING THE PLATFORM — three coordinated settings (ArgoCD ApplicationSet
-# generators can't read a Terraform variable, so the repo URL lives in git, not
-# in tfvars; Terraform only renders the root `bootstrap` Application):
-#   1. var.gitops_repo_url / var.gitops_revision in your tfvars  → the root bootstrap app
-#   2. $repo / $rev in the templatePatch below (set ONCE, used by all apps here)
-#   3. repoURL / targetRevision in argocd/bootstrap/workloads.yaml (set ONCE there)
-# Points 2 and 3 must match point 1. Default placeholder: YOUR-ORG/YOUR-REPO.
+# FORKING THE PLATFORM — set the repo URL in ONE place: var.gitops_repo_url
+# (+ var.gitops_revision) in your tfvars. This directory is a Helm chart; the
+# root `bootstrap` Application (rendered by Terraform) passes those values in as
+# Helm values, and this ApplicationSet reads them below (.Values.repoURL /
+# .Values.revision) — so both the platform and workloads ApplicationSets inherit
+# the one tfvars value. Self-service workloads may live in a separate repo; see
+# var.gitops_workloads_repo_url and argocd/bootstrap/templates/workloads.yaml.
 ---
 apiVersion: argoproj.io/v1alpha1
 kind: ApplicationSet
@@ -84,9 +84,10 @@ spec:
             type: directory
             path: platform/services/cluster-dashboard
             tier: platform
-          # Keeps LiteLLM's model registry in sync with InferenceEndpoints
-          # (deregisters a model on IE deletion via a finalizer). Lives in the
-          # `inference` namespace alongside the endpoints it watches.
+          # Owns LiteLLM's model registry: registers + deregisters models for
+          # all three serving tiers (watched cluster-wide via a finalizer), so
+          # the master key never enters a workload namespace. Lives in the
+          # `inference` namespace.
           - name: litellm-sync
             namespace: inference
             type: directory
@@ -94,16 +95,16 @@ spec:
             tier: platform
   template:
     metadata:
-      name: '{{.name}}'
+      name: '{{`{{.name}}`}}'
       namespace: argocd
       labels:
         app.kubernetes.io/part-of: ai-platform
-        tier: '{{.tier}}'
+        tier: '{{`{{.tier}}`}}'
     spec:
       project: default
       destination:
         name: local-cluster
-        namespace: '{{.namespace}}'
+        namespace: '{{`{{.namespace}}`}}'
       ignoreDifferences:
         - group: nvidia.com
           kind: ClusterPolicy
@@ -163,13 +164,15 @@ spec:
           # configMap.defaultMode: 420, volumeClaimTemplates[].spec.volumeMode)
           # are reported as OutOfSync forever even though SSA succeeds.
           - ServerSideDiff=true
+  # templatePatch is ApplicationSet Go-templating (goTemplate), evaluated by the
+  # ApplicationSet CONTROLLER at runtime — NOT by Helm. The only Helm-rendered
+  # bits are .Values.repoURL / .Values.revision on the two $repo/$rev lines
+  # (injected once by Terraform); the rest is wrapped in a Helm raw block so it
+  # reaches the controller verbatim.
   templatePatch: |
-    {{- /* Fork point: set your repo URL + branch ONCE here (used by both the */ -}}
-    {{- /* directory source and the Helm $values source below). Mirror the same */ -}}
-    {{- /* value in argocd/bootstrap/workloads.yaml. */ -}}
-    {{- $repo := "https://github.com/radudobrinescu/ai-platform-eks.git" }}
-    {{- $rev := "main" }}
-    spec:
+    {{`{{- $repo := "`}}{{ .Values.repoURL }}{{`" }}`}}
+    {{`{{- $rev := "`}}{{ .Values.revision }}{{`" }}`}}
+    {{`spec:
       {{- if eq .type "directory" }}
       source:
         repoURL: {{ $repo }}
@@ -191,4 +194,4 @@ spec:
         - repoURL: {{ $repo }}
           targetRevision: {{ $rev }}
           ref: values
-      {{- end }}
+      {{- end }}`}}

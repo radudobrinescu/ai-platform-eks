@@ -55,17 +55,21 @@ observability_configuration = {
 
 # GitOps repository — ArgoCD syncs the platform from this repo.
 # Required when cluster_config.capabilities.gitops = true.
-# This sets the URL for the root `bootstrap` Application that Terraform renders.
-# IMPORTANT: ArgoCD ApplicationSet generators can't read a Terraform variable,
-# so when you FORK you must also set the same URL/branch in two git files (each
-# once): the $repo/$rev in argocd/bootstrap/platform.yaml and the repoURL in
-# argocd/bootstrap/workloads.yaml. See those files' headers for the checklist.
+# FORKING = set this ONE value. Terraform renders the root `bootstrap`
+# Application (a Helm app-of-apps) and passes this URL down as a Helm value, so
+# every ApplicationSet inherits it — no other git file to edit.
 gitops_repo_url = "https://github.com/YOUR-ORG/YOUR-REPO.git"
 gitops_revision = "main"
 
+# Self-service workloads repo (optional). Leave empty (default) to keep models/,
+# teams/, scale-models/ in the SAME repo above (single-repo, simplest). Set to a
+# separate, tenant-owned repo for multi-team self-service — teams get write to
+# that repo only, never the platform repo. See workloads/README.md.
+# gitops_workloads_repo_url = "https://github.com/YOUR-ORG/ai-platform-workloads.git"
+
 # GPU cold-start optimization (optional) — pre-pulled container images on EBS snapshot.
 # Created by: ./ops/create-data-volume-snapshot.sh <ecr-image-uri>
-# When set, GPU nodes boot with the Ray LLM image already on disk (~0s image pull).
+# When set, GPU nodes boot with the vLLM serving image already on disk (~0s image pull).
 # When empty (default), nodes fall back to SOCI lazy-loading or full image pull.
 # gpu_data_volume_snapshot_id = "snap-0123456789abcdef0"
 
