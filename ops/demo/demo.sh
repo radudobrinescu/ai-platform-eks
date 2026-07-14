@@ -6,8 +6,8 @@
 #
 # Prerequisites:
 #   - claude-opus-4-8 available (Bedrock, zero GPUs — always on)
-#   - qwen3-3b deployed: commit an InferenceEndpoint (Qwen/Qwen2.5-3B-Instruct)
-#     to workloads/models/ and push (the catalog ships empty by design)
+#   - qwen3-3b deployed: commit a VLLMEndpoint (Qwen/Qwen2.5-3B-Instruct) to
+#     workloads/models/inference/ and push (no models ship by default)
 #   - llama32-1b NOT deployed (added live during the demo in Part 4)
 #   - Teams onboarded (dev-team, data-science — workloads/teams/)
 #   - AWS_REGION exported (defaults to your kubeconfig / aws cli region)
@@ -57,19 +57,18 @@ kubectl explain bucket.spec --api-version=s3.services.k8s.aws/v1alpha1
 kubectl get resourcegraphdefinitions
 
 # "KRO lets the platform team define custom Kubernetes APIs.
-#  InferenceEndpoint: deploy a model. AITeam: onboard a team.
+#  VLLMEndpoint: deploy a model. AITeam: onboard a team.
 #  Users write simple YAML — KRO expands it into the full resource graph."
 
 # Show running models
-kubectl get inferenceendpoints -n inference \
-  -o custom-columns=NAME:.metadata.name,READY:.status.ready,STATUS:.status.modelStatus,ENDPOINT:.status.endpoint
+kubectl get vllmendpoints -n inference \
+  -o custom-columns=NAME:.metadata.name,READY:.status.ready,ENDPOINT:.status.endpoint
 
-# Show what a model definition looks like (the qwen3-3b you deployed under workloads/models/)
-cat workloads/models/qwen3-3b.yaml 2>/dev/null || cat workloads/models/TEMPLATE.yaml.example
+# Show what a model definition looks like (the qwen3-3b you deployed)
+cat workloads/models/inference/qwen3-3b.yaml 2>/dev/null || cat workloads/models/TEMPLATE.yaml.example
 
-# "6 lines of YAML. KRO expands this into a RayService with vLLM,
-#  GPU worker pods, a LiteLLM registration Job, and a CloudWatch
-#  log group via ACK."
+# "A few lines of YAML. KRO expands this into a vLLM Deployment + Service and a
+#  CloudWatch log group via ACK; litellm-sync registers it with the gateway."
 
 # Show the CloudWatch log groups created by ACK
 kubectl get loggroups -n inference
@@ -102,34 +101,32 @@ kubectl get nodes -l workload-type=gpu-inference \
 # ─────────────────────────────────────────────────────────────────────────────
 
 # "Let's deploy Llama 3.2 1B. All I need is this YAML:"
-cat > workloads/models/llama32-1b.yaml << 'EOF'
+mkdir -p workloads/models/inference
+cat > workloads/models/inference/llama32-1b.yaml << 'EOF'
 apiVersion: kro.run/v1alpha1
-kind: InferenceEndpoint
+kind: VLLMEndpoint
 metadata:
-  name: llama32-1b
-  namespace: inference
+  name: llama32-1b        # namespace inherited from the directory (inference)
 spec:
   model: "meta-llama/Llama-3.2-1B-Instruct"
   gpuCount: 1
-  minReplicas: 1
-  maxReplicas: 2
 EOF
 
-cat workloads/models/llama32-1b.yaml
+cat workloads/models/inference/llama32-1b.yaml
 
 # Commit and push
-git add workloads/models/llama32-1b.yaml
+git add workloads/models/inference/llama32-1b.yaml
 git commit -m "feat: Deploy Llama 3.2 1B Instruct"
 git push origin main
 
-# → ArgoCD UI: watch the "models" app sync
+# → ArgoCD UI: watch the "models-inference" app sync
 
-# Watch pods appear (Ctrl+C when worker shows Running)
-kubectl get pods -n inference -l ray.io/cluster=llama32-1b -w
+# Watch pods appear (Ctrl+C when the vLLM pod shows Running)
+kubectl get pods -n inference -l app.kubernetes.io/name=llama32-1b -w
 
 # Check model status
-kubectl get inferenceendpoints -n inference \
-  -o custom-columns=NAME:.metadata.name,READY:.status.ready,STATUS:.status.modelStatus
+kubectl get vllmendpoints -n inference \
+  -o custom-columns=NAME:.metadata.name,READY:.status.ready,ENDPOINT:.status.endpoint
 
 # Verify CloudWatch log group was created by ACK
 kubectl get loggroups -n inference

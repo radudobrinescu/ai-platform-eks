@@ -147,6 +147,16 @@ See **[its guide](platform/services/cluster-dashboard/PLATFORM-HEALTH-AGENT.md)*
 and reclaims them when workloads are removed; `shared: true` time-slices one
 physical GPU across up to 4 small models.
 
+**Team self-service (GitOps).** Onboard a team with an `AITeam` YAML in
+`workloads/teams/` — it creates a `team-<name>` namespace with a GPU quota, RBAC,
+default-deny egress, and a scoped LiteLLM key (budget + rpm/tpm). The team then
+deploys models by committing a `VLLMEndpoint` under **`workloads/models/team-<name>/`**
+— the directory name is the target namespace, so models land in that team's quota
+and key (no `kubectl`, no console; removal is `git rm`). By default workloads live
+in this repo; for real multi-team self-service point `gitops_workloads_repo_url` at
+a separate, tenant-owned repo so teams get write access to the workloads repo only,
+never the platform repo. See [`workloads/models/README.md`](workloads/models/README.md).
+
 **Single sign-on, per-user cost & budgets.** SSO ships enabled (`enable_sso`,
 default on): Terraform stands up an **Amazon Cognito** user pool with a hosted login
 page, role groups (`admins`/`developers`/`users`), and three seed users whose

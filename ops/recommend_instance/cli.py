@@ -96,15 +96,15 @@ def main(argv: list[str] | None = None) -> int:
                         "throughput — forces escalation to faster GPUs if needed.")
     p.add_argument("--hf-token", default=os.environ.get("HF_TOKEN"),
                    help="HuggingFace token (also $HF_TOKEN). Required for gated models.")
-    p.add_argument("--tier", choices=["auto", "vllm", "llm-d", "llm-d-disagg", "ray"], default="auto",
+    p.add_argument("--tier", choices=["auto", "vllm", "llm-d", "llm-d-disagg"], default="auto",
                    help="Serving CRD to emit: vllm=VLLMEndpoint, llm-d=LLMDEndpoint "
-                        "(scale tier), llm-d-disagg=LLMDDisaggEndpoint (prefill/decode split), "
-                        "ray=InferenceEndpoint (legacy). Default auto: single->vllm, fleet->llm-d, "
+                        "(scale tier), llm-d-disagg=LLMDDisaggEndpoint (prefill/decode split). "
+                        "Default auto: single->vllm, fleet->llm-d, "
                         "long-context fleet->llm-d-disagg.")
     p.add_argument("--deploy", action="store_true",
-                   help="Write the recommended InferenceEndpoint YAML to "
-                        "workloads/models/, then git commit + push so ArgoCD "
-                        "deploys it (instead of only printing the snippet).")
+                   help="Write the recommended endpoint YAML under workloads/, then "
+                        "git commit + push so ArgoCD deploys it (instead of only "
+                        "printing the snippet).")
     p.add_argument("--undeploy", metavar="NAME", default=None,
                    help="Delete workloads/models/<NAME>.yaml and git commit + push "
                         "so ArgoCD removes the model (and LiteLLM deregisters it). "

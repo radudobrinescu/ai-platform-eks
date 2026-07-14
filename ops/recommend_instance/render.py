@@ -724,10 +724,9 @@ def model_name_from_id(model_id: str) -> str:
 # Each tier is a different KRO CRD in front of the SAME vLLM engine, so the
 # sizing math is identical — only the emitted manifest (kind, a few field
 # names, target directory) differs.
-TIER_KIND = {"ray": "InferenceEndpoint", "vllm": "VLLMEndpoint", "llm-d": "LLMDEndpoint",
+TIER_KIND = {"vllm": "VLLMEndpoint", "llm-d": "LLMDEndpoint",
              "llm-d-disagg": "LLMDDisaggEndpoint"}
 KIND_DIR = {
-    "InferenceEndpoint": "workloads/models",
     "VLLMEndpoint": "workloads/models",
     "LLMDEndpoint": "workloads/scale-models",
     "LLMDDisaggEndpoint": "workloads/scale-models",
@@ -744,8 +743,7 @@ ROUTING_PROFILE_BY_WORKLOAD = {
 def pick_tier(args, best, scaling) -> str:
     """Choose the serving CRD. Explicit --tier wins; otherwise a fleet (2+
     replicas) goes to the llm-d scale tier for KV/prefix/load-aware routing, and
-    a single replica goes to plain vLLM. Ray (InferenceEndpoint) is legacy —
-    only on explicit request. Pipeline parallelism forces vLLM/Ray (the
+    a single replica goes to plain vLLM. Pipeline parallelism forces vLLM (the
     LLMDEndpoint RGD is single-node tensor-parallel only)."""
     t = (getattr(args, "tier", "auto") or "auto")
     if t != "auto":

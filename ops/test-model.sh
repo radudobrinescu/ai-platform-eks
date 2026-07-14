@@ -12,18 +12,18 @@ PF_PID=""
 cleanup() { [ -n "$PF_PID" ] && kill "$PF_PID" 2>/dev/null; }
 trap cleanup EXIT
 
-# Find the endpoint across serving kinds (InferenceEndpoint / VLLMEndpoint /
-# LLMDEndpoint) and check readiness. Bedrock models have no CR — skip the check.
+# Find the endpoint across serving kinds (VLLMEndpoint / LLMDEndpoint /
+# LLMDDisaggEndpoint) and check readiness. Bedrock models have no CR — skip the check.
 READY=""; KIND=""
-for k in inferenceendpoint vllmendpoint llmdendpoint; do
+for k in vllmendpoint llmdendpoint llmddisaggendpoint; do
   if r=$(kubectl get "$k" "$MODEL" -n inference -o jsonpath='{.status.ready}' 2>/dev/null); then
     READY="$r"; KIND="$k"; break
   fi
 done
 if [ -z "$KIND" ]; then
-  echo "ERROR: no InferenceEndpoint/VLLMEndpoint/LLMDEndpoint named '$MODEL' in namespace 'inference'."
+  echo "ERROR: no VLLMEndpoint/LLMDEndpoint/LLMDDisaggEndpoint named '$MODEL' in namespace 'inference'."
   echo "Available serving endpoints:"
-  kubectl get inferenceendpoints,vllmendpoints,llmdendpoints -n inference 2>/dev/null || echo "  (none)"
+  kubectl get vllmendpoints,llmdendpoints,llmddisaggendpoints -n inference 2>/dev/null || echo "  (none)"
   echo "(If '$MODEL' is a Bedrock model it has no CR — it should still answer via LiteLLM.)"
   exit 1
 fi

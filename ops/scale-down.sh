@@ -24,11 +24,12 @@ for app in $(kubectl get applications -n argocd -o jsonpath='{.items[*].metadata
 done
 echo "✓ Auto-sync suspended"
 
-# Delete all serving endpoints (Ray InferenceEndpoints, plain vLLM, and llm-d).
-# Removes GPU workers (and, for llm-d, the router Applications via KRO GC) so
-# Karpenter reclaims the GPU nodes.
-echo "Removing serving endpoints (inference / vllm / llm-d)..."
-kubectl delete inferenceendpoints,vllmendpoints,llmdendpoints --all -n inference --ignore-not-found
+# Delete all serving endpoints (vLLM + llm-d scale/disaggregation), across all
+# namespaces (models can live in per-team `team-*` namespaces). Removes GPU
+# workers (and, for llm-d, the router Applications via KRO GC) so Karpenter
+# reclaims the GPU nodes.
+echo "Removing serving endpoints (vllm / llm-d / disagg)..."
+kubectl delete vllmendpoints,llmdendpoints,llmddisaggendpoints --all -A --ignore-not-found
 echo "✓ Serving endpoints removed (GPU nodes will be reclaimed)"
 
 # Scale down everything in ai-platform namespace
