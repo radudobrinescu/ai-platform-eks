@@ -11,6 +11,7 @@ kind: Kustomization
 #      present — see pha-event-watcher.yaml + scripts/event_watcher.py.
 resources:
   - manifests.yaml
+  - oauth2-proxy.yaml
   - pha-rbac.yaml
   - pha-config.yaml
   - pha-event-watcher.yaml
