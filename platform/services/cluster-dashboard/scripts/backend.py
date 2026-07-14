@@ -823,14 +823,23 @@ def _litellm_metrics() -> dict:
             # NOTE: only covers interactive (Open WebUI) users; direct API callers
             # are attributed by key/team, not user.
             cur.execute("""
-              SELECT split_part(tag, ': ', 2), count(*),
-                     COALESCE(sum(total_tokens),0), COALESCE(sum(spend),0)
+              SELECT split_part(tag, ': ', 2) AS u, COALESCE(model_group, '?'),
+                     count(*), COALESCE(sum(total_tokens),0), COALESCE(sum(spend),0)
               FROM "LiteLLM_SpendLogs", jsonb_array_elements_text(request_tags) tag
               WHERE "startTime" > now() - interval '30 days'
                 AND tag LIKE 'x-openwebui-user-email:%'
-              GROUP BY 1 ORDER BY 4 DESC LIMIT 50""")
-            out["byUser"] = [{"user": r[0], "requests": int(r[1]), "tokens": int(r[2]),
-                              "spend": round(float(r[3]), 4)} for r in cur.fetchall()]
+              GROUP BY 1, 2""")
+            agg = {}
+            for u, model, reqs, toks, spend in cur.fetchall():
+                e = agg.setdefault(u, {"user": u, "requests": 0, "tokens": 0, "spend": 0.0, "models": {}})
+                e["requests"] += int(reqs); e["tokens"] += int(toks); e["spend"] += float(spend)
+                e["models"][model] = e["models"].get(model, 0.0) + float(spend)
+            out["byUser"] = sorted(
+                [{"user": e["user"], "requests": e["requests"], "tokens": e["tokens"],
+                  "spend": round(e["spend"], 4),
+                  "models": sorted([{"model": m, "spend": round(s, 4)} for m, s in e["models"].items()],
+                                   key=lambda x: -x["spend"])}
+                 for e in agg.values()], key=lambda x: -x["spend"])[:50]
         except Exception:
             pass
     return out
