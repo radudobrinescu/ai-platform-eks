@@ -173,3 +173,37 @@ callbacks and flips oauth2-proxy to `--cookie-secure=true`. See
 **Live end-to-end validation** (login flow + per-user spend) requires
 `terraform apply` against a real account and cannot be exercised in this
 environment; the code is structured and validated for a clean fresh-deploy.
+
+## Update (2026-07-14) — per-user budgets/keys shipped + internal-ALB edge
+
+Two items previously listed under *Deferred* are now implemented and (for the chat
+path) validated live:
+
+- **Per-user hard budgets + rate limits (chat path, no keys).** Open WebUI forwards
+  the signed-in identity; LiteLLM `general_settings.user_header_mappings` maps
+  `x-openwebui-user-email` to a LiteLLM "customer" (end-user), and
+  `litellm_settings.max_end_user_budget_id` binds every end-user to a default budget
+  tier ($10 / 30d + 60 rpm + 100k tpm) created idempotently by the
+  `litellm-enduser-budget` Job (`POST /budget/new`). **Empirically proven** on the
+  live proxy: with only the forwarded header (no body `user`), a second over-budget
+  request returns `ExceededBudget: End User … over budget`, and `/customer/info`
+  shows the mapped customer with tracked spend.
+- **Per-user API keys (programmatic path).** SSO users are internal_users (role from
+  `custom:role`); `max_internal_user_budget` + `internal_user_budget_duration` give
+  each a default personal budget, and `upperbound_key_generate_params` caps any key
+  they self-generate. (We deliberately do **not** set
+  `default_internal_user_params.user_role`, which would override the working
+  `custom:role` mapping and could downgrade the seed admin.)
+
+**Networking correction vs. the original design above.** The platform now ships the
+shared ALB as **`scheme: internal`** (no public IP) — the secure default — instead
+of internet-facing + IP-allowlist. Consequently the CloudFront edge was rebuilt from
+a **public domain origin** to a **CloudFront VPC origin** (four `VPCOrigin` resources,
+one per ALB listener port) that reaches the private ALB from inside the VPC; the
+`reconcile-edge` Job now resolves the ALB **ARN** (IRSA:
+`elasticloadbalancing:DescribeLoadBalancers`), sets it on each `VPCOrigin`, and points
+each `Distribution` at the VPC-origin id. The `inbound-cidrs` allowlist is **retained**
+(not removed as the original design assumed) and, for the edge, is scoped to the VPC
+so CloudFront's in-VPC network interface can reach the ALB. All edge manifests are
+`kubectl apply --dry-run=server`-validated against the live ACK CRDs; a full public
+end-to-end run creates billable CloudFront resources and hasn't been exercised here.

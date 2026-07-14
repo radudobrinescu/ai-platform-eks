@@ -10,15 +10,23 @@ GitHub issue.
 
 ## Deploying this project securely
 
-This is a **sample**. It provisions real, billable infrastructure and, by design,
-exposes UIs on the public internet behind an IP-allowlisted load balancer. Before you
-deploy, review and harden the following for your environment:
+This is a **sample**. It provisions real, billable infrastructure. By default the
+platform UIs are private (internal load balancer, reachable via `./platformctl
+tunnel` or an opt-in CloudFront edge). Before you deploy, review and harden the
+following for your environment:
 
-- **Internet-facing ALB.** The platform UIs (Open WebUI, LiteLLM, Langfuse, dashboard)
-  sit behind an internet-facing Application Load Balancer restricted by an **IP
-  allowlist**. Set the allowlist to your own IP ranges before applying — **never leave
-  it open to `0.0.0.0/0`**. Prefer `./platformctl tunnel` for private access where
-  possible.
+- **Internal ALB by default.** The platform UIs (Open WebUI, LiteLLM, Langfuse,
+  dashboard) sit behind an **internal** Application Load Balancer with no public IP —
+  unreachable from the internet. Reach them with `./platformctl tunnel`
+  (kubectl port-forward) or expose them publicly via the opt-in **CloudFront VPC-origin
+  edge** (`platform/services/edge/`), which fronts the private ALB with HTTPS + SSO.
+  If you instead switch the ALB to `internet-facing` (all four ingress `scheme`
+  values), you **must** set the `inbound-cidrs` allowlist to your own IP ranges —
+  **never leave it open to `0.0.0.0/0`**.
+- **Per-user budgets & rate limits.** LiteLLM enforces a default per-user spend
+  budget and rpm/tpm throttle on the Open WebUI chat path (via the forwarded identity)
+  and caps self-served API keys. Review the defaults in
+  `platform/services/litellm/litellm.yaml` and adjust for your environment.
 - **Secrets.** Provide model tokens, API keys, and other secrets via the mechanisms
   described in the README (tfvars / Kubernetes secrets), never by committing them.
   `*.tfvars` (except `example*.tfvars`) and state files are git-ignored — keep it that

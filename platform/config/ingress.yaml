@@ -6,14 +6,23 @@
 # subnets, ...) must be IDENTICAL across all of them or the AWS Load Balancer
 # Controller refuses to merge. Keep every inbound-cidrs value in sync.
 #
-# SCHEME: internet-facing (public ALB). Replaces the previous SSM-tunnel-only
-# access path (ops/ssm-tunnel.sh). The SSM tunnel remains available as a
-# fallback for networks without a stable public IP.
+# SCHEME: internal (private ALB) — the secure default. The ALB has no public
+# IP and is unreachable from the internet. Reach the UIs two ways:
+#   * ./platformctl tunnel — kubectl port-forward straight to the pods (works
+#     regardless of ALB scheme; the everyday operator path).
+#   * The opt-in CloudFront edge (platform/services/edge) — public HTTPS via a
+#     CloudFront VPC origin that connects privately to this internal ALB. That
+#     is the supported way to expose the UIs publicly, with TLS + SSO in front.
+# To instead expose the ALB directly to the internet (IP-allowlisted), flip all
+# four `scheme` values to `internet-facing` and set inbound-cidrs to your IPs.
 #
-# INBOUND-CIDRS: operator allowlist. The ALB security group drops everything
-# not in this list. Set this to your own operator/office CIDR(s); a fresh
-# install should treat the value below as a placeholder to replace. Update all
-# four occurrences (here x3 + cluster-dashboard) together.
+# INBOUND-CIDRS: source allowlist on the ALB security group. For the internal
+# default this bounds which in-VPC sources (the CloudFront VPC origin, a VPN, a
+# bastion) may reach the ALB — the edge README documents the exact rule for the
+# CloudFront VPC origin. If you switch scheme to internet-facing, this becomes
+# your public operator/office allowlist (never leave it 0.0.0.0/0). Set it to
+# your own CIDRs; a fresh install should treat the value below as a placeholder.
+# Keep all four occurrences (here x3 + cluster-dashboard) in sync.
 apiVersion: networking.k8s.io/v1
 kind: Ingress
 metadata:
@@ -21,7 +30,7 @@ metadata:
   namespace: ai-platform
   annotations:
     alb.ingress.kubernetes.io/group.name: ai-platform
-    alb.ingress.kubernetes.io/scheme: internet-facing
+    alb.ingress.kubernetes.io/scheme: internal
     alb.ingress.kubernetes.io/target-type: ip
     alb.ingress.kubernetes.io/listen-ports: '[{"HTTP": 4000}]'
     alb.ingress.kubernetes.io/healthcheck-path: /health/liveliness
@@ -46,7 +55,7 @@ metadata:
   namespace: ai-platform
   annotations:
     alb.ingress.kubernetes.io/group.name: ai-platform
-    alb.ingress.kubernetes.io/scheme: internet-facing
+    alb.ingress.kubernetes.io/scheme: internal
     alb.ingress.kubernetes.io/target-type: ip
     alb.ingress.kubernetes.io/listen-ports: '[{"HTTP": 8080}]'
     alb.ingress.kubernetes.io/healthcheck-path: /health
@@ -71,7 +80,7 @@ metadata:
   namespace: ai-platform
   annotations:
     alb.ingress.kubernetes.io/group.name: ai-platform
-    alb.ingress.kubernetes.io/scheme: internet-facing
+    alb.ingress.kubernetes.io/scheme: internal
     alb.ingress.kubernetes.io/target-type: ip
     alb.ingress.kubernetes.io/listen-ports: '[{"HTTP": 3000}]'
     alb.ingress.kubernetes.io/healthcheck-path: /api/public/health

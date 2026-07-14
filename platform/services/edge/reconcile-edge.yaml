@@ -1,10 +1,16 @@
-# reconcile-edge — wires the CloudFront Distributions to the runtime ALB and
-# feeds the resulting *.cloudfront.net domains back into sso-secrets.
+# reconcile-edge — wires the CloudFront VPC origins + Distributions to the runtime
+# internal ALB, then feeds the resulting *.cloudfront.net domains into sso-secrets.
 #
-# Mirrors the langfuse-nextauth-url pattern: the ALB is created in-cluster by the
-# LB controller, so its hostname is only known at runtime. This Job reads it off
-# the ingress, patches each Distribution's origin, waits for ACK to publish the
-# CloudFront domain, then updates the app base-URL keys the UIs consume.
+# The ALB is created in-cluster by the load-balancer controller, so its hostname
+# AND arn are only known at runtime. This Job:
+#   1. reads the ALB hostname off the shared ingress,
+#   2. resolves the ALB ARN via the AWS API (needs IRSA — see the ServiceAccount),
+#   3. sets that ARN on each VPCOrigin, waits for CloudFront to assign a VPC-origin
+#      id (.status.id),
+#   4. points each Distribution's origin at its VPC origin (vpcOriginID) + the ALB
+#      hostname,
+#   5. waits for ACK to publish each CloudFront domain and writes the app base-URL
+#      keys the UIs consume from sso-secrets.
 #
 # It does NOT touch Cognito (Terraform-owned): it prints the sso_public_urls block
 # for you to set in tfvars + `terraform apply` (updates the Cognito callbacks).
@@ -14,6 +20,13 @@ kind: ServiceAccount
 metadata:
   name: reconcile-edge
   namespace: ai-platform
+  annotations:
+    # IRSA: this Job calls elasticloadbalancing:DescribeLoadBalancers to resolve
+    # the ALB ARN from its hostname. Create a minimal read-only role with that
+    # single permission and a trust policy for this ServiceAccount, then set its
+    # ARN here (see README.md "IAM role"). Left as a placeholder, the AWS call
+    # fails and edge activation stops here — nothing else is affected (opt-in).
+    eks.amazonaws.com/role-arn: REPLACE_WITH_EDGE_RECONCILE_ROLE_ARN
 ---
 apiVersion: rbac.authorization.k8s.io/v1
 kind: Role
@@ -25,7 +38,7 @@ rules:
     resources: ["ingresses"]
     verbs: ["get", "list"]
   - apiGroups: ["cloudfront.services.k8s.aws"]
-    resources: ["distributions"]
+    resources: ["distributions", "vpcorigins"]
     verbs: ["get", "list", "patch"]
   - apiGroups: [""]
     resources: ["secrets"]
@@ -61,36 +74,72 @@ spec:
       serviceAccountName: reconcile-edge
       restartPolicy: OnFailure
       containers:
+        # alpine/k8s bundles kubectl + aws-cli + jq — both the AWS lookup and the
+        # kubectl patches run in one container.
         - name: reconcile
-          image: bitnami/kubectl:1.31
-          command: ["/bin/bash", "-c"]
+          image: alpine/k8s:1.31.3
+          command: ["/bin/sh", "-c"]
           args:
             - |
-              set -euo pipefail
+              set -eu
               NS=ai-platform
+
               echo "Discovering ALB hostname from the shared ingress..."
-              ALB=""
+              ALB_HOST=""
               for i in $(seq 1 60); do
-                ALB=$(kubectl get ingress ai-platform-openwebui -n "$NS" \
+                ALB_HOST=$(kubectl get ingress ai-platform-openwebui -n "$NS" \
                   -o jsonpath='{.status.loadBalancer.ingress[0].hostname}' 2>/dev/null || true)
-                [ -n "$ALB" ] && break
+                [ -n "$ALB_HOST" ] && break
                 echo "  waiting for ALB..."; sleep 10
               done
-              [ -n "$ALB" ] || { echo "ALB hostname not found"; exit 1; }
-              echo "ALB: $ALB"
+              [ -n "$ALB_HOST" ] || { echo "ALB hostname not found"; exit 1; }
+              echo "ALB host: $ALB_HOST"
 
-              # Patch each Distribution's origin to the ALB hostname.
-              for d in open-webui-edge litellm-edge langfuse-edge dashboard-edge; do
-                kubectl patch distribution "$d" -n "$NS" --type=json \
-                  -p "[{\"op\":\"replace\",\"path\":\"/spec/distributionConfig/origins/items/0/domainName\",\"value\":\"$ALB\"}]"
+              echo "Resolving ALB ARN via AWS API..."
+              ALB_ARN=$(aws elbv2 describe-load-balancers \
+                --query "LoadBalancers[?DNSName=='$ALB_HOST'].LoadBalancerArn" --output text 2>/dev/null || true)
+              [ -n "$ALB_ARN" ] && [ "$ALB_ARN" != "None" ] || {
+                echo "ALB ARN not found. This Job needs elasticloadbalancing:DescribeLoadBalancers"
+                echo "via IRSA — set eks.amazonaws.com/role-arn on the reconcile-edge SA (see README)."
+                exit 1; }
+              echo "ALB ARN: $ALB_ARN"
+
+              # Set the ALB ARN on every VPC origin (same ALB, one per listener port).
+              for vo in open-webui-vpco litellm-vpco langfuse-vpco dashboard-vpco; do
+                kubectl patch vpcorigin "$vo" -n "$NS" --type=merge \
+                  -p "{\"spec\":{\"vpcOriginEndpointConfig\":{\"arn\":\"$ALB_ARN\"}}}"
+              done
+
+              # For each VPCOrigin<->Distribution pair: wait for CloudFront to assign
+              # the VPC-origin id, then point the distribution's origin at it + the ALB host.
+              PAIRS="open-webui-vpco:open-webui-edge litellm-vpco:litellm-edge langfuse-vpco:langfuse-edge dashboard-vpco:dashboard-edge"
+              for p in $PAIRS; do
+                vo=${p%%:*}; dist=${p##*:}
+                VOID=""
+                for i in $(seq 1 90); do
+                  VOID=$(kubectl get vpcorigin "$vo" -n "$NS" -o jsonpath='{.status.id}' 2>/dev/null || true)
+                  [ -n "$VOID" ] && break
+                  sleep 10
+                done
+                [ -n "$VOID" ] || { echo "  $vo: no .status.id yet — skipping $dist"; continue; }
+                echo "  $vo -> $VOID (distribution $dist)"
+                kubectl patch distribution "$dist" -n "$NS" --type=json -p "[
+                  {\"op\":\"replace\",\"path\":\"/spec/distributionConfig/origins/items/0/domainName\",\"value\":\"$ALB_HOST\"},
+                  {\"op\":\"replace\",\"path\":\"/spec/distributionConfig/origins/items/0/vpcOriginConfig/vpcOriginID\",\"value\":\"$VOID\"}
+                ]"
               done
 
               # Wait for ACK to publish each CloudFront domain, then write the app
               # base-URL keys the UIs read from sso-secrets.
-              declare -A APP=( [open-webui-edge]=open-webui [litellm-edge]=litellm [langfuse-edge]=langfuse )
               echo; echo "=== sso_public_urls (copy into tfvars, then terraform apply) ==="
               echo "sso_public_urls = {"
               for d in open-webui-edge litellm-edge langfuse-edge dashboard-edge; do
+                case "$d" in
+                  open-webui-edge) app=open-webui;;
+                  litellm-edge)    app=litellm;;
+                  langfuse-edge)   app=langfuse;;
+                  *)               app="";;
+                esac
                 CF=""
                 for i in $(seq 1 90); do
                   CF=$(kubectl get distribution "$d" -n "$NS" -o jsonpath='{.status.domainName}' 2>/dev/null || true)
@@ -98,7 +147,6 @@ spec:
                   sleep 10
                 done
                 [ -n "$CF" ] || { echo "  # $d: domain not ready yet"; continue; }
-                app="${APP[$d]:-}"
                 if [ -n "$app" ]; then
                   kubectl patch secret sso-secrets -n "$NS" --type=merge \
                     -p "{\"stringData\":{\"${app}-public-url\":\"https://${CF}\"}}"

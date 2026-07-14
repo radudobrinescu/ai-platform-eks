@@ -239,12 +239,15 @@ metadata:
   namespace: ai-platform
   annotations:
     alb.ingress.kubernetes.io/group.name: ai-platform
-    alb.ingress.kubernetes.io/scheme: internet-facing
+    # scheme: internal (private ALB) — the secure default; must stay IDENTICAL
+    # to platform/config/ingress.yaml (shared ALB group "ai-platform"). Reach
+    # the UIs via ./platformctl tunnel or the opt-in CloudFront VPC-origin edge.
+    alb.ingress.kubernetes.io/scheme: internal
     alb.ingress.kubernetes.io/target-type: ip
     alb.ingress.kubernetes.io/listen-ports: '[{"HTTP": 9090}]'
     alb.ingress.kubernetes.io/healthcheck-path: /data.json
-    # inbound-cidrs: operator allowlist. Must stay IDENTICAL to
-    # platform/config/ingress.yaml (shared ALB group "ai-platform").
+    # inbound-cidrs: source allowlist on the shared ALB SG. Must stay IDENTICAL
+    # to platform/config/ingress.yaml (shared ALB group "ai-platform").
     alb.ingress.kubernetes.io/inbound-cidrs: 213.157.191.17/32
 spec:
   ingressClassName: alb

@@ -1,24 +1,97 @@
-# CloudFront edge — public HTTPS front for the platform UIs, via ACK.
+# CloudFront edge — public HTTPS front for the platform UIs, via ACK, over a
+# CloudFront VPC ORIGIN to the platform's INTERNAL ALB.
 #
 # OPT-IN: this directory is intentionally NOT in the platform ApplicationSet list
 # (argocd/bootstrap/platform.yaml), so ArgoCD does NOT create these by default —
-# each Distribution is a real, billable CloudFront distribution. Activate by
-# adding an element for `platform/services/edge` to that list (see README.md).
+# each Distribution + VPC origin is a real, billable resource. Activate by adding
+# an element for `platform/services/edge` to that list (see README.md).
 #
-# Why ACK (not Terraform): the ALB is created in-cluster at runtime, so Terraform
-# can't reference it at apply time. As GitOps/ACK resources these reconcile after
-# the ALB exists — no two-phase apply. Validated against the live CRD with
-# `kubectl apply --dry-run=server`.
+# WHY VPC ORIGIN: the platform ships the shared ALB as `scheme: internal` (no
+# public IP — see platform/config/ingress.yaml). A classic CloudFront custom
+# origin resolves the origin's PUBLIC DNS, which an internal ALB doesn't have.
+# A CloudFront VPC origin instead reaches the ALB PRIVATELY from inside the VPC,
+# so the only public surface is CloudFront (HTTPS + SSO), never the ALB.
 #
-# ORIGIN: all four share the one internet-facing ALB (ingress group ai-platform),
-# differing only by port. `domainName` is set to the ALB hostname by the
-# reconcile-edge Job (reconcile-edge.yaml), which reads it off the ingress.
+# ONE VPC ORIGIN PER PORT: the four UIs share one ALB but each listens on its own
+# port (WebUI 8080 / LiteLLM 4000 / Langfuse 3000 / dashboard 9090). A VPC origin
+# binds to a single ALB port, so there are four VPCOrigins (same ALB ARN, one per
+# port), each paired with its Distribution.
+#
+# RECONCILE: `arn` (ALB ARN), each origin's `domainName` (ALB hostname) and
+# `vpcOriginID` (from the VPCOrigin's .status.id) are all runtime values, filled
+# in by the reconcile-edge Job (reconcile-edge.yaml) after the ALB and the VPC
+# origins exist. Placeholders below are replaced in place; do not hand-edit.
+#
+# ALB SECURITY GROUP: the internal ALB's SG must allow inbound from the CloudFront
+# VPC origin on each listener port. See README.md ("ALB security group") — with
+# the internal default, set the shared `inbound-cidrs` to the VPC CIDR (or add the
+# VPC-origin ENI subnets) so CloudFront's in-VPC network interface can reach it.
 #
 # CACHE: CachingDisabled (4135ea2d-...) + AllViewer origin-request policy
 # (216adef6-...) so the dynamic, auth'd apps get all headers/cookies/query and
 # nothing is cached. Viewer cert = the free *.cloudfront.net default (HTTPS with
 # no domain/ACM). After creation, feed each distribution's domain into
 # `sso_public_urls` (see README).
+---
+apiVersion: cloudfront.services.k8s.aws/v1alpha1
+kind: VPCOrigin
+metadata:
+  name: open-webui-vpco
+  namespace: ai-platform
+spec:
+  vpcOriginEndpointConfig:
+    name: open-webui-vpco
+    arn: REPLACE_WITH_ALB_ARN # set by reconcile-edge Job
+    httpPort: 8080
+    httpsPort: 443
+    originProtocolPolicy: http-only
+    originSSLProtocols:
+      items: ["TLSv1.2"]
+---
+apiVersion: cloudfront.services.k8s.aws/v1alpha1
+kind: VPCOrigin
+metadata:
+  name: litellm-vpco
+  namespace: ai-platform
+spec:
+  vpcOriginEndpointConfig:
+    name: litellm-vpco
+    arn: REPLACE_WITH_ALB_ARN # set by reconcile-edge Job
+    httpPort: 4000
+    httpsPort: 443
+    originProtocolPolicy: http-only
+    originSSLProtocols:
+      items: ["TLSv1.2"]
+---
+apiVersion: cloudfront.services.k8s.aws/v1alpha1
+kind: VPCOrigin
+metadata:
+  name: langfuse-vpco
+  namespace: ai-platform
+spec:
+  vpcOriginEndpointConfig:
+    name: langfuse-vpco
+    arn: REPLACE_WITH_ALB_ARN # set by reconcile-edge Job
+    httpPort: 3000
+    httpsPort: 443
+    originProtocolPolicy: http-only
+    originSSLProtocols:
+      items: ["TLSv1.2"]
+---
+apiVersion: cloudfront.services.k8s.aws/v1alpha1
+kind: VPCOrigin
+metadata:
+  name: dashboard-vpco
+  namespace: ai-platform
+spec:
+  vpcOriginEndpointConfig:
+    name: dashboard-vpco
+    arn: REPLACE_WITH_ALB_ARN # set by reconcile-edge Job
+    httpPort: 9090
+    httpsPort: 443
+    originProtocolPolicy: http-only
+    originSSLProtocols:
+      items: ["TLSv1.2"]
 ---
 apiVersion: cloudfront.services.k8s.aws/v1alpha1
 kind: Distribution
@@ -43,12 +116,8 @@ spec:
       items:
         - id: alb
           domainName: REPLACE_WITH_ALB_HOSTNAME # set by reconcile-edge Job
-          customOriginConfig:
-            httpPort: 8080
-            httpSPort: 443
-            originProtocolPolicy: http-only
-            originSSLProtocols:
-              items: ["TLSv1.2"]
+          vpcOriginConfig:
+            vpcOriginID: REPLACE_WITH_VPCORIGIN_ID # set by reconcile-edge Job (open-webui-vpco .status.id)
     viewerCertificate:
       cloudFrontDefaultCertificate: true
 ---
@@ -75,12 +144,8 @@ spec:
       items:
         - id: alb
           domainName: REPLACE_WITH_ALB_HOSTNAME # set by reconcile-edge Job
-          customOriginConfig:
-            httpPort: 4000
-            httpSPort: 443
-            originProtocolPolicy: http-only
-            originSSLProtocols:
-              items: ["TLSv1.2"]
+          vpcOriginConfig:
+            vpcOriginID: REPLACE_WITH_VPCORIGIN_ID # set by reconcile-edge Job (litellm-vpco .status.id)
     viewerCertificate:
       cloudFrontDefaultCertificate: true
 ---
@@ -107,12 +172,8 @@ spec:
       items:
         - id: alb
           domainName: REPLACE_WITH_ALB_HOSTNAME # set by reconcile-edge Job
-          customOriginConfig:
-            httpPort: 3000
-            httpSPort: 443
-            originProtocolPolicy: http-only
-            originSSLProtocols:
-              items: ["TLSv1.2"]
+          vpcOriginConfig:
+            vpcOriginID: REPLACE_WITH_VPCORIGIN_ID # set by reconcile-edge Job (langfuse-vpco .status.id)
     viewerCertificate:
       cloudFrontDefaultCertificate: true
 ---
@@ -139,11 +200,7 @@ spec:
       items:
         - id: alb
           domainName: REPLACE_WITH_ALB_HOSTNAME # set by reconcile-edge Job
-          customOriginConfig:
-            httpPort: 9090
-            httpSPort: 443
-            originProtocolPolicy: http-only
-            originSSLProtocols:
-              items: ["TLSv1.2"]
+          vpcOriginConfig:
+            vpcOriginID: REPLACE_WITH_VPCORIGIN_ID # set by reconcile-edge Job (dashboard-vpco .status.id)
     viewerCertificate:
       cloudFrontDefaultCertificate: true

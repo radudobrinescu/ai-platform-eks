@@ -74,12 +74,13 @@ prove the savings. Mind the prerequisites that matter: fork the repo, set the IP
 allowlist, and supply gated-model tokens where needed. The shape of it:
 
 > ⚠️ **Before you deploy — this creates real, billable infrastructure in your AWS
-> account.** It provisions an EKS cluster and (on demand) GPU nodes, and exposes the
-> platform UIs behind an **internet-facing ALB**. Restrict access to your own IP
-> ranges via the **IP allowlist** before applying — never leave it open to the public
-> internet (`0.0.0.0/0`). GPU nodes and the cluster incur significant cost; use
-> [Tear down](#tear-down) to remove everything when finished. See
-> [SECURITY.md](SECURITY.md).
+> account.** It provisions an EKS cluster and (on demand) GPU nodes. The platform
+> UIs sit behind an **internal ALB** by default (no public IP) — reach them via
+> `./platformctl tunnel` or the opt-in CloudFront edge. If you switch the ALB to
+> **internet-facing**, restrict it to your own IP ranges via the **IP allowlist**
+> first — never leave it open to the public internet (`0.0.0.0/0`). GPU nodes and
+> the cluster incur significant cost; use [Tear down](#tear-down) to remove
+> everything when finished. See [SECURITY.md](SECURITY.md).
 
 
 ```bash
@@ -102,9 +103,11 @@ kubectl get vllmendpoints -n inference -w
 ```
 
 `./platformctl` is a thin wrapper over `make` + `ops/` (`up · status · tunnel ·
-preflight · compare · down`). The UIs sit behind one internet-facing ALB
-(Open WebUI `:8080` · LiteLLM `:4000` · Langfuse `:3000` · Dashboard `:9090`),
-IP-allowlisted — or reach them from anywhere with `./platformctl tunnel`.
+preflight · compare · down`). The UIs sit behind one **internal** ALB
+(Open WebUI `:8080` · LiteLLM `:4000` · Langfuse `:3000` · Dashboard `:9090`) with
+no public IP — reach them with `./platformctl tunnel`, or publicly via the opt-in
+CloudFront edge. (Switch the ALB to `internet-facing` + set an IP allowlist to
+expose it directly.)
 
 ---
 
@@ -141,19 +144,24 @@ See **[its guide](platform/services/cluster-dashboard/PLATFORM-HEALTH-AGENT.md)*
 and reclaims them when workloads are removed; `shared: true` time-slices one
 physical GPU across up to 4 small models.
 
-**Single sign-on & per-user cost.** SSO ships enabled (`enable_sso`, default on):
-Terraform stands up an **Amazon Cognito** user pool with a hosted login page, role
-groups (`admins`/`developers`/`users`), and three seed users whose generated
-passwords are printed as the `sso_seed_user_passwords` output. Open WebUI, the
-LiteLLM admin UI, and Langfuse all federate to it, and Open WebUI forwards the
-signed-in identity so **cost is attributed per user** in LiteLLM's spend reports —
-no per-user API keys. It works out of the box over `./platformctl tunnel` (Cognito
-allows `localhost` callbacks); bring your own enterprise IdP by federating it into
-the pool. Cognito is the only new hard dependency — Identity Center stays required
-only for ArgoCD SSO. For **public HTTPS** access (and to protect the dashboard
-behind auth), opt in to the CloudFront edge in
-[`platform/services/edge/`](platform/services/edge/README.md) — CloudFront via ACK,
-with a free `*.cloudfront.net` certificate (no domain needed).
+**Single sign-on, per-user cost & budgets.** SSO ships enabled (`enable_sso`,
+default on): Terraform stands up an **Amazon Cognito** user pool with a hosted login
+page, role groups (`admins`/`developers`/`users`), and three seed users whose
+generated passwords are printed as the `sso_seed_user_passwords` output. Open WebUI,
+the LiteLLM admin UI, and Langfuse all federate to it, and Open WebUI forwards the
+signed-in identity so **cost is attributed per user** in LiteLLM's spend reports.
+LiteLLM also enforces a **default per-user budget + rpm/tpm throttle** on the chat
+path (from that forwarded identity, no keys needed) and caps any API key a user
+mints for themselves — tune the defaults in
+[`platform/services/litellm/litellm.yaml`](platform/services/litellm/litellm.yaml).
+It works out of the box over `./platformctl tunnel` (Cognito allows `localhost`
+callbacks); bring your own enterprise IdP by federating it into the pool. Cognito is
+the only new hard dependency — Identity Center stays required only for ArgoCD SSO.
+For **public HTTPS** access (and to protect the dashboard behind auth), opt in to
+the CloudFront edge in
+[`platform/services/edge/`](platform/services/edge/README.md) — CloudFront via ACK
+over a **VPC origin** to the private ALB, with a free `*.cloudfront.net` certificate
+(no domain needed).
 
 **Presenting it?** [docs/demo-walkthrough.md](docs/demo-walkthrough.md) is a timed
 presenter's script (10/20/30-min cuts) with talk track and fallbacks.
@@ -183,9 +191,11 @@ kubectl delete applicationset --all -n argocd --wait=false
 kubectl delete application    --all -n argocd --wait=false
 kubectl delete inferenceendpoints,vllmendpoints,llmdendpoints,aiteams,finetunejobs --all -A --wait=false
 # If the CloudFront edge was activated (platform/services/edge): delete the
-# Distributions so ACK removes the real CloudFront distributions BEFORE the
-# cluster (and the ACK controller) are destroyed — otherwise they orphan.
+# Distributions first, then the VPCOrigins, so ACK removes the real CloudFront
+# resources BEFORE the cluster (and the ACK controller) are destroyed — otherwise
+# they orphan. (A VPC origin can't delete while a distribution still references it.)
 kubectl delete distributions.cloudfront.services.k8s.aws --all -n ai-platform --wait=false 2>/dev/null || true
+kubectl delete vpcorigins.cloudfront.services.k8s.aws   --all -n ai-platform --wait=false 2>/dev/null || true
 kubectl delete ingress --all -A --wait=false      # → ALB controller cleans up the ALB
 
 # 2. Empty the training-datasets bucket (force_destroy=false by design — real
