@@ -106,10 +106,11 @@ kubectl get resourcegraphdefinitions
 ```
 
 **Say:** *"KRO lets us define our own Kubernetes APIs. Three of them are the entire
-self-service surface: `InferenceEndpoint` to serve a model, `AITeam` to onboard a
-team, `FineTuneJob` to fine-tune one. A user writes six lines of YAML; KRO expands
-it into the full resource graph — a Ray Serve + vLLM deployment, GPU workers, a
-LiteLLM registration job, and a CloudWatch log group created via ACK."*
+self-service surface: `VLLMEndpoint` to serve a model (or `LLMDEndpoint` /
+`LLMDDisaggEndpoint` for the llm-d scale tiers), `AITeam` to onboard a team. A
+user writes a few lines of YAML; KRO expands it into the full resource graph — a
+vLLM deployment + service, GPU workers, and a CloudWatch log group created via
+ACK, with litellm-sync registering it on the gateway."*
 
 ```bash
 kubectl get inferenceendpoints -n inference \

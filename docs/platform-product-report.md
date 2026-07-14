@@ -34,18 +34,20 @@ Grouped by capability domain. Legend: ✅ built today · 🔶 partial/gap · �
 ### A. Model serving & access
 - ✅ One OpenAI-compatible endpoint (`/v1/chat/completions`, `/v1/embeddings`) fronting **every** model via LiteLLM.
 - ✅ **Frontier model on day one, zero GPUs** — Bedrock (Claude Opus 4.8) live the moment the cluster is up.
-- ✅ Self-hosted open models on GPUs via vLLM (Ray Serve), tensor-parallel 1/2/4/8.
+- ✅ Self-hosted open models on GPUs via vLLM, tensor-parallel 1/2/4/8.
 - ✅ GPU time-slicing (one physical GPU → up to 4 small models) for cost.
 - 🔶 Model-aware routing — today LiteLLM round-robins; 🎯 **GIE** adds KV-cache/queue/LoRA-aware pod picking.
-- 🎯 Embeddings & reranker endpoints; multi-LoRA (many adapters on one base GPU); disaggregated
-  (prefill/decode) serving for scale; optional multi-node for very large models; Neuron (Trainium/Inferentia).
+- 🎯 Embeddings & reranker endpoints; multi-LoRA (many adapters on one base GPU); optional
+  multi-node for very large models; Neuron (Trainium/Inferentia).
 
 ### B. Self-service & lifecycle (the API)
-- ✅ `InferenceEndpoint` — serve any HuggingFace model or S3-hosted fine-tune from a few lines of YAML.
+- ✅ `VLLMEndpoint` — serve any HuggingFace model or S3-hosted fine-tune from a few lines of YAML (the simple default).
+- ✅ `LLMDEndpoint` / `LLMDDisaggEndpoint` — the llm-d scale tier and its prefill/decode-disaggregated performance tier.
 - ✅ `AITeam` — onboard a tenant: namespace, RBAC, quota, network policy, scoped API key, budget, rate limits.
-- ✅ `FineTuneJob` — QLoRA fine-tune (Unsloth) → S3 → optional `autoDeploy` to a live endpoint.
 - 🎯 `EmbeddingEndpoint`, `RerankerEndpoint`, `VectorDatabase`, `RAGPipeline`, `AgentRuntime` — the
   catalog that turns it from "one demo" into "a platform."
+- ⛔ **Out of scope:** fine-tuning/training. The platform *serves* models (including externally
+  fine-tuned ones via `modelSource`), it does not train them (tenet: scope discipline).
 
 ### C. Cost & efficiency
 - ✅ Scale-to-zero idle GPUs (Karpenter), spot + on-demand, right-sizing.
