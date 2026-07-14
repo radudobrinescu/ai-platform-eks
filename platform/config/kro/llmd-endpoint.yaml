@@ -11,6 +11,14 @@
 # Request path: LiteLLM -> llm-d router (Envoy + EPP) -> InferencePool -> vLLM pod.
 # The EPP scores pods by queue depth, KV-cache utilization, and prefix reuse.
 #
+# MIGRATION: `minReplicas` now has `minimum=1` (scale-to-zero parked). Raising a
+# field's minimum (0 -> 1) is a breaking CRD change KRO refuses to apply in place
+# ("breaking changes detected: Minimum was increased from 0 to 1" -> the RGD goes
+# Inactive). Fresh installs are unaffected (the CRD is created with minimum=1). On
+# an EXISTING cluster that predates this, recreate the CRD once when no
+# LLMDEndpoints are live (safe, it holds no persistent state):
+#   kubectl delete crd llmdendpoints.kro.run   # KRO immediately rebuilds it
+#
 # Prereqs (gated by capabilities.inference_gateway): GIE CRDs + base Envoy Gateway
 # installed, and the ghcr.io/llm-d/charts OCI Helm repo registered with ArgoCD.
 apiVersion: kro.run/v1alpha1
