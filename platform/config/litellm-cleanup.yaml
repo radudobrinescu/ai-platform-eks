@@ -1,9 +1,8 @@
-# Hourly reconciler for LiteLLM state that has no event-driven owner:
+# Hourly reconciler for the one bit of LiteLLM state with no event-driven owner:
 #   - orphaned teams (from deleted AITeams)
-#   - completed `-register` Jobs (GC)
-# Model deregistration is handled separately, event-driven, by the
+# Model registration AND deregistration are handled event-driven by the
 # `litellm-sync` controller (platform/services/litellm-sync) — this CronJob
-# no longer touches models.
+# never touches models.
 ---
 apiVersion: batch/v1
 kind: CronJob
@@ -34,11 +33,11 @@ spec:
                   SA_TOKEN=$(cat /var/run/secrets/kubernetes.io/serviceaccount/token)
                   CA=/var/run/secrets/kubernetes.io/serviceaccount/ca.crt
 
-                  # NOTE: model deregistration is NOT handled here. The
-                  # `litellm-sync` controller (platform/services/litellm-sync)
-                  # owns model consistency — it deregisters a model the moment
-                  # its InferenceEndpoint is deleted, via a finalizer. This
-                  # CronJob now only reconciles teams and GCs register Jobs.
+                  # NOTE: models are NOT handled here. The `litellm-sync`
+                  # controller (platform/services/litellm-sync) owns the model
+                  # registry — it registers on create and deregisters on delete
+                  # (finalizer) across all serving tiers. This CronJob only
+                  # reconciles orphaned teams.
 
                   # Clean up orphaned teams from LiteLLM
                   TEAMS=$(curl -sf "$LITELLM/team/list" \
@@ -60,23 +59,6 @@ spec:
                     fi
                   done
 
-                  # Clean up completed registration Jobs
-                  JOBS=$(curl -sf --cacert "$CA" \
-                    -H "Authorization: Bearer $SA_TOKEN" \
-                    "$K8S/apis/batch/v1/namespaces/inference/jobs?labelSelector=job-name" \
-                    | sed -n 's/.*"name":"\([^"]*-register[^"]*\)".*/\1/gp' | sort -u)
-                  for job in $JOBS; do
-                    STATUS=$(curl -sf --cacert "$CA" \
-                      -H "Authorization: Bearer $SA_TOKEN" \
-                      "$K8S/apis/batch/v1/namespaces/inference/jobs/$job" \
-                      | sed -n 's/.*"complete".*"status":"True".*/complete/p')
-                    if [ "$STATUS" = "complete" ]; then
-                      curl -sf --cacert "$CA" \
-                        -H "Authorization: Bearer $SA_TOKEN" \
-                        -X DELETE "$K8S/apis/batch/v1/namespaces/inference/jobs/$job?propagationPolicy=Background" \
-                        && echo "  Cleaned job: $job"
-                    fi
-                  done
                   echo "Done."
               env:
                 - name: LITELLM_MASTER_KEY
@@ -106,9 +88,6 @@ rules:
   - apiGroups: ["kro.run"]
     resources: ["aiteams"]
     verbs: ["list"]
-  - apiGroups: ["batch"]
-    resources: ["jobs"]
-    verbs: ["list", "delete"]
 ---
 apiVersion: rbac.authorization.k8s.io/v1
 kind: ClusterRoleBinding
