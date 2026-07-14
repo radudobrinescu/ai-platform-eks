@@ -196,8 +196,99 @@ data:
       # ~1-2 min) — turning the cold start into added latency rather than an error.
       num_retries: 5
       request_timeout: 120
+      # --- Per-user budgets & rate limits (self-service governance) ---
+      # 1a — Open WebUI chat path. Open WebUI authenticates to LiteLLM with the
+      # shared master key and forwards the signed-in identity as the
+      # x-openwebui-user-email header (see general_settings.user_header_mappings
+      # below, which maps it to LiteLLM's "customer"/end-user). This applies a
+      # per-person $ budget AND rpm/tpm throttle WITHOUT issuing per-user keys.
+      # The actual limits live on the `end-user-default` budget tier, created
+      # idempotently by the litellm-enduser-budget Job (POST /budget/new) further
+      # down. Referencing a budget id that doesn't exist yet is inert (it's a
+      # per-request DB lookup, not validated at boot), so this stays push-safe:
+      # until the Job runs, end-user requests are simply unmetered.
+      max_end_user_budget_id: "end-user-default"
+      # 1b — direct API / virtual-key path. SSO users who sign in to the LiteLLM
+      # UI are internal_users (role from custom:role — see GENERIC_USER_ROLE_ATTRIBUTE);
+      # give them a default personal budget and cap any key they mint themselves.
+      # (Open WebUI traffic rides the master key, so these bound programmatic/API
+      # use, not the chat path — that's what 1a above covers.) We deliberately do
+      # NOT set default_internal_user_params.user_role here: role must stay driven
+      # by custom:role, or the seed admin would be downgraded to internal_user.
+      max_internal_user_budget: 10           # USD default budget per internal user
+      internal_user_budget_duration: "30d"   # ...reset every 30 days
+      upperbound_key_generate_params:        # ceiling for self-served /key/generate
+        max_budget: 10
+        budget_duration: "30d"
+        rpm_limit: 60
+        tpm_limit: 100000
     general_settings:
       master_key: os.environ/LITELLM_MASTER_KEY
+      # Identify the per-user "customer" (end-user) from the header Open WebUI
+      # forwards, so the end-user budget/limits (max_end_user_budget_id above)
+      # apply on the chat path without per-user keys. LiteLLM natively only
+      # checks x-litellm-customer-id / x-litellm-end-user-id; this maps our
+      # forwarded header into that resolution (ranks above the body `user` field,
+      # which Open WebUI does not send). Inert for callers that omit the header.
+      user_header_mappings:
+        - header_name: "x-openwebui-user-email"
+          litellm_user_role: "customer"
+---
+# litellm-enduser-budget — creates the default "customer" (end-user) budget tier
+# that max_end_user_budget_id references. Runs as a post-sync hook: it waits for
+# LiteLLM to be live, then idempotently POSTs /budget/new. Re-running when the
+# budget already exists is a no-op (LiteLLM returns an error which we swallow),
+# so it's safe on every sync. Editing the limits below + re-syncing does NOT
+# update the existing budget — change it via POST /budget/update or the UI, or
+# delete the budget and let this recreate it.
+#
+# Push-safe: needs only the litellm master key (always present) and the in-cluster
+# LiteLLM Service. If LiteLLM never comes up the Job just retries and fails
+# harmlessly without affecting any running pod.
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: litellm-enduser-budget
+  namespace: ai-platform
+  annotations:
+    argocd.argoproj.io/hook: PostSync
+    argocd.argoproj.io/hook-delete-policy: BeforeHookCreation
+spec:
+  backoffLimit: 20
+  template:
+    spec:
+      restartPolicy: OnFailure
+      containers:
+        - name: seed-budget
+          image: curlimages/curl:8.11.0
+          env:
+            - name: MASTER_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: litellm-secrets
+                  key: master-key
+          command: ["/bin/sh", "-c"]
+          args:
+            - |
+              set -eu
+              BASE=http://litellm.ai-platform.svc.cluster.local:4000
+              echo "Waiting for LiteLLM..."
+              for i in $(seq 1 60); do
+                if curl -fsS "$BASE/health/liveliness" >/dev/null 2>&1; then break; fi
+                sleep 5
+              done
+              # Default per-end-user tier: $10 / 30d + 60 rpm + 100k tpm. Applied
+              # to every "customer" (Open WebUI user) that has no explicit budget.
+              code=$(curl -s -o /tmp/resp -w '%{http_code}' -X POST "$BASE/budget/new" \
+                -H "Authorization: Bearer $MASTER_KEY" \
+                -H "Content-Type: application/json" \
+                -d '{"budget_id":"end-user-default","max_budget":10,"budget_duration":"30d","rpm_limit":60,"tpm_limit":100000}')
+              echo "POST /budget/new -> HTTP $code"; cat /tmp/resp 2>/dev/null || true; echo
+              case "$code" in
+                2*) echo "created end-user-default budget";;
+                *)  echo "budget likely already exists (HTTP $code) — treating as success";;
+              esac
+              exit 0
 ---
 apiVersion: v1
 kind: Service
