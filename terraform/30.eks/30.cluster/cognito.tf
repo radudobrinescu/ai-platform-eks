@@ -42,12 +42,14 @@ locals {
   sso_groups = ["ai-platform-admins", "ai-platform-developers", "ai-platform-users"]
 
   # Seed users (one per role). Passwords are generated + surfaced as outputs.
-  # .local emails follow the existing langfuse_init_user convention; no email is
-  # deliverable, so users are admin-created with a permanent password.
+  # example.com (RFC 2606 documentation domain) is used deliberately: LiteLLM's
+  # SSO email validator rejects reserved/special-use domains like .local, so the
+  # seed emails must use a normal domain. No email is ever sent (admin-created
+  # users with a permanent password + email_verified=true).
   sso_seed_users = {
-    "admin@ai-platform.local"     = "ai-platform-admins"
-    "developer@ai-platform.local" = "ai-platform-developers"
-    "user@ai-platform.local"      = "ai-platform-users"
+    "admin@example.com"     = "ai-platform-admins"
+    "developer@example.com" = "ai-platform-developers"
+    "user@example.com"      = "ai-platform-users"
   }
 
   cognito_domain_prefix = local.enable_sso ? "${local.cluster_name}-${random_string.cognito_domain_suffix[0].result}" : ""
