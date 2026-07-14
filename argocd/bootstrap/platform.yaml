@@ -44,14 +44,6 @@ spec:
             chartVersion: v25.10.1
             valuesPath: platform/services/gpu-operator/helm-values.yaml
             tier: infra
-          - name: kuberay-operator
-            namespace: kuberay
-            type: helm
-            chart: kuberay-operator
-            chartRepo: https://ray-project.github.io/kuberay-helm/
-            chartVersion: "1.5.1"
-            valuesPath: platform/services/kuberay/helm-values.yaml
-            tier: infra
           # GIE CRDs (InferencePool) + the llm-d OCI Helm repo registration —
           # the substrate the LLMDEndpoint scale tier needs. Minimal (CRDs + a
           # repo Secret, no running pods); shipped by default so teams can use

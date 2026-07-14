@@ -5,23 +5,17 @@ locals {
   cluster_version = var.cluster_config.kubernetes_version
   eks_auto_mode   = try(var.cluster_config.eks_auto_mode, false)
 
-  # Single source of truth for the Ray LLM image version.
-  # Referenced by the platform-config ConfigMap; KRO reads it via externalRef.
-  ray_image_tag = "2.54.0-py311-cu128"
-  ray_image     = "anyscale/ray-llm:${local.ray_image_tag}"
-
-  # Unsloth fine-tuning trainer image. Built from
-  # platform/images/unsloth-trainer/Dockerfile and pushed to a private ECR
-  # repo by unsloth-image.tf. Bump the tag to rebuild + re-push. Surfaced to KRO
-  # via the platform-config ConfigMap (unslothImage) so FineTuneJob reads it.
-  unsloth_image_tag = "0.1.0"
-  unsloth_image     = local.enable_fine_tuning ? "${aws_ecr_repository.unsloth_trainer[0].repository_url}:${local.unsloth_image_tag}" : ""
+  # Single source of truth for the vLLM serving image version.
+  # Surfaced to KRO via the platform-config ConfigMap (vllmImage); the
+  # VLLMEndpoint RGD reads it via externalRef, falling back to its schema default.
+  vllm_image_tag = "v0.24.0"
+  vllm_image     = "vllm/vllm-openai:${local.vllm_image_tag}"
 
   # HuggingFace model-weights cache.
-  # S3 bucket is populated by ops/seed-model-cache.py (manual) or by the Ray
+  # S3 bucket is populated by ops/seed-model-cache.py (manual) or by the vLLM
   # worker's sidecar after first successful load (automatic). The initContainer
-  # in the KRO InferenceEndpoint template syncs from here on pod startup —
-  # falling back to a live HF download on cache miss.
+  # in the serving-tier RGDs (VLLMEndpoint/LLMDEndpoint/LLMDDisaggEndpoint) syncs
+  # from here on pod startup — falling back to a live HF download on cache miss.
   model_cache_bucket            = "${local.cluster_name}-model-cache"
   inference_worker_sa_namespace = "inference"
   inference_worker_sa_name      = "inference-worker"

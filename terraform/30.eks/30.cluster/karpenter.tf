@@ -135,9 +135,8 @@ data "kubectl_path_documents" "karpenter_manifests" {
     # This avoids passing an invalid empty snapshotID to Karpenter.
     # Source: explicit tfvar override > auto-discovered snapshot > disabled.
     gpu_snapshot_id_line = local.resolved_snapshot_id != "" ? "snapshotID: ${local.resolved_snapshot_id}" : ""
-    # GPU data volume size — must be >= the baked snapshot's volume size. Grows
-    # to 300Gi when fine-tuning is enabled (the snapshot then also holds the
-    # ~14.5 GiB Unsloth trainer image). Kept in sync with local.snapshot_volume_gib.
+    # GPU data volume size — must be >= the baked snapshot's volume size.
+    # Kept in sync with local.snapshot_volume_gib.
     gpu_volume_size = local.snapshot_volume_gib
   }
   depends_on = [

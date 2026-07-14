@@ -175,9 +175,9 @@ resource "aws_iam_policy" "ecr_pull_through" {
 
 ################################################################################
 # Platform Config — KRO externalRef reads this ConfigMap.
-# rayImage always set: ECR mirror when pull-through cache is enabled, Docker Hub otherwise.
-# Version is defined once in locals.tf (ray_image_tag).
-# modelCacheBucket + region are consumed by the Ray worker's initContainer
+# vllmImage always set: ECR mirror when the pull-through cache is enabled, Docker
+# Hub otherwise. Version is defined once in locals.tf (vllm_image_tag).
+# modelCacheBucket + region are consumed by the serving worker's initContainer
 # and auto-warm sidecar to sync HF weights to/from s3://{bucket}/hf/...
 ################################################################################
 resource "kubernetes_config_map" "platform_config" {
@@ -189,13 +189,14 @@ resource "kubernetes_config_map" "platform_config" {
   }
 
   data = {
-    cluster          = module.eks.cluster_name
-    region           = local.region
-    rayImage         = var.docker_hub_username != "" ? "${data.aws_caller_identity.current.account_id}.dkr.ecr.${local.region}.amazonaws.com/docker-hub/${local.ray_image}" : local.ray_image
+    cluster = module.eks.cluster_name
+    region  = local.region
+    # vLLM serving image via the docker-hub pull-through cache (falls back to the
+    # plain Docker Hub ref when no ECR cache is configured). The serving-tier RGDs
+    # (VLLMEndpoint/LLMDEndpoint/LLMDDisaggEndpoint) read this via externalRef,
+    # falling back to their schema default.
+    vllmImage        = var.docker_hub_username != "" ? "${data.aws_caller_identity.current.account_id}.dkr.ecr.${local.region}.amazonaws.com/docker-hub/${local.vllm_image}" : local.vllm_image
     modelCacheBucket = local.capabilities.gitops ? aws_s3_bucket.model_cache[0].bucket : ""
-    # Fine-tuning (empty string when disabled — KRO falls back via .orValue()).
-    unslothImage           = local.unsloth_image
-    trainingDatasetsBucket = local.enable_fine_tuning ? aws_s3_bucket.training_datasets[0].bucket : ""
   }
 
   depends_on = [kubernetes_namespace.inference]
@@ -297,9 +298,11 @@ resource "aws_iam_role_policy" "inference_worker_s3_cache" {
         Resource = "${aws_s3_bucket.model_cache[0].arn}/hf/*"
       },
       {
-        # Fine-tuned models: READ-only. The serving worker's modelSource init
-        # container syncs weights from fine-tuned/{name}/{ts}/; only the
-        # fine-tuning-worker role writes here (kept separate to bound blast radius).
+        # Fine-tuned / custom model weights: READ-only. A serving tier's
+        # modelSource init container syncs weights from this prefix on startup.
+        # Upload externally fine-tuned weights here (the platform serves tuned
+        # models via modelSource; it does not train them). Read-only — serving
+        # pods never write model weights.
         Sid      = "FineTunedReadOnly"
         Effect   = "Allow"
         Action   = ["s3:GetObject"]
@@ -319,9 +322,9 @@ resource "aws_iam_role_policy" "inference_worker_s3_cache" {
   })
 }
 
-# The ServiceAccount the Ray worker pods reference. Annotation ties it to the
-# IAM role via IRSA. Kept Terraform-managed so the ARN is injected at apply
-# time without hardcoding account IDs in git-tracked YAML.
+# The ServiceAccount the vLLM serving worker pods reference. Annotation ties it
+# to the IAM role via IRSA. Kept Terraform-managed so the ARN is injected at
+# apply time without hardcoding account IDs in git-tracked YAML.
 resource "kubernetes_service_account" "inference_worker" {
   count = local.capabilities.gitops ? 1 : 0
 

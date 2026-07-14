@@ -83,12 +83,6 @@ gitops_revision = "main"
 # enabled in-account for the target model (one-time AWS console toggle).
 # enable_bedrock = true
 
-# Self-service fine-tuning (default: enabled). NOTE: builds + pushes the Unsloth
-# trainer image to ECR during `terraform apply` — this REQUIRES Docker on the
-# apply host. No Docker? Set this to false (or build the image in CI via
-# ops/build-unsloth-image.sh, then re-apply).
-# enable_fine_tuning = true
-
 # SSO + per-user cost attribution (default: enabled). Ships a Cognito user pool
 # with a hosted login page, role groups (admins/developers/users), and three
 # seed users whose generated passwords are surfaced as the `sso_seed_user_passwords`

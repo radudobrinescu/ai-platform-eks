@@ -1,15 +1,12 @@
 # Workloads — ArgoCD ApplicationSet for self-service workloads.
 #
-# - models:      syncs workloads/models/ → creates InferenceEndpoint CRs.
+# - models:      syncs workloads/models/ → creates VLLMEndpoint CRs.
 #                Teams add a YAML here to deploy a model. Recurses into
 #                catalog/ for platform-shipped default models.
 # - teams:       syncs workloads/teams/ → creates AITeam CRs.
 #                Platform team adds a YAML here to onboard a new team.
-# - fine-tuning: syncs workloads/fine-tuning/ → creates FineTuneJob CRs.
-#                Users add a YAML here to fine-tune a model.
-# - scale-models: syncs workloads/scale-models/ → creates LLMDEndpoint CRs.
-#                Users add a YAML here to serve a model on the llm-d scale tier
-#                (KV-cache/load-aware routing across replicas).
+# - scale-models: syncs workloads/scale-models/ → creates LLMDEndpoint /
+#                LLMDDisaggEndpoint CRs (the llm-d scale + disaggregation tiers).
 #
 # Forking = set repoURL/targetRevision below (ONCE), mirror $repo/$rev in
 # argocd/bootstrap/platform.yaml, and set var.gitops_repo_url in Terraform.
@@ -30,8 +27,6 @@ spec:
             path: workloads/models
           - name: teams
             path: workloads/teams
-          - name: fine-tuning
-            path: workloads/fine-tuning
           - name: scale-models
             path: workloads/scale-models
   template:

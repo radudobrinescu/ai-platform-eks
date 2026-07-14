@@ -59,12 +59,6 @@ variable "gitops_revision" {
   default     = "main"
 }
 
-variable "enable_fine_tuning" {
-  description = "Enable self-service fine-tuning (FineTuneJob). When true, Terraform builds + pushes the Unsloth trainer image to ECR, creates a training-datasets S3 bucket, and provisions the fine-tuning-worker ServiceAccount + IRSA + RBAC. Building the image requires Docker on the apply host (or run ops/build-unsloth-image.sh in CI, then re-apply)."
-  type        = bool
-  default     = true
-}
-
 variable "langfuse_nextauth_url" {
   description = "Browser-facing URL of the Langfuse web UI (the Host that NextAuth validates sign-in against). For the default turnkey ALB access you can leave this as-is: the langfuse-nextauth-url CronJob (platform/config/langfuse-nextauth-url.yaml) discovers the ALB hostname at runtime and sets NEXTAUTH_URL on the langfuse-web Deployment automatically. Override only matters if you pin a custom domain — and that is done in platform/services/langfuse/helm-values.yaml (nextauth.url), which the reconciler then respects. This var is retained for reference/back-compat (it feeds the langfuse-init secret's NEXTAUTH_URL key, which the chart does not consume)."
   type        = string

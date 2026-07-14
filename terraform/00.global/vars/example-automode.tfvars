@@ -65,12 +65,6 @@ gitops_revision = "main"
 # enabled in-account for the target model (one-time AWS console toggle).
 # enable_bedrock = true
 
-# Self-service fine-tuning (default: enabled). NOTE: builds + pushes the Unsloth
-# trainer image to ECR during `terraform apply` — this REQUIRES Docker on the
-# apply host. No Docker? Set this to false (or build the image in CI via
-# ops/build-unsloth-image.sh, then re-apply).
-# enable_fine_tuning = true
-
 # Langfuse first-boot init (tracing live on the first call — no manual setup).
 # Default URL works with the SSM tunnel (ops/ssm-tunnel.sh). For ALB access use
 # e.g. http://k8s-aiplatform-<hash>.<region>.elb.amazonaws.com:3000, or
