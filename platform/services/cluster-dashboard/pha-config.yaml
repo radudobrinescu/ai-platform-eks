@@ -29,7 +29,7 @@ data:
   # (litellm, langfuse, …). The watcher skips only its OWN pods/Jobs, by label
   # + name, not by excluding the whole namespace (see event_watcher.py).
   WATCH_NAMESPACES: "*"
-  EXCLUDE_NAMESPACES: "kube-system,kube-node-lease,kube-public,argocd,external-secrets,gpu-operator,kuberay,amazon-cloudwatch"
+  EXCLUDE_NAMESPACES: "kube-system,kube-node-lease,kube-public,argocd,external-secrets,gpu-operator,amazon-cloudwatch"
 
   # Per-resource debounce (no re-investigation within this window).
   DEBOUNCE_WINDOW_SEC: "600"
@@ -61,8 +61,9 @@ data:
   # POD_NOT_READY_THRESHOLD_SEC to clear normal slow model loads.
   TRIGGER_PODNOTREADY: "true"
 
-  # Stuck-resource scanner — polls KRO/Ray CRs (InferenceEndpoint, AITeam,
-  # RayService). Fires when any has been in non-healthy state for this long.
+  # Stuck-resource scanner — polls the KRO serving/team CRs (VLLMEndpoint,
+  # LLMDEndpoint, LLMDDisaggEndpoint, AITeam). Fires when any has been in a
+  # non-healthy state for this long.
   STUCK_RESOURCE_THRESHOLD_SEC: "300"
   STUCK_RESOURCE_POLL_INTERVAL: "60"
 

@@ -799,10 +799,10 @@ def reconcile_rolebindings_loop() -> None:
 
 
 # ---------------------------------------------------------------------------
-# Stuck custom-resource watcher — periodic poll, fires when KRO/Ray CRs
+# Stuck custom-resource watcher — periodic poll, fires when KRO CRs
 # haven't reached their healthy state within STUCK_RESOURCE_THRESHOLD_SEC.
 # Catches the gap that pod-level triggers miss: KRO reconcile errors,
-# RayService stuck Pending, InferenceEndpoint stuck DEPLOYING, etc.
+# an endpoint stuck deploying, an AITeam stuck onboarding, etc.
 # ---------------------------------------------------------------------------
 
 def _resource_age_seconds(obj: dict) -> float:
@@ -829,22 +829,6 @@ def _is_stuck_aiteam(team: dict) -> bool:
     return _resource_age_seconds(team) >= STUCK_RESOURCE_THRESHOLD_SEC
 
 
-def _is_stuck_inferenceendpoint(ep: dict) -> bool:
-    status = ep.get("status") or {}
-    # Healthy when the IE reports `ACTIVE` modelStatus AND a Ready condition.
-    # The IE optimistically reports modelStatus=ACTIVE before vLLM finishes
-    # loading the actual model, so we ALSO require Ready=True from conditions.
-    healthy_ms = status.get("modelStatus") == "ACTIVE"
-    healthy_cond = False
-    for c in (status.get("conditions") or []):
-        if c.get("type") == "Ready" and c.get("status") == "True":
-            healthy_cond = True
-            break
-    if healthy_ms and healthy_cond:
-        return False
-    return _resource_age_seconds(ep) >= STUCK_RESOURCE_THRESHOLD_SEC
-
-
 def _is_stuck_vllmendpoint(ep: dict) -> bool:
     # VLLMEndpoint (simple vLLM) is healthy once its Deployment is available,
     # which the RGD surfaces as status.ready == "True".
@@ -866,25 +850,15 @@ def _is_stuck_llmdendpoint(ep: dict) -> bool:
     return _resource_age_seconds(ep) >= STUCK_RESOURCE_THRESHOLD_SEC
 
 
-def _is_stuck_rayservice(rs: dict) -> bool:
-    status = rs.get("status") or {}
-    # RayService is healthy when serviceStatus is "Running" and active replicas exist.
-    if status.get("serviceStatus") == "Running":
-        return False
-    return _resource_age_seconds(rs) >= STUCK_RESOURCE_THRESHOLD_SEC
-
-
 def watch_stuck_resources(conn_factory) -> None:
     """Periodically scan KRO/Ray custom resources; fire StuckResource trigger
     on those that haven't reached healthy state in time.
 
     Resources scanned (read-only):
-      - inferenceendpoints.kro.run        (in `inference` ns; Ray, legacy)
       - vllmendpoints.kro.run             (in `inference` ns; simple vLLM)
       - llmdendpoints.kro.run             (in `inference` ns; llm-d scale tier)
       - llmddisaggendpoints.kro.run       (in `inference` ns; llm-d P/D disaggregated)
       - aiteams.kro.run                   (cluster-wide, in `ai-platform` ns)
-      - rayservices.ray.io                (cluster-wide)
     """
     if not TRIGGERS["StuckResource"]:
         log.info("StuckResource trigger disabled — watcher exiting")
@@ -895,31 +869,6 @@ def watch_stuck_resources(conn_factory) -> None:
     while not stop_event.is_set():
         try:
             conn = conn_factory()
-
-            # --- InferenceEndpoints ---
-            try:
-                eps = custom.list_namespaced_custom_object(
-                    group="kro.run", version="v1alpha1",
-                    namespace="inference", plural="inferenceendpoints",
-                ).get("items", [])
-            except ApiException as e:
-                if e.status != 404:
-                    log.warning("list inferenceendpoints: %s", e)
-                eps = []
-            for ep in eps:
-                if not _is_stuck_inferenceendpoint(ep):
-                    continue
-                payload = {
-                    "kind": "InferenceEndpoint",
-                    "namespace": ep["metadata"].get("namespace", ""),
-                    "name": ep["metadata"]["name"],
-                    "modelStatus": (ep.get("status") or {}).get("modelStatus", "Pending"),
-                    "ready": str((ep.get("status") or {}).get("ready", "False")),
-                    "message": (ep.get("status") or {}).get("message", ""),
-                    "model": (ep.get("spec") or {}).get("model", ""),
-                    "age_seconds": int(_resource_age_seconds(ep)),
-                }
-                spawn_investigation(conn, batch_v1, "StuckResource", payload)
 
             # --- VLLMEndpoints (simple vLLM) + LLMDEndpoints (llm-d scale) ---
             for plural, kind, stuck_fn in (
@@ -972,32 +921,6 @@ def watch_stuck_resources(conn_factory) -> None:
                     "phase": (team.get("status") or {}).get("phase", "Pending"),
                     "message": (team.get("status") or {}).get("message", ""),
                     "age_seconds": int(_resource_age_seconds(team)),
-                }
-                spawn_investigation(conn, batch_v1, "StuckResource", payload)
-
-            # --- RayServices ---
-            try:
-                rs_items = custom.list_cluster_custom_object(
-                    group="ray.io", version="v1", plural="rayservices",
-                ).get("items", [])
-            except ApiException as e:
-                if e.status != 404:
-                    log.warning("list rayservices: %s", e)
-                rs_items = []
-            for rs in rs_items:
-                # Skip RayServices in namespaces the watcher excludes.
-                ns = rs["metadata"].get("namespace", "")
-                if not is_namespace_watched(ns):
-                    continue
-                if not _is_stuck_rayservice(rs):
-                    continue
-                payload = {
-                    "kind": "RayService",
-                    "namespace": ns,
-                    "name": rs["metadata"]["name"],
-                    "serviceStatus": (rs.get("status") or {}).get("serviceStatus", "Pending"),
-                    "message": (rs.get("status") or {}).get("message", ""),
-                    "age_seconds": int(_resource_age_seconds(rs)),
                 }
                 spawn_investigation(conn, batch_v1, "StuckResource", payload)
 

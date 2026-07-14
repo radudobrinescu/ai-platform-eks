@@ -347,7 +347,7 @@ tbody tr:hover{background:var(--surface-2)}
 
 
 <script>
-const TIERS={bedrock:['Bedrock','b-bedrock'],vllm:['vLLM','b-vllm'],'llm-d':['llm-d','b-llmd'],'llm-d-disagg':['llm-d P/D','b-disagg'],ft:['fine-tuned','b-ft'],ray:['Ray','b-ray']};
+const TIERS={bedrock:['Bedrock','b-bedrock'],vllm:['vLLM','b-vllm'],'llm-d':['llm-d','b-llmd'],'llm-d-disagg':['llm-d P/D','b-disagg'],ft:['fine-tuned','b-ft']};
 const MTABS=[['all','All'],['bedrock','Bedrock'],['vllm','vLLM'],['llm-d','llm-d'],['llm-d-disagg','llm-d P/D'],['ft','Fine-tuned']];
 let D={models:[],teams:[],gpu:[],argocd:[],nodes:[],pods:[],cost:{},costExt:{},sources:{},links:[]};
 let mtab='all', selected=null, selectedNode=null, selectedTeam=null, curV='overview', prevM={}, prevN=null, prevS={}, activity=[], invs=[], lastSearch=[];

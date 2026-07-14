@@ -24,8 +24,8 @@
 #    Binding: RoleBinding scoped to the `ai-platform` namespace only.
 #
 # What these roles deliberately do NOT grant:
-# - No write access to InferenceEndpoint / AITeam KRO CRs (ArgoCD-managed).
-# - No write access to anything in ai-platform / gpu-operator / kuberay /
+# - No write access to the serving-tier / AITeam KRO CRs (ArgoCD-managed).
+# - No write access to anything in ai-platform / gpu-operator /
 #   argocd / external-secrets / kube-system / amazon-cloudwatch (the writer
 #   ClusterRole is only ever bound in inference + team-* namespaces).
 # - No `*` verbs anywhere.
@@ -77,10 +77,7 @@ rules:
     resources: ["horizontalpodautoscalers"]
     verbs: ["get", "list", "watch"]
   - apiGroups: ["kro.run"]
-    resources: ["inferenceendpoints", "vllmendpoints", "llmdendpoints", "llmddisaggendpoints", "aiteams"]
-    verbs: ["get", "list", "watch"]
-  - apiGroups: ["ray.io"]
-    resources: ["rayservices", "rayclusters"]
+    resources: ["vllmendpoints", "llmdendpoints", "llmddisaggendpoints", "aiteams"]
     verbs: ["get", "list", "watch"]
   - apiGroups: ["events.k8s.io"]
     resources: ["events"]

@@ -108,21 +108,23 @@ Investigation procedure:
 1. Read /tmp/event.json → identify the affected resource (kind, namespace, name).
 2. Use list_k8s_resources / manage_k8s_resource(operation="read") to inspect
    the affected resource AND its owner chain (Pod → ReplicaSet → Deployment,
-   or Pod → RayCluster → RayService, etc.).
+   etc.).
 3. Use get_pod_logs to read the last 100 lines from each container.
 4. Use get_k8s_events to fetch warning events on the affected resource.
 5. If the affected resource is a Pod, list_k8s_resources(kind="Node", api_version="v1")
    for the node it's running on; check its conditions.
 6. If the resource is in 'inference' or matches '${ALLOWED_NS_PATTERN}', also
-   inspect the parent KRO custom resources (kind="InferenceEndpoint",
-   api_version="kro.run/v1alpha1" — or kind="AITeam"). Read for context only.
+   inspect the parent KRO custom resources (kind="VLLMEndpoint" /
+   "LLMDEndpoint" / "LLMDDisaggEndpoint", api_version="kro.run/v1alpha1" — or
+   kind="AITeam"). Read for context only.
 7. Optionally: search_eks_troubleshoot_guide for known patterns matching
    the symptom.
 
 Determine \`out_of_scope\`:
-- TRUE if the only reasonable fix is to modify an InferenceEndpoint or AITeam
-  custom resource, OR any resource in: ai-platform, gpu-operator, kuberay,
-  argocd, external-secrets, kube-system, amazon-cloudwatch, platform-health-agent.
+- TRUE if the only reasonable fix is to modify a serving-tier endpoint
+  (VLLMEndpoint / LLMDEndpoint / LLMDDisaggEndpoint) or AITeam custom resource,
+  OR any resource in: ai-platform, gpu-operator, argocd, external-secrets,
+  kube-system, amazon-cloudwatch, platform-health-agent.
 - TRUE if the fix requires editing a file under platform/services or workloads/.
 - FALSE if the fix can be applied via apply_yaml or manage_k8s_resource(operation="patch")
   to a workload-level resource (Deployment, StatefulSet, Pod, ConfigMap, HPA)

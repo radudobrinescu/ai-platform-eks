@@ -1,7 +1,7 @@
 # Cluster Dashboard manifests.
 #
 # Two roles in V2 (after platform-health-agent integration):
-#   1. Cluster topology view (existing): polls K8s for nodes/pods/InferenceEndpoints.
+#   1. Cluster topology view (existing): polls K8s for nodes/pods/serving endpoints.
 #   2. Platform Health Agent approvals UI (new):  reads pending investigations from
 #      the `platform_health_agent` postgres database; on click, creates a Remediator
 #      Job in the `ai-platform` namespace.
@@ -41,7 +41,7 @@ rules:
     resources: ["pods/log"]
     verbs: ["get"]
   - apiGroups: ["kro.run"]
-    resources: ["inferenceendpoints", "vllmendpoints", "llmdendpoints", "llmddisaggendpoints"]
+    resources: ["vllmendpoints", "llmdendpoints", "llmddisaggendpoints"]
     verbs: ["list"]
   # Autoscaling visibility: read the KEDA-managed HPAs (current/desired/min/max +
   # the driving metric value/target) so the dashboard shows per-pool scaling.

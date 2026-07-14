@@ -2,10 +2,11 @@
 # Copy this file, rename it to your model name (e.g. qwen3-32b.yaml), and fill in spec.model.
 # Only 'model' is required — everything else has sensible defaults.
 #
-# Use this instead of InferenceEndpoint/VLLMEndpoint when you need high-throughput
+# Use this instead of VLLMEndpoint when you need high-throughput
 # or long multi-turn/agentic serving: llm-d spreads requests across replicas using
 # live KV-cache, prefix-reuse, and queue-depth signals (Endpoint Picker), all still
 # behind the same LiteLLM /v1 API. See docs/llm-d-and-ingress-architecture.md.
+# For independent prefill/decode scaling, use LLMDDisaggEndpoint (DISAGG-TEMPLATE).
 #
 # Requires the inference_gateway capability to be enabled on the cluster
 # (base Envoy Gateway + GIE CRDs + the llm-d OCI Helm repo registered in ArgoCD).

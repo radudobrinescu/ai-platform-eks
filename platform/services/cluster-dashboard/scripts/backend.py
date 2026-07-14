@@ -4,7 +4,7 @@
 Two responsibilities:
 
 1. (Original) Poll the Kubernetes API every 2s, build a JSON snapshot of
-   nodes/pods/InferenceEndpoints, and serve it at /data.json plus static
+   nodes/pods/serving endpoints, and serve it at /data.json plus static
    HTML. Browser polls /data.json — no streaming, no proxying, no auth
    in browser.
 
@@ -355,11 +355,10 @@ def _build_links() -> list:
     return links
 
 
-# Serving kinds surfaced on the dashboard. Ray InferenceEndpoint is legacy
-# (being retired); VLLMEndpoint (simple) and LLMDEndpoint (llm-d scale tier) are
-# the current path. All three are kro.run/v1alpha1 in the `inference` namespace.
+# Serving kinds surfaced on the dashboard — the three tiers, all kro.run/v1alpha1
+# in the `inference` namespace: VLLMEndpoint (simple), LLMDEndpoint (llm-d scale),
+# LLMDDisaggEndpoint (llm-d scale + prefill/decode disaggregation).
 SERVING_KINDS = [
-    ("inferenceendpoints", "ray"),
     ("vllmendpoints", "vllm"),
     ("llmdendpoints", "llm-d"),
     ("llmddisaggendpoints", "llm-d-disagg"),
@@ -536,8 +535,7 @@ def _normalize_endpoint(ep: dict, mode: str) -> dict:
     ready = str(status.get("ready", "False"))
     avail = (int(status.get("prefillReplicas", 0) or 0) + int(status.get("decodeReplicas", 0) or 0)) \
         if is_disagg else int(status.get("availableReplicas", 0) or 0)
-    norm_status = status.get("modelStatus", "Pending") if mode == "ray" \
-        else ("Running" if ready == "True" else "Pending")
+    norm_status = "Running" if ready == "True" else "Pending"
     # KRO reconcile state (CR-level). An ERROR CR — e.g. a name collision where a
     # generated resource belongs to another endpoint's ApplySet — can still read
     # a colliding resource's replicas, so surface the real state rather than a
@@ -566,7 +564,7 @@ def _normalize_endpoint(ep: dict, mode: str) -> dict:
         "modelStatus": norm_status,
         "status": norm_status,
         "routerHealth": str(status.get("routerHealth", "")) if mode in ("llm-d", "llm-d-disagg") else "",
-        "message": status.get("message", "") if mode == "ray" else "",
+        "message": "",
         "kroState": kro_state,
         "reconcileError": recon_err,
         "prefillReplicas": prefill_n,
