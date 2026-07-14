@@ -142,6 +142,22 @@ spec:
           name: langfuse-web
           jqPathExpressions:
             - '.spec.template.spec.containers[].env[]? | select(.name == "NEXTAUTH_URL")'
+        # CloudFront edge (opt-in, platform/services/edge): the ALB is created
+        # in-cluster at runtime, so its ARN/hostname and the resulting VPC-origin
+        # id are values git cannot know at author time. The reconcile-edge Job
+        # discovers and patches exactly these three fields; ignore them so
+        # selfHeal doesn't revert the Job (same pattern as NEXTAUTH_URL above).
+        # git owns the resource shape; the Job owns only these runtime fields.
+        # Inert for every app that has no CloudFront resources.
+        - group: cloudfront.services.k8s.aws
+          kind: Distribution
+          jqPathExpressions:
+            - '.spec.distributionConfig.origins.items[].domainName'
+            - '.spec.distributionConfig.origins.items[].vpcOriginConfig.vpcOriginID'
+        - group: cloudfront.services.k8s.aws
+          kind: VPCOrigin
+          jsonPointers:
+            - /spec/vpcOriginEndpointConfig/arn
       syncPolicy:
         automated:
           prune: true
