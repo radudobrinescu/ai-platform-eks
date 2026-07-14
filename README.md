@@ -13,10 +13,10 @@ provisioning, serving, routing, and observability. A frontier model
   fine-tuned models behind a single `/v1/chat/completions` endpoint — with team
   isolation, budgets, and Langfuse tracing built in.
 - **Proven, extendable templates.** Four [KRO](https://kro.run) resources
-  (`VLLMEndpoint`, `LLMDEndpoint`, `AITeam`, `FineTuneJob`)
+  (`VLLMEndpoint`, `LLMDEndpoint`, `LLMDDisaggEndpoint`, `AITeam`)
   capture the hard parts — tensor-parallelism, GPU sizing, elastic autoscaling,
-  scale-tier routing, fine-tune→deploy — as a few lines of YAML. They're the
-  platform's API: fork and extend them, don't reinvent them.
+  scale-tier routing, prefill/decode disaggregation — as a few lines of YAML.
+  They're the platform's API: fork and extend them, don't reinvent them.
 
 **Stack:** EKS Managed Capabilities (ArgoCD · KRO · ACK) · Karpenter · vLLM ·
 LiteLLM · Langfuse — with an optional **llm-d + Gateway API Inference
@@ -40,8 +40,8 @@ The custom resources **are** the self-service interface:
 |---|---|
 | **`VLLMEndpoint`** | Serve a model on vLLM — the simple default: one model, one pod, one instance (HuggingFace ID, or a fine-tuned model from S3) |
 | **`LLMDEndpoint`** | Serve a model on the llm-d scale tier — KV-cache/load/prefix-aware routing across replicas (opt-in; needs the `inference_gateway` capability) |
+| **`LLMDDisaggEndpoint`** | Serve on the llm-d scale + performance tier — independently autoscaled prefill/decode pools (opt-in; needs the `inference_gateway` capability) |
 | **`AITeam`** | Onboard a team: namespace, RBAC, budget, rate limits, scoped API key |
-| **`FineTuneJob`** | QLoRA fine-tune (Unsloth), optionally `autoDeploy` the result |
 
 ```yaml
 # That's the whole interface — e.g. serve a model:
@@ -114,16 +114,19 @@ expose it directly.)
 ## Beyond the basics
 
 **Prove small + fine-tuned beats big.** Run the same eval set through the frontier
-model, a base small model, and a fine-tuned small model — Langfuse shows the tuned
-3B matching Opus 4.8 on a narrow task at a fraction of the cost, and the script
-prints the **cost crossover** (daily volume above which self-hosting wins):
+model, a base small model, and a fine-tuned small model (served via `modelSource`)
+— Langfuse shows the tuned 3B matching Opus 4.8 on a narrow task at a fraction of
+the cost, and the script prints the **cost crossover** (daily volume above which
+self-hosting wins):
 
 ```bash
 ./platformctl compare    # → ops/compare-models.py, traced as a Langfuse dataset run
 ```
 
-Fine-tune with the same `git push` loop: upload a dataset, commit a `FineTuneJob`
-with `autoDeploy: true`, and the tuned model goes live as an endpoint.
+Serve your own fine-tuned model with the same `git push` loop: upload the weights
+to the model-cache bucket and point a `VLLMEndpoint` (or `LLMDEndpoint`) at them
+with `modelSource: <s3-prefix>`. The platform **serves** tuned models — you bring
+the training (fine-tuning itself is out of scope).
 
 **Scale-tier routing (llm-d).** For high-QPS or long, multi-turn/agentic
 workloads, commit an `LLMDEndpoint` (see `workloads/scale-models/`) and the
@@ -189,7 +192,7 @@ steps below. The script does **not** touch the bootstrap state (S3
 # 1. Drain the cluster from the gitops side so destroy doesn't race ArgoCD.
 kubectl delete applicationset --all -n argocd --wait=false
 kubectl delete application    --all -n argocd --wait=false
-kubectl delete inferenceendpoints,vllmendpoints,llmdendpoints,aiteams,finetunejobs --all -A --wait=false
+kubectl delete vllmendpoints,llmdendpoints,llmddisaggendpoints,aiteams --all -A --wait=false
 # If the CloudFront edge was activated (platform/services/edge): delete the
 # Distributions first, then the VPCOrigins, so ACK removes the real CloudFront
 # resources BEFORE the cluster (and the ACK controller) are destroyed — otherwise
@@ -197,19 +200,6 @@ kubectl delete inferenceendpoints,vllmendpoints,llmdendpoints,aiteams,finetunejo
 kubectl delete distributions.cloudfront.services.k8s.aws --all -n ai-platform --wait=false 2>/dev/null || true
 kubectl delete vpcorigins.cloudfront.services.k8s.aws   --all -n ai-platform --wait=false 2>/dev/null || true
 kubectl delete ingress --all -A --wait=false      # → ALB controller cleans up the ALB
-
-# 2. Empty the training-datasets bucket (force_destroy=false by design — real
-#    user data lives there. Skipping this makes the cluster destroy fail.)
-aws s3 rm "s3://$(terraform -chdir=terraform/30.eks/30.cluster output -raw cluster_name)-training-datasets" --recursive
-# If versioning is enabled (it is, by default), purge versions + delete markers too:
-aws s3api delete-objects --bucket "<cluster>-training-datasets" \
-    --delete "$(aws s3api list-object-versions --bucket "<cluster>-training-datasets" \
-                --query='{Objects: Versions[].{Key:Key,VersionId:VersionId}}')" 2>/dev/null || true
-
-# 3. Empty the unsloth-trainer ECR repo (also force_delete=false by design):
-aws ecr batch-delete-image --repository-name "<cluster>/unsloth-trainer" \
-    --image-ids "$(aws ecr list-images --repository-name "<cluster>/unsloth-trainer" \
-                   --query 'imageIds[*]' --output json)" 2>/dev/null || true
 
 ./platformctl down <env>
 ```
@@ -260,11 +250,11 @@ aws iam list-roles --query "Roles[?contains(RoleName, '<cluster-name>')].RoleNam
 ```
 argocd/bootstrap/   ApplicationSets (platform services + self-service workloads)
 platform/
-  config/kro/       VLLMEndpoint · LLMDEndpoint · AITeam · FineTuneJob (the API)
+  config/kro/       VLLMEndpoint · LLMDEndpoint · LLMDDisaggEndpoint · AITeam (the API)
   services/         litellm, open-webui, langfuse, gpu-operator,
                     cluster-dashboard (+ Platform Health Agent), inference-gateway
-  images/           Container build contexts (unsloth-trainer, platform-controller)
-workloads/          Self-service YAMLs: models/ · scale-models/ · teams/ · fine-tuning/
+  images/           Container build contexts (platform-controller)
+workloads/          Self-service YAMLs: models/ · scale-models/ · teams/
 ops/                Operational scripts (ops/demo/ holds demo-only scripts)
 terraform/          Infrastructure modules (VPC → IAM → EKS → observability)
 docs/               demo-walkthrough · platform-product-report ·
