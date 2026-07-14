@@ -106,6 +106,15 @@ spec:
                   name: sso-secrets
                   key: litellm-public-url
                   optional: true
+            # Promote the SSO seed admin (user_id == email) to proxy_admin on boot.
+            # Group-based admin mapping for additional admins would need a Cognito
+            # pre-token Lambda emitting a role claim + GENERIC_USER_ROLE_ATTRIBUTE.
+            - name: PROXY_ADMIN_ID
+              valueFrom:
+                secretKeyRef:
+                  name: sso-secrets
+                  key: admin-user-id
+                  optional: true
           volumeMounts:
             - name: config
               mountPath: /app/config.yaml

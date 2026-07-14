@@ -194,6 +194,8 @@ resource "kubernetes_secret" "sso_secrets" {
       "token-url"         = "${local.cognito_hosted_ui_url}/oauth2/token"
       "userinfo-url"      = "${local.cognito_hosted_ui_url}/oauth2/userInfo"
       "admin-group"       = "ai-platform-admins"
+      # Seed admin's user_id (LiteLLM keys SSO users by email) -> PROXY_ADMIN_ID.
+      "admin-user-id"     = one([for e, g in local.sso_seed_users : e if g == "ai-platform-admins"])
       # Public base URL per UI. Defaults to the localhost tunnel URL (so SSO
       # works out of the box via `platformctl tunnel`); overridden by CloudFront.
       "open-webui-public-url" = try(var.sso_public_urls["open-webui"], "http://localhost:8080")
