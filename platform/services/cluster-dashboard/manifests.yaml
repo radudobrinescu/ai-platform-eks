@@ -245,7 +245,9 @@ metadata:
     alb.ingress.kubernetes.io/scheme: internal
     alb.ingress.kubernetes.io/target-type: ip
     alb.ingress.kubernetes.io/listen-ports: '[{"HTTP": 9090}]'
-    alb.ingress.kubernetes.io/healthcheck-path: /data.json
+    # Healthcheck hits oauth2-proxy's /ping (the ingress backend is the proxy,
+    # not the dashboard directly — see below).
+    alb.ingress.kubernetes.io/healthcheck-path: /ping
     # inbound-cidrs: source allowlist on the shared ALB SG. Must stay IDENTICAL
     # to platform/config/ingress.yaml (shared ALB group "ai-platform").
     alb.ingress.kubernetes.io/inbound-cidrs: 213.157.191.17/32
@@ -258,6 +260,12 @@ spec:
             pathType: Prefix
             backend:
               service:
-                name: cluster-dashboard
+                # SSO gate: route through oauth2-proxy (Cognito), which
+                # authenticates + authorizes (admins/developers) and proxies to
+                # the dashboard. The dashboard has no native auth, so this is
+                # what protects it out of the box. oauth2-proxy ships in this
+                # same app (oauth2-proxy.yaml); its config comes from the
+                # Terraform-created `oauth2-proxy-secrets` (enable_sso, default on).
+                name: oauth2-proxy
                 port:
-                  number: 9090
+                  number: 4180
