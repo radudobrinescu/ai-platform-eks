@@ -34,7 +34,7 @@ metadata:
     alb.ingress.kubernetes.io/target-type: ip
     alb.ingress.kubernetes.io/listen-ports: '[{"HTTP": 4000}]'
     alb.ingress.kubernetes.io/healthcheck-path: /health/liveliness
-    alb.ingress.kubernetes.io/inbound-cidrs: 213.157.191.17/32
+    alb.ingress.kubernetes.io/inbound-cidrs: 10.10.0.0/16
 spec:
   ingressClassName: alb
   rules:
@@ -59,7 +59,7 @@ metadata:
     alb.ingress.kubernetes.io/target-type: ip
     alb.ingress.kubernetes.io/listen-ports: '[{"HTTP": 8080}]'
     alb.ingress.kubernetes.io/healthcheck-path: /health
-    alb.ingress.kubernetes.io/inbound-cidrs: 213.157.191.17/32
+    alb.ingress.kubernetes.io/inbound-cidrs: 10.10.0.0/16
 spec:
   ingressClassName: alb
   rules:
@@ -84,7 +84,7 @@ metadata:
     alb.ingress.kubernetes.io/target-type: ip
     alb.ingress.kubernetes.io/listen-ports: '[{"HTTP": 3000}]'
     alb.ingress.kubernetes.io/healthcheck-path: /api/public/health
-    alb.ingress.kubernetes.io/inbound-cidrs: 213.157.191.17/32
+    alb.ingress.kubernetes.io/inbound-cidrs: 10.10.0.0/16
 spec:
   ingressClassName: alb
   rules:

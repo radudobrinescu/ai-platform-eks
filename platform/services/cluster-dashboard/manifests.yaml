@@ -250,7 +250,7 @@ metadata:
     alb.ingress.kubernetes.io/healthcheck-path: /ping
     # inbound-cidrs: source allowlist on the shared ALB SG. Must stay IDENTICAL
     # to platform/config/ingress.yaml (shared ALB group "ai-platform").
-    alb.ingress.kubernetes.io/inbound-cidrs: 213.157.191.17/32
+    alb.ingress.kubernetes.io/inbound-cidrs: 10.10.0.0/16
 spec:
   ingressClassName: alb
   rules:

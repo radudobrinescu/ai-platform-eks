@@ -26,7 +26,7 @@ metadata:
     # single permission and a trust policy for this ServiceAccount, then set its
     # ARN here (see README.md "IAM role"). Left as a placeholder, the AWS call
     # fails and edge activation stops here — nothing else is affected (opt-in).
-    eks.amazonaws.com/role-arn: REPLACE_WITH_EDGE_RECONCILE_ROLE_ARN
+    eks.amazonaws.com/role-arn: arn:aws:iam::802019299867:role/ai-euc-eu-central-edge-reconcile
 ---
 apiVersion: rbac.authorization.k8s.io/v1
 kind: Role

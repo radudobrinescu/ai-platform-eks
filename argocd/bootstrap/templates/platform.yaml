@@ -93,6 +93,15 @@ spec:
             type: directory
             path: platform/services/litellm-sync
             tier: platform
+          # CloudFront edge (opt-in) — public HTTPS for the UIs via CloudFront
+          # VPC origins to the internal ALB. Each Distribution is billable;
+          # activated here + var.enable_edge (the reconcile-edge IRSA role) +
+          # the ALB SG opened to the VPC origin. See platform/services/edge/README.md.
+          - name: edge
+            namespace: ai-platform
+            type: directory
+            path: platform/services/edge
+            tier: platform
   template:
     metadata:
       name: '{{`{{.name}}`}}'
