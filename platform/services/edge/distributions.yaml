@@ -32,6 +32,13 @@
 # nothing is cached. Viewer cert = the free *.cloudfront.net default (HTTPS with
 # no domain/ACM). After creation, feed each distribution's domain into
 # `sso_public_urls` (see README).
+#
+# CUSTOM DOMAIN (optional): to serve a UI on your own domain instead of the
+# *.cloudfront.net default, add an `aliases` list and swap the viewer cert for
+# an ACM certificate. The ACM cert MUST be in us-east-1 (CloudFront requirement),
+# regardless of the cluster region. Then point your DNS (Route53 alias / CNAME)
+# at the distribution's *.cloudfront.net domain and set that custom domain in
+# `sso_public_urls`. See the commented example on open-webui-edge below.
 ---
 apiVersion: cloudfront.services.k8s.aws/v1alpha1
 kind: VPCOrigin
@@ -118,8 +125,17 @@ spec:
           domainName: REPLACE_WITH_ALB_HOSTNAME # set by reconcile-edge Job
           vpcOriginConfig:
             vpcOriginID: REPLACE_WITH_VPCORIGIN_ID # set by reconcile-edge Job (open-webui-vpco .status.id)
+    # Default: free *.cloudfront.net HTTPS, no domain needed.
     viewerCertificate:
       cloudFrontDefaultCertificate: true
+    # --- CUSTOM DOMAIN (optional) — replace the two blocks above/here with: ---
+    # aliases:
+    #   items: ["webui.example.com"]        # your domain (CNAME/alias -> this dist)
+    # viewerCertificate:
+    #   acmCertificateARN: "arn:aws:acm:us-east-1:<acct>:certificate/<id>"  # MUST be us-east-1
+    #   sslSupportMethod: sni-only
+    #   minimumProtocolVersion: TLSv1.2_2021
+    # (repeat per distribution; then set the custom domain in sso_public_urls.)
 ---
 apiVersion: cloudfront.services.k8s.aws/v1alpha1
 kind: Distribution

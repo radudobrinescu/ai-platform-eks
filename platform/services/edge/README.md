@@ -70,6 +70,27 @@ is deliberately **not** in the platform ApplicationSet
 6. **Flip oauth2-proxy to secure cookies** (now that it's HTTPS): set
    `--cookie-secure=true` in `platform/services/cluster-dashboard/oauth2-proxy.yaml`.
 
+## Front doors (bring your own)
+
+The platform dictates neither entry point — both paths terminate on the same
+private ingress and the same Cognito SSO:
+
+1. **CloudFront edge (this directory).** Public HTTPS with zero DNS/cert setup via
+   the free `*.cloudfront.net` domain. For **your own domain**, add `aliases` + an
+   **ACM certificate in us-east-1** to each distribution (see the commented example
+   on `open-webui-edge` in `distributions.yaml`), point Route53/DNS at the
+   distribution, and set the custom domain in `sso_public_urls`.
+2. **Your own domain straight to the ingress ALB (no CloudFront).** Flip the four
+   ingresses (`platform/config/ingress.yaml` x3 + the dashboard) from `internal` to
+   `internet-facing`, and on each add:
+   ```yaml
+   alb.ingress.kubernetes.io/listen-ports: '[{"HTTPS": <port>}]'
+   alb.ingress.kubernetes.io/certificate-arn: arn:aws:acm:<region>:<acct>:certificate/<id>
+   ```
+   set `inbound-cidrs` to your allowlist, and point Route53 at the ALB. The ACM cert
+   here lives in the **cluster region** (unlike CloudFront's us-east-1). Same ingress,
+   same SSO — a deliberate, documented exposure (tenet 9).
+
 ## Notes
 - All four VPC origins point at the **same** internal ALB, differing only by port
   (WebUI 8080 / LiteLLM 4000 / Langfuse 3000 / dashboard 9090).
