@@ -20,12 +20,10 @@ requires two things this repo doesn't have in the default (self-hosted) path,
 and a half-wired change would break the "fork and `up` anywhere" property:
 
 1. **A build + push step.** There is no Docker on the Terraform apply host in
-   the current flow (same reason `enable_fine_tuning` is documented as
-   Docker-dependent). The build must run via Terraform on a Docker-capable host
-   or in CI — mirror `terraform/30.eks/30.cluster/unsloth-image.tf` exactly:
-   an `aws_ecr_repository` + a `docker build/push` (or CodeBuild) + surface the
-   resulting image URI into the `platform-config` ConfigMap as
-   `platformControllerImage` (next to `rayImage` / `unslothImage`).
+   the current flow. The build must run via Terraform on a Docker-capable host
+   or in CI — an `aws_ecr_repository` + a `docker build/push` (or CodeBuild) +
+   surface the resulting image URI into the `platform-config` ConfigMap as
+   `platformControllerImage` (next to `vllmImage`).
 
 2. **Per-install image-URI injection into the manifests.** These three
    Deployments are *raw* manifests synced by ArgoCD — Kubernetes cannot read a
@@ -40,7 +38,7 @@ and a half-wired change would break the "fork and `up` anywhere" property:
 
 ## Implementation checklist (when scheduled — this is a Phase-0 hardening item)
 
-- [ ] `platform-controller-image.tf` — ECR repo + build/push (mirror `unsloth-image.tf`), gated like `enable_fine_tuning`.
+- [ ] `platform-controller-image.tf` — ECR repo + build/push, behind a var-gate + Docker-capable apply host/CI.
 - [ ] Add `platformControllerImage` to the `platform-config` ConfigMap.
 - [ ] litellm-sync: drop the `install-pydeps` initContainer + `pydeps` emptyDir + `PYTHONPATH`; set `image` to the pinned image.
 - [ ] cluster-dashboard + event-watcher: same, keeping the `db-init` (postgres) initContainer as-is.

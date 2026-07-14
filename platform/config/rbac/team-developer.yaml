@@ -28,10 +28,10 @@ rules:
   - apiGroups: [""]
     resources: ["events"]
     verbs: ["get", "list", "watch"]
-  # KRO InferenceEndpoints — read-only.
-  # Model deployment is done by the platform team via git (workloads/models/)
-  # synced by ArgoCD. Teams can see model status in the inference namespace
-  # but do not create/modify InferenceEndpoints directly.
+  # KRO serving endpoints — read-only.
+  # Teams deploy models via git (workloads/models/team-<name>/, synced by ArgoCD)
+  # and can see their status in their namespace, but don't create/modify the CRs
+  # directly (that's the GitOps path).
   - apiGroups: ["kro.run"]
-    resources: ["inferenceendpoints"]
+    resources: ["vllmendpoints", "llmdendpoints", "llmddisaggendpoints"]
     verbs: ["get", "list", "watch"]

@@ -15,7 +15,7 @@
 
 ## Motivation
 
-The current Ray Serve + vLLM setup uses queue-depth routing but each replica runs
+A non-disaggregated LLMDEndpoint routes on queue depth, but each replica runs
 both prefill and decode on the same GPU. Under high concurrency, prefill (compute-bound,
 bursty) steals cycles from decode (memory-bound, latency-sensitive), causing
 inter-token latency spikes.
@@ -73,7 +73,7 @@ KRO expands into:
 - Decode `InferencePool` (scale by ongoing decode sessions)
 - KV cache connector config (Redis or RDMA depending on topology)
 - llm-d router with P/D-aware + prefix-cache-aware routing
-- Service + LiteLLM model registration (same as InferenceEndpoint)
+- Service + LiteLLM model registration (same as the other serving tiers, via litellm-sync)
 
 ### 4. LiteLLM integration
 

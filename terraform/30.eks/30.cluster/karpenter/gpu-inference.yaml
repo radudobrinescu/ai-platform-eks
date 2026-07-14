@@ -37,11 +37,11 @@ spec:
     # Classic SOCI lazy-loading (FUSE). We deliberately do NOT enable
     # `pull-mode = "parallel-pull-unpack"`: PPU eagerly downloads + unpacks all
     # layers concurrently and the Bottlerocket snapshotter PANICS mid-unpack on
-    # large multi-GB-layer images (e.g. the ~14.5 GiB Unsloth trainer built on
-    # nvcr.io/nvidia/pytorch), surfacing to the kubelet as
+    # large multi-GB-layer images (e.g. the vLLM serving image), surfacing to
+    # the kubelet as
     # "reading from server: EOF". The EBS data-volume snapshot is baked with
     # bare `snapshotter = "soci"` too, so this matches the baked content store
-    # and keeps ray-llm cold-start at ~0s. Large GPU images should be pre-baked
+    # and keeps vLLM image cold-start at ~0s. Large GPU images should be pre-baked
     # into the snapshot (image-optimization.tf); the SOCI index is the fallback.
   tags:
     karpenter.sh/discovery: ${cluster_name}

@@ -808,8 +808,8 @@ def build_endpoint_yaml(
     args: argparse.Namespace,
     scaling: list[ScalingRecommendation] | None = None,
 ) -> tuple[str, str, str, str]:
-    """Build the serving manifest (InferenceEndpoint | VLLMEndpoint |
-    LLMDEndpoint) for the recommended config. All three front the same vLLM
+    """Build the serving manifest (VLLMEndpoint | LLMDEndpoint |
+    LLMDDisaggEndpoint) for the recommended config. All three front the same vLLM
     engine, so the sizing is identical — only the CRD kind, a few field names,
     and the target directory differ. Returns (name, yaml_path, yaml_body,
     commit_msg); used for both the printed snippet and --deploy so they can't
@@ -910,20 +910,9 @@ def build_endpoint_yaml(
         # replica count (not min/max). The llm-d tier is the scale path.
         lines.append(f"  # maxNumSeqs: {max_num_seqs}")
         lines.append(f"  replicas: {min_replicas}")
-    else:
-        # Ray (InferenceEndpoint): Ray Serve autoscales between min and max.
-        lines.append(f"  # maxNumSeqs: {max_num_seqs}")
-        lines.append(f"  minReplicas: {min_replicas}")
-        lines.append(f"  maxReplicas: {max_replicas}")
 
     yaml_body = "\n".join(lines) + "\n"
     return name, yaml_path, yaml_body, commit_msg
-
-
-def build_inference_yaml(model, vram, best, args, scaling=None):
-    """Backward-compatible wrapper — emits an InferenceEndpoint (Ray tier)."""
-    return build_endpoint_yaml("InferenceEndpoint", model, vram, best, args, scaling)
-
 
 
 def _print_yaml_snippet(model: ModelSpec, vram: VramEstimate, best: Option,
@@ -936,8 +925,7 @@ def _print_yaml_snippet(model: ModelSpec, vram: VramEstimate, best: Option,
 
     why = {"LLMDDisaggEndpoint": "long-context fleet -> disaggregated llm-d (prefill/decode split + KV/prefix routing)",
            "LLMDEndpoint": "fleet of 2+ replicas -> llm-d scale tier (KV/prefix/load-aware routing)",
-           "VLLMEndpoint": "single replica -> plain vLLM (simplest, no router)",
-           "InferenceEndpoint": "Ray Serve tier (legacy / explicit)"}.get(kind, kind)
+           "VLLMEndpoint": "single replica -> plain vLLM (simplest, no router)"}.get(kind, kind)
     print(f"\n{C.BOLD}Serving tier:{C.RESET} {C.BOLD}{kind}{C.RESET} {C.DIM}- {why}{C.RESET}")
     if kind in ("LLMDEndpoint", "LLMDDisaggEndpoint"):
         prof = pick_routing_profile(args)
@@ -972,7 +960,7 @@ def _print_yaml_snippet(model: ModelSpec, vram: VramEstimate, best: Option,
     print("git push")
     print()
     print(f"{C.DIM}# Watch the deployment come up:{C.RESET}")
-    plural = {"InferenceEndpoint": "inferenceendpoints", "VLLMEndpoint": "vllmendpoints",
+    plural = {"VLLMEndpoint": "vllmendpoints",
               "LLMDEndpoint": "llmdendpoints", "LLMDDisaggEndpoint": "llmddisaggendpoints"}[kind]
     print(f"kubectl get {plural} -n inference -w")
     print(f"{C.DIM}# Later, to remove it (ArgoCD deletes the model + LiteLLM "

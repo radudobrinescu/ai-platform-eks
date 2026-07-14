@@ -163,9 +163,9 @@ of the critical path; add it as an optional enterprise tier only if customers de
                                      Karpenter GPU NodePools
                         (Ampere+ - time-sliced - reserved/ODCR/Capacity Blocks - EFA - DRA-ready)
 
-  TENANT SELF-SERVICE (KRO RGDs):  InferenceEndpoint - AITeam - FineTuneJob
-                                   EmbeddingEndpoint - RerankerEndpoint - VectorDatabase - RAGPipeline - AgentRuntime
-  STORAGE:  Mountpoint-S3 (weights) - S3 (cache/datasets) - pgvector/RDS/OpenSearch/S3-Vectors - FSx Lustre (opt)
+  TENANT SELF-SERVICE (KRO RGDs):  VLLMEndpoint - LLMDEndpoint - LLMDDisaggEndpoint - AITeam
+                                   EmbeddingEndpoint - RerankerEndpoint - VectorDatabase - RAGPipeline - AgentRuntime  (future)
+  STORAGE:  Mountpoint-S3 (weights) - S3 (model cache) - pgvector/RDS/OpenSearch/S3-Vectors - FSx Lustre (opt)
   OBSERVABILITY:  Langfuse (LLM) - DCGM+AMP/Grafana or OTel Container Insights (GPU/cost) - alerts->SNS
 ```
 
@@ -185,8 +185,8 @@ There are **two** boundaries: (A) the **responsibility layers** (AWS <-> platfor
 ```
 +---------------------------------------------------------------------------+
 | LAYER 3 - TENANT (self-service, via KRO YAML in Git)                      |  <- the customer's teams
-|   InferenceEndpoint - EmbeddingEndpoint - RerankerEndpoint - FineTuneJob  |
-|   RAGPipeline - VectorDatabase - AgentRuntime   (+ their own app configs) |
+|   VLLMEndpoint - LLMDEndpoint - LLMDDisaggEndpoint - AITeam                |
+|   EmbeddingEndpoint - RerankerEndpoint - RAGPipeline - AgentRuntime (future) |
 +---------------------------------------------------------------------------+
 | LAYER 2 - PLATFORM (this product; installed once by the platform team)    |  <- "the distribution"
 |   KRO RGD definitions (the API) - LiteLLM - GIE gateway - llm-d - Langfuse |
@@ -205,7 +205,7 @@ Concern-by-concern (where the line sits):
 
 | Concern | AWS provides (L1) | Platform brings (L2) | Tenant deploys (L3) |
 |---|---|---|---|
-| **Compute** | EKS, Karpenter engine, GPU AMIs, capacity reservations | NodePools (gpu-inference/gpu-shared/reserved), time-slicing, cold-start | picks `gpuCount`/`shared` in `InferenceEndpoint` |
+| **Compute** | EKS, Karpenter engine, GPU AMIs, capacity reservations | NodePools (gpu-inference/gpu-shared/reserved), time-slicing, cold-start | picks `gpuCount`/`shared` in a `VLLMEndpoint` |
 | **Cluster ops** | ArgoCD/KRO/ACK as managed capabilities | ApplicationSets, RGD catalog, GitOps wiring | commits YAML to their path in Git |
 | **Model access** | Bedrock models | LiteLLM (one API), GIE routing, model registration | names a model; gets a scoped key |
 | **Serving** | — | vLLM/Ray/llm-d integration + serving modes | chooses `servingMode`, replicas |

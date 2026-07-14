@@ -165,7 +165,7 @@ AWS stack with the best of the open-source ecosystem:
   real serving-saturation signals, so capacity follows actual demand.
 
 Crucially, **the custom resources *are* the platform's API.** A small, curated set of
-them — serve a model, onboard a team, run a fine-tune job — captures the complex
+them — serve a model, onboard a team — captures the complex
 machinery behind a few readable lines of YAML. Developers never see the expansion;
 they see the intent. And operators get a live dashboard that shows the cluster's
 nodes, GPU slots, and deployed models at a glance — and explains *why* a model isn't

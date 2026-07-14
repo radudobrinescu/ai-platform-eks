@@ -72,10 +72,9 @@ spec:
     snapshotter = "soci"
     # Bare SOCI lazy-loading (no parallel-pull-unpack). PPU eagerly unpacks all
     # layers concurrently and PANICS the Bottlerocket snapshotter on large
-    # multi-GB-layer images (see gpu-inference.yaml + commit eb34028). The Ray
-    # HEAD pod runs here and pulls the ~13GiB ray-llm image, so PPU is unsafe;
-    # the platform services that also use this pool have small images for which
-    # PPU gave no meaningful benefit anyway.
+    # multi-GB-layer images (see gpu-inference.yaml + commit eb34028). Kept bare
+    # here to match the GPU pools; the platform services that use this pool have
+    # small images for which PPU gave no meaningful benefit anyway.
   tags:
     karpenter.sh/discovery: ${cluster_name}
     Environment: ${environment}

@@ -91,7 +91,7 @@ resource "aws_eks_capability" "simple" {
 }
 
 # KRO needs cluster-admin level access to create/manage arbitrary resources
-# defined in ResourceGraphDefinitions (Deployments, Services, RayServices, etc.)
+# defined in ResourceGraphDefinitions (Deployments, Services, etc.)
 resource "aws_eks_access_policy_association" "kro_edit" {
   count = local.capabilities.kro ? 1 : 0
 
@@ -152,7 +152,7 @@ resource "aws_ecr_repository_creation_template" "docker_hub" {
 # images: a fresh-account first pull needs ecr:BatchImportUpstreamImage (and,
 # absent the creation template above, ecr:CreateRepository). The standard
 # read-only node policies (AmazonEC2ContainerRegistryReadOnly/PullOnly) lack it,
-# so without this the very first ray-llm pull — at apply time on the SOCI/snapshot
+# so without this the very first vLLM image pull — at apply time on the SOCI/snapshot
 # builder, and at runtime on GPU nodes — 403s and breaks model serving.
 resource "aws_iam_policy" "ecr_pull_through" {
   count       = var.docker_hub_username != "" ? 1 : 0
@@ -205,7 +205,7 @@ resource "kubernetes_config_map" "platform_config" {
 ################################################################################
 # Model weights cache — S3 bucket + IRSA role for Ray worker pods.
 #
-# The initContainer in the KRO InferenceEndpoint template s5cmd-syncs HF
+# The initContainer in the serving-tier RGDs s5cmd-syncs HF
 # weights from this bucket on pod startup (cache hit) or falls back to a live
 # HuggingFace download (cache miss). An auto-warm sidecar uploads new models
 # after vLLM finishes loading, so subsequent deploys hit the cache.

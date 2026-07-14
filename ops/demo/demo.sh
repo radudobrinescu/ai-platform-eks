@@ -32,8 +32,8 @@
 #   ArgoCD, KRO, ACK — all AWS-managed, run in AWS infrastructure
 
 # → ArgoCD UI: walk through the apps
-#   platform-config, models, teams, gpu-operator, kuberay,
-#   litellm, langfuse, open-webui
+#   platform-config, models, teams, gpu-operator,
+#   litellm, langfuse, open-webui, litellm-sync
 #   "Everything is GitOps-managed — the entire platform is defined in git"
 
 # Show ACK controllers — 55 AWS services manageable from Kubernetes

@@ -36,7 +36,6 @@ echo "✓ Serving endpoints removed (GPU nodes will be reclaimed)"
 echo "Scaling down platform..."
 kubectl scale deploy -n ai-platform --all --replicas=0 2>/dev/null || true
 kubectl scale statefulset -n ai-platform --all --replicas=0 2>/dev/null || true
-kubectl scale deploy -n kuberay --all --replicas=0 2>/dev/null || true
 echo "✓ Platform scaled to 0"
 
 echo ""

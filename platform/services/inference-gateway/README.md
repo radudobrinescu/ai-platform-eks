@@ -21,7 +21,7 @@ there is no Envoy front door either. The earlier Envoy Gateway / Envoy AI Gatewa
 
 A default ArgoCD platform component, delivered by the `platform` ApplicationSet
 (`argocd/bootstrap/platform.yaml`, the `inference-gateway` element, infra tier) —
-exactly like `gpu-operator` / `kuberay`. It ships on every cluster: the footprint
+exactly like `gpu-operator`. It ships on every cluster: the footprint
 is minimal (CRDs + a repo Secret, no running pods), and shipping it by default
 means teams can use `LLMDEndpoint` without a separate cluster toggle. Terraform is
 not involved.

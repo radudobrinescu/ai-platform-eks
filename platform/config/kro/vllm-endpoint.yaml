@@ -1,16 +1,14 @@
 # VLLMEndpoint — direct vLLM serving (no Ray).
 #
-# Parallel to the Ray-based InferenceEndpoint RGD. Serves a model via a plain
-# vLLM OpenAI-server Deployment fronted by LiteLLM (LiteLLM registers this
-# model and round-robins the Service's replicas). Simpler + more modern than
-# Ray; llm-d/GIE is the separate scale mode.
+# The simple default serving tier: a model on a plain vLLM OpenAI-server
+# Deployment fronted by LiteLLM (litellm-sync registers the model; LiteLLM
+# round-robins the Service's replicas). For horizontal scale + KV-cache/prefix/
+# load-aware routing, use the llm-d tier (LLMDEndpoint / LLMDDisaggEndpoint).
 #
-# Why a separate RGD (not a servingMode field on InferenceEndpoint): KRO status
-# fields may only reference resource *outputs* (never schema) and cannot
-# reference includeWhen-gated resources — so a dual-mode RGD whose serving
-# resource is conditional cannot build its status schema. Single-mode RGDs are
-# the KRO-idiomatic approach. At Ray retirement this becomes the primary
-# InferenceEndpoint.
+# Single-mode RGD by design: KRO status fields may only reference resource
+# *outputs* (never schema) and cannot reference includeWhen-gated resources, so
+# a dual-mode RGD whose serving resource is conditional couldn't build its
+# status schema. One RGD per serving tier is the KRO-idiomatic approach.
 #
 # MIGRATION: `replicas` replaced the earlier `minReplicas`/`maxReplicas` — the
 # vLLM tier is fixed-size (no built-in autoscaler; autoscaling is the llm-d

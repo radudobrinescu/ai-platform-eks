@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Build and push a SOCI index for an ECR image using a temporary EC2 instance.
 # Usage: ./ops/create-soci-index.sh [-p <instance-profile>] [-n <cluster>] [-r <region>] <ecr-image-uri>
-# Example: ./ops/create-soci-index.sh <account-id>.dkr.ecr.<region>.amazonaws.com/docker-hub/anyscale/ray-llm:2.54.0-py311-cu128
+# Example: ./ops/create-soci-index.sh <account-id>.dkr.ecr.<region>.amazonaws.com/docker-hub/vllm/vllm-openai:v0.24.0
 #
 # The temp instance must run under an instance profile that can BOTH pull and
 # PUSH to ECR (soci push uploads the index as a referrer artifact). The EKS
@@ -38,9 +38,9 @@ REGION="${REGION:-${AWS_REGION:-$(echo "$IMAGE" | grep -oE '[a-z]+-[a-z]+-[0-9]+
 ACCOUNT=$(echo "$IMAGE" | grep -oE '^[0-9]+')
 
 # Self-protect: if the target image isn't in ECR yet, there's nothing to index.
-# This makes the script safe to call from Terraform on the no-Docker path — the
-# Unsloth build is skipped (no image pushed), so we must NOT launch a builder and
-# fail trying to pull a tag that doesn't exist. Exit 0 (success, no-op) instead.
+# This makes the script safe to call from Terraform when an image isn't in ECR
+# yet: we must NOT launch a builder and fail trying to pull a tag that doesn't
+# exist. Exit 0 (success, no-op) instead.
 # Only applies to ECR repo URIs (<acct>.dkr.ecr.<region>...); skip the check for
 # any other registry.
 if echo "$IMAGE" | grep -qE '\.dkr\.ecr\.'; then
@@ -50,8 +50,7 @@ if echo "$IMAGE" | grep -qE '\.dkr\.ecr\.'; then
         --repository-name "$REPO_NAME" --image-ids "imageTag=${IMG_TAG}" \
         >/dev/null 2>&1; then
     echo "⚠ Image not found in ECR: ${IMAGE} — skipping SOCI index (nothing to index)." >&2
-    echo "  (Build/push the image first, then re-run; e.g. fine-tuning's Unsloth image" >&2
-    echo "   is only present after a Docker-enabled apply.)" >&2
+    echo "  (Build/push the image first, then re-run.)" >&2
     exit 0
   fi
 fi

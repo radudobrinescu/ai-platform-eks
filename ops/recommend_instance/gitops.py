@@ -1,4 +1,4 @@
-"""GitOps deploy / undeploy: write (or delete) a model's InferenceEndpoint YAML
+"""GitOps deploy / undeploy: write (or delete) a model's serving endpoint YAML
 and commit + push it, so ArgoCD applies (or prunes) the change.
 
 Both paths are surgical: they stage ONLY the one model file (never a blanket
@@ -11,7 +11,7 @@ the plain push could not: it applies the change in seconds instead of waiting
 for ArgoCD's ~3-minute git poll, and — crucially for --undeploy — an explicit
 sync bypasses ArgoCD's automated-sync guard that REFUSES to prune an app down to
 zero resources. That guard is why deleting the *last* model's YAML used to leave
-its InferenceEndpoint stranded: the dir rendered no manifests, so auto-sync
+its serving endpoint stranded: the dir rendered no manifests, so auto-sync
 skipped the prune. A manual sync has no such restriction.
 """
 
@@ -116,7 +116,7 @@ def _argocd_sync(root: str, C: type, app: str = ARGOCD_MODELS_APP) -> None:
       1. Speed — skips ArgoCD's ~3-minute git poll; the change lands in seconds.
       2. Correctness — ArgoCD's *automated* sync refuses to prune an app to zero
          resources. Deleting the last model's YAML renders an empty dir, so
-         auto-sync silently skips the prune and the InferenceEndpoint is
+         auto-sync silently skips the prune and the serving endpoint is
          stranded. A *manual* sync operation has no empty-prune guard.
 
     This is advisory, never fatal: the push already succeeded (git is the source
@@ -181,7 +181,7 @@ def deploy_model(name: str, yaml_path: str, yaml_body: str, commit_msg: str,
     if rc == 0:
         _argocd_sync(root, C, _app_for_path(yaml_path))
         print(f"\n{C.DIM}Watch it come up:{C.RESET} "
-              f"kubectl get inferenceendpoints,vllmendpoints,llmdendpoints -n inference -w")
+              f"kubectl get vllmendpoints,llmdendpoints,llmddisaggendpoints -n inference -w")
         print(f"{C.DIM}Remove it later:{C.RESET} "
               f"./ops/recommend-instance.py --undeploy {name}")
     return rc
@@ -189,7 +189,7 @@ def deploy_model(name: str, yaml_path: str, yaml_body: str, commit_msg: str,
 
 def undeploy_model(name: str, args) -> int:
     """Delete a model's YAML from the repo and commit + push so ArgoCD prunes the
-    InferenceEndpoint (which also deregisters it from LiteLLM via the finalizer).
+    serving endpoint (which also deregisters it from LiteLLM via the finalizer).
     Needs no model lookup — operates purely on the file by name."""
     C = _palette(_should_use_colour(args))
     root = _repo_root()
@@ -208,7 +208,7 @@ def undeploy_model(name: str, args) -> int:
     abs_path = os.path.join(root, rel_path)
 
     print(f"\n{C.BOLD}Delete {rel_path}{C.RESET} and push so ArgoCD removes "
-          f"{C.BOLD}{name}{C.RESET} (the InferenceEndpoint is pruned and LiteLLM "
+          f"{C.BOLD}{name}{C.RESET} (the serving endpoint is pruned and LiteLLM "
           f"deregisters it).")
     if not _confirm("Proceed?", args.yes):
         print("Aborted — file left in place.")
@@ -231,7 +231,7 @@ def undeploy_model(name: str, args) -> int:
         # to zero. The explicit sync below is what actually removes the endpoint.
         _argocd_sync(root, C, _app_for_path(rel_path))
         print(f"\n{C.DIM}Confirm removal:{C.RESET} "
-              f"kubectl get inferenceendpoints,vllmendpoints,llmdendpoints -n inference")
+              f"kubectl get vllmendpoints,llmdendpoints,llmddisaggendpoints -n inference")
     return rc
 
 

@@ -163,7 +163,7 @@ data:
     # LiteLLM merges this model_list with DB-registered models (STORE_MODEL_IN_DB=True).
     model_list:
       # Amazon Bedrock — Claude Opus 4.8 (the frontier commercial baseline).
-      # Static endpoint: zero GPUs, no InferenceEndpoint. Auth comes from the
+      # Static endpoint: zero GPUs, no serving CR. Auth comes from the
       # `litellm` ServiceAccount's IRSA role (terraform: enable_bedrock=true) —
       # no static keys. The `global.` prefix selects the region-agnostic
       # cross-region inference profile (works in any region; swap to `eu.`/`us.`

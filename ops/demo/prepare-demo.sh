@@ -4,16 +4,16 @@
 # =============================================================================
 # Replaces the always-on warm-pool Deployment (removed from the platform): that
 # pinned an expensive GPU node 24/7. Instead, run this a few minutes before a
-# demo to pre-provision ONE gpu-shared node and pre-pull the Ray LLM image, so
-# the first `shared: true` model deploy starts in seconds instead of waiting
-# ~90s for Karpenter + a ~13 GiB image pull.
+# demo to pre-provision ONE gpu-shared node and pre-pull the vLLM serving image,
+# so the first `shared: true` model deploy starts in seconds instead of waiting
+# ~90s for Karpenter + a multi-GiB image pull.
 #
 # How it works:
 #   1. Applies a throwaway placeholder Deployment (NOT in git/ArgoCD) that
 #      requests 1 nvidia.com/gpu on the gpu-shared NodePool, pinned to L4-class
 #      so Karpenter picks a cheap g6.xlarge — not whatever big instance happens
 #      to be eligible.
-#   2. Waits for the node to be Ready and the Ray LLM image to land.
+#   2. Waits for the node to be Ready and the vLLM image to land.
 #   3. By default, deletes the placeholder immediately (--keep to leave it):
 #      the node stays warm during Karpenter's consolidateAfter window
 #      (gpu-shared = 300s) and a real model preempts onto it within that grace.
@@ -27,9 +27,9 @@
 #
 # Env:
 #   NAMESPACE        placeholder namespace      (default: ai-platform)
-#   RAY_IMAGE        image to pre-pull          (default: read from the
+#   IMAGE            image to pre-pull          (default: read vllmImage from the
 #                                                platform-config ConfigMap,
-#                                                else anyscale/ray-llm:<pinned>)
+#                                                else vllm/vllm-openai:<pinned>)
 #   MIN_GPU_MIB      VRAM floor for instance    (default: 21503 → excludes T4,
 #                                                allows L4/A10G/L40S/+)
 # =============================================================================
@@ -38,7 +38,7 @@ set -euo pipefail
 
 NAMESPACE="${NAMESPACE:-ai-platform}"
 NAME="demo-gpu-warmup"
-DEFAULT_RAY_IMAGE="anyscale/ray-llm:2.54.0-py311-cu128"
+DEFAULT_IMAGE="vllm/vllm-openai:v0.24.0"
 MIN_GPU_MIB="${MIN_GPU_MIB:-21503}"   # (21 GiB * 1024) - 1
 TIMEOUT=420
 KEEP=0
@@ -77,10 +77,10 @@ if [ "$TEARDOWN_ONLY" -eq 1 ]; then
 fi
 
 # ---- resolve the image real models use, so we pre-pull the SAME layers ----- #
-RAY_IMAGE="${RAY_IMAGE:-$(kubectl get configmap platform-config -n inference \
-  -o jsonpath='{.data.rayImage}' 2>/dev/null || true)}"
-[ -n "$RAY_IMAGE" ] || RAY_IMAGE="$DEFAULT_RAY_IMAGE"
-log "Pre-pulling image: ${c_dim}${RAY_IMAGE}${c_rst}"
+IMAGE="${IMAGE:-$(kubectl get configmap platform-config -n inference \
+  -o jsonpath='{.data.vllmImage}' 2>/dev/null || true)}"
+[ -n "$IMAGE" ] || IMAGE="$DEFAULT_IMAGE"
+log "Pre-pulling image: ${c_dim}${IMAGE}${c_rst}"
 
 # ---- apply the throwaway placeholder --------------------------------------- #
 # Mirrors the (removed) warm-pool: lowest-priority so a real workload preempts
@@ -128,7 +128,7 @@ spec:
                     values: ["${MIN_GPU_MIB}"]
       containers:
         - name: warmer
-          image: ${RAY_IMAGE}
+          image: ${IMAGE}
           command: ["sh", "-c", "exec sleep infinity"]
           resources:
             requests:

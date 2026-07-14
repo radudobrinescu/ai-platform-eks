@@ -3,7 +3,7 @@
 #
 # LiteLLM serves Bedrock models (e.g. Claude Opus 4.8) natively. Because
 # Bedrock models are static (nothing to deploy/scale), they go straight into the
-# LiteLLM config (platform/services/litellm/litellm.yaml) — no InferenceEndpoint,
+# LiteLLM config (platform/services/litellm/litellm.yaml) — no serving CR,
 # no registration Job. The only infra needed is AWS credentials for the LiteLLM
 # pod, granted via IRSA on a dedicated `litellm` ServiceAccount.
 #

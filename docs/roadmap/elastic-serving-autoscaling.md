@@ -5,8 +5,8 @@ Scale-to-zero (v2) is **PARKED** — see §5 for why and the unpark checklist.
 **Priority**: High (platform completeness pillar #1)
 **Date added**: 2026-07-10
 **Applies to**: the **llm-d scale tier** (`LLMDEndpoint`, `LLMDDisaggEndpoint`).
-`VLLMEndpoint` is the simple single-instance tier (fixed-size, no autoscaling) and
-Ray/`InferenceEndpoint` is legacy — both are out of scope for autoscaling.
+`VLLMEndpoint` is the simple single-instance tier (fixed-size, no autoscaling) —
+out of scope for this autoscaling work, which targets the llm-d tiers.
 
 ## Goal
 Make the llm-d tier elastic: scale replicas up under load, down when idle, and

@@ -48,10 +48,12 @@ Cold starts kill demos. Warm everything up first.
 [`ops/demo/demo.sh`](../ops/demo/demo.sh)):
 
 - [ ] `claude-opus-4-8` answers (Bedrock, zero GPUs — always on)
-- [ ] `qwen3-3b` deployed and `READY` (the cheap contender; catalog ships empty, so
-      commit `Qwen/Qwen2.5-3B-Instruct` to `workloads/models/` ahead of time)
-- [ ] `qwen3-support-tuned` deployed (the fine-tuned model for Act 5's money demo —
-      run the fine-tune the day before; it takes ~30 min)
+- [ ] `qwen3-3b` deployed and `READY` (the cheap contender; no models ship by
+      default, so commit `Qwen/Qwen2.5-3B-Instruct` to `workloads/models/inference/`
+      ahead of time)
+- [ ] `qwen3-support-tuned` deployed (the tuned contender for Act 5's money demo —
+      your fine-tuned weights served from S3 via `modelSource`; upload them ahead
+      of time — the platform serves tuned models but does not train them)
 - [ ] `llama32-1b` **NOT** deployed (you add it live in Act 4)
 - [ ] Teams onboarded: `data-science` (all models) and `dev-team` (locked down)
 - [ ] Browser tabs: **EKS Console** (cluster page), **ArgoCD UI**, **Open WebUI**
@@ -59,9 +61,9 @@ Cold starts kill demos. Warm everything up first.
       **Cluster Dashboard** (`:9090`)
 - [ ] Terminal font ≥ 18pt, light-on-dark, `clear` between acts
 
-> **Money-demo prep.** The fine-tune is the one thing you can't do live (~30 min).
-> Run it the day before per [quickstart §4](quickstart.md) so `qwen3-support-tuned`
-> is a live endpoint when you reach Act 5.
+> **Money-demo prep.** Have your fine-tuned weights in the model-cache bucket and
+> serve them via a `VLLMEndpoint` with `modelSource` (no in-platform training), so
+> `qwen3-support-tuned` is a live endpoint when you reach Act 5.
 
 ---
 
@@ -113,8 +115,8 @@ vLLM deployment + service, GPU workers, and a CloudWatch log group created via
 ACK, with litellm-sync registering it on the gateway."*
 
 ```bash
-kubectl get inferenceendpoints -n inference \
-  -o custom-columns=NAME:.metadata.name,READY:.status.ready,STATUS:.status.modelStatus
+kubectl get vllmendpoints -n inference \
+  -o custom-columns=NAME:.metadata.name,READY:.status.ready,ENDPOINT:.status.endpoint
 ```
 
 ---
@@ -145,9 +147,9 @@ kubectl get nodes -l workload-type=gpu-inference \
 **Say:** *"Watch how a developer ships a model. Same loop as shipping code."*
 
 ```bash
-cat > workloads/models/llama32-1b.yaml << 'EOF'
+cat > workloads/models/inference/llama32-1b.yaml << 'EOF'
 apiVersion: kro.run/v1alpha1
-kind: InferenceEndpoint
+kind: VLLMEndpoint
 metadata:
   name: llama32-1b
   namespace: inference
@@ -204,8 +206,8 @@ vibes."*
 ```
 
 **Say while it runs:** *"Same held-out questions through three contenders: the
-frontier model, the base 3B, and a 3B I fine-tuned on our support voice with one
-`FineTuneJob` — a `git push`, same as the model deploy."*
+frontier model, the base 3B, and a 3B fine-tuned on our support voice — served
+here from S3 via `modelSource`, a `git push` just like any other model deploy."*
 
 → **Langfuse:** open the `support-voice-eval` dataset → **compare runs side-by-side**.
 Point to: the tuned 3B matching Opus on voice/quality, with **far lower cost and
@@ -336,9 +338,10 @@ cannot fail — they only call models that already answered. Lean on them.
 
 ## Likely audience questions
 
-- **"Is the model serving production-grade?"** — Ray Serve + vLLM with tensor
-  parallelism (`gpuCount`), autoscaling replicas, and GPU time-slicing (`shared:
-  true`) for small models. Karpenter scales GPU nodes to zero when idle.
+- **"Is the model serving production-grade?"** — vLLM with tensor parallelism
+  (`gpuCount`), the llm-d scale tier for autoscaling replicas + KV/prefix-aware
+  routing, and GPU time-slicing (`shared: true`) for small models. Karpenter
+  reclaims GPU nodes when idle.
 - **"How do cold starts not wreck UX?"** — Three layers: EBS image snapshots (0s
   pull), SOCI lazy loading, and an S3 weight cache (~15s load). ~2 min worst case;
   scale-to-zero is opt-in per workload.

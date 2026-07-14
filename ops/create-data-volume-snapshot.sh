@@ -3,7 +3,7 @@
 #
 # The snapshot can be referenced in Karpenter EC2NodeClass blockDeviceMappings
 # (snapshotID field) so new GPU nodes boot with images already on disk —
-# eliminating the multi-minute pull for large images like Ray LLM (~13 GiB).
+# eliminating the multi-minute pull for the large vLLM serving image.
 #
 # Approach: launches a temporary Bottlerocket instance that joins the EKS cluster
 # with a NoSchedule taint. A short-lived pod scheduled ON that node (via nodeName)
@@ -23,13 +23,13 @@
 #
 # Examples:
 #   # Using ECR pull-through cache URI:
-#   ./ops/create-data-volume-snapshot.sh <account-id>.dkr.ecr.<region>.amazonaws.com/docker-hub/anyscale/ray-llm:2.54.0-py311-cu128
+#   ./ops/create-data-volume-snapshot.sh <account-id>.dkr.ecr.<region>.amazonaws.com/docker-hub/vllm/vllm-openai:v0.24.0
 #
 #   # Short form (auto-prefixes with account ECR pull-through cache):
-#   ./ops/create-data-volume-snapshot.sh anyscale/ray-llm:2.54.0-py311-cu128
+#   ./ops/create-data-volume-snapshot.sh vllm/vllm-openai:v0.24.0
 #
 #   # With FSR and auto-tfvars:
-#   ./ops/create-data-volume-snapshot.sh --fsr eu-central-1a,eu-central-1b --write-tfvars anyscale/ray-llm:2.54.0-py311-cu128
+#   ./ops/create-data-volume-snapshot.sh --fsr eu-central-1a,eu-central-1b --write-tfvars vllm/vllm-openai:v0.24.0
 #
 # Output: prints snapshot ID (snap-xxx) as the last line on success.
 set -euo pipefail
@@ -97,10 +97,9 @@ if [[ -z "$ACCOUNT" || "$ACCOUNT" == "None" ]]; then
 fi
 
 # Expand short image references to full ECR pull-through cache URIs, and drop
-# any private-ECR image that isn't pushed yet. The Unsloth trainer is listed by
-# Terraform whenever fine-tuning is enabled, but on a no-Docker apply it was
-# never built/pushed — baking it would hang the puller pod in ImagePullBackOff.
-# Skipping it keeps the no-Docker path working (ray-llm still bakes).
+# any private-ECR image that isn't pushed yet — baking such an image would hang
+# the puller pod in ImagePullBackOff, so the script skips images absent from ECR.
+# Skipping it keeps the no-Docker path working (the vLLM image still bakes).
 FULL_IMAGES=()
 for img in "${IMAGES[@]}"; do
   if [[ "$img" != *".dkr.ecr."* ]]; then
