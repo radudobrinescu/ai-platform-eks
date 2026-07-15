@@ -262,7 +262,7 @@ tbody tr:hover{background:var(--surface-2)}
   <div class="main">
     <!-- OVERVIEW -->
     <div class="view active" id="v-overview">
-      <div class="vhead"><div class="vtitle">Overview</div><div class="vsub">ai-euc-eu-central · eu-central-1 · updated just now</div></div>
+      <div class="vhead"><div class="vtitle">Overview</div><div class="vsub" id="ov-sub">updated just now</div></div>
       <div class="kpis" id="kpis"></div>
       <div class="cols-3" style="margin-top:22px">
         <div class="card">
@@ -380,7 +380,9 @@ function diffActivity(){const t=new Date().toLocaleTimeString('en-GB',{hour:'2-d
 
 function alertList(){const out=[];(D.models||[]).forEach(m=>{if(m.status!=='running'){const d=m.deploy||{};let reason='';if(m.reconcileError)reason=m.reconcileError;else if(d.provisioning&&d.provisioning.length)reason='waiting for GPU node — '+d.provisioning[0].reason;else if(d.waiting&&d.waiting.reason)reason=d.waiting.reason;else if(d.events&&d.events.length){const w=d.events.find(e=>e.type==='Warning')||d.events[0];reason=w.reason;}const sev=(m.status==='error'||(d.provisioning&&d.provisioning.length))?'crit':'warn';out.push({icon:m.status==='error'?'✗':'⚠',sev,t:`${m.name} · ${m.status}`,d:reason?`${tierLabel(m.tier)} · ${reason}`:`${tierLabel(m.tier)} · ${m.availableReplicas||0}/${m.replicas||1} replicas ready`,open:['model',m.name]});}else if((m.tier==='llm-d'||m.tier==='llm-d-disagg')&&m.router&&m.router!=='Healthy')out.push({icon:'⚠',sev:'warn',t:`${m.name} · router ${m.router}`,d:'llm-d EPP/router not yet Healthy',open:['model',m.name]});else if(m.health&&m.health.toLowerCase()!=='healthy')out.push({icon:'⚠',sev:'warn',t:`${m.name} · ${m.health}`,d:'LiteLLM health check',open:['model',m.name]});});(D.provisioning||[]).slice(0,1).forEach(e=>out.push({icon:'☁',sev:'crit',t:`GPU capacity · ${e.reason}`,d:e.message,open:['view','infra']}));(D.argocd||[]).forEach(a=>{if(a.sync!=='Synced'||a.health!=='Healthy')out.push({icon:'🚢',sev:(a.health==='Degraded'||a.health==='Missing')?'crit':'warn',t:`ArgoCD · ${a.name}`,d:`${a.sync} · ${a.health}`,open:['link','argocd']});});(D.nodeAlerts||[]).forEach(a=>out.push({icon:'🖥',sev:(a.issue==='NotReady'?'crit':'warn'),t:`Node ${a.node} · ${a.issue}`,d:'EKS node condition',open:['node',a.node]}));return out;}
 
-function renderAll(){kpis();topbar();ovModels();costMini();gpuBars();ovHealth();ovFeed();modelTabs();modelsBody();teamsView();costViews();infra();healthView();links();if(selected)openModel(selected,true);if(selectedNode)openNode(selectedNode,true);if(selectedTeam)openTeam(selectedTeam,true);}
+function renderAll(){ovSub();kpis();topbar();ovModels();costMini();gpuBars();ovHealth();ovFeed();modelTabs();modelsBody();teamsView();costViews();infra();healthView();links();if(selected)openModel(selected,true);if(selectedNode)openNode(selectedNode,true);if(selectedTeam)openTeam(selectedTeam,true);}
+
+function ovSub(){const s=$('ov-sub');if(!s)return;const age=D.ts?Math.max(0,Math.round(Date.now()/1000-D.ts)):null;const when=age===null?'updated just now':(age<5?'updated just now':'updated '+age+'s ago');const parts=[D.cluster,D.region].filter(Boolean);parts.push(when);s.textContent=parts.join(' · ');}
 
 function topbar(){const c=D.cost||{};$('top-cost').innerHTML=`💲 <b class="cg">$${(c.hourly||0).toFixed(2)}</b>/hr · ~$${Math.round(c.monthly||0).toLocaleString()}/mo`;const al=alertList().length,ap=D.approvals_pending||0;const p=$('top-health');p.className='pill'+(al||ap?' warn':'');p.innerHTML=(al||ap)?`<span class="cw">⚠ ${al}</span> alerts · <b>${ap}</b> approval${ap===1?'':'s'}`:`✓ healthy`;const nm=$('nav-mcount');if(nm)nm.textContent=(D.models||[]).length||'';const hb=$('nav-hbadge');if(hb){const n=al+ap;hb.textContent=n||'';hb.style.display=n?'':'none';}}
 

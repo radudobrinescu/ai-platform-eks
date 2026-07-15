@@ -7,8 +7,9 @@
 # no Terraform input. ArgoCD is an EKS-managed capability with its own endpoint
 # (server_url) that can't be derived from the ALB — so we surface it here.
 #
-# Consumed by platform/services/cluster-dashboard/manifests.yaml via an optional
-# configMapKeyRef (ARGOCD_URL); the dashboard hides the ArgoCD link if unset.
+# Consumed by platform/services/cluster-dashboard/manifests.yaml via optional
+# configMapKeyRefs: ARGOCD_URL (the dashboard hides the ArgoCD link if unset)
+# and CLUSTER_NAME (the overview header; region is auto-detected from nodes).
 ################################################################################
 resource "kubernetes_config_map" "cluster_dashboard_links" {
   count = local.capabilities.gitops ? 1 : 0
@@ -19,7 +20,8 @@ resource "kubernetes_config_map" "cluster_dashboard_links" {
   }
 
   data = {
-    argocdUrl = try(aws_eks_capability.argocd[0].configuration[0].argo_cd[0].server_url, "")
+    argocdUrl   = try(aws_eks_capability.argocd[0].configuration[0].argo_cd[0].server_url, "")
+    clusterName = local.cluster_name
   }
 
   depends_on = [

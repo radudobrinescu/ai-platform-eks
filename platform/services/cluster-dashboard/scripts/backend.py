@@ -316,6 +316,7 @@ def build_remediator_job(investigation_id: str) -> dict:
 
 snapshot = {"nodes": [], "pods": [], "endpoints": [], "cost": {},
             "approvals_available": False, "approvals_pending": 0,
+            "cluster": "", "region": "",
             "links": [], "ts": 0}
 snapshot_lock = threading.Lock()
 
@@ -723,6 +724,8 @@ def _build_k8s_snapshot() -> dict:
         "cost": cost,
         "approvals_available": approvals_available,
         "approvals_pending": approvals_pending,
+        "cluster": os.environ.get("CLUSTER_NAME", ""),
+        "region": cost.get("region", "") or os.environ.get("AWS_REGION", ""),
         "links": _build_links(),
         "ts": time.time(),
     }
