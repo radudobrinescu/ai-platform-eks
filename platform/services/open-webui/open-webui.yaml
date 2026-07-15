@@ -86,6 +86,16 @@ spec:
                   name: sso-secrets
                   key: open-webui-public-url
                   optional: true
+            # Explicit OAuth callback. Open WebUI otherwise derives it from the
+            # request (http + the ALB port 8080), which fails behind the
+            # TLS-terminating CloudFront edge. Terraform sets this to the public
+            # HTTPS callback (edge URL) or the localhost tunnel callback.
+            - name: OPENID_REDIRECT_URI
+              valueFrom:
+                secretKeyRef:
+                  name: sso-secrets
+                  key: open-webui-oidc-redirect-uri
+                  optional: true
           volumeMounts:
             - name: data
               mountPath: /app/backend/data

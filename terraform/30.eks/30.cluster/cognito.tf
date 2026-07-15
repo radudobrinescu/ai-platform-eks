@@ -245,6 +245,10 @@ resource "kubernetes_secret" "sso_secrets" {
       "open-webui-public-url" = local.sso_public_url["open-webui"] != "" ? local.sso_public_url["open-webui"] : "http://localhost:8080"
       "litellm-public-url"    = local.sso_public_url["litellm"] != "" ? local.sso_public_url["litellm"] : "http://localhost:4000"
       "langfuse-public-url"   = local.sso_public_url["langfuse"] != "" ? local.sso_public_url["langfuse"] : "http://localhost:3000"
+      # Explicit OAuth callback for Open WebUI (it derives the wrong http:8080
+      # URL from the request behind the TLS-terminating edge). Public edge
+      # callback when set, else the localhost tunnel callback.
+      "open-webui-oidc-redirect-uri" = "${local.sso_public_url["open-webui"] != "" ? local.sso_public_url["open-webui"] : "http://localhost:8080"}${local.sso_apps["open-webui"].callback}"
     },
     { for app in keys(local.sso_apps) : "${app}-client-id" => aws_cognito_user_pool_client.apps[app].id },
     { for app in keys(local.sso_apps) : "${app}-client-secret" => aws_cognito_user_pool_client.apps[app].client_secret },
