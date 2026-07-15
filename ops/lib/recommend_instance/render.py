@@ -727,7 +727,7 @@ def model_name_from_id(model_id: str) -> str:
 TIER_KIND = {"vllm": "VLLMEndpoint", "llm-d": "LLMDEndpoint",
              "llm-d-disagg": "LLMDDisaggEndpoint"}
 KIND_DIR = {
-    "VLLMEndpoint": "workloads/models",
+    "VLLMEndpoint": "workloads/models/inference",
     "LLMDEndpoint": "workloads/scale-models",
     "LLMDDisaggEndpoint": "workloads/scale-models",
 }

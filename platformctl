@@ -1,114 +1,200 @@
 #!/usr/bin/env bash
-# platformctl — thin turnkey wrapper over the existing `make` + `ops/` flow.
+# platformctl — the single entry point for operating the AI platform.
 #
-# Deliberately NOT a provisioning platform: every command shells out to tools
-# that already exist (terraform/Makefile, ops/*.sh, ops/*.py). It just removes
-# the "which command in what order" friction so a teammate can stand up the
-# platform and reach the model comparison without hand-editing manifests.
+# A thin, unified front door over `make` + Terraform + the helpers in ops/lib/.
+# It removes the "which command in what order" friction; it is NOT a bespoke
+# provisioning engine — every verb shells out to tools that already exist.
 #
 # Usage:
-#   ./platformctl up        [ENV]      Provision everything (make bootstrap + apply-all)
-#   ./platformctl status    [ENV]      Show cluster / ArgoCD / model health
-#   ./platformctl tunnel               Port-forward WebUI/LiteLLM/Langfuse (ops/ssm-tunnel.sh)
-#   ./platformctl preflight            Check Bedrock + model access (ops/compare-models.py --preflight)
-#   ./platformctl compare   [ARGS...]  Run the model comparison (ops/compare-models.py)
-#   ./platformctl test MODEL "PROMPT"  Quick single-model test (ops/test-model.sh)
-#   ./platformctl down      [ENV]      Tear down (make destroy-all) — asks to confirm
+#   ./platformctl up      [ENV]        Provision everything (state backend + all Terraform stages)
+#   ./platformctl status  [--check]    Show platform health; --check also validates it end-to-end
+#   ./platformctl tunnel               Reach the private UIs locally (SSM port-forward to the ClusterIPs)
+#   ./platformctl edge    [MODE]       Choose the public front door: cloudfront | domain | tunnel
+#   ./platformctl new-model MODEL [..] Right-size a model + scaffold its serving YAML (VLLMEndpoint/LLMDEndpoint)
+#   ./platformctl down    [ENV]        Tear everything down (asks to confirm)
 #
-# ENV defaults to $PLATFORM_ENV or "dev". Region from your AWS config / $AWS_REGION.
+# ENV defaults to $PLATFORM_ENV or "dev". Region comes from $AWS_REGION / your AWS config.
 set -euo pipefail
 
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 TF_DIR="${REPO_ROOT}/terraform"
-OPS_DIR="${REPO_ROOT}/ops"
+LIB_DIR="${REPO_ROOT}/ops/lib"
+CLUSTER_STAGE="30.eks/30.cluster"
 ENVIRONMENT="${PLATFORM_ENV:-dev}"
+NS_PLATFORM="ai-platform"
+NS_INFERENCE="inference"
 
-c_bold=$'\033[1m'; c_dim=$'\033[2m'; c_grn=$'\033[32m'; c_red=$'\033[31m'; c_rst=$'\033[0m'
-[ -t 1 ] || { c_bold=""; c_dim=""; c_grn=""; c_red=""; c_rst=""; }
+c_bold=$'\033[1m'; c_dim=$'\033[2m'; c_grn=$'\033[32m'; c_red=$'\033[31m'; c_ylw=$'\033[33m'; c_rst=$'\033[0m'
+[ -t 1 ] || { c_bold=""; c_dim=""; c_grn=""; c_red=""; c_ylw=""; c_rst=""; }
 
 log()  { echo "${c_bold}==>${c_rst} $*"; }
+ok()   { echo "${c_grn}✓${c_rst} $*"; }
 warn() { echo "${c_red}!${c_rst} $*" >&2; }
 die()  { warn "$*"; exit 1; }
-
 need() { command -v "$1" >/dev/null 2>&1 || die "missing required tool: $1"; }
 
-# Print the leading comment block (everything from line 2 up to the first
-# non-comment line), stripped of the leading "# ".
+# Print the leading comment block as usage.
 usage() { sed -n '2,/^[^#]/p' "${BASH_SOURCE[0]}" | grep '^#' | sed 's/^# \{0,1\}//'; }
 
-# ---- commands -------------------------------------------------------------- #
+require_tfvars() {
+  local env="$1" f="${TF_DIR}/00.global/vars/${1}.tfvars"
+  [ -f "$f" ] || die "no tfvars for env '${env}': ${f}
+  Copy 00.global/vars/example.tfvars and set your Identity Center ARN + gitops_repo_url."
+}
+
+# ---- up / down ------------------------------------------------------------- #
 
 cmd_up() {
   local env="${1:-$ENVIRONMENT}"
-  need terraform; need aws; need make
-  local var_file="${TF_DIR}/00.global/vars/${env}.tfvars"
-  [ -f "$var_file" ] || die "no tfvars for env '${env}': ${var_file}
-  Copy 00.global/vars/example.tfvars and set your Identity Center ARN + gitops_repo_url."
-  log "Provisioning environment '${env}' (this takes a while — EKS + add-ons)"
-  log "1/2 bootstrap state backend (S3 + DynamoDB)"
+  need terraform; need aws; need make; require_tfvars "$env"
+  log "Provisioning '${env}' — EKS + capabilities + Karpenter (takes a while)"
   make -C "$TF_DIR" bootstrap ENVIRONMENT="$env"
-  log "2/2 apply all modules in order"
   make -C "$TF_DIR" apply-all ENVIRONMENT="$env"
   echo
-  log "${c_grn}Done.${c_rst} Next:"
-  echo "  ./platformctl status ${env}      # watch the platform come up"
+  ok "Done. Next:"
+  echo "  ./platformctl status --check     # confirm it's healthy AND working"
   echo "  ./platformctl tunnel             # reach the UIs locally"
-  echo "  ./platformctl preflight          # confirm Bedrock + models answer"
-}
-
-cmd_status() {
-  local env="${1:-$ENVIRONMENT}"
-  need kubectl
-  log "ArgoCD applications"
-  kubectl get applications -n argocd 2>/dev/null \
-    || warn "cannot reach the cluster — run: aws eks update-kubeconfig --name <cluster>"
-  echo
-  log "Platform pods (ai-platform ns)"
-  kubectl get pods -n ai-platform 2>/dev/null || true
-  echo
-  log "Serving endpoints (inference / vllm / llm-d)"
-  kubectl get inferenceendpoints,vllmendpoints,llmdendpoints -n inference 2>/dev/null || true
-  echo
-  log "Fine-tune jobs"
-  kubectl get finetunejobs -n inference 2>/dev/null || echo "  (none / CRD not installed yet)"
-}
-
-cmd_tunnel() {
-  exec "${OPS_DIR}/ssm-tunnel.sh"
-}
-
-cmd_preflight() {
-  need python3
-  log "Preflighting LiteLLM + model access (incl. Bedrock)"
-  exec python3 "${OPS_DIR}/compare-models.py" --preflight "$@"
-}
-
-cmd_compare() {
-  need python3
-  if [ "$#" -eq 0 ]; then
-    log "Running the default support-voice comparison (sample dataset)"
-    exec python3 "${OPS_DIR}/compare-models.py" \
-      --dataset "${OPS_DIR}/sample-data/support-eval.jsonl" \
-      --langfuse-dataset support-voice-eval \
-      --self-hosted-model qwen3-3b \
-      --self-hosted-hf-id Qwen/Qwen2.5-3B-Instruct
-  else
-    exec python3 "${OPS_DIR}/compare-models.py" "$@"
-  fi
-}
-
-cmd_test() {
-  [ "$#" -ge 2 ] || die "usage: platformctl test MODEL \"PROMPT\""
-  exec "${OPS_DIR}/test-model.sh" "$@"
+  echo "  ./platformctl edge               # (optional) choose a public front door"
 }
 
 cmd_down() {
   local env="${1:-$ENVIRONMENT}"
   need terraform; need make
-  warn "This will DESTROY all infrastructure for env '${env}'."
+  warn "This DESTROYS all infrastructure for env '${env}'."
   read -r -p "Type the environment name to confirm: " confirm
   [ "$confirm" = "$env" ] || die "confirmation mismatch — aborted."
   make -C "$TF_DIR" destroy-all ENVIRONMENT="$env"
+}
+
+# ---- status [--check] ------------------------------------------------------ #
+
+cmd_status() {
+  need kubectl
+  local deep=0
+  [ "${1:-}" = "--check" ] && deep=1
+
+  log "ArgoCD applications"
+  kubectl get applications -n argocd 2>/dev/null \
+    || warn "cannot reach the cluster — run: aws eks update-kubeconfig --name <cluster>"
+  echo
+  log "Platform pods (${NS_PLATFORM})"
+  kubectl get pods -n "$NS_PLATFORM" 2>/dev/null || true
+  echo
+  log "Serving endpoints (all namespaces)"
+  kubectl get vllmendpoints,llmdendpoints,llmddisaggendpoints -A 2>/dev/null || echo "  (none deployed)"
+
+  [ "$deep" -eq 1 ] || { echo; echo "${c_dim}Run 'platformctl status --check' to validate Bedrock + gateway + tracing.${c_rst}"; return; }
+
+  echo; log "Validating the platform end-to-end (--check)"
+  need aws
+  local mk pf_pid=""
+  mk=$(kubectl get secret litellm-secrets -n "$NS_PLATFORM" -o jsonpath='{.data.master-key}' 2>/dev/null | base64 -d) \
+    || { warn "cannot read litellm master key — is the platform up?"; return 1; }
+  kubectl port-forward -n "$NS_PLATFORM" svc/litellm 4000:4000 >/dev/null 2>&1 &
+  pf_pid=$!; trap '[ -n "$pf_pid" ] && kill $pf_pid 2>/dev/null || true' RETURN
+  sleep 4
+  local base="http://127.0.0.1:4000"
+
+  # 1) Gateway answers.
+  if curl -fsS "$base/v1/models" -H "Authorization: Bearer $mk" >/dev/null 2>&1; then
+    ok "LiteLLM gateway responding (/v1/models)"
+  else
+    warn "LiteLLM gateway not responding"
+  fi
+  # 2) Bedrock model access (the #1 fresh-install gotcha — a manual per-account toggle).
+  local code
+  code=$(curl -s -o /dev/null -w '%{http_code}' -X POST "$base/v1/chat/completions" \
+    -H "Authorization: Bearer $mk" -H "Content-Type: application/json" \
+    -d '{"model":"claude-opus-4-8","messages":[{"role":"user","content":"ping"}],"max_tokens":5}')
+  if [ "$code" = "200" ]; then
+    ok "Bedrock frontier model answered (claude-opus-4-8)"
+  else
+    warn "Bedrock model call returned HTTP $code — enable Bedrock model access in the console (per-account toggle)"
+  fi
+  # 3) Langfuse tracing reachable.
+  if kubectl run pfcheck-langfuse --rm -i --restart=Never --image=curlimages/curl:8.11.0 -n "$NS_PLATFORM" --quiet -- \
+       -fsS http://langfuse-web.ai-platform.svc.cluster.local:3000/api/public/health >/dev/null 2>&1; then
+    ok "Langfuse tracing reachable"
+  else
+    warn "Langfuse health check failed (tracing may be starting)"
+  fi
+}
+
+# ---- tunnel ---------------------------------------------------------------- #
+
+cmd_tunnel() { exec "${LIB_DIR}/tunnel.sh"; }
+
+# ---- edge ------------------------------------------------------------------ #
+
+cmd_edge() {
+  local mode="${1:-}" env="${PLATFORM_ENV:-$ENVIRONMENT}"
+  case "$mode" in
+    cloudfront)
+      need terraform; need make; require_tfvars "$env"
+      log "Enabling the CloudFront edge (public HTTPS via VPC origins to the private ALB)"
+      _edge_set_tfvar "$env" true
+      make -C "$TF_DIR" apply MODULE="$CLUSTER_STAGE" ENVIRONMENT="$env"
+      echo; ok "CloudFront edge applied. URLs (deploy takes ~10-15 min):"
+      terraform -chdir="${TF_DIR}/${CLUSTER_STAGE}" output -json edge_cloudfront_urls 2>/dev/null \
+        | python3 -c "import sys,json; [print('  '+k+': '+v) for k,v in json.load(sys.stdin).items()]" 2>/dev/null || true
+      echo "${c_dim}Cognito callbacks were wired automatically. SSO works once the distributions finish deploying.${c_rst}"
+      ;;
+    tunnel|off)
+      need terraform; need make; require_tfvars "$env"
+      log "Disabling the CloudFront edge (back to private ALB + tunnel)"
+      _edge_set_tfvar "$env" false
+      make -C "$TF_DIR" apply MODULE="$CLUSTER_STAGE" ENVIRONMENT="$env"
+      ok "Edge removed. Reach the UIs with: ./platformctl tunnel"
+      ;;
+    domain)
+      cat <<EOF
+${c_bold}Front door: your own domain on an internet-facing ALB${c_rst}
+This is a GitOps change (the ALB scheme + cert live in the ingress manifests), so
+edit + commit + push in your fork:
+  1. In platform/config/ingress.yaml (x3) + platform/services/cluster-dashboard/manifests.yaml,
+     set on all four ingresses:
+       alb.ingress.kubernetes.io/scheme: internet-facing
+       alb.ingress.kubernetes.io/listen-ports: '[{"HTTPS": <port>}]'
+       alb.ingress.kubernetes.io/certificate-arn: <your ACM cert ARN, in this region>
+     and set inbound-cidrs to your own IP/CIDR ranges (never 0.0.0.0/0).
+  2. Point your DNS (Route53 alias / CNAME) at the ALB hostname.
+  3. Put your domain URLs in sso_public_urls in your tfvars, then: ./platformctl edge  (re-run terraform to wire Cognito callbacks)
+EOF
+      ;;
+    ""|status)
+      cat <<EOF
+${c_bold}Public front door — three postures:${c_rst}
+  ${c_grn}tunnel${c_rst}      Private ALB, no public IP. Reach the UIs via ./platformctl tunnel. (default)
+  ${c_grn}cloudfront${c_rst}  Public HTTPS via CloudFront VPC origins to the private ALB — free
+              *.cloudfront.net cert, no domain needed. Good for demo/PoC.
+              Run AFTER 'up' (needs the ALB): ./platformctl edge cloudfront
+  ${c_grn}domain${c_rst}      Your own domain + cert on an internet-facing ALB (enterprise).
+              Guided GitOps change: ./platformctl edge domain
+
+  Turn CloudFront off:  ./platformctl edge tunnel
+EOF
+      ;;
+    *) die "unknown edge mode: ${mode}  (use: cloudfront | domain | tunnel)" ;;
+  esac
+}
+
+# Set enable_cloudfront_edge in the env tfvars (durable), adding the line if absent.
+_edge_set_tfvar() {
+  local env="$1" val="$2" f="${TF_DIR}/00.global/vars/${1}.tfvars"
+  if grep -q '^enable_cloudfront_edge' "$f"; then
+    sed -i.bak "s/^enable_cloudfront_edge.*/enable_cloudfront_edge = ${val}/" "$f" && rm -f "${f}.bak"
+  else
+    printf '\nenable_cloudfront_edge = %s\n' "$val" >> "$f"
+  fi
+}
+
+# ---- new-model ------------------------------------------------------------- #
+
+cmd_new_model() {
+  need python3
+  [ "$#" -ge 1 ] || die "usage: platformctl new-model <hf-model-id> [flags]
+  e.g. platformctl new-model Qwen/Qwen2.5-3B-Instruct --seq 8192 --users 4"
+  exec python3 "${LIB_DIR}/recommend-instance.py" "$@"
 }
 
 # ---- dispatch -------------------------------------------------------------- #
@@ -117,12 +203,11 @@ main() {
   local cmd="${1:-}"; shift || true
   case "$cmd" in
     up)        cmd_up "$@" ;;
+    down)      cmd_down "$@" ;;
     status)    cmd_status "$@" ;;
     tunnel)    cmd_tunnel "$@" ;;
-    preflight) cmd_preflight "$@" ;;
-    compare)   cmd_compare "$@" ;;
-    test)      cmd_test "$@" ;;
-    down)      cmd_down "$@" ;;
+    edge)      cmd_edge "$@" ;;
+    new-model) cmd_new_model "$@" ;;
     ""|-h|--help|help) usage ;;
     *) die "unknown command: ${cmd}
 $(usage)" ;;

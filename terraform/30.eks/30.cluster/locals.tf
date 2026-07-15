@@ -12,7 +12,7 @@ locals {
   vllm_image     = "vllm/vllm-openai:${local.vllm_image_tag}"
 
   # HuggingFace model-weights cache.
-  # S3 bucket is populated by ops/seed-model-cache.py (manual) or by the vLLM
+  # S3 bucket is populated automatically by the vLLM
   # worker's sidecar after first successful load (automatic). The initContainer
   # in the serving-tier RGDs (VLLMEndpoint/LLMDEndpoint/LLMDDisaggEndpoint) syncs
   # from here on pod startup — falling back to a live HF download on cache miss.

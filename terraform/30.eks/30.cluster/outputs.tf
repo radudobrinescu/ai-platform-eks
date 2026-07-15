@@ -39,7 +39,7 @@ output "next_steps" {
          pass: terraform output -raw langfuse_admin_password
 
     6. Try the frontier model with zero GPUs (Bedrock Claude Opus 4.8):
-       requires Bedrock model access enabled in-account; see ops/compare-models.py --preflight
+       requires Bedrock model access enabled in-account; see ./platformctl status --check
   EOT
 }
 

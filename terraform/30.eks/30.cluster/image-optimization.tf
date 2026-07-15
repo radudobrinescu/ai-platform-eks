@@ -40,7 +40,7 @@ resource "null_resource" "soci_index" {
   }
 
   provisioner "local-exec" {
-    command     = "${path.module}/../../../ops/create-soci-index.sh -p ${aws_iam_instance_profile.soci_builder[0].name} -n ${local.cluster_name} -r ${local.region} ${local.vllm_ecr_image}"
+    command     = "${path.module}/../../../ops/image/create-soci-index.sh -p ${aws_iam_instance_profile.soci_builder[0].name} -n ${local.cluster_name} -r ${local.region} ${local.vllm_ecr_image}"
     interpreter = ["bash", "-c"]
     # Best-effort: SOCI is a cold-start optimization, not load-bearing. A
     # transient builder failure must degrade to lazy-pull, not abort the apply.
@@ -80,7 +80,7 @@ resource "null_resource" "gpu_data_volume_snapshot" {
   }
 
   provisioner "local-exec" {
-    command     = "${path.module}/../../../ops/create-data-volume-snapshot.sh -r ${local.region} -n ${local.cluster_name} -s ${local.snapshot_volume_gib} ${local.snapshot_images}"
+    command     = "${path.module}/../../../ops/image/create-data-volume-snapshot.sh -r ${local.region} -n ${local.cluster_name} -s ${local.snapshot_volume_gib} ${local.snapshot_images}"
     interpreter = ["bash", "-c"]
     # Best-effort cold-start optimization — never abort the platform apply.
     on_failure = continue
