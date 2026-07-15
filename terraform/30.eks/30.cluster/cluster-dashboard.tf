@@ -22,6 +22,12 @@ resource "kubernetes_config_map" "cluster_dashboard_links" {
   data = {
     argocdUrl   = try(aws_eks_capability.argocd[0].configuration[0].argo_cd[0].server_url, "")
     clusterName = local.cluster_name
+    # Public UI URLs when the CloudFront edge is enabled (empty otherwise) — the
+    # dashboard's Quick Links prefer these over the internal-ALB host:port, which
+    # is not browser-reachable from outside the VPC.
+    openWebuiUrl = try(local.edge_public_urls["open-webui"], "")
+    litellmUrl   = try(local.edge_public_urls["litellm"], "")
+    langfuseUrl  = try(local.edge_public_urls["langfuse"], "")
   }
 
   depends_on = [

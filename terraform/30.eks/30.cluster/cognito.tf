@@ -267,7 +267,10 @@ resource "kubernetes_secret" "oauth2_proxy_secrets" {
     "client-secret" = aws_cognito_user_pool_client.apps["oauth2-proxy"].client_secret
     "cookie-secret" = random_password.oauth2_proxy_cookie[0].result
     "issuer"        = local.cognito_issuer_url
-    "redirect-url"  = "${try(var.sso_public_urls["oauth2-proxy"], "http://localhost:9090")}/oauth2/callback"
+    # Edge-aware, consistent with the app-client callback_urls above: the
+    # CloudFront "dashboard" URL when the edge is on, else var.sso_public_urls,
+    # else the localhost tunnel.
+    "redirect-url" = "${local.sso_public_url["oauth2-proxy"] != "" ? local.sso_public_url["oauth2-proxy"] : "http://localhost:9090"}/oauth2/callback"
   }
 
   depends_on = [kubernetes_namespace.ai_platform]

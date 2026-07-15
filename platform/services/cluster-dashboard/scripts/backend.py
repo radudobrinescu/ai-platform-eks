@@ -336,20 +336,26 @@ def _alb_hostname() -> str:
 
 
 def _build_links() -> list:
-    """Quick links to the platform's web UIs. The ALB-fronted services share one
-    hostname and differ by port; ArgoCD is an EKS capability with its own URL
-    (ARGOCD_URL from Terraform). Links with no resolvable URL are omitted."""
+    """Quick links to the platform's web UIs. Prefers the public CloudFront edge
+    URLs (set by Terraform into the cluster-dashboard-links ConfigMap when the
+    edge is enabled) and falls back to the internal-ALB host:port for in-VPC /
+    tunnel access. ArgoCD is an EKS capability with its own URL (ARGOCD_URL).
+    Links with no resolvable URL are omitted."""
     alb = _alb_hostname()
+    alb_url = (lambda port: f"http://{alb}:{port}" if alb else "")
+    webui = os.environ.get("OPEN_WEBUI_URL", "") or alb_url(8080)
+    litellm = os.environ.get("LITELLM_URL", "") or alb_url(4000)
+    langfuse = os.environ.get("LANGFUSE_URL", "") or alb_url(3000)
     links = []
-    if alb:
-        links += [
-            {"label": "Open WebUI", "url": f"http://{alb}:8080",
-             "desc": "Chat with models", "icon": "💬"},
-            {"label": "LiteLLM Admin", "url": f"http://{alb}:4000/ui",
-             "desc": "API gateway + keys + usage", "icon": "🔑"},
-            {"label": "Langfuse", "url": f"http://{alb}:3000",
-             "desc": "Traces, evals, cost", "icon": "📊"},
-        ]
+    if webui:
+        links.append({"label": "Open WebUI", "url": webui,
+                      "desc": "Chat with models", "icon": "💬"})
+    if litellm:
+        links.append({"label": "LiteLLM Admin", "url": litellm.rstrip("/") + "/ui",
+                      "desc": "API gateway + keys + usage", "icon": "🔑"})
+    if langfuse:
+        links.append({"label": "Langfuse", "url": langfuse,
+                      "desc": "Traces, evals, cost", "icon": "📊"})
     if ARGOCD_URL:
         links.append({"label": "ArgoCD", "url": ARGOCD_URL,
                       "desc": "GitOps sync status", "icon": "🚢"})

@@ -183,6 +183,26 @@ spec:
                   name: cluster-dashboard-links
                   key: clusterName
                   optional: true
+            # Public UI URLs when the CloudFront edge is on (set by Terraform).
+            # The Quick Links prefer these over the internal-ALB host:port.
+            - name: OPEN_WEBUI_URL
+              valueFrom:
+                configMapKeyRef:
+                  name: cluster-dashboard-links
+                  key: openWebuiUrl
+                  optional: true
+            - name: LITELLM_URL
+              valueFrom:
+                configMapKeyRef:
+                  name: cluster-dashboard-links
+                  key: litellmUrl
+                  optional: true
+            - name: LANGFUSE_URL
+              valueFrom:
+                configMapKeyRef:
+                  name: cluster-dashboard-links
+                  key: langfuseUrl
+                  optional: true
           volumeMounts:
             - name: backend-script
               mountPath: /app

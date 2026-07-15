@@ -258,11 +258,21 @@ _edge_apply() {
   [ "$go" = "yes" ] || die "aborted at plan review (nothing applied)."
   make -C "$TF_DIR" apply MODULE="$CLUSTER_STAGE" ENVIRONMENT="$env"
 
+  # The apps read their public URL from a Secret/ConfigMap at startup (OIDC
+  # redirects) and the dashboard reads the edge URLs from a ConfigMap env — none
+  # hot-reload, so restart them to pick up the new URLs. Best-effort.
+  if command -v kubectl >/dev/null 2>&1; then
+    log "Restarting the UIs + dashboard to pick up the new URLs…"
+    kubectl rollout restart deployment -n "$NS_PLATFORM" \
+      open-webui litellm langfuse-web oauth2-proxy cluster-dashboard >/dev/null 2>&1 \
+      || warn "could not restart some deployments — restart them manually to apply the new URLs"
+  fi
+
   echo
   if [ "$action" = cloudfront ]; then
     ok "CloudFront edge applied for '${env}'. Public URLs ([InProgress] until ~10-15 min out):"
     edge_urls_live
-    echo "${c_dim}SSO callbacks were wired automatically. Track rollout with: ./platformctl status${c_rst}"
+    echo "${c_dim}Cognito callbacks + the dashboard Quick Links were updated automatically. Track rollout with: ./platformctl status${c_rst}"
   else
     ok "CloudFront edge removed for '${env}'. Reach the UIs with: ./platformctl tunnel"
   fi
