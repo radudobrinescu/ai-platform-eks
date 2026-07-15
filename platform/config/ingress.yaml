@@ -2,9 +2,9 @@
 # NOTE: The three ingresses below share a single ALB via
 # `alb.ingress.kubernetes.io/group.name: ai-platform` (the cluster-dashboard
 # ingress in platform/services/cluster-dashboard/manifests.yaml joins the same
-# group — four ingresses total). ALB-level annotations (scheme, inbound-cidrs,
+# group — four ingresses total). ALB-level annotations (scheme, security-groups,
 # subnets, ...) must be IDENTICAL across all of them or the AWS Load Balancer
-# Controller refuses to merge. Keep every inbound-cidrs value in sync.
+# Controller refuses to merge. Keep every one of them in sync.
 #
 # SCHEME: internal (private ALB) — the secure default. The ALB has no public
 # IP and is unreachable from the internet. Reach the UIs two ways:
@@ -14,17 +14,20 @@
 #     Terraform) — public HTTPS via a CloudFront VPC origin that connects
 #     privately to this internal ALB. The supported way to expose the UIs
 #     publicly, with TLS + SSO in front.
-# To instead expose the ALB directly to the internet (IP-allowlisted), flip all
-# four `scheme` values to `internet-facing` and set inbound-cidrs to your IPs.
+# To instead expose the ALB directly to the internet, flip all four `scheme`
+# values to `internet-facing` and tighten the SG below to your own IPs.
 #
-# INBOUND-CIDRS: source allowlist on the ALB security group. For the internal
-# default this bounds which in-VPC sources (the CloudFront VPC origin, a VPN, a
-# bastion) may reach the ALB, so it MUST cover your VPC CIDR (Terraform's
-# var.vpc_cidr) — otherwise the CloudFront edge and the SSM tunnel can't reach
-# the ALB. It ships as 10.10.0.0/16 to match the example tfvars vpc_cidr; if you
-# change vpc_cidr, change this too. If you switch scheme to internet-facing,
-# this instead becomes your public operator/office allowlist (never leave it
-# 0.0.0.0/0). Keep all four occurrences (here x3 + cluster-dashboard) in sync.
+# SECURITY-GROUPS: the ALB's inbound is governed by a Terraform-managed frontend
+# SG (`ai-platform-alb-inbound`, terraform/30.eks/30.cluster/alb-security-group.tf)
+# instead of the controller's `inbound-cidrs`. WHY: the CloudFront edge reaches
+# the ALB via a VPC origin whose traffic is authorized by SECURITY-GROUP
+# REFERENCE, not the VPC CIDR — and the controller strips foreign rules from the
+# SG it auto-creates from inbound-cidrs. So we own this SG: it allows the VPC
+# CIDR (in-VPC / tunnel node) always, and `platformctl edge cloudfront` adds the
+# CloudFront VPC-origin SG to it (edge.tf). The controller still auto-manages the
+# backend SG, so ALB->pod traffic is unaffected. To change the allowed sources
+# (e.g. an internet-facing operator allowlist), edit that SG in Terraform. The SG
+# is referenced by fixed name, so it is fork-generic.
 apiVersion: networking.k8s.io/v1
 kind: Ingress
 metadata:
@@ -36,7 +39,8 @@ metadata:
     alb.ingress.kubernetes.io/target-type: ip
     alb.ingress.kubernetes.io/listen-ports: '[{"HTTP": 4000}]'
     alb.ingress.kubernetes.io/healthcheck-path: /health/liveliness
-    alb.ingress.kubernetes.io/inbound-cidrs: 10.10.0.0/16
+    alb.ingress.kubernetes.io/security-groups: ai-platform-alb-inbound
+    alb.ingress.kubernetes.io/manage-backend-security-group-rules: "true"
 spec:
   ingressClassName: alb
   rules:
@@ -61,7 +65,8 @@ metadata:
     alb.ingress.kubernetes.io/target-type: ip
     alb.ingress.kubernetes.io/listen-ports: '[{"HTTP": 8080}]'
     alb.ingress.kubernetes.io/healthcheck-path: /health
-    alb.ingress.kubernetes.io/inbound-cidrs: 10.10.0.0/16
+    alb.ingress.kubernetes.io/security-groups: ai-platform-alb-inbound
+    alb.ingress.kubernetes.io/manage-backend-security-group-rules: "true"
 spec:
   ingressClassName: alb
   rules:
@@ -86,7 +91,8 @@ metadata:
     alb.ingress.kubernetes.io/target-type: ip
     alb.ingress.kubernetes.io/listen-ports: '[{"HTTP": 3000}]'
     alb.ingress.kubernetes.io/healthcheck-path: /api/public/health
-    alb.ingress.kubernetes.io/inbound-cidrs: 10.10.0.0/16
+    alb.ingress.kubernetes.io/security-groups: ai-platform-alb-inbound
+    alb.ingress.kubernetes.io/manage-backend-security-group-rules: "true"
 spec:
   ingressClassName: alb
   rules:

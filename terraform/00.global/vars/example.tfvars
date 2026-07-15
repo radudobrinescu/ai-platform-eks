@@ -1,9 +1,7 @@
-# VPC CIDR for the platform network. IMPORTANT: keep this in sync with the
-# `alb.ingress.kubernetes.io/inbound-cidrs` value in the ingress manifests
-# (platform/config/ingress.yaml x3 + platform/services/cluster-dashboard/manifests.yaml).
-# For the default internal ALB, that allowlist must cover this CIDR so in-VPC
-# sources — the CloudFront edge's VPC origin and the SSM tunnel — can reach the
-# ALB. Both ship as 10.10.0.0/16; if you change one, change the other.
+# VPC CIDR for the platform network. The ALB frontend security group
+# (terraform/30.eks/30.cluster/alb-security-group.tf) derives its in-VPC allow
+# rules from this automatically, so the CloudFront edge + SSM tunnel keep working
+# whatever you set here — no manifest edits needed.
 vpc_cidr = "10.10.0.0/16"
 
 tags = {}

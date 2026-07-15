@@ -1,4 +1,4 @@
-# VPC CIDR — keep in sync with the ingress `inbound-cidrs` (see example.tfvars).
+# VPC CIDR — the ALB frontend SG derives its rules from this automatically.
 vpc_cidr = "10.10.0.0/16"
 
 tags = {}

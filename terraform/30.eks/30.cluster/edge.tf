@@ -119,3 +119,30 @@ output "edge_cloudfront_urls" {
   description = "Public HTTPS URL per UI once the CloudFront edge is enabled (empty otherwise). Reach the UIs at these; SSO callbacks are wired automatically."
   value       = local.edge_public_urls
 }
+
+# The CloudFront VPC-origins service SG — one per VPC, created by CloudFront when
+# the first VPC origin is made. Discovered by its well-known tag so it's generic
+# across forks (no hardcoded SG id).
+data "aws_security_group" "cloudfront_vpcorigins" {
+  count = local.enable_cloudfront_edge ? 1 : 0
+
+  vpc_id = data.terraform_remote_state.vpc.outputs.vpc_id
+  tags   = { "aws.cloudfront.vpcorigin" = "enabled" }
+
+  depends_on = [aws_cloudfront_vpc_origin.edge]
+}
+
+# THE rule that makes the edge reachable: allow the CloudFront VPC origin to hit
+# the ALB on each UI port. VPC-origin traffic is matched by SG-reference (not the
+# VPC CIDR), and this lives on our own frontend SG (alb-security-group.tf) so the
+# AWS LB Controller can't strip it. Removed automatically when the edge is off.
+resource "aws_vpc_security_group_ingress_rule" "edge_from_cloudfront" {
+  for_each = local.enable_cloudfront_edge ? local.edge_ports : {}
+
+  security_group_id            = aws_security_group.alb_frontend.id
+  referenced_security_group_id = data.aws_security_group.cloudfront_vpcorigins[0].id
+  from_port                    = each.value
+  to_port                      = each.value
+  ip_protocol                  = "tcp"
+  description                  = "CloudFront VPC origin to ${each.key}"
+}
