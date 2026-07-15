@@ -95,12 +95,21 @@ gitops_revision = "main"
 # per-user cost shows up in LiteLLM spend reports. Identity Center is still only
 # needed for ArgoCD SSO.
 #   enable_sso = true
-# Once a public HTTPS front (e.g. CloudFront) is deployed, add its per-UI base
-# URLs so the browser OIDC redirects resolve publicly (tunnel keeps working too):
+#
+# Public front door (CloudFront). Opt-in, billable per distribution. When true,
+# Terraform stands up CloudFront VPC origins to the private ALB with a free
+# *.cloudfront.net cert and wires the Cognito callbacks automatically — no
+# sso_public_urls needed. Enable it AFTER `up` (the ALB must exist), most easily
+# via `./platformctl edge cloudfront`:
+#   enable_cloudfront_edge = false
+#
+# For your OWN domain on an internet-facing ALB instead, leave the edge off and
+# set the per-UI public base URLs here so the browser OIDC redirects resolve
+# publicly (tunnel keeps working too):
 #   sso_public_urls = {
-#     open-webui = "https://dXXXX.cloudfront.net"
-#     litellm    = "https://dYYYY.cloudfront.net"
-#     langfuse   = "https://dZZZZ.cloudfront.net"
+#     open-webui = "https://webui.your-domain.com"
+#     litellm    = "https://litellm.your-domain.com"
+#     langfuse   = "https://langfuse.your-domain.com"
 #   }
 # To federate your own enterprise IdP, add it to the Cognito pool (SAML/OIDC).
 
