@@ -100,6 +100,14 @@ resource "aws_cloudfront_distribution" "edge" {
     origin_request_policy_id = local.cf_all_viewer_orp_id
     allowed_methods          = ["GET", "HEAD", "OPTIONS", "PUT", "PATCH", "POST", "DELETE"]
     cached_methods           = ["GET", "HEAD"]
+
+    # Upgrade app-generated redirects (e.g. http://<domain>:8080/... from apps
+    # that build Location from the request, since TLS terminates here and the ALB
+    # listener is HTTP) to https://<domain>/... so OAuth/UI redirects don't break.
+    function_association {
+      event_type   = "viewer-response"
+      function_arn = aws_cloudfront_function.upgrade_redirects[0].arn
+    }
   }
 
   restrictions {
@@ -113,6 +121,36 @@ resource "aws_cloudfront_distribution" "edge" {
   }
 
   tags = local.tags
+}
+
+# CloudFront Function (viewer-response): rewrite Location headers of the form
+# http://<host>:<port>/path -> https://<host>/path. Apps like Open WebUI and
+# LiteLLM build redirect URLs from the request; behind this TLS-terminating edge
+# (ALB listener is HTTP) that yields http + the ALB port, which the browser
+# can't reach on CloudFront. This upgrades them at the edge — generic, no app or
+# ALB changes. Pure string ops (no regex) for CloudFront Functions' JS runtime.
+resource "aws_cloudfront_function" "upgrade_redirects" {
+  count   = local.enable_cloudfront_edge ? 1 : 0
+  name    = "${local.cluster_name}-edge-upgrade-redirects"
+  runtime = "cloudfront-js-2.0"
+  comment = "Upgrade http://host:port Location headers to https://host"
+  publish = true
+  code    = <<-EOT
+    function handler(event) {
+      var response = event.response;
+      var loc = response.headers && response.headers.location;
+      if (loc && loc.value && loc.value.indexOf('http://') === 0) {
+        var rest = loc.value.substring(7);
+        var slash = rest.indexOf('/');
+        var hostport = slash === -1 ? rest : rest.substring(0, slash);
+        var path = slash === -1 ? '' : rest.substring(slash);
+        var colon = hostport.indexOf(':');
+        var host = colon === -1 ? hostport : hostport.substring(0, colon);
+        loc.value = 'https://' + host + path;
+      }
+      return response;
+    }
+  EOT
 }
 
 output "edge_cloudfront_urls" {
