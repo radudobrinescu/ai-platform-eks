@@ -42,6 +42,10 @@ spec:
             # OAuth activates automatically once the client id/secret exist.
             - name: ENABLE_OAUTH_SIGNUP
               value: "true"
+            # Hide the local email/password form so the UI goes straight to
+            # Cognito SSO (single sign-on across the platform, no local login).
+            - name: ENABLE_LOGIN_FORM
+              value: "false"
             - name: OAUTH_PROVIDER_NAME
               value: "SSO"
             - name: OAUTH_SCOPES

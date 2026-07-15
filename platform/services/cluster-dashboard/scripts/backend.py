@@ -351,7 +351,7 @@ def _build_links() -> list:
         links.append({"label": "Open WebUI", "url": webui,
                       "desc": "Chat with models", "icon": "💬"})
     if litellm:
-        links.append({"label": "LiteLLM Admin", "url": litellm.rstrip("/") + "/ui",
+        links.append({"label": "LiteLLM Admin", "url": litellm.rstrip("/") + "/ui/",
                       "desc": "API gateway + keys + usage", "icon": "🔑"})
     if langfuse:
         links.append({"label": "Langfuse", "url": langfuse,

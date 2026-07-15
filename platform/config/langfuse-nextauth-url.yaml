@@ -44,6 +44,11 @@ rules:
   - apiGroups: ["apps"]
     resources: ["deployments"]
     verbs: ["get", "patch"]
+  # Read sso-secrets to prefer the public (CloudFront edge / domain) URL.
+  - apiGroups: [""]
+    resources: ["secrets"]
+    resourceNames: ["sso-secrets"]
+    verbs: ["get"]
 ---
 apiVersion: rbac.authorization.k8s.io/v1
 kind: RoleBinding
@@ -101,18 +106,14 @@ spec:
                     echo "waiting for deployment/$DEPLOY ... ($i)"; sleep 10
                   done
 
-                  # 1. Wait for the ALB hostname on the ingress status (~5 min).
-                  HOST=""
-                  for i in $(seq 1 30); do
-                    HOST=$(kubectl get ingress "$ING" -n "$NS" \
-                      -o jsonpath='{.status.loadBalancer.ingress[0].hostname}' 2>/dev/null || true)
-                    [ -n "$HOST" ] && break
-                    echo "waiting for ALB hostname on ingress/$ING ... ($i)"; sleep 10
-                  done
-                  if [ -z "$HOST" ]; then
-                    echo "ALB hostname not ready yet; will retry next run."; exit 0
-                  fi
-                  DESIRED="http://${HOST}:${PORT}"
+                  # 1. Prefer the configured public URL (CloudFront edge, or a
+                  #    custom domain in sso_public_urls) — that's the browser-
+                  #    facing origin when the platform is exposed publicly. Falls
+                  #    through to the ALB hostname (turnkey) when it's unset.
+                  PUBLIC=$(kubectl get secret sso-secrets -n "$NS" \
+                    -o jsonpath='{.data.langfuse-public-url}' 2>/dev/null \
+                    | base64 -d 2>/dev/null || true)
+                  case "$PUBLIC" in ""|*localhost*) PUBLIC="" ;; esac
 
                   # 2. Current NEXTAUTH_URL on the Deployment (first match wins).
                   CURRENT=$(kubectl get deploy "$DEPLOY" -n "$NS" \
@@ -120,14 +121,32 @@ spec:
                     2>/dev/null || true)
                   CURRENT=$(printf '%s' "$CURRENT" | awk '{print $1}')
 
-                  # 3. Defer to an operator-pinned custom URL. We only manage the
-                  #    chart placeholder (localhost) and our own ALB-derived value.
-                  case "$CURRENT" in
-                    ""|*localhost*|*elb.amazonaws.com*) : ;;
-                    *) echo "NEXTAUTH_URL pinned to '$CURRENT' — leaving as-is."; exit 0 ;;
-                  esac
+                  if [ -n "$PUBLIC" ]; then
+                    # Public front door set — reconcile straight to it.
+                    DESIRED="$PUBLIC"
+                  else
+                    # Wait for the ALB hostname on the ingress status (~5 min).
+                    HOST=""
+                    for i in $(seq 1 30); do
+                      HOST=$(kubectl get ingress "$ING" -n "$NS" \
+                        -o jsonpath='{.status.loadBalancer.ingress[0].hostname}' 2>/dev/null || true)
+                      [ -n "$HOST" ] && break
+                      echo "waiting for ALB hostname on ingress/$ING ... ($i)"; sleep 10
+                    done
+                    if [ -z "$HOST" ]; then
+                      echo "ALB hostname not ready yet; will retry next run."; exit 0
+                    fi
+                    DESIRED="http://${HOST}:${PORT}"
+                    # Defer to an operator-pinned custom URL. We manage only the
+                    # chart placeholder (localhost), our ALB value, and our own
+                    # prior CloudFront value (so disabling the edge reverts here).
+                    case "$CURRENT" in
+                      ""|*localhost*|*elb.amazonaws.com*|*cloudfront.net*) : ;;
+                      *) echo "NEXTAUTH_URL pinned to '$CURRENT' — leaving as-is."; exit 0 ;;
+                    esac
+                  fi
 
-                  # 4. Idempotent: patch + roll only when the value changes.
+                  # 3. Idempotent: patch + roll only when the value changes.
                   if [ "$CURRENT" = "$DESIRED" ]; then
                     echo "NEXTAUTH_URL already '$DESIRED' — nothing to do."; exit 0
                   fi
