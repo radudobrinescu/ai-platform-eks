@@ -87,13 +87,12 @@ cmd_status() {
 
   echo; log "Validating the platform end-to-end (--check)"
   need aws
-  local mk pf_pid=""
+  local mk code base="http://127.0.0.1:4000" pf_pid=""
   mk=$(kubectl get secret litellm-secrets -n "$NS_PLATFORM" -o jsonpath='{.data.master-key}' 2>/dev/null | base64 -d) \
     || { warn "cannot read litellm master key — is the platform up?"; return 1; }
   kubectl port-forward -n "$NS_PLATFORM" svc/litellm 4000:4000 >/dev/null 2>&1 &
-  pf_pid=$!; trap '[ -n "$pf_pid" ] && kill $pf_pid 2>/dev/null || true' RETURN
+  pf_pid=$!
   sleep 4
-  local base="http://127.0.0.1:4000"
 
   # 1) Gateway answers.
   if curl -fsS "$base/v1/models" -H "Authorization: Bearer $mk" >/dev/null 2>&1; then
@@ -102,7 +101,6 @@ cmd_status() {
     warn "LiteLLM gateway not responding"
   fi
   # 2) Bedrock model access (the #1 fresh-install gotcha — a manual per-account toggle).
-  local code
   code=$(curl -s -o /dev/null -w '%{http_code}' -X POST "$base/v1/chat/completions" \
     -H "Authorization: Bearer $mk" -H "Content-Type: application/json" \
     -d '{"model":"claude-opus-4-8","messages":[{"role":"user","content":"ping"}],"max_tokens":5}')
@@ -118,6 +116,8 @@ cmd_status() {
   else
     warn "Langfuse health check failed (tracing may be starting)"
   fi
+
+  [ -n "${pf_pid:-}" ] && kill "$pf_pid" 2>/dev/null || true
 }
 
 # ---- tunnel ---------------------------------------------------------------- #
