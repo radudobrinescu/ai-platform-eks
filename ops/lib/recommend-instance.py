@@ -7,8 +7,8 @@ concern: catalog, pricing, model, vram, throughput, recommend, scaling,
 render, cli). See recommend_instance/__init__.py for the full usage docs, or
 run with --help.
 
-Kept as a top-level script so existing callers (README, compare-models.py,
-docs) keep working unchanged:  ./ops/recommend-instance.py <model> [flags]
+Invoked via `./platformctl new-model <model> [flags]`; also runnable directly as
+`./ops/lib/recommend-instance.py <model> [flags]`.
 """
 
 import os

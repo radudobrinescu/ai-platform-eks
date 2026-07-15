@@ -10,9 +10,10 @@
 # IP and is unreachable from the internet. Reach the UIs two ways:
 #   * ./platformctl tunnel — kubectl port-forward straight to the pods (works
 #     regardless of ALB scheme; the everyday operator path).
-#   * The opt-in CloudFront edge (platform/services/edge) — public HTTPS via a
-#     CloudFront VPC origin that connects privately to this internal ALB. That
-#     is the supported way to expose the UIs publicly, with TLS + SSO in front.
+#   * The opt-in CloudFront edge (`./platformctl edge cloudfront`, built in
+#     Terraform) — public HTTPS via a CloudFront VPC origin that connects
+#     privately to this internal ALB. The supported way to expose the UIs
+#     publicly, with TLS + SSO in front.
 # To instead expose the ALB directly to the internet (IP-allowlisted), flip all
 # four `scheme` values to `internet-facing` and set inbound-cidrs to your IPs.
 #

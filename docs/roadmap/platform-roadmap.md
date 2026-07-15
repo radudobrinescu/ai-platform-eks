@@ -83,16 +83,16 @@ nice-to-have.
 ### 4. First-class evaluation & quality gates
 **Status**: Proposed · **Priority**: High · **Effort**: Medium
 
-**Why.** "A fine-tuned 3B matches Opus at a fraction of the cost" is the
-platform's crown-jewel story, but `ops/compare-models.py` is a manual script.
-Make it rigorous and repeatable.
+**Why.** The platform serves many models (Bedrock + self-hosted vLLM/llm-d) but
+has no systematic way to compare their quality or catch regressions before a
+model deploys. Make model evaluation rigorous and repeatable.
 
 **Approach.**
 - Scheduled evals against golden datasets, results tracked as Langfuse dataset
   runs.
 - **Regression gates in CI / code review**: a model can't deploy if it regresses
   on its golden set.
-- Per-model quality + drift dashboards; surface the cost-crossover automatically.
+- Per-model quality + drift dashboards; surface cost/quality tradeoffs automatically.
 
 ### 5. Pre-merge validation (admission + dry-run)
 **Status**: Proposed · **Priority**: High · **Effort**: Medium

@@ -181,6 +181,6 @@ then fold in guardrails (with the Gateway Guardrails initiative).
 - **Gateway guardrails**: vSR's PII/jailbreak plugins could later satisfy part of
   that initiative — same component, deferred here to keep v1 cost-only.
 - **Evaluation & quality gates**: Phase 0 sizing and Phase 1 shadow-mode reuse
-  the Langfuse dataset-run / `ops/compare-models.py` machinery.
+  the Langfuse dataset-run machinery.
 - **Deploy**: its Helm chart as an ArgoCD platform service (like LiteLLM/Langfuse);
   no operator/CRD unless its lifecycle is needed.

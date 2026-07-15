@@ -32,11 +32,10 @@ By default, models live in this repo. For real multi-team self-service, point
 access to the **workloads repo only** — never the platform repo. The
 directory-per-namespace convention above is unchanged.
 
-## Bedrock + the cost comparison
+## Bedrock — available out of the box
 
 Bedrock's `claude-opus-4-8` is a static LiteLLM entry (no GPUs, no CR), so a
-fresh install serves against it out of the box. To run the cost-crossover
-comparison (`./platformctl compare`), add a small base model here (a
-`VLLMEndpoint`) and, for the fine-tuned contender, serve your externally
-fine-tuned weights via `modelSource: <s3-prefix>` — the platform serves tuned
-models; it does not train them.
+fresh install serves against it immediately. To serve your own externally
+fine-tuned weights, point a `VLLMEndpoint` here at them via
+`modelSource: <s3-prefix>` — the platform serves tuned models; it does not
+train them.

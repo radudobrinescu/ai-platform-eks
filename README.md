@@ -93,7 +93,7 @@ export AWS_REGION=eu-central-1
 
 # 3. Use it immediately — no GPUs yet.
 ./platformctl tunnel        # forward the UIs (WebUI / LiteLLM / Langfuse)
-./platformctl preflight     # verify Bedrock + models answer AND Langfuse tracing works
+./platformctl status --check  # verify Bedrock + models answer AND Langfuse tracing works
 
 # 4. Deploy a self-hosted model — commit a YAML and push.
 cp workloads/models/TEMPLATE.yaml.example workloads/models/qwen3-3b.yaml
@@ -102,8 +102,8 @@ git add workloads/models/qwen3-3b.yaml && git commit -m "feat: deploy qwen3-3b" 
 kubectl get vllmendpoints -n inference -w
 ```
 
-`./platformctl` is a thin wrapper over `make` + `ops/` (`up · status · tunnel ·
-preflight · compare · down`). The UIs sit behind one **internal** ALB
+`./platformctl` is the single CLI over `make` + Terraform + `ops/lib/` (`up ·
+status[--check] · tunnel · edge · new-model · down`). The UIs sit behind one **internal** ALB
 (Open WebUI `:8080` · LiteLLM `:4000` · Langfuse `:3000` · Dashboard `:9090`) with
 no public IP — reach them with `./platformctl tunnel`, or publicly via the opt-in
 CloudFront edge. (Switch the ALB to `internet-facing` + set an IP allowlist to
@@ -113,20 +113,10 @@ expose it directly.)
 
 ## Beyond the basics
 
-**Prove small + fine-tuned beats big.** Run the same eval set through the frontier
-model, a base small model, and a fine-tuned small model (served via `modelSource`)
-— Langfuse shows the tuned 3B matching Opus 4.8 on a narrow task at a fraction of
-the cost, and the script prints the **cost crossover** (daily volume above which
-self-hosting wins):
-
-```bash
-./platformctl compare    # → ops/compare-models.py, traced as a Langfuse dataset run
-```
-
-Serve your own fine-tuned model with the same `git push` loop: upload the weights
-to the model-cache bucket and point a `VLLMEndpoint` (or `LLMDEndpoint`) at them
-with `modelSource: <s3-prefix>`. The platform **serves** tuned models — you bring
-the training (fine-tuning itself is out of scope).
+**Serve your own fine-tuned model.** Upload the weights to the model-cache bucket
+and point a `VLLMEndpoint` (or `LLMDEndpoint`) at them with `modelSource: <s3-prefix>`,
+shipped with the same `git push` loop. The platform **serves** tuned models — you
+bring the training (fine-tuning itself is out of scope).
 
 **Scale-tier routing (llm-d).** For high-QPS or long, multi-turn/agentic
 workloads, commit an `LLMDEndpoint` (see `workloads/scale-models/`) and the
@@ -171,13 +161,10 @@ It works out of the box over `./platformctl tunnel` (Cognito allows `localhost`
 callbacks); bring your own enterprise IdP by federating it into the pool. Cognito is
 the only new hard dependency — Identity Center stays required only for ArgoCD SSO.
 For **public HTTPS** access (and to protect the dashboard behind auth), opt in to
-the CloudFront edge in
-[`platform/services/edge/`](platform/services/edge/README.md) — CloudFront via ACK
-over a **VPC origin** to the private ALB, with a free `*.cloudfront.net` certificate
-(no domain needed).
-
-**Presenting it?** [docs/demo-walkthrough.md](docs/demo-walkthrough.md) is a timed
-presenter's script (10/20/30-min cuts) with talk track and fallbacks.
+the CloudFront edge with `./platformctl edge cloudfront` — Terraform stands up a
+CloudFront **VPC origin** to the private ALB, with a free `*.cloudfront.net`
+certificate (no domain needed) and the Cognito callbacks wired automatically. For
+your own domain, `./platformctl edge domain` (internet-facing ALB + your ACM cert).
 
 ---
 
@@ -203,12 +190,8 @@ steps below. The script does **not** touch the bootstrap state (S3
 kubectl delete applicationset --all -n argocd --wait=false
 kubectl delete application    --all -n argocd --wait=false
 kubectl delete vllmendpoints,llmdendpoints,llmddisaggendpoints,aiteams --all -A --wait=false
-# If the CloudFront edge was activated (platform/services/edge): delete the
-# Distributions first, then the VPCOrigins, so ACK removes the real CloudFront
-# resources BEFORE the cluster (and the ACK controller) are destroyed — otherwise
-# they orphan. (A VPC origin can't delete while a distribution still references it.)
-kubectl delete distributions.cloudfront.services.k8s.aws --all -n ai-platform --wait=false 2>/dev/null || true
-kubectl delete vpcorigins.cloudfront.services.k8s.aws   --all -n ai-platform --wait=false 2>/dev/null || true
+# If you enabled the CloudFront edge, disable it first so Terraform removes the
+# distributions + VPC origins cleanly: ./platformctl edge tunnel
 kubectl delete ingress --all -A --wait=false      # → ALB controller cleans up the ALB
 
 ./platformctl down <env>
@@ -265,9 +248,10 @@ platform/
                     cluster-dashboard (+ Platform Health Agent), inference-gateway
   images/           Container build contexts (platform-controller)
 workloads/          Self-service YAMLs: models/ · scale-models/ · teams/
-ops/                Operational scripts (ops/demo/ holds demo-only scripts)
+platformctl         The unified CLI (up · status · tunnel · edge · new-model · down)
+ops/                platformctl implementation: ops/lib/ (helpers) · ops/image/ (cold-start build helpers)
 terraform/          Infrastructure modules (VPC → IAM → EKS → observability)
-docs/               demo-walkthrough · platform-product-report ·
+docs/               platform-product-report ·
                     llm-d-and-ingress-architecture · roadmap/
 ```
 

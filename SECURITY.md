@@ -19,7 +19,7 @@ following for your environment:
   dashboard) sit behind an **internal** Application Load Balancer with no public IP —
   unreachable from the internet. Reach them with `./platformctl tunnel`
   (kubectl port-forward) or expose them publicly via the opt-in **CloudFront VPC-origin
-  edge** (`platform/services/edge/`), which fronts the private ALB with HTTPS + SSO.
+  edge** (`./platformctl edge cloudfront`, built in Terraform), which fronts the private ALB with HTTPS + SSO.
   If you instead switch the ALB to `internet-facing` (all four ingress `scheme`
   values), you **must** set the `inbound-cidrs` allowlist to your own IP ranges —
   **never leave it open to `0.0.0.0/0`**.

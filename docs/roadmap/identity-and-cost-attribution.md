@@ -156,18 +156,18 @@ app-client callback URLs default to the localhost tunnel ports). Per-user cost
 appears in LiteLLM spend reports once users chat through Open WebUI.
 
 **Remaining — CloudFront public HTTPS (opt-in, implemented via ACK):** the ALB is
-created by the in-cluster LB controller *after* Terraform runs, so CloudFront can't
-reference it in the same apply. Rather than a two-phase Terraform stage, the edge
-is implemented as **ACK CloudFront `Distribution` manifests** in
-`platform/services/edge/` (the CloudFront ACK CRDs ship with the managed `ack`
-capability — verified present on-cluster; the `Distribution` manifests are
-schema-validated via `kubectl apply --dry-run=server`). It is **opt-in** (not in the
-platform ApplicationSet list) because each distribution is billable. A
-`reconcile-edge` Job discovers the runtime ALB hostname, patches each distribution's
-origin, and writes the resulting `*.cloudfront.net` domains into `sso-secrets`; the
-operator then sets `sso_public_urls` + `terraform apply` to update the Cognito
-callbacks and flips oauth2-proxy to `--cookie-secure=true`. See
-`platform/services/edge/README.md`. Until activated, the temporary ALB
+created by the in-cluster LB controller *after* Terraform first runs, so CloudFront
+can't reference it in the same apply. The edge is therefore **two-phase Terraform**:
+the CloudFront VPC origins + distributions (in `terraform/30.eks/30.cluster/edge.tf`)
+are gated behind `enable_cloudfront_edge` and applied *after* `up` — a `data "aws_lb"`
+discovers the ALB by its ingress-group tags, so a targeted re-apply
+(`./platformctl edge cloudfront`) picks up the live ALB. It is **opt-in** because each
+distribution is billable. Terraform writes the resulting `*.cloudfront.net` domains
+straight into the Cognito callback/logout URLs and the app `*-public-url` secrets —
+no manual `sso_public_urls` step — and the ALB stays internal. (An earlier iteration
+used ACK `Distribution` CRDs, but the managed ACK CloudFront controller can't create
+VPC origins — `cloudfront:CreateVpcOrigin` is outside its permission set and isn't
+extensible — so Terraform owns the edge.) Until activated, the temporary ALB
 `inbound-cidrs` allowlist stays.
 
 **Live end-to-end validation** (login flow + per-user spend) requires

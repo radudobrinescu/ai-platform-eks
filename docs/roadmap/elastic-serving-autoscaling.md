@@ -145,7 +145,7 @@ and the arrival trigger in the ScaledObject (`activationThreshold: 0`).
 **Unpark checklist (when the payoff justifies it):**
 - [ ] Extend `image-optimization.tf` to bake **and** SOCI-index the llm-d
       `vllm/vllm-openai` image (today it's Ray-only); set `docker_hub_username`.
-- [ ] Seed each scale-to-zero model into the S3 cache (`ops/seed-model-cache.py`).
+- [ ] Seed each scale-to-zero model into the S3 model-cache bucket ahead of time.
 - [ ] LiteLLM: `disable_cooldowns` (assess platform-wide blast radius) + a
       cold-start hold + confirm the model stays in `/v1/models` through a wake.
 - [ ] Relax the schema back to `minReplicas: 0`.

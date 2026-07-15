@@ -89,7 +89,7 @@ langfuse:
     #     detects the non-placeholder value and leaves it alone.
     #
     #   - SSM tunnel fallback: the localhost default below still works via
-    #     ./ops/ssm-tunnel.sh on a cluster with no ALB ingress.
+    #     ./platformctl tunnel on a cluster with no ALB ingress.
     url: "http://localhost:3000"
     secret:
       secretKeyRef:

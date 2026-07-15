@@ -105,7 +105,7 @@ gitops_revision = "main"
 # To federate your own enterprise IdP, add it to the Cognito pool (SAML/OIDC).
 
 # Langfuse first-boot init (tracing live on the first call — no manual setup).
-# Default URL works with the SSM tunnel (ops/ssm-tunnel.sh). For ALB access use
+# Default URL works with the SSM tunnel (./platformctl tunnel). For ALB access use
 # e.g. http://k8s-aiplatform-<hash>.<region>.elb.amazonaws.com:3000, or
 # https://langfuse.<your-domain> behind a domain + cert.
 # langfuse_nextauth_url    = "http://localhost:3000"

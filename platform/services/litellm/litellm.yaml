@@ -169,7 +169,7 @@ data:
       # cross-region inference profile (works in any region; swap to `eu.`/`us.`
       # to pin a geography). Verify the exact model ID + region availability in
       # the Bedrock console; it's a one-line edit. Requires Bedrock model access
-      # enabled in-account (a one-time console toggle) — compare-models.py preflights it.
+      # enabled in-account (a one-time console toggle) — `./platformctl status --check` validates it.
       - model_name: claude-opus-4-8
         litellm_params:
           model: bedrock/global.anthropic.claude-opus-4-8

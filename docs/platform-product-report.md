@@ -51,8 +51,6 @@ Grouped by capability domain. Legend: ✅ built today · 🔶 partial/gap · �
 
 ### C. Cost & efficiency
 - ✅ Scale-to-zero idle GPUs (Karpenter), spot + on-demand, right-sizing.
-- ✅ **Cost-crossover proof** (`compare-models.py`): shows the daily volume above which a tuned 3B beats a
-  frontier model — a sales artifact, not just a script.
 - 🎯 Reserved-fleet story (StaticCapacity / ODCR / Capacity Blocks), per-team GPU chargeback.
 
 ### D. Governance, security & multi-tenancy
@@ -68,7 +66,7 @@ Grouped by capability domain. Legend: ✅ built today · 🔶 partial/gap · �
 
 ### F. Operations & Day-2
 - ✅ Cold-start engineering (EBS image snapshot + SOCI + S3 weight cache) → ~15s vs ~60s loads.
-- ✅ `platformctl` ops CLI (up/status/tunnel/preflight/compare/down), instance recommender, Platform Health
+- ✅ `platformctl` ops CLI (up/status[--check]/tunnel/edge/new-model/down), instance recommender, Platform Health
   Agent (LLM-assisted incident triage with human-approved fixes).
 - ✅ GitOps everything (ArgoCD prune + self-heal + server-side apply).
 
@@ -80,7 +78,7 @@ Grouped by capability domain. Legend: ✅ built today · 🔶 partial/gap · �
 |---|---|---|
 | **Developer / data-science team** | `git push` a YAML → a live, governed model endpoint. Same OpenAI API for Bedrock, open, and fine-tuned models. | Ship AI features in minutes without touching GPUs, Helm, or infra. No new SDK. |
 | **Platform / infra team** | One opinionated, GitOps-native distribution; AWS runs the control plane, ArgoCD/KRO/ACK, and increasingly the compute. | Operate an AI platform without building one; ride the AWS roadmap instead of maintaining custom code. |
-| **Finance / FinOps** | Scale-to-zero, GPU time-slicing, per-team budgets, and a **proven cost-crossover** between self-host and frontier. | Turn GPU spend into a governed, attributable, optimizable line item. |
+| **Finance / FinOps** | Scale-to-zero, GPU time-slicing, and per-team budgets. | Turn GPU spend into a governed, attributable, optimizable line item. |
 | **Security / compliance** | Everything runs **in your AWS account and VPC**; per-team isolation, keys, and audit; CNCF/OSS components (no lock-in). | Data sovereignty and control — the core reason this segment self-hosts. |
 | **Business / product** | Frontier quality on day one (Bedrock), then a path to cheaper tuned models for narrow tasks, plus RAG and agents as first-class. | Start delivering value immediately; reduce unit cost as usage scales. |
 
@@ -104,7 +102,7 @@ Prioritized on **"what gates a sale"**, not raw technical interest. Three tiers:
 *The moat.*
 - The **KRO self-service catalog** (git-push-to-model) + GitOps ✅ foundation.
 - **RAG blueprint** (the #1 enterprise pattern) + embeddings/rerankers + vector DB.
-- **Fine-tune → serve** loop ✅ and multi-LoRA; day-one Bedrock ✅; cost-crossover proof ✅.
+- **Serve any model** — day-one Bedrock ✅; self-hosted vLLM + the llm-d scale tier ✅; serve your own fine-tuned weights (`modelSource`) ✅.
 - **Dual serving** (simple single-node vLLM → llm-d scale path).
 
 ### Tier 3 — Expansion (land-and-expand, enterprise depth)
@@ -213,7 +211,7 @@ Concern-by-concern (where the line sits):
 | **Networking edge** | NLB/ALB, ACM, VPC | TLS, gateway, HTTPRoutes, IP allowlist | nothing (consumes the shared endpoint) |
 | **Identity** | IAM, IRSA, Pod Identity, Identity Center | role wiring, per-team RBAC/keys | uses their team's key/namespace |
 | **Observability** | AMP, CloudWatch, X-Ray | Langfuse, DCGM scrape, dashboards, alerts | reads their traces/dashboards |
-| **Cost** | billing, Karpenter right-sizing | budgets, time-slicing, chargeback, cost-crossover tool | sets a team budget/limits |
+| **Cost** | billing, Karpenter right-sizing | budgets, time-slicing, chargeback | sets a team budget/limits |
 | **Security controls** | KMS, SGs, network policy engine | baseline (TLS/auth/isolation), guardrails | inherits; can tighten within their ns |
 
 **The clean mental model:**
