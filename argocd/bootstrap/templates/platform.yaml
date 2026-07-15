@@ -93,15 +93,6 @@ spec:
             type: directory
             path: platform/services/litellm-sync
             tier: platform
-          # CloudFront edge (opt-in) — public HTTPS for the UIs via CloudFront
-          # VPC origins to the internal ALB. Each Distribution is billable;
-          # activated here + var.enable_edge (the reconcile-edge IRSA role) +
-          # the ALB SG opened to the VPC origin. See platform/services/edge/README.md.
-          - name: edge
-            namespace: ai-platform
-            type: directory
-            path: platform/services/edge
-            tier: platform
   template:
     metadata:
       name: '{{`{{.name}}`}}'
@@ -144,22 +135,6 @@ spec:
           name: langfuse-web
           jqPathExpressions:
             - '.spec.template.spec.containers[].env[]? | select(.name == "NEXTAUTH_URL")'
-        # CloudFront edge (opt-in, platform/services/edge): the ALB is created
-        # in-cluster at runtime, so its ARN/hostname and the resulting VPC-origin
-        # id are values git cannot know at author time. The reconcile-edge Job
-        # discovers and patches exactly these three fields; ignore them so
-        # selfHeal doesn't revert the Job (same pattern as NEXTAUTH_URL above).
-        # git owns the resource shape; the Job owns only these runtime fields.
-        # Inert for every app that has no CloudFront resources.
-        - group: cloudfront.services.k8s.aws
-          kind: Distribution
-          jqPathExpressions:
-            - '.spec.distributionConfig.origins.items[].domainName'
-            - '.spec.distributionConfig.origins.items[].vpcOriginConfig.vpcOriginID'
-        - group: cloudfront.services.k8s.aws
-          kind: VPCOrigin
-          jsonPointers:
-            - /spec/vpcOriginEndpointConfig/arn
       syncPolicy:
         automated:
           prune: true

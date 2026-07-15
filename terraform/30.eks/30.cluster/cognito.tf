@@ -25,17 +25,34 @@ locals {
     "oauth2-proxy" = { port = 9090, callback = "/oauth2/callback", logout = "/" }
   }
 
-  # callback/logout URL lists = localhost tunnel + optional public (CloudFront) URL.
+  # Each SSO app's CloudFront edge key (the dashboard UI is fronted by the
+  # oauth2-proxy gate, so its edge origin is keyed "dashboard").
+  sso_edge_key = {
+    "open-webui"   = "open-webui"
+    "litellm"      = "litellm"
+    "langfuse"     = "langfuse"
+    "oauth2-proxy" = "dashboard"
+  }
+
+  # Public base URL per app: the CloudFront edge URL when that edge is enabled
+  # (auto-wired, no manual step), else an explicit var.sso_public_urls entry
+  # (e.g. an internet-facing ALB behind your own domain), else none.
+  sso_public_url = {
+    for app, cfg in local.sso_apps : app =>
+    try(local.edge_public_urls[local.sso_edge_key[app]], try(var.sso_public_urls[app], ""))
+  }
+
+  # callback/logout URL lists = localhost tunnel + optional public URL.
   sso_callbacks = {
     for app, cfg in local.sso_apps : app => compact([
       "http://localhost:${cfg.port}${cfg.callback}",
-      try("${var.sso_public_urls[app]}${cfg.callback}", ""),
+      local.sso_public_url[app] != "" ? "${local.sso_public_url[app]}${cfg.callback}" : "",
     ])
   }
   sso_logouts = {
     for app, cfg in local.sso_apps : app => compact([
       "http://localhost:${cfg.port}${cfg.logout}",
-      try("${var.sso_public_urls[app]}${cfg.logout}", ""),
+      local.sso_public_url[app] != "" ? "${local.sso_public_url[app]}${cfg.logout}" : "",
     ])
   }
 
@@ -223,10 +240,11 @@ resource "kubernetes_secret" "sso_secrets" {
       # Seed admin's user_id (LiteLLM keys SSO users by email) -> PROXY_ADMIN_ID.
       "admin-user-id" = one([for e, g in local.sso_seed_users : e if g == "ai-platform-admins"])
       # Public base URL per UI. Defaults to the localhost tunnel URL (so SSO
-      # works out of the box via `platformctl tunnel`); overridden by CloudFront.
-      "open-webui-public-url" = try(var.sso_public_urls["open-webui"], "http://localhost:8080")
-      "litellm-public-url"    = try(var.sso_public_urls["litellm"], "http://localhost:4000")
-      "langfuse-public-url"   = try(var.sso_public_urls["langfuse"], "http://localhost:3000")
+      # works out of the box via `platformctl tunnel`); overridden by the
+      # CloudFront edge (auto) or an explicit var.sso_public_urls entry.
+      "open-webui-public-url" = local.sso_public_url["open-webui"] != "" ? local.sso_public_url["open-webui"] : "http://localhost:8080"
+      "litellm-public-url"    = local.sso_public_url["litellm"] != "" ? local.sso_public_url["litellm"] : "http://localhost:4000"
+      "langfuse-public-url"   = local.sso_public_url["langfuse"] != "" ? local.sso_public_url["langfuse"] : "http://localhost:3000"
     },
     { for app in keys(local.sso_apps) : "${app}-client-id" => aws_cognito_user_pool_client.apps[app].id },
     { for app in keys(local.sso_apps) : "${app}-client-secret" => aws_cognito_user_pool_client.apps[app].client_secret },

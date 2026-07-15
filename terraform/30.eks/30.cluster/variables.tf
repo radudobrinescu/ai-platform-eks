@@ -65,8 +65,8 @@ variable "gitops_workloads_repo_url" {
   default     = ""
 }
 
-variable "enable_edge" {
-  description = "Activate the opt-in CloudFront edge (platform/services/edge): a public HTTPS front for the platform UIs via CloudFront VPC origins to the internal ALB. When true, Terraform creates the read-only IRSA role the reconcile-edge Job uses to resolve the ALB ARN. You must ALSO add `edge` to the platform ApplicationSet and set the role ARN on the reconcile-edge ServiceAccount. Each Distribution is billable. See platform/services/edge/README.md."
+variable "enable_cloudfront_edge" {
+  description = "Activate the opt-in CloudFront edge: public HTTPS for the platform UIs via CloudFront VPC origins to the INTERNAL ALB (built in Terraform — the managed ACK controller can't create VPC origins). Requires the ALB to already exist, so enable it as a post-up step (`./platformctl edge cloudfront`). Each distribution is billable. The CloudFront domains auto-wire into the Cognito callback URLs. See docs / platformctl edge."
   type        = bool
   default     = false
 }
@@ -90,7 +90,7 @@ variable "enable_bedrock" {
 }
 
 variable "gpu_data_volume_snapshot_id" {
-  description = "EBS snapshot ID containing the pre-pulled GPU container image (vLLM serving image). Created by ops/create-data-volume-snapshot.sh. When set, Karpenter GPU nodes boot with the image already on disk, eliminating the multi-minute image pull."
+  description = "EBS snapshot ID containing the pre-pulled GPU container image (vLLM serving image). Created by ops/image/create-data-volume-snapshot.sh. When set, Karpenter GPU nodes boot with the image already on disk, eliminating the multi-minute image pull."
   type        = string
   default     = ""
 }
