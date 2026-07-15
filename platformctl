@@ -60,7 +60,7 @@ resolve_env() {
 
 need_env() {
   local env; env=$(resolve_env "${1:-}") || die "cannot determine the environment.
-  Pass it explicitly (e.g. '$2 eu-central') or set PLATFORM_ENV=<env>."
+  Pass it explicitly (e.g. '$2 <env>') or set PLATFORM_ENV=<env>."
   echo "$env"
 }
 

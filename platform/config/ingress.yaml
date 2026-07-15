@@ -19,11 +19,12 @@
 #
 # INBOUND-CIDRS: source allowlist on the ALB security group. For the internal
 # default this bounds which in-VPC sources (the CloudFront VPC origin, a VPN, a
-# bastion) may reach the ALB — the edge README documents the exact rule for the
-# CloudFront VPC origin. If you switch scheme to internet-facing, this becomes
-# your public operator/office allowlist (never leave it 0.0.0.0/0). Set it to
-# your own CIDRs; a fresh install should treat the value below as a placeholder.
-# Keep all four occurrences (here x3 + cluster-dashboard) in sync.
+# bastion) may reach the ALB, so it MUST cover your VPC CIDR (Terraform's
+# var.vpc_cidr) — otherwise the CloudFront edge and the SSM tunnel can't reach
+# the ALB. It ships as 10.10.0.0/16 to match the example tfvars vpc_cidr; if you
+# change vpc_cidr, change this too. If you switch scheme to internet-facing,
+# this instead becomes your public operator/office allowlist (never leave it
+# 0.0.0.0/0). Keep all four occurrences (here x3 + cluster-dashboard) in sync.
 apiVersion: networking.k8s.io/v1
 kind: Ingress
 metadata:

@@ -88,7 +88,7 @@ allowlist, and supply gated-model tokens where needed. The shape of it:
 cd terraform/00.global/vars && cp example.tfvars dev.tfvars   # set ARN + gitops repo URL
 
 # 2. Provision everything (VPC → EKS + capabilities → Karpenter → secrets).
-export AWS_REGION=eu-central-1
+export AWS_REGION=<your-region>   # e.g. eu-central-1
 ./platformctl up dev
 
 # 3. Use it immediately — no GPUs yet.

@@ -1,4 +1,5 @@
-vpc_cidr = "10.5.0.0/16"
+# VPC CIDR — keep in sync with the ingress `inbound-cidrs` (see example.tfvars).
+vpc_cidr = "10.10.0.0/16"
 
 tags = {}
 

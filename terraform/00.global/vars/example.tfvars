@@ -1,4 +1,10 @@
-vpc_cidr = "10.5.0.0/16"
+# VPC CIDR for the platform network. IMPORTANT: keep this in sync with the
+# `alb.ingress.kubernetes.io/inbound-cidrs` value in the ingress manifests
+# (platform/config/ingress.yaml x3 + platform/services/cluster-dashboard/manifests.yaml).
+# For the default internal ALB, that allowlist must cover this CIDR so in-VPC
+# sources — the CloudFront edge's VPC origin and the SSM tunnel — can reach the
+# ALB. Both ship as 10.10.0.0/16; if you change one, change the other.
+vpc_cidr = "10.10.0.0/16"
 
 tags = {}
 
