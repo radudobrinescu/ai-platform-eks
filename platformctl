@@ -7,30 +7,33 @@
 #
 # Usage:
 #   ./platformctl up      [ENV]        Provision everything (state backend + all Terraform stages)
-#   ./platformctl status  [--check]    Show platform health; --check also validates it end-to-end
+#   ./platformctl status  [--check]    Show health + where the UIs are reachable; --check validates end-to-end
 #   ./platformctl tunnel               Reach the private UIs locally (SSM port-forward to the ClusterIPs)
-#   ./platformctl edge    [MODE]       Choose the public front door: cloudfront | domain | tunnel
+#   ./platformctl edge    [MODE] [ENV] Choose the public front door: cloudfront | domain | tunnel
 #   ./platformctl new-model MODEL [..] Right-size a model + scaffold its serving YAML (VLLMEndpoint/LLMDEndpoint)
 #   ./platformctl down    [ENV]        Tear everything down (asks to confirm)
 #
-# ENV defaults to $PLATFORM_ENV or "dev". Region comes from $AWS_REGION / your AWS config.
+# ENV is resolved in this order and NEVER guessed: explicit arg > $PLATFORM_ENV >
+# the deployed Terraform workspace of the cluster stage. Region comes from
+# $AWS_REGION / your AWS config.
 set -euo pipefail
 
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 TF_DIR="${REPO_ROOT}/terraform"
 LIB_DIR="${REPO_ROOT}/ops/lib"
 CLUSTER_STAGE="30.eks/30.cluster"
-ENVIRONMENT="${PLATFORM_ENV:-dev}"
 NS_PLATFORM="ai-platform"
-NS_INFERENCE="inference"
+
+# UI -> local tunnel port (matches ops/lib/tunnel.sh and the ALB listener ports).
+UI_PORTS=("Open WebUI:8080" "LiteLLM:4000" "Langfuse:3000" "Dashboard:9090")
 
 c_bold=$'\033[1m'; c_dim=$'\033[2m'; c_grn=$'\033[32m'; c_red=$'\033[31m'; c_ylw=$'\033[33m'; c_rst=$'\033[0m'
 [ -t 1 ] || { c_bold=""; c_dim=""; c_grn=""; c_red=""; c_ylw=""; c_rst=""; }
 
 log()  { echo "${c_bold}==>${c_rst} $*"; }
 ok()   { echo "${c_grn}✓${c_rst} $*"; }
-warn() { echo "${c_red}!${c_rst} $*" >&2; }
-die()  { warn "$*"; exit 1; }
+warn() { echo "${c_ylw}!${c_rst} $*" >&2; }
+die()  { echo "${c_red}✗${c_rst} $*" >&2; exit 1; }
 need() { command -v "$1" >/dev/null 2>&1 || die "missing required tool: $1"; }
 
 # Print the leading comment block as usage.
@@ -42,10 +45,41 @@ require_tfvars() {
   Copy 00.global/vars/example.tfvars and set your Identity Center ARN + gitops_repo_url."
 }
 
+# Resolve the target env WITHOUT ever guessing (guessing 'dev' would point
+# Terraform at the wrong/empty workspace). Order: explicit arg > $PLATFORM_ENV >
+# the cluster stage's selected Terraform workspace. Empty string => unresolved.
+resolve_env() {
+  local explicit="${1:-}"
+  if [ -n "$explicit" ]; then echo "$explicit"; return 0; fi
+  if [ -n "${PLATFORM_ENV:-}" ]; then echo "$PLATFORM_ENV"; return 0; fi
+  local ws
+  ws=$(cat "${TF_DIR}/${CLUSTER_STAGE}/.terraform/environment" 2>/dev/null || true)
+  [ -n "$ws" ] && [ "$ws" != "default" ] && { echo "$ws"; return 0; }
+  return 1
+}
+
+need_env() {
+  local env; env=$(resolve_env "${1:-}") || die "cannot determine the environment.
+  Pass it explicitly (e.g. '$2 eu-central') or set PLATFORM_ENV=<env>."
+  echo "$env"
+}
+
+# True if a TCP listener is up on localhost:<port> (detects an active tunnel).
+port_open() { (exec 3<>"/dev/tcp/127.0.0.1/$1") 2>/dev/null; }
+
+# Print the live CloudFront edge URLs (empty if none), env-agnostic — reads the
+# real distributions so it reflects what's actually deployed, not just config.
+edge_urls_live() {
+  aws cloudfront list-distributions \
+    --query "DistributionList.Items[?starts_with(Comment,'ai-platform ')].[Comment,DomainName,Status]" \
+    --output text 2>/dev/null \
+    | awk -F'\t' 'NF{sub(/^ai-platform /,"",$1); printf "    %-11s https://%s  [%s]\n",$1,$2,$3}'
+}
+
 # ---- up / down ------------------------------------------------------------- #
 
 cmd_up() {
-  local env="${1:-$ENVIRONMENT}"
+  local env; env=$(need_env "${1:-}" "up")
   need terraform; need aws; need make; require_tfvars "$env"
   log "Provisioning '${env}' — EKS + capabilities + Karpenter (takes a while)"
   make -C "$TF_DIR" bootstrap ENVIRONMENT="$env"
@@ -58,11 +92,11 @@ cmd_up() {
 }
 
 cmd_down() {
-  local env="${1:-$ENVIRONMENT}"
-  need terraform; need make
+  local env; env=$(need_env "${1:-}" "down")
+  need terraform; need make; require_tfvars "$env"
   warn "This DESTROYS all infrastructure for env '${env}'."
-  read -r -p "Type the environment name to confirm: " confirm
-  [ "$confirm" = "$env" ] || die "confirmation mismatch — aborted."
+  read -r -p "Type the environment name ('${env}') to confirm: " confirm
+  [ "$confirm" = "$env" ] || die "confirmation mismatch — aborted (nothing changed)."
   make -C "$TF_DIR" destroy-all ENVIRONMENT="$env"
 }
 
@@ -83,9 +117,62 @@ cmd_status() {
   log "Serving endpoints (all namespaces)"
   kubectl get vllmendpoints,llmdendpoints,llmddisaggendpoints -A 2>/dev/null || echo "  (none deployed)"
 
-  [ "$deep" -eq 1 ] || { echo; echo "${c_dim}Run 'platformctl status --check' to validate Bedrock + gateway + tracing.${c_rst}"; return; }
+  echo
+  _status_access
 
-  echo; log "Validating the platform end-to-end (--check)"
+  [ "$deep" -eq 1 ] || { echo; echo "${c_dim}Run 'platformctl status --check' to validate Bedrock + gateway + tracing.${c_rst}"; return; }
+  echo
+  _status_check
+}
+
+# Where are the UIs reachable? Shows the edge posture, live public URLs, and
+# whether a local tunnel is currently up.
+_status_access() {
+  log "Access — where the UIs are reachable"
+  local shown=0
+
+  # 1) CloudFront edge (public HTTPS). Read the live distributions.
+  local cf=""
+  command -v aws >/dev/null 2>&1 && cf=$(edge_urls_live || true)
+  if [ -n "$cf" ]; then
+    echo "  ${c_grn}CloudFront edge${c_rst} (public HTTPS; [Deployed] = live, [InProgress] = still rolling out):"
+    echo "$cf"
+    shown=1
+  fi
+
+  # 2) Own-domain posture: the ALB is internet-facing.
+  local scheme
+  scheme=$(kubectl get ingress -n "$NS_PLATFORM" -o jsonpath='{.items[0].metadata.annotations.alb\.ingress\.kubernetes\.io/scheme}' 2>/dev/null || true)
+  if [ "$scheme" = "internet-facing" ]; then
+    local albhost
+    albhost=$(kubectl get ingress -n "$NS_PLATFORM" -o jsonpath='{.items[0].status.loadBalancer.ingress[0].hostname}' 2>/dev/null || true)
+    echo "  ${c_grn}Internet-facing ALB${c_rst} — reach the UIs at your DNS names (or ${albhost:-the ALB host}) on ports 8080/4000/3000/9090."
+    shown=1
+  fi
+
+  # 3) Local tunnel: is one currently running?
+  local any_up=0 pair name port line=""
+  for pair in "${UI_PORTS[@]}"; do
+    name="${pair%%:*}"; port="${pair##*:}"
+    if port_open "$port"; then any_up=1; line="${line}    ${name}: http://localhost:${port}\n"; fi
+  done
+  if [ "$any_up" -eq 1 ]; then
+    echo "  ${c_grn}Tunnel ACTIVE${c_rst} (this machine):"
+    printf "%b" "$line"
+    shown=1
+  else
+    echo "  ${c_dim}No tunnel running on this machine — start one: ./platformctl tunnel${c_rst}"
+  fi
+
+  # 4) Nothing public + internal ALB: make the private posture explicit.
+  if [ "$shown" -eq 0 ] && [ "$scheme" != "internet-facing" ]; then
+    echo "  ${c_dim}UIs are private (internal ALB). Go public with ./platformctl edge cloudfront, or tunnel above.${c_rst}"
+  fi
+}
+
+# Active end-to-end validation (--check).
+_status_check() {
+  log "Validating the platform end-to-end (--check)"
   need aws
   local mk code base="http://127.0.0.1:4000" pf_pid=""
   mk=$(kubectl get secret litellm-secrets -n "$NS_PLATFORM" -o jsonpath='{.data.master-key}' 2>/dev/null | base64 -d) \
@@ -94,13 +181,11 @@ cmd_status() {
   pf_pid=$!
   sleep 4
 
-  # 1) Gateway answers.
   if curl -fsS "$base/v1/models" -H "Authorization: Bearer $mk" >/dev/null 2>&1; then
     ok "LiteLLM gateway responding (/v1/models)"
   else
     warn "LiteLLM gateway not responding"
   fi
-  # 2) Bedrock model access (the #1 fresh-install gotcha — a manual per-account toggle).
   code=$(curl -s -o /dev/null -w '%{http_code}' -X POST "$base/v1/chat/completions" \
     -H "Authorization: Bearer $mk" -H "Content-Type: application/json" \
     -d '{"model":"claude-opus-4-8","messages":[{"role":"user","content":"ping"}],"max_tokens":5}')
@@ -109,7 +194,6 @@ cmd_status() {
   else
     warn "Bedrock model call returned HTTP $code — enable Bedrock model access in the console (per-account toggle)"
   fi
-  # 3) Langfuse tracing reachable.
   if kubectl run pfcheck-langfuse --rm -i --restart=Never --image=curlimages/curl:8.11.0 -n "$NS_PLATFORM" --quiet -- \
        -fsS http://langfuse-web.ai-platform.svc.cluster.local:3000/api/public/health >/dev/null 2>&1; then
     ok "Langfuse tracing reachable"
@@ -127,30 +211,68 @@ cmd_tunnel() { exec "${LIB_DIR}/tunnel.sh"; }
 # ---- edge ------------------------------------------------------------------ #
 
 cmd_edge() {
-  local mode="${1:-}" env="${PLATFORM_ENV:-$ENVIRONMENT}"
+  local mode="${1:-}"
   case "$mode" in
-    cloudfront)
-      need terraform; need make; require_tfvars "$env"
-      log "Enabling the CloudFront edge (public HTTPS via VPC origins to the private ALB)"
-      _edge_set_tfvar "$env" true
-      make -C "$TF_DIR" apply MODULE="$CLUSTER_STAGE" ENVIRONMENT="$env"
-      echo; ok "CloudFront edge applied. URLs (deploy takes ~10-15 min):"
-      terraform -chdir="${TF_DIR}/${CLUSTER_STAGE}" output -json edge_cloudfront_urls 2>/dev/null \
-        | python3 -c "import sys,json; [print('  '+k+': '+v) for k,v in json.load(sys.stdin).items()]" 2>/dev/null || true
-      echo "${c_dim}Cognito callbacks were wired automatically. SSO works once the distributions finish deploying.${c_rst}"
-      ;;
-    tunnel|off)
-      need terraform; need make; require_tfvars "$env"
-      log "Disabling the CloudFront edge (back to private ALB + tunnel)"
-      _edge_set_tfvar "$env" false
-      make -C "$TF_DIR" apply MODULE="$CLUSTER_STAGE" ENVIRONMENT="$env"
-      ok "Edge removed. Reach the UIs with: ./platformctl tunnel"
-      ;;
-    domain)
-      cat <<EOF
+    cloudfront) _edge_apply cloudfront "${2:-}" ;;
+    tunnel|off) _edge_apply off "${2:-}" ;;
+    domain)     _edge_domain_help ;;
+    ""|status)  _edge_help ;;
+    *) die "unknown edge mode: ${mode}  (use: cloudfront | domain | tunnel)" ;;
+  esac
+}
+
+# Enable/disable the CloudFront edge. Guarded three ways: (1) env is resolved,
+# never guessed; (2) a typed confirmation showing the exact env; (3) the real
+# Terraform plan is shown and a second 'yes' is required before anything applies.
+# Everything runs through the Makefile so the workspace, var-file, and backend
+# are always the deployed env's (the cause of the earlier "53 to add" was a
+# guessed 'dev' env pointing at an empty workspace — now impossible).
+_edge_apply() {
+  local action="$1" env
+  need terraform; need make; need aws
+  env=$(need_env "${2:-}" "edge ${action/off/tunnel}")
+  require_tfvars "$env"
+  local want; [ "$action" = cloudfront ] && want=true || want=false
+
+  echo
+  if [ "$action" = cloudfront ]; then
+    warn "About to ENABLE the CloudFront edge — a significant, user-facing change:"
+    echo "    • creates 4 public CloudFront distributions (BILLABLE) fronting the private ALB"
+    echo "    • exposes Open WebUI / LiteLLM / Langfuse / Dashboard on public *.cloudfront.net HTTPS"
+    echo "    • rewrites the Cognito OIDC callback URLs to those public domains"
+  else
+    warn "About to DISABLE the CloudFront edge — a significant, user-facing change:"
+    echo "    • DESTROYS the 4 CloudFront distributions + VPC origins (public URLs stop working)"
+    echo "    • reverts the Cognito callbacks; reach the UIs via ./platformctl tunnel afterwards"
+  fi
+  echo "    Environment: ${c_bold}${env}${c_rst}   (Terraform workspace: ${env})"
+  echo
+  read -r -p "Type the environment name ('${env}') to continue to the plan: " confirm
+  [ "$confirm" = "$env" ] || die "confirmation mismatch — aborted (nothing changed)."
+
+  _edge_set_tfvar "$env" "$want"
+  echo; log "Planning the change for '${env}' — review the plan below carefully:"
+  make -C "$TF_DIR" plan MODULE="$CLUSTER_STAGE" ENVIRONMENT="$env"
+  echo
+  read -r -p "Apply the plan above to '${env}'? Type 'yes' to proceed (anything else aborts): " go
+  [ "$go" = "yes" ] || die "aborted at plan review (nothing applied)."
+  make -C "$TF_DIR" apply MODULE="$CLUSTER_STAGE" ENVIRONMENT="$env"
+
+  echo
+  if [ "$action" = cloudfront ]; then
+    ok "CloudFront edge applied for '${env}'. Public URLs ([InProgress] until ~10-15 min out):"
+    edge_urls_live
+    echo "${c_dim}SSO callbacks were wired automatically. Track rollout with: ./platformctl status${c_rst}"
+  else
+    ok "CloudFront edge removed for '${env}'. Reach the UIs with: ./platformctl tunnel"
+  fi
+}
+
+_edge_domain_help() {
+  cat <<EOF
 ${c_bold}Front door: your own domain on an internet-facing ALB${c_rst}
-This is a GitOps change (the ALB scheme + cert live in the ingress manifests), so
-edit + commit + push in your fork:
+This is a GitOps change (the ALB scheme + cert live in the ingress manifests),
+so edit + commit + push in your fork — there is no Terraform toggle:
   1. In platform/config/ingress.yaml (x3) + platform/services/cluster-dashboard/manifests.yaml,
      set on all four ingresses:
        alb.ingress.kubernetes.io/scheme: internet-facing
@@ -158,24 +280,24 @@ edit + commit + push in your fork:
        alb.ingress.kubernetes.io/certificate-arn: <your ACM cert ARN, in this region>
      and set inbound-cidrs to your own IP/CIDR ranges (never 0.0.0.0/0).
   2. Point your DNS (Route53 alias / CNAME) at the ALB hostname.
-  3. Put your domain URLs in sso_public_urls in your tfvars, then: ./platformctl edge  (re-run terraform to wire Cognito callbacks)
+  3. Put your domain URLs in sso_public_urls in your tfvars and re-apply the
+     cluster stage to wire the Cognito callbacks (a normal 'up' does this).
 EOF
-      ;;
-    ""|status)
-      cat <<EOF
+}
+
+_edge_help() {
+  cat <<EOF
 ${c_bold}Public front door — three postures:${c_rst}
   ${c_grn}tunnel${c_rst}      Private ALB, no public IP. Reach the UIs via ./platformctl tunnel. (default)
   ${c_grn}cloudfront${c_rst}  Public HTTPS via CloudFront VPC origins to the private ALB — free
-              *.cloudfront.net cert, no domain needed. Good for demo/PoC.
-              Run AFTER 'up' (needs the ALB): ./platformctl edge cloudfront
+              *.cloudfront.net cert, no domain needed. Good for demo/PoC. BILLABLE.
+              Run AFTER 'up' (needs the ALB):  ./platformctl edge cloudfront [ENV]
   ${c_grn}domain${c_rst}      Your own domain + cert on an internet-facing ALB (enterprise).
-              Guided GitOps change: ./platformctl edge domain
+              Guided GitOps change:            ./platformctl edge domain
 
-  Turn CloudFront off:  ./platformctl edge tunnel
+  Turn CloudFront off (destroys the distributions):  ./platformctl edge tunnel [ENV]
+  See the current posture + URLs any time:           ./platformctl status
 EOF
-      ;;
-    *) die "unknown edge mode: ${mode}  (use: cloudfront | domain | tunnel)" ;;
-  esac
 }
 
 # Set enable_cloudfront_edge in the env tfvars (durable), adding the line if absent.
