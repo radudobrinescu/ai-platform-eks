@@ -166,9 +166,36 @@ def deploy_model(name: str, yaml_path: str, yaml_body: str, commit_msg: str,
     abs_path = os.path.join(root, yaml_path)
 
     action = "Overwrite" if os.path.exists(abs_path) else "Create"
-    print(f"\n{C.BOLD}{action} {yaml_path}{C.RESET} and push so ArgoCD deploys "
+    print(f"\n{C.BOLD}{action} {yaml_path}{C.RESET} → git push → ArgoCD deploys "
           f"{C.BOLD}{name}{C.RESET}.")
-    if not _confirm("Proceed?", args.yes):
+
+    # Show exactly what will be written (or, on overwrite, what changes) so the
+    # user confirms with full sight of the manifest — not a blind [y/N].
+    if os.path.exists(abs_path):
+        import difflib
+        with open(abs_path) as f:
+            old = f.read()
+        diff = list(difflib.unified_diff(
+            old.splitlines(), yaml_body.splitlines(),
+            fromfile="current", tofile="new", lineterm="",
+        ))
+        if diff:
+            print(f"\n  {C.DIM}Changes vs the current manifest:{C.RESET}")
+            for ln in diff[2:]:   # skip the ---/+++ file headers
+                if ln.startswith("+"):
+                    print(f"  {C.GREEN}{ln}{C.RESET}")
+                elif ln.startswith("-"):
+                    print(f"  {C.RED}{ln}{C.RESET}")
+                else:
+                    print(f"  {C.DIM}{ln}{C.RESET}")
+        else:
+            print(f"\n  {C.DIM}(identical to the current file — nothing would change){C.RESET}")
+    else:
+        print(f"\n  {C.DIM}Manifest to write:{C.RESET}")
+        for ln in yaml_body.rstrip().splitlines():
+            print(f"  {C.DIM}│{C.RESET} {ln}")
+
+    if not _confirm("\nProceed?", args.yes):
         print("Aborted — nothing written.")
         return 1
 
@@ -183,7 +210,7 @@ def deploy_model(name: str, yaml_path: str, yaml_body: str, commit_msg: str,
         print(f"\n{C.DIM}Watch it come up:{C.RESET} "
               f"kubectl get vllmendpoints,llmdendpoints,llmddisaggendpoints -n inference -w")
         print(f"{C.DIM}Remove it later:{C.RESET} "
-              f"./ops/recommend-instance.py --undeploy {name}")
+              f"./platformctl new-model --undeploy {name}")
     return rc
 
 

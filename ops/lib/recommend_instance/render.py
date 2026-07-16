@@ -60,12 +60,6 @@ def _next_steps_lines(
             "Production sizing:    --users N --target-tok-s X"
         )
 
-    # Non-quantized → suggest int4 for cost savings
-    if args.quant in ("bf16", "fp16", "fp32"):
-        suggestions.append(
-            "Cut cost ~50%:  --quant int4  (may lose 1-2% on benchmarks)"
-        )
-
     # No workload set → suggest one
     if not args.workload:
         suggestions.append(
@@ -318,6 +312,60 @@ def _diagnose_no_fit(
     print()
 
 
+def _int4_savings_hint(
+    model: ModelSpec,
+    best:  "Option",
+    args:  argparse.Namespace,
+    prices: dict[str, float] | None,
+    C:     type,
+) -> str | None:
+    """If switching to int4 would let a *cheaper* instance host the model, return
+    a concrete one-liner (instance + price + % saved). Returns None when the user
+    is already on int4-class weights or int4 wouldn't change the instance — so we
+    never claim savings that don't exist."""
+    if args.quant not in ("bf16", "fp16", "fp32"):
+        return None
+    prices = prices or {}
+    v = estimate_vram(model, "int4", args.kv_quant, args.seq, args.batch, 1,
+                      avg_context_len=args.avg_context)
+    opts = find_options(
+        total_need_gb=v.total_gb, num_heads=model.num_heads, tp_pin=None,
+        require_in_cluster=args.in_cluster_only, safety_margin=args.safety_margin,
+        prices=prices, max_price=1e12, model=model, weight_q="int4",
+        kv_q=args.kv_quant, users=1,
+    )
+    if not opts:
+        return None
+    alt = opts[0]
+    if alt.price_usd_h >= best.price_usd_h - 1e-6:
+        return None   # int4 lands on the same/pricier GPU — no real saving
+    save_pct = (best.price_usd_h - alt.price_usd_h) / best.price_usd_h * 100
+    saved_mo = _fmt_monthly(best.price_usd_h - alt.price_usd_h)
+    same_gpu = alt.instance.name == best.instance.name
+    where = "on the same GPU" if same_gpu else f"on {alt.instance.name} ({alt.instance.gpu})"
+    return (f"{C.CYAN}--quant int4{C.RESET} fits {where} at "
+            f"{C.BOLD}${alt.price_usd_h:.2f}/hr{C.RESET} — {save_pct:.0f}% cheaper "
+            f"(~{saved_mo}/mo saved){C.DIM}; ~1-2% quality loss on benchmarks{C.RESET}")
+
+
+def _deploy_flags(args: argparse.Namespace) -> str:
+    """Reconstruct the non-default flags for a faithful `--deploy` re-run line."""
+    parts: list[str] = []
+    if args.quant != "bf16":
+        parts.append(f"--quant {args.quant}")
+    if args.kv_quant != "fp16":
+        parts.append(f"--kv-quant {args.kv_quant}")
+    if args.seq != 8192:
+        parts.append(f"--seq {args.seq}")
+    if args.workload:
+        parts.append(f"--workload {args.workload}")
+    elif args.users > 1:
+        parts.append(f"--users {args.users}")
+    if getattr(args, "tier", "auto") not in (None, "auto"):
+        parts.append(f"--tier {args.tier}")
+    return (" " + " ".join(parts)) if parts else ""
+
+
 def print_human(
     model:       ModelSpec,
     vram:        VramEstimate,
@@ -431,6 +479,10 @@ def print_human(
     if rationale:
         print()
         print(f"  {C.BOLD}Why:{C.RESET} {rationale}")
+    if not is_fleet_mode:
+        hint = _int4_savings_hint(model, best, args, prices, C)
+        if hint:
+            print(f"  {C.BOLD}💡 Cheaper:{C.RESET} {hint}")
     if getattr(args, "_preset_applied", None):
         print(f"  {C.DIM}Workload preset '{args.workload}' applied: "
               f"{', '.join(args._preset_applied)}{C.RESET}")
@@ -1023,28 +1075,31 @@ def _print_yaml_snippet(model: ModelSpec, vram: VramEstimate, best: Option,
 
     # --deploy/--undeploy do the git work for you; the copy-paste block is the
     # manual path. Point at the automated one so users know it exists.
-    print(f"\n{C.BOLD}Deploy this model{C.RESET} — "
-          f"{C.DIM}automatically:{C.RESET} re-run with {C.BOLD}--deploy{C.RESET} "
-          f"{C.DIM}(writes the file, commits, and pushes for you).{C.RESET}")
-    print(f"{C.DIM}Or copy-paste the block below into your shell:{C.RESET}\n")
-    # The heredoc uses a quoted 'EOF' so the YAML content is not subject to
-    # shell expansion (model IDs sometimes contain '$' in other ecosystems).
-    print(f"cat > {yaml_path} <<'EOF'")
-    print(yaml_body, end="")
-    print("EOF")
-
-    print(f"\n{C.DIM}Then commit and push (ArgoCD picks it up within ~30s):{C.RESET}\n")
-    print(f"git add {yaml_path}")
-    print(f'git commit -m "{commit_msg}"')
-    print("git push")
-    print()
-    print(f"{C.DIM}# Watch the deployment come up:{C.RESET}")
     plural = {"VLLMEndpoint": "vllmendpoints",
               "LLMDEndpoint": "llmdendpoints", "LLMDDisaggEndpoint": "llmddisaggendpoints"}[kind]
-    print(f"kubectl get {plural} -n inference -w")
-    print(f"{C.DIM}# Later, to remove it (ArgoCD deletes the model + LiteLLM "
-          f"deregisters):{C.RESET}")
-    print(f"./platformctl new-model --undeploy {name}")
+
+    # Manifest preview — the "you'll deploy this" box.
+    print(f"\n{C.BOLD}You'll deploy this{C.RESET} {C.DIM}→ {yaml_path}{C.RESET}")
+    for ln in yaml_body.rstrip().splitlines():
+        print(f"  {C.DIM}│{C.RESET} {ln}")
+
+    # Primary path: the native one-liner (previews + confirms before it commits).
+    flags = _deploy_flags(args)
+    print(f"\n{C.BOLD}Deploy it:{C.RESET}  "
+          f"{C.CYAN}./platformctl new-model {model.model_id}{flags} --deploy{C.RESET}")
+    print(f"  {C.DIM}writes the manifest, commits, pushes, and triggers an ArgoCD "
+          f"sync — you preview + confirm first.{C.RESET}")
+    print(f"  {C.DIM}Remove it later:  ./platformctl new-model --undeploy {name}{C.RESET}")
+
+    # Manual copy-paste path — only when asked (keeps the default tidy). The
+    # heredoc uses a quoted 'EOF' so the YAML is not subject to shell expansion.
+    if args.verbose:
+        print(f"\n{C.DIM}Or by hand:{C.RESET}")
+        print(f"cat > {yaml_path} <<'EOF'")
+        print(yaml_body, end="")
+        print("EOF")
+        print(f'git add {yaml_path} && git commit -m "{commit_msg}" && git push')
+        print(f"kubectl get {plural} -n inference -w   {C.DIM}# watch it come up{C.RESET}")
 
 
 def print_json(
