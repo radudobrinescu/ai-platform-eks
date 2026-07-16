@@ -1,86 +1,98 @@
-# Publishing to open source (aws-samples) — compliance checklist
+# Publishing to open source — compliance checklist
 
-> **Process source of truth:** the internal guide
-> `https://w.amazon.com/bin/view/Users/andyhop/Publish_to_aws_samples/`.
-> That page is Amazon-internal and could not be read while preparing this doc, so
-> the **internal workflow steps** below (repo request, Open Source Program Office
-> review/approval, security review) are described from general knowledge and MUST
-> be confirmed against that page. The **licensing/attribution** work has been done
-> in the repo and is described in detail.
+Reconciled with the internal guide *"Publish to aws-samples"* (Andy Hopper) and
+*Open Source / Posting Sample Code → Third-party Inclusions* (updated Mar 2026).
+This file is the working checklist; the internal OpenSourcerer tool is the system
+of record for the self-certification + repo creation.
 
-## A. Repository hygiene (in place)
+## 0. Is this the right home? (decide first)
 
-- [x] `LICENSE` — present (**see the flag in section C about which license**).
-- [x] `THIRD_PARTY_LICENSES` — attribution for vendored + deployed components (this change).
-- [x] `CONTRIBUTING.md`, `CODE_OF_CONDUCT.md`, `SECURITY.md`, `README.md`.
-- [x] No committed secrets (real tfvars are gitignored; `repo-secret.yaml` is a
-      public OCI-registry declaration, not a credential).
-- [x] No account/region/env pinning in tracked files (swept this cycle).
-- [ ] CI workflow (`.github/workflows/ci.yaml`) — written, currently **untracked**;
-      commit it as part of publishing (runs fmt/validate/lint/kubeconform/gitleaks).
-- [ ] `.github/CODEOWNERS` + PR/issue templates — nice-to-have, not blocking.
+The guide says aws-samples is for **code that demonstrates AWS services for a
+blog/presentation/workshop**, and explicitly **NOT** for *"a tool, library, SDK,
+client, or code that replicates significant AWS product functionality."*
 
-## B. Third-party licensing — what was done and why
+**Open question for a DevEx Advocate / the #open-source channel:** this project is
+a substantial self-service AI platform, and it already extends *"Automated
+Provisioning of Application-Ready Amazon EKS Clusters"* from the **AWS Solutions
+Library**. So the better home may be **`aws-solutions-library-samples`** (or
+`aws-ia`) rather than `aws-samples`. Confirm the target org before anything else —
+it changes the template, naming, and review path.
 
-`THIRD_PARTY_LICENSES` splits obligations by how each dependency is consumed:
+## 1. Self-certification (OpenSourcerer → "AWS Sample Code")
 
-- **Vendored (copied into the repo) → full-text obligation.** The only vendored
-  third-party artifact is `platform/services/inference-gateway/gie-crds.yaml`
-  (Gateway API Inference Extension CRDs, **Apache-2.0**). Before publishing, drop
-  the upstream Apache-2.0 `LICENSE` text **verbatim** into `THIRD_PARTY_LICENSES`
-  where noted (the file currently abbreviates it with a pointer).
-- **Deployed at runtime (referenced by image tag / chart version) → attribution.**
-  vLLM (Apache-2.0), LiteLLM (MIT), oauth2-proxy (MIT), NVIDIA GPU Operator,
-  Argo CD, KRO, Karpenter, llm-d, EKS Blueprints Addons (all Apache-2.0), curl,
-  Langfuse and Open WebUI (see flags). The repo does not redistribute these
-  images/charts, so attribution + a link is the standard treatment — but confirm
-  the OSPO review agrees for the two flagged components.
+Creates a SIM ticket (save the ID); all 6 checks must pass before going public:
 
-## C. LEGAL REVIEW REQUIRED — do not publish until resolved
+1. **Names & Logos** — repo must start with **`sample-`** (e.g.
+   `sample-ai-platform-on-eks`). No logos.
+2. **Security** — always required (AppSec review; PCSR if SMGS). See §4.
+3. **Content & IP** — no confidential info, customer data, or internal details;
+   if any code came from another Amazon team, get their leadership's approval. See §3.
+4. **Third-party Inclusions** — `THIRD-PARTY-LICENSES` for non-Amazon *included*
+   assets. Done (see §2). **Note:** the guide says *including* anything not created
+   by Amazon **requires review**, and prefers referencing over vendoring.
+5. **Third-party Dependencies** — evaluate the license of every *referenced*
+   dependency. See §2(B).
+6. **Datasets & Models** — public datasets/ML models need Dataset Group review.
+   We don't bundle models; templates *reference* HF model IDs (e.g. Qwen) pulled
+   at deploy time. Confirm this "reference, not include" reading with the reviewer.
 
-These have legal implications and need Amazon Open Source Program Office (OSPO)
-and/or legal sign-off — they are **not** decisions to make unilaterally:
+## 2. Third-party licensing — status
 
-1. **Open WebUI license (highest priority).** Since v0.6.6 Open WebUI is
-   **BSD-3-Clause + a branding-protection clause** — NOT a standard OSI license.
-   Removing/altering the "Open WebUI" branding is a material breach for
-   deployments over 50 users. Questions for legal: is it acceptable for an
-   AWS-published sample to deploy and feature a component under a non-OSI,
-   branding-restricted license? Does anything in this repo alter its branding?
-   If it's a problem, options are: keep it but document the license prominently,
-   make it optional/opt-in, or replace the chat UI.
+`THIRD-PARTY-LICENSES` (next to `LICENSE`, and a `NOTICE` if required) splits by
+the guide's *included* vs *referenced* distinction:
 
-2. **Langfuse licensing.** Core is MIT; some enterprise ("ee") features are under
-   a separate commercial license. Confirm the deployed configuration enables only
-   MIT-licensed functionality (no `ee` feature on by default).
+- **(A) Included / vendored → attribution + full license text + REVIEW.** One file:
+  `platform/services/inference-gateway/gie-crds.yaml` (Gateway API Inference
+  Extension CRDs, Apache-2.0). Because it is non-Amazon content *included* in the
+  repo, the guide says the project **requires review**, and it prefers we **not
+  vendor** it. **Decision needed (see §5.3):** reference the CRDs from the upstream
+  release instead of bundling, or keep + attribute + accept the review.
+- **(B) Referenced (images/charts pulled at deploy) → evaluate + attribute.**
+  vLLM, LiteLLM, oauth2-proxy, GPU Operator, Argo CD, KRO, Karpenter, llm-d, EKS
+  Blueprints, curl, Langfuse, Open WebUI. All attributed in `THIRD-PARTY-LICENSES`.
 
-3. **Which license for THIS repo.** The repo currently ships **MIT** with an
-   Amazon copyright. aws-samples typically requires **MIT-0** (MIT without the
-   attribution clause) or **Apache-2.0**. Confirm the required license with OSPO
-   and switch `LICENSE` if needed (this also affects the header the process may
-   require in source files).
+Before publish: replace the abbreviated Apache-2.0 body in `THIRD-PARTY-LICENSES`
+with the full upstream text; add a `NOTICE` file if the reviewer requires one.
 
-4. **Trademarks / third-party names.** The README and docs reference product
-   names (LiteLLM, Langfuse, Open WebUI, NVIDIA, Karpenter, etc.). Confirm usage
-   is nominative/attribution only and matches each project's trademark guidance.
+## 3. Content & IP scrub (mechanical)
 
-## D. Internal workflow (confirm against the internal guide)
-
-Typical aws-samples path — **verify each step against the internal page**:
-1. Request the public `aws-samples/<name>` repo through the AWS open-source
-   process (OSPO intake).
-2. OSPO / open-source review of license, THIRD_PARTY_LICENSES, and dependencies.
-3. Security review / secret scan of the full history (not just HEAD).
-4. Import the code (a clean, squashed history is usually preferred over the
-   internal development history).
-5. Final approval + publish.
-
-## E. Pre-publish scrub (mechanical, before import)
-
-- [ ] Scrub git history for internal hostnames, account IDs, ARNs, and the
-      operator's real `*.tfvars` (they're gitignored now, but confirm they were
-      never committed historically).
-- [ ] Replace the abbreviated Apache-2.0 text in `THIRD_PARTY_LICENSES` with the
-      full upstream text.
-- [ ] Commit the CI workflow and confirm it passes.
+- [ ] Scrub git **history** (not just HEAD) for internal hostnames, account IDs,
+      ARNs, and any real `*.tfvars` (gitignored now — confirm never committed).
 - [ ] Confirm example values (region, ARNs, repo URLs) are placeholders.
+- [ ] Commit the CI workflow (`.github/workflows/ci.yaml`, currently untracked)
+      and confirm it passes.
+- [ ] The import to the public repo is typically a **clean/squashed** history, not
+      the internal development history.
+
+## 4. Security review
+
+Required before the repo goes public: AppSec review (or PCSR for SMGS). The repo
+already ships secure defaults (internal ALB, SSO, network policies, no committed
+secrets) — surface those in the review.
+
+## 5. LEGAL REVIEW REQUIRED — not decisions to make unilaterally
+
+The guide is explicit: *"Only licenses that are pre-approved for distribution can
+be approved without engaging a lawyer."*
+
+1. **Open WebUI (highest priority) → likely needs a lawyer.** Since v0.6.6 it's
+   **BSD-3-Clause + a branding-protection clause** — NOT a standard OSI license.
+   Removing/altering "Open WebUI" branding is a material breach for 50+ user
+   deployments. An AWS-published sample featuring a non-OSI, branding-restricted
+   component almost certainly trips the "not pre-approved → lawyer" rule. Options:
+   keep + document prominently, make it opt-in, or swap the chat UI.
+2. **Langfuse** — MIT core + commercially-licensed `ee` features. Confirm the
+   deployed config enables only MIT functionality.
+3. **Vendored GIE CRDs** — the guide prefers referencing over bundling. Decide:
+   reference the upstream CRD release (removes an "included" review item), or keep
+   + attribute (accepts the review).
+4. **License = MIT-0** — confirmed by the OpenSourcerer MIT-0 template. The repo
+   currently ships plain **MIT** with an Amazon copyright; replace `LICENSE` with
+   the MIT-0 text at/after repo creation.
+5. **Trademarks** — confirm nominative/attribution-only use of the product names.
+
+## Where we are
+
+Repo hygiene + attribution are in place; the blockers are the **org decision (§0)**,
+the **legal items (§5)** — Open WebUI especially — and the **internal
+OpenSourcerer self-cert + security review**, none of which are code changes.
