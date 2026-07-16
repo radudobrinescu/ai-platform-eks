@@ -13,7 +13,7 @@ pre-flight validation**.
 
 Individual initiatives may graduate into their own doc under `docs/roadmap/`:
 `elastic-serving-autoscaling.md`, `disaggregated-inference.md`,
-`semantic-routing.md`.
+`semantic-routing.md`, `multi-node-serving.md`.
 
 ---
 
