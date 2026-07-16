@@ -282,8 +282,8 @@ def watch_kind(plural: str) -> None:
                     continue  # 410 Gone / status object — let the loop re-list
                 process(custom, plural, obj)
         except ApiException as e:
-            # 404 = CRD not installed (e.g. inference_gateway capability off for
-            # the llm-d kinds). Back off quietly; don't spin.
+            # 404 = CRD not installed (e.g. the llm-d kinds before the
+            # inference-gateway app has synced its GIE CRDs). Back off quietly; don't spin.
             if e.status == 404:
                 time.sleep(60)
             else:

@@ -39,8 +39,8 @@ The custom resources **are** the self-service interface:
 | Resource | What it does |
 |---|---|
 | **`VLLMEndpoint`** | Serve a model on vLLM — the simple default: one model, one pod, one instance (HuggingFace ID, or a fine-tuned model from S3) |
-| **`LLMDEndpoint`** | Serve a model on the llm-d scale tier — KV-cache/load/prefix-aware routing across replicas (opt-in; needs the `inference_gateway` capability) |
-| **`LLMDDisaggEndpoint`** | Serve on the llm-d scale + performance tier — independently autoscaled prefill/decode pools (opt-in; needs the `inference_gateway` capability) |
+| **`LLMDEndpoint`** | Serve a model on the llm-d scale tier — KV-cache/load/prefix-aware routing across replicas (the `inference-gateway` substrate ships on every cluster; no toggle) |
+| **`LLMDDisaggEndpoint`** | Serve on the llm-d scale + performance tier — independently autoscaled prefill/decode pools (same llm-d substrate; no toggle) |
 | **`AITeam`** | Onboard a team: namespace, RBAC, budget, rate limits, scoped API key |
 
 ```yaml
@@ -58,20 +58,22 @@ Bedrock models need no resource — they're a few lines of LiteLLM config, live 
 moment the cluster is up. KRO definitions live in `platform/config/kro/`; extend
 them there and every model/team inherits the change.
 
-**Two serving tiers, one front door.** Every model — Bedrock and self-hosted
+**One front door, tiers as you grow.** Every model — Bedrock and self-hosted
 (`VLLMEndpoint`, the simple default) — answers through the same LiteLLM `/v1` API
-(governance, budgets, tracing). For high-throughput workloads an optional **llm-d**
+(governance, budgets, tracing). For high-throughput workloads the optional **llm-d**
 scale tier (`LLMDEndpoint`) adds KV-cache-, prefix-, and load-aware routing across
-replicas (via the Gateway API Inference Extension); LiteLLM forwards to it
+replicas (via the Gateway API Inference Extension), and `LLMDDisaggEndpoint` splits
+prefill and decode into independently autoscaled pools; LiteLLM forwards to both
 internally, so governance still applies. See **[docs/llm-d-and-ingress-architecture.md](docs/llm-d-and-ingress-architecture.md)**.
 
 ---
 
 ## Quick start
 
-Provision → use Opus 4.8 with zero GPUs → deploy a self-hosted model → fine-tune →
-prove the savings. Mind the prerequisites that matter: fork the repo, set the IP
-allowlist, and supply gated-model tokens where needed. The shape of it:
+Provision → use Opus 4.8 with zero GPUs → deploy a self-hosted model → serve your
+own fine-tuned weights → prove the savings. Mind the prerequisites that matter:
+fork the repo, reach the UIs via `./platformctl tunnel` (the ALB is internal by
+default), and supply gated-model tokens where needed. The shape of it:
 
 > ⚠️ **Before you deploy — this creates real, billable infrastructure in your AWS
 > account.** It provisions an EKS cluster and (on demand) GPU nodes. The platform
@@ -165,6 +167,8 @@ the CloudFront edge with `./platformctl edge cloudfront` — Terraform stands up
 CloudFront **VPC origin** to the private ALB, with a free `*.cloudfront.net`
 certificate (no domain needed) and the Cognito callbacks wired automatically. For
 your own domain, `./platformctl edge domain` (internet-facing ALB + your ACM cert).
+See **[docs/cloudfront-edge.md](docs/cloudfront-edge.md)** for how it works and the
+edge gotchas the Terraform handles.
 
 ---
 
@@ -251,7 +255,7 @@ workloads/          Self-service YAMLs: models/ · scale-models/ · teams/
 platformctl         The unified CLI (up · status · tunnel · edge · new-model · down)
 ops/                platformctl implementation: ops/lib/ (helpers) · ops/image/ (cold-start build helpers)
 terraform/          Infrastructure modules (VPC → IAM → EKS → observability)
-docs/               platform-product-report ·
+docs/               platform-product-report · cloudfront-edge ·
                     llm-d-and-ingress-architecture · roadmap/
 ```
 

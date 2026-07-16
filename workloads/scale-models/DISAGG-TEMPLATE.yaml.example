@@ -9,8 +9,8 @@
 # LiteLLM /v1 API. See docs/roadmap/disaggregated-inference.md and
 # docs/llm-d-and-ingress-architecture.md.
 #
-# Requires the inference_gateway capability to be enabled on the cluster
-# (base Envoy Gateway + GIE CRDs + the llm-d OCI Helm repo registered in ArgoCD).
+# The llm-d substrate (GIE CRDs + the llm-d OCI Helm repo registered in ArgoCD)
+# ships on every cluster via the `inference-gateway` platform app — no toggle.
 #
 # After committing, ArgoCD syncs automatically. Track progress with:
 #   kubectl get llmddisaggendpoints -n inference -w
@@ -38,4 +38,4 @@ spec:
   # decodeTargetKvCachePct: 85     # target avg vllm:kv_cache_usage_perc (%)
 #
 # Unsure what size GPU / how many GPUs your model needs?
-# Run: ./ops/recommend-instance.py org/model-id --seq 16384 --users 8
+# Run: ./platformctl new-model org/model-id --seq 16384 --users 8

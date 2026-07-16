@@ -8,8 +8,8 @@
 # behind the same LiteLLM /v1 API. See docs/llm-d-and-ingress-architecture.md.
 # For independent prefill/decode scaling, use LLMDDisaggEndpoint (DISAGG-TEMPLATE).
 #
-# Requires the inference_gateway capability to be enabled on the cluster
-# (base Envoy Gateway + GIE CRDs + the llm-d OCI Helm repo registered in ArgoCD).
+# The llm-d substrate (GIE CRDs + the llm-d OCI Helm repo registered in ArgoCD)
+# ships on every cluster via the `inference-gateway` platform app — no toggle.
 #
 # After committing, ArgoCD syncs automatically. Track progress with:
 #   kubectl get llmdendpoints -n inference -w
@@ -33,4 +33,4 @@ spec:
   # routerChartVersion: "v0.9.0"               # llm-d-router-standalone chart version
 #
 # Unsure what size GPU / how many GPUs your model needs?
-# Run: ./ops/recommend-instance.py org/model-id --seq 8192 --users 4
+# Run: ./platformctl new-model org/model-id --seq 8192 --users 4

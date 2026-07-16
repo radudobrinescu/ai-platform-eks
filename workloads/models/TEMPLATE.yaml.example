@@ -26,9 +26,9 @@ spec:
   # maxModelLen: 8192         # Max sequence length. Lower = less GPU memory, faster.
   # minVramPerGpuGiB: 0       # Min per-GPU VRAM in GiB (Karpenter hint). 0 = no floor.
   #                           # Set this to exclude T4 (16 GB) if you need L4/A10G (24+) —
-  #                           # recommend-instance.py emits the right value automatically.
+  #                           # `platformctl new-model` emits the right value automatically.
   # vllmImage: "vllm/vllm-openai:v0.24.0"  # Override only if needed
 #
 # Unsure what size GPU / how many GPUs your model needs?
-# Run: ./ops/recommend-instance.py org/model-id --seq 8192 --users 4
+# Run: ./platformctl new-model org/model-id --seq 8192 --users 4
 # It computes VRAM from the HuggingFace config and suggests the right GPU sizing.

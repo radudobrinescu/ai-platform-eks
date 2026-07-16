@@ -19,8 +19,10 @@
 # LLMDEndpoints are live (safe, it holds no persistent state):
 #   kubectl delete crd llmdendpoints.kro.run   # KRO immediately rebuilds it
 #
-# Prereqs (gated by capabilities.inference_gateway): GIE CRDs + base Envoy Gateway
-# installed, and the ghcr.io/llm-d/charts OCI Helm repo registered with ArgoCD.
+# Prereqs (shipped by default via the `inference-gateway` platform app — no
+# toggle): GIE CRDs installed + the ghcr.io/llm-d/charts OCI Helm repo registered
+# with ArgoCD. The router runs in standalone mode (its own Envoy+EPP per pool), so
+# no shared Envoy Gateway is needed. See platform/services/inference-gateway/.
 apiVersion: kro.run/v1alpha1
 kind: ResourceGraphDefinition
 metadata:
