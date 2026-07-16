@@ -520,7 +520,7 @@ def _compute_cost(nodes: list) -> dict:
 def _normalize_endpoint(ep: dict, mode: str) -> dict:
     """Flatten a serving CR (any of the three kinds) into one dashboard record
     with a `mode` field. Status is normalized so the UI can render all kinds
-    uniformly: Ray reports modelStatus; vLLM/llm-d report ready +
+    uniformly: vLLM/llm-d report ready +
     availableReplicas; llm-d also reports routerHealth (EPP/router health)."""
     spec = ep.get("spec", {}) or {}
     status = ep.get("status", {}) or {}
@@ -529,7 +529,7 @@ def _normalize_endpoint(ep: dict, mode: str) -> dict:
     pp = int(spec.get("pipelineParallelSize", 1) or 1)
     if tp == 0:
         tp = gpu_count if pp == 1 else 1
-    # Desired replicas: llm-d + vLLM use `replicas`; Ray uses `minReplicas`;
+    # Desired replicas: llm-d + vLLM use `replicas`;
     # llm-d-disagg splits into prefill + decode pools.
     is_disagg = mode == "llm-d-disagg"
     if is_disagg:

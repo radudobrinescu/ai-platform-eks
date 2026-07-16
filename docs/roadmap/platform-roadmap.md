@@ -4,7 +4,7 @@
 
 This is a prioritized backlog of improvements that would significantly increase
 the platform's value, ordered by **value-per-effort**. The platform today is
-strong on serving (Bedrock / vLLM / Ray / llm-d tiers behind one LiteLLM API),
+strong on serving (Bedrock / vLLM / llm-d tiers behind one LiteLLM API),
 governance (per-team keys, budgets, rate limits), **elastic autoscaling (KEDA v1,
 shipped for the llm-d tier)**, cost recommendation (`ops/recommend_instance`), and
 observability basics (cluster dashboard + Platform Health Agent + Langfuse). The

@@ -203,7 +203,7 @@ resource "kubernetes_config_map" "platform_config" {
 }
 
 ################################################################################
-# Model weights cache — S3 bucket + IRSA role for Ray worker pods.
+# Model weights cache — S3 bucket + IRSA role for vLLM worker pods.
 #
 # The initContainer in the serving-tier RGDs s5cmd-syncs HF
 # weights from this bucket on pod startup (cache hit) or falls back to a live
@@ -259,7 +259,7 @@ resource "aws_s3_bucket_lifecycle_configuration" "model_cache" {
 }
 
 # IAM role scoped to the inference-worker ServiceAccount via OIDC.
-# Only Ray worker pods that use this SA can read/write the cache bucket.
+# Only vLLM worker pods that use this SA can read/write the cache bucket.
 resource "aws_iam_role" "inference_worker" {
   count = local.capabilities.gitops ? 1 : 0
   name  = "${local.cluster_name}-inference-worker"

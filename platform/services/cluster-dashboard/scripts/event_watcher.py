@@ -851,7 +851,7 @@ def _is_stuck_llmdendpoint(ep: dict) -> bool:
 
 
 def watch_stuck_resources(conn_factory) -> None:
-    """Periodically scan KRO/Ray custom resources; fire StuckResource trigger
+    """Periodically scan KRO custom resources; fire StuckResource trigger
     on those that haven't reached healthy state in time.
 
     Resources scanned (read-only):

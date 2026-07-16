@@ -60,7 +60,7 @@ Examples:
   ./ops/recommend-instance.py Qwen/Qwen2.5-3B-Instruct --deploy
 
   # Choose the serving tier (default auto: a fleet -> LLMDEndpoint, a single
-  # replica -> VLLMEndpoint, Ray only on request). The llm-d scale tier bakes
+  # replica -> VLLMEndpoint). The llm-d scale tier bakes
   # in KV/prefix/load-aware routing, with the routingProfile picked from the
   # workload (chat/rag/code/agentic -> prefix; batch/summarization -> throughput):
   ./ops/recommend-instance.py Qwen/Qwen2.5-32B-Instruct --workload agentic --users 100 --tier llm-d

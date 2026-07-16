@@ -49,8 +49,8 @@ module "karpenter" {
 
   # Used to attach additional IAM policies to the Karpenter node IAM role.
   # The ECR pull-through import policy is attached only when the docker-hub
-  # pull-through cache is enabled — GPU nodes pull the rayImage from the cache
-  # at runtime, and the FIRST pull must import the upstream image (403s with the
+  # pull-through cache is enabled — GPU nodes pull the vLLM serving image from
+  # the cache at runtime, and the FIRST pull must import the upstream image (403s with the
   # default read-only node policy otherwise → ImagePullBackOff).
   node_iam_role_additional_policies = merge(
     {

@@ -268,9 +268,9 @@ def find_options(
 
         # Host RAM check — the worker pod requests workerMemory ≈ weights+4 GiB
         # of host RAM (vLLM stages weights through CPU during init). The
-        # instance must have enough host RAM after K8s system reservation
-        # (~2 GiB) and the Ray head process (~2 GiB if it lands on this node).
-        # Use a 4 GiB safety buffer above the workerMemory request.
+        # instance must have enough host RAM after the K8s system reservation
+        # and daemonsets (~4 GiB). Use a 4 GiB safety buffer above the
+        # workerMemory request.
         if model is not None:
             weights_gb_for_check = (
                 model.params * WEIGHT_BYTES[weight_q] / (1024 ** 3)

@@ -155,7 +155,7 @@ of the critical path; add it as an optional enterprise tier only if customers de
                            +---+---------------+---------------+-----------+
                      +---------v------+ +-------v--------+ +----v--------------+
                      | single vLLM    | | multi-node LWS | | llm-d disaggregated|
-                     | (Ray, simple)  | | (optional tier)| | prefill/decode     |
+                     | (simple tier)  | | (optional tier)| | prefill/decode     |
                      +---------+------+ +-------+--------+ +----+--------------+
                                +----------------+---------------+
                                      Karpenter GPU NodePools
@@ -206,7 +206,7 @@ Concern-by-concern (where the line sits):
 | **Compute** | EKS, Karpenter engine, GPU AMIs, capacity reservations | NodePools (gpu-inference/gpu-shared/reserved), time-slicing, cold-start | picks `gpuCount`/`shared` in a `VLLMEndpoint` |
 | **Cluster ops** | ArgoCD/KRO/ACK as managed capabilities | ApplicationSets, RGD catalog, GitOps wiring | commits YAML to their path in Git |
 | **Model access** | Bedrock models | LiteLLM (one API), GIE routing, model registration | names a model; gets a scoped key |
-| **Serving** | — | vLLM/Ray/llm-d integration + serving modes | chooses `servingMode`, replicas |
+| **Serving** | — | vLLM/llm-d integration + serving modes | chooses `servingMode`, replicas |
 | **Data / weights** | S3, FSx, CSIs, S3 Vectors | `modelSource` plumbing, weight cache, `VectorDatabase` RGD | points at an HF ID / S3 URI / dataset |
 | **Networking edge** | NLB/ALB, ACM, VPC | TLS, gateway, HTTPRoutes, IP allowlist | nothing (consumes the shared endpoint) |
 | **Identity** | IAM, IRSA, Pod Identity, Identity Center | role wiring, per-team RBAC/keys | uses their team's key/namespace |

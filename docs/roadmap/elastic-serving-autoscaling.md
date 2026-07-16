@@ -126,8 +126,7 @@ KEDA activates 0→1 → Karpenter provisions a node → the pod serves; then id
 1. **Cold start is ~5 min today and ~2 min even fully optimized.** On this cluster
    none of the fast-start layers engage for llm-d: the EBS image snapshot + SOCI
    index are gated off (`docker_hub_username` unset → `run_image_optimization=false`,
-   no snapshot exists), and even when enabled they bake the **Ray** image, not the
-   llm-d `vllm/vllm-openai` image. The S3 model-weight cache bucket exists but the
+   no snapshot exists), and the S3 model-weight cache bucket exists but the
    model wasn't seeded. Optimized, the floor is still ~2 min (on-demand Karpenter
    node bring-up + vLLM warmup).
 2. **LiteLLM's router fights an intentionally-absent backend.** During the cold
@@ -143,8 +142,8 @@ LiteLLM prometheus metrics (useful for observability), the `litellm` scrape job,
 and the arrival trigger in the ScaledObject (`activationThreshold: 0`).
 
 **Unpark checklist (when the payoff justifies it):**
-- [ ] Extend `image-optimization.tf` to bake **and** SOCI-index the llm-d
-      `vllm/vllm-openai` image (today it's Ray-only); set `docker_hub_username`.
+- [ ] Enable image optimization (set `docker_hub_username`) — `image-optimization.tf`
+      already bakes + SOCI-indexes the `vllm/vllm-openai` serving image.
 - [ ] Seed each scale-to-zero model into the S3 model-cache bucket ahead of time.
 - [ ] LiteLLM: `disable_cooldowns` (assess platform-wide blast radius) + a
       cold-start hold + confirm the model stays in `/v1/models` through a wake.
