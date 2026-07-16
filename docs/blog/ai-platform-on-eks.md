@@ -27,7 +27,7 @@ the platform's Git repository and opens a pull request:
 apiVersion: kro.run/v1alpha1
 kind: VLLMEndpoint
 metadata:
-  name: qwen3-8b
+  name: qwen2-5-7b-instruct
   namespace: inference
 spec:
   model: "Qwen/Qwen2.5-7B-Instruct"   # a Hugging Face model ID
@@ -62,7 +62,7 @@ three kinds of models:
 - **Amazon Bedrock** models (AWS's managed access to frontier foundation models such
   as Anthropic's Claude), which need no infrastructure at all;
 - **open-source models** you self-host on GPUs; and
-- **your fine-tuned models**, trained on your own data.
+- **your own fine-tuned models** — you bring the weights and the platform serves them.
 
 Every one of them is called the same way, with the same team API keys, the same
 budgets, and the same tracing. That uniformity is the quiet superpower: there is no
@@ -139,9 +139,9 @@ babysit:
 - **KRO (Kube Resource Orchestrator)** lets you define a simple, high-level custom
   resource (like the `VLLMEndpoint` above) and have it automatically expand into the
   dozens of lower-level Kubernetes and AWS resources it really requires.
-- **ACK (AWS Controllers for Kubernetes)** lets the cluster create and manage AWS
-  services (such as storage and IAM) directly from Kubernetes, so a single
-  declarative flow spans both Kubernetes and AWS.
+- **ACK (AWS Controllers for Kubernetes)** is available so a capability's template
+  can create and manage AWS resources (S3, IAM, and more) directly from Kubernetes
+  when it needs them — keeping one declarative flow across Kubernetes and AWS.
 
 Put together, the end-to-end loop looks like this:
 
@@ -182,17 +182,19 @@ multi-minute cold starts that usually accompany large container images and model
 weights. The net effect: you pay for the capacity your traffic actually needs, and
 self-hosting becomes a genuine cost lever rather than an operational burden.
 
-## Prove the savings, don't assume them
+## Measure cost and quality across models
 
-"A small model can be cheaper" is only useful if you can trust it for *your* task, so
-the platform makes the comparison measurable. You can run the same evaluation set
-through a frontier Bedrock model, a base open-source model, and a fine-tuned version —
-and see the quality and the per-request cost side by side in Langfuse, including the
-break-even volume above which self-hosting wins. Fine-tuning is a first-class,
-self-service workflow too: a fine-tune job trains a smaller model on your own dataset
-and can automatically deploy the result as a new endpoint — closing the loop from
-"expensive frontier model" to "cheaper specialized model that's good enough," with
-evidence.
+"A smaller model can be cheaper" is only useful if you can trust it for *your* task.
+Because every model — frontier, open-source, or your own fine-tuned one — answers
+through the same API and is traced by **Langfuse**, the comparison is measurable
+rather than assumed: send the same prompts to a frontier Bedrock model and to a
+self-hosted model and see the quality and the per-request cost side by side. When a
+self-hosted model is good enough for a task, routing that traffic to it is a
+configuration change — and the traces show the savings. The platform **serves**
+fine-tuned models — upload your weights and point an endpoint at them — so a small
+model you've specialized on a narrow task can stand in for a much larger frontier
+model at a fraction of the cost per request. (Training the model is your own
+workflow; the platform's job is to serve, route, govern, and measure it.)
 
 ## Extending the platform: new capabilities as new resources
 
@@ -201,8 +203,8 @@ of KRO **ResourceGraphDefinitions (RGDs)** — the templates that define what ea
 custom resource expands into. Adding a new capability means authoring a new RGD, not
 teaching every team a new runbook.
 
-Want to offer a new serving pattern, a new fine-tuning workflow, a
-retrieval-augmented-generation (RAG) endpoint, or a managed vector store? You express
+Want to offer a new serving pattern, a retrieval-augmented-generation (RAG)
+endpoint, or a managed vector store? You express
 it once as an RGD, with all the GPU sizing, networking, governance, and wiring baked
 in. From that moment, teams consume the new capability the same way they consume every
 other one: a short YAML file and a pull request. The platform's surface area for its
