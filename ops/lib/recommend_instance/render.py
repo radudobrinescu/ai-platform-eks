@@ -268,6 +268,10 @@ def _diagnose_no_fit(
     else:
         print(f"{largest_line}  {C.YELLOW}→ has room; blocked by host RAM or "
               f"a parallelism constraint{C.RESET}")
+    print(f"  {C.DIM}Each model serves on one node (≤8 GPUs). The llm-d tier adds "
+          f"replicas for throughput, not model sharding — so multiple instances "
+          f"won't fit a bigger model; multi-node model parallelism is out of "
+          f"scope. Quantize or pick a smaller checkpoint.{C.RESET}")
 
     # What WOULD fit — try the highest-leverage knobs and report the cheapest
     # fitting instance for each (ignoring the price ceiling: fit first).
