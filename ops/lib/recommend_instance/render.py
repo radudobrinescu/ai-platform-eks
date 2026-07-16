@@ -238,6 +238,86 @@ def _explain_recommendation(
 
 
 
+def _diagnose_no_fit(
+    model: ModelSpec,
+    args:  argparse.Namespace,
+    prices: dict[str, float] | None,
+    C:     type,
+) -> None:
+    """Explain WHY nothing fits and, crucially, what config WOULD — so the user
+    gets a concrete re-run instead of a dead end. `best is None` means no
+    instance can hold the model at all (VRAM/host-RAM), independent of price."""
+    from .catalog import INSTANCES
+
+    prices = prices or {}
+    need = estimate_vram(model, args.quant, args.kv_quant, args.seq, args.batch, 1,
+                         avg_context_len=args.avg_context).total_gb
+    largest = max(INSTANCES, key=lambda i: i.vram_gb * i.num_gpus)
+    largest_total = largest.vram_gb * largest.num_gpus
+
+    tags = []
+    if any("multi-modal" in w for w in model.warnings):
+        tags.append("multi-modal")
+    if model.is_moe:
+        tags.append(f"MoE {model.num_experts}E")
+    tag_str = f" ({', '.join(tags)})" if tags else ""
+
+    print(f"\n  {C.BOLD}Model:{C.RESET} {model.model_id} — "
+          f"{_fmt_params(model.params)} params{tag_str}, {model.num_layers} layers")
+    print(f"  {C.BOLD}Needs:{C.RESET} {need:,.0f} GB VRAM "
+          f"({C.CYAN}{args.quant}{C.RESET} weights, {args.seq:,}-token context)")
+    gap = need - largest_total
+    largest_line = (f"  {C.BOLD}Largest node:{C.RESET} {largest.name} — "
+                    f"{largest.num_gpus}× {largest.gpu} = {largest_total:,.0f} GB")
+    if gap > 0:
+        print(f"{largest_line}  {C.RED}→ short by ~{gap:,.0f} GB{C.RESET}")
+    else:
+        print(f"{largest_line}  {C.YELLOW}→ has room; blocked by host RAM or "
+              f"a parallelism constraint{C.RESET}")
+
+    # What WOULD fit — try the highest-leverage knobs and report the cheapest
+    # fitting instance for each (ignoring the price ceiling: fit first).
+    def _fits(quant: str, seq: int):
+        v = estimate_vram(model, quant, args.kv_quant, seq, args.batch, 1,
+                          avg_context_len=min(args.avg_context or seq // 4, seq))
+        opts = find_options(
+            total_need_gb=v.total_gb, num_heads=model.num_heads, tp_pin=None,
+            require_in_cluster=args.in_cluster_only, safety_margin=args.safety_margin,
+            prices=prices, max_price=1e12, model=model, weight_q=quant,
+            kv_q=args.kv_quant, users=1,
+        )
+        return (opts[0] if opts else None), v.total_gb
+
+    trials: list[tuple[str, str, int]] = []          # (flags, quant, seq)
+    if args.quant != "int4":
+        trials.append(("--quant int4", "int4", args.seq))
+    if args.seq > 4096:
+        trials.append(("--quant int4 --seq 4096", "int4", 4096))
+
+    shown: list[tuple[str, "Option", float]] = []
+    for flags, quant, seq in trials:
+        opt, gb = _fits(quant, seq)
+        if opt is not None:
+            shown.append((flags, opt, gb))
+
+    if shown:
+        print(f"\n  {C.BOLD}What would fit:{C.RESET}")
+        for flags, o, gb in shown:
+            strat = f", {o.parallelism_label}" if o.parallelism_label else ""
+            print(f"    {C.GREEN}✓{C.RESET} {flags:<26} {C.DIM}→{C.RESET} {gb:,.0f} GB "
+                  f"{C.DIM}→{C.RESET} {o.instance.name} "
+                  f"({o.total_gpus}× {o.instance.gpu}{strat})  "
+                  f"{C.BOLD}${o.price_usd_h:.2f}/hr{C.RESET}")
+        print(f"\n  {C.BOLD}Re-run:{C.RESET} {C.CYAN}./platformctl new-model "
+              f"{model.model_id} {shown[0][0]}{C.RESET}")
+    else:
+        print(f"\n  {C.YELLOW}Even int4 on the largest node ({largest_total:,.0f} GB) "
+              f"can't hold this model.{C.RESET} It needs multi-node serving, which "
+              f"this single-node platform doesn't cover — or point at a smaller / "
+              f"already-quantized checkpoint.")
+    print()
+
+
 def print_human(
     model:       ModelSpec,
     vram:        VramEstimate,
@@ -253,9 +333,8 @@ def print_human(
 
     # -------- 1. Recommendation banner ----------------------------------- #
     if best is None:
-        print(f"\n{C.RED}✗ No catalog instance can host this configuration.{C.RESET}")
-        print(f"  Try: {C.CYAN}--quant int4{C.RESET}, a shorter {C.CYAN}--seq{C.RESET}, "
-              f"fewer {C.CYAN}--users{C.RESET}, or lower {C.CYAN}--batch{C.RESET}.\n")
+        print(f"\n  {C.RED}✗ No catalog instance fits {model.model_id} as configured.{C.RESET}")
+        _diagnose_no_fit(model, args, prices, C)
         return
 
     util_pct  = 100.0 * best.per_gpu_need_gb / best.instance.vram_gb
@@ -965,7 +1044,7 @@ def _print_yaml_snippet(model: ModelSpec, vram: VramEstimate, best: Option,
     print(f"kubectl get {plural} -n inference -w")
     print(f"{C.DIM}# Later, to remove it (ArgoCD deletes the model + LiteLLM "
           f"deregisters):{C.RESET}")
-    print(f"./ops/recommend-instance.py --undeploy {name}")
+    print(f"./platformctl new-model --undeploy {name}")
 
 
 def print_json(
