@@ -103,6 +103,17 @@ spec:
                   name: sso-secrets
                   key: open-webui-oidc-redirect-uri
                   optional: true
+            # Cognito's /logout is non-standard (needs client_id + logout_uri,
+            # rejects id_token_hint, and publishes no end_session_endpoint), so
+            # Open WebUI's default OIDC sign-out lands on a "Client does not
+            # exist" error. Point the OIDC end-session endpoint at the correct
+            # Cognito logout URL instead (Terraform builds it in sso-secrets).
+            - name: OPENID_END_SESSION_ENDPOINT
+              valueFrom:
+                secretKeyRef:
+                  name: sso-secrets
+                  key: open-webui-oidc-end-session-endpoint
+                  optional: true
           volumeMounts:
             - name: data
               mountPath: /app/backend/data

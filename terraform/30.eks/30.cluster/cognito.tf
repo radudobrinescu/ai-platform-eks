@@ -249,6 +249,14 @@ resource "kubernetes_secret" "sso_secrets" {
       # URL from the request behind the TLS-terminating edge). Public edge
       # callback when set, else the localhost tunnel callback.
       "open-webui-oidc-redirect-uri" = "${local.sso_public_url["open-webui"] != "" ? local.sso_public_url["open-webui"] : "http://localhost:8080"}${local.sso_apps["open-webui"].callback}"
+      # OIDC end-session endpoint for Open WebUI. Cognito's /logout is NOT
+      # standard OIDC RP-logout: it ignores id_token_hint and requires
+      # client_id + logout_uri, and it publishes no end_session_endpoint, so Open
+      # WebUI's default sign-out hits a "Client does not exist" Cognito error.
+      # OPENID_END_SESSION_ENDPOINT points sign-out at a correctly-formed Cognito
+      # logout URL (logout_uri is a registered LogoutURL: the edge URL when set,
+      # else the localhost tunnel).
+      "open-webui-oidc-end-session-endpoint" = "${local.cognito_hosted_ui_url}/logout?client_id=${aws_cognito_user_pool_client.apps["open-webui"].id}&logout_uri=${urlencode("${local.sso_public_url["open-webui"] != "" ? local.sso_public_url["open-webui"] : "http://localhost:8080"}${local.sso_apps["open-webui"].logout}")}"
     },
     { for app in keys(local.sso_apps) : "${app}-client-id" => aws_cognito_user_pool_client.apps[app].id },
     { for app in keys(local.sso_apps) : "${app}-client-secret" => aws_cognito_user_pool_client.apps[app].client_secret },
