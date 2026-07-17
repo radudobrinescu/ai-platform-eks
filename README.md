@@ -254,9 +254,8 @@ aws iam list-roles --query "Roles[?contains(RoleName, '<cluster-name>')].RoleNam
 argocd/bootstrap/   ApplicationSets (platform services + self-service workloads)
 platform/
   config/kro/       VLLMEndpoint · LLMDEndpoint · LLMDDisaggEndpoint · AITeam (the API)
-  services/         litellm, open-webui, langfuse, gpu-operator,
+  services/         litellm, litellm-sync, open-webui, langfuse, gpu-operator,
                     cluster-dashboard (+ Platform Health Agent), inference-gateway
-  images/           Container build contexts (platform-controller)
 workloads/          Self-service YAMLs: models/ · scale-models/ · teams/
 platformctl         The unified CLI (up · status · tunnel · edge · new-model · down)
 ops/                platformctl implementation: ops/lib/ (helpers) · ops/image/ (cold-start build helpers)

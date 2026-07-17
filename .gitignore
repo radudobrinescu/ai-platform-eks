@@ -5,9 +5,10 @@ nohup.out
 
 # Terraform
 **/.terraform/
-**/.terraform.lock.hcl
+# .terraform.lock.hcl is committed on purpose (reproducible provider versions)
 terraform.tfstate
 terraform.tfstate.backup
+terraform.tfstate.d/
 *.tfplan
 *.tfvars
 *.tfvars.backup
