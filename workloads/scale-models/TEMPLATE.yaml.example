@@ -28,7 +28,6 @@ spec:
   # minVramPerGpuGiB: 0       # Min per-GPU VRAM in GiB (Karpenter hint). 0 = no floor.
   # workerMemory: "16Gi"      # Memory per replica
   # workerCpu: "8"            # CPU per replica
-  # modelSource: ""           # S3 path for a fine-tuned model (leave empty for HF)
   # vllmImage: "vllm/vllm-openai:v0.24.0"      # Override only if needed
   # routerChartVersion: "v0.9.0"               # llm-d-router-standalone chart version
 #

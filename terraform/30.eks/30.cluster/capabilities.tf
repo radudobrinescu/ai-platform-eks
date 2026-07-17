@@ -298,12 +298,11 @@ resource "aws_iam_role_policy" "inference_worker_s3_cache" {
         Resource = "${aws_s3_bucket.model_cache[0].arn}/hf/*"
       },
       {
-        # Fine-tuned / custom model weights: READ-only. A serving tier's
-        # modelSource init container syncs weights from this prefix on startup.
-        # Upload externally fine-tuned weights here (the platform serves tuned
-        # models via modelSource; it does not train them). Read-only — serving
-        # pods never write model weights.
-        Sid      = "FineTunedReadOnly"
+        # Model-weight cache: READ-only. Each serving tier's init container syncs
+        # pre-seeded HuggingFace model weights (s3://<bucket>/hf/<model-id>/) from
+        # this bucket on startup for a fast cold start, falling back to a HF
+        # download on a cache miss. Read-only — serving pods never write weights.
+        Sid      = "ModelCacheReadOnly"
         Effect   = "Allow"
         Action   = ["s3:GetObject"]
         Resource = "${aws_s3_bucket.model_cache[0].arn}/fine-tuned/*"

@@ -25,7 +25,6 @@ spec:
   # gpuCount: 1               # GPUs per replica (tensor parallelism). 1, 2, 4, or 8.
   # tensorParallelSize: 0     # 0 = use gpuCount; set explicitly to override
   # maxModelLen: 16384        # Max sequence length. Lower = less GPU memory.
-  # modelSource: ""           # S3 path for a fine-tuned model (leave empty for HF)
   #
   # --- Prefill pool (compute-bound) — autoscaled on queue depth ---
   # prefillMinReplicas: 1          # floor (>=1; scale-to-zero parked)

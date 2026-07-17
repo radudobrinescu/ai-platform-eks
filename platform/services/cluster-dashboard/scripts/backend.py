@@ -1193,7 +1193,7 @@ def _build_metrics(nodes: list, pods: list) -> dict:
 
     models = []
     for ep in endpoints:
-        tier = "ft" if ep.get("modelSource") else ep["mode"]
+        tier = ep["mode"]
         models.append({"name": ep["name"], "model": ep["model"], "tier": tier,
             "status": "error" if ep.get("kroState") == "ERROR" else ("running" if ep["ready"] == "True" else "deploying"),
             "gpu": ("shared" if ep.get("shared") else f'{ep["gpuCount"]}×GPU'),

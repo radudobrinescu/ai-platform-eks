@@ -33,7 +33,6 @@ spec:
     kind: LLMDEndpoint
     spec:
       model:                "string"
-      modelSource:          "string  | default="
       gpuCount:             "integer | default=1"
       tensorParallelSize:   "integer | default=0"
       # DEPRECATED — superseded by minReplicas/maxReplicas; ignored by this RGD.
@@ -144,7 +143,7 @@ spec:
                   image: ${platformConfig.data.?vllmImage.orValue(schema.spec.vllmImage)}
                   command: ["vllm", "serve"]
                   args:
-                    - "${schema.spec.modelSource != '' ? '/hf-cache/finetuned' : schema.spec.model}"
+                    - "${schema.spec.model}"
                     - "--served-model-name"
                     - "${schema.spec.model}"
                     - "--tensor-parallel-size"

@@ -26,7 +26,6 @@ spec:
     kind: VLLMEndpoint
     spec:
       model:                "string"
-      modelSource:          "string  | default="
       gpuCount:             "integer | default=1"
       tensorParallelSize:   "integer | default=0"
       pipelineParallelSize: "integer | default=1"

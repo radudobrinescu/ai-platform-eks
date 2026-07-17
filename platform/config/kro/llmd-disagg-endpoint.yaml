@@ -41,7 +41,6 @@ spec:
     kind: LLMDDisaggEndpoint
     spec:
       model:                "string"
-      modelSource:          "string  | default="
       gpuCount:             "integer | default=1"
       tensorParallelSize:   "integer | default=0"
       # DEPRECATED — superseded by prefill/decode Min/MaxReplicas; ignored by this
@@ -170,7 +169,7 @@ spec:
                   image: ${platformConfig.data.?vllmImage.orValue(schema.spec.vllmImage)}
                   command: ["vllm", "serve"]
                   args:
-                    - "${schema.spec.modelSource != '' ? '/hf-cache/finetuned' : schema.spec.model}"
+                    - "${schema.spec.model}"
                     - "--served-model-name"
                     - "${schema.spec.model}"
                     - "--tensor-parallel-size"
@@ -311,7 +310,7 @@ spec:
                   image: ${platformConfig.data.?vllmImage.orValue(schema.spec.vllmImage)}
                   command: ["vllm", "serve"]
                   args:
-                    - "${schema.spec.modelSource != '' ? '/hf-cache/finetuned' : schema.spec.model}"
+                    - "${schema.spec.model}"
                     - "--served-model-name"
                     - "${schema.spec.model}"
                     - "--tensor-parallel-size"
