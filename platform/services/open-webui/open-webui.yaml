@@ -5,6 +5,13 @@ metadata:
   namespace: ai-platform
   labels:
     app: open-webui
+  annotations:
+    # Server-side apply so ArgoCD merges the env list by field ownership rather
+    # than a strategic patch. Without this, switching an env var between `value`
+    # and `valueFrom` (e.g. the SSO OPENID_REDIRECT_URI) leaves both set on the
+    # live object and the apply fails with "may not be specified when value is
+    # not empty". SSA transitions the field cleanly.
+    argocd.argoproj.io/sync-options: ServerSideApply=true
 spec:
   replicas: 1
   # Recreate (not RollingUpdate): the data PVC is ReadWriteOnce, so a rolling
