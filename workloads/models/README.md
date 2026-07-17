@@ -35,7 +35,8 @@ directory-per-namespace convention above is unchanged.
 ## Bedrock — available out of the box
 
 Bedrock's `claude-opus-4-8` is a static LiteLLM entry (no GPUs, no CR), so a
-fresh install serves against it immediately. To serve your own externally
-fine-tuned weights, point a `VLLMEndpoint` here at them via
-`modelSource: <s3-prefix>` — the platform serves tuned models; it does not
-train them.
+fresh install serves against it immediately. To serve any other model, point a
+`VLLMEndpoint` at a HuggingFace model ID — including a model you've fine-tuned and
+pushed to HF (private repos need a token). The platform serves models; it does not
+train them. (Serving weights directly from your own S3 bucket is on the roadmap —
+see `docs/roadmap/bring-your-own-weights.md`.)

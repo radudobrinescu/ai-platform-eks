@@ -46,11 +46,13 @@ Grouped by capability domain. Legend: ✅ built today · 🔶 partial/gap · �
 - ✅ `AITeam` — onboard a tenant: namespace, RBAC, quota, network policy, scoped API key, budget, rate limits.
 - 🎯 `EmbeddingEndpoint`, `RerankerEndpoint`, `VectorDatabase`, `RAGPipeline`, `AgentRuntime` — the
   catalog that turns it from "one demo" into "a platform."
-- ⛔ **Out of scope:** fine-tuning/training. The platform *serves* models (including externally
-  fine-tuned ones via `modelSource`), it does not train them (tenet: scope discipline).
+- ⛔ **Out of scope:** fine-tuning/training. The platform *serves* models (including
+  fine-tuned models published to HuggingFace, by ID), it does not train them (tenet:
+  scope discipline). Serving weights from your own S3 bucket is roadmap
+  (`docs/roadmap/bring-your-own-weights.md`).
 
 ### C. Cost & efficiency
-- ✅ Scale-to-zero idle GPUs (Karpenter), spot + on-demand, right-sizing.
+- ✅ Karpenter right-sizes + consolidates GPU nodes and reclaims them when workloads are removed; spot + on-demand. (Model-replica scale-to-zero is parked — see `docs/roadmap/elastic-serving-autoscaling.md`.)
 - 🎯 Reserved-fleet story (StaticCapacity / ODCR / Capacity Blocks), per-team GPU chargeback.
 
 ### D. Governance, security & multi-tenancy
@@ -65,7 +67,7 @@ Grouped by capability domain. Legend: ✅ built today · 🔶 partial/gap · �
 - 🎯 Per-model/per-team GPU dashboards + cost attribution + alerting.
 
 ### F. Operations & Day-2
-- ✅ Cold-start engineering (EBS image snapshot + SOCI + S3 weight cache) → ~15s vs ~60s loads.
+- ✅ Cold-start engineering (opt-in): EBS image snapshot + SOCI + an S3 HF-weight cache, enabled via `docker_hub_username`, to cut GPU-node warmup.
 - ✅ `platformctl` ops CLI (up/status[--check]/tunnel/edge/new-model/down), instance recommender, Platform Health
   Agent (LLM-assisted incident triage with human-approved fixes).
 - ✅ GitOps everything (ArgoCD prune + self-heal + server-side apply).
@@ -78,12 +80,12 @@ Grouped by capability domain. Legend: ✅ built today · 🔶 partial/gap · �
 |---|---|---|
 | **Developer / data-science team** | `git push` a YAML → a live, governed model endpoint. Same OpenAI API for Bedrock, open, and fine-tuned models. | Ship AI features in minutes without touching GPUs, Helm, or infra. No new SDK. |
 | **Platform / infra team** | One opinionated, GitOps-native distribution; AWS runs the control plane, ArgoCD/KRO/ACK, and increasingly the compute. | Operate an AI platform without building one; ride the AWS roadmap instead of maintaining custom code. |
-| **Finance / FinOps** | Scale-to-zero, GPU time-slicing, and per-team budgets. | Turn GPU spend into a governed, attributable, optimizable line item. |
+| **Finance / FinOps** | GPU right-sizing + consolidation, GPU time-slicing, and per-team budgets. | Turn GPU spend into a governed, attributable, optimizable line item. |
 | **Security / compliance** | Everything runs **in your AWS account and VPC**; per-team isolation, keys, and audit; CNCF/OSS components (no lock-in). | Data sovereignty and control — the core reason this segment self-hosts. |
 | **Business / product** | Frontier quality on day one (Bedrock), then a path to cheaper tuned models for narrow tasks, plus RAG and agents as first-class. | Start delivering value immediately; reduce unit cost as usage scales. |
 
 **Consolidated value proposition:** *AI infrastructure you own and control, with the self-service speed
-of a SaaS, the cost discipline of scale-to-zero + tuned small models, and no vendor lock-in.*
+of a SaaS, the cost discipline of right-sized GPUs + tuned small models, and no vendor lock-in.*
 
 ---
 
@@ -102,7 +104,7 @@ Prioritized on **"what gates a sale"**, not raw technical interest. Three tiers:
 *The moat.*
 - The **KRO self-service catalog** (git-push-to-model) + GitOps ✅ foundation.
 - **RAG blueprint** (the #1 enterprise pattern) + embeddings/rerankers + vector DB.
-- **Serve any model** — day-one Bedrock ✅; self-hosted vLLM + the llm-d scale tier ✅; serve your own fine-tuned weights (`modelSource`) ✅.
+- **Serve any model** — day-one Bedrock ✅; self-hosted vLLM + the llm-d scale tier ✅; fine-tuned models by HuggingFace ID ✅; bring-your-own-S3-weights (`modelSource`) 🎯 (roadmap).
 - **Dual serving** (simple single-node vLLM → llm-d scale path).
 
 ### Tier 3 — Expansion (land-and-expand, enterprise depth)
@@ -207,7 +209,7 @@ Concern-by-concern (where the line sits):
 | **Cluster ops** | ArgoCD/KRO/ACK as managed capabilities | ApplicationSets, RGD catalog, GitOps wiring | commits YAML to their path in Git |
 | **Model access** | Bedrock models | LiteLLM (one API), GIE routing, model registration | names a model; gets a scoped key |
 | **Serving** | — | vLLM/llm-d integration + serving modes | chooses `servingMode`, replicas |
-| **Data / weights** | S3, FSx, CSIs, S3 Vectors | `modelSource` plumbing, weight cache, `VectorDatabase` RGD | points at an HF ID / S3 URI / dataset |
+| **Data / weights** | S3, FSx, CSIs, S3 Vectors | HF-weight cold-start cache; bring-your-own-S3-weights + `VectorDatabase` RGD (roadmap) | points at an HF ID / dataset |
 | **Networking edge** | NLB/ALB, ACM, VPC | TLS, gateway, HTTPRoutes, IP allowlist | nothing (consumes the shared endpoint) |
 | **Identity** | IAM, IRSA, Pod Identity, Identity Center | role wiring, per-team RBAC/keys | uses their team's key/namespace |
 | **Observability** | AMP, CloudWatch, X-Ray | Langfuse, DCGM scrape, dashboards, alerts | reads their traces/dashboards |

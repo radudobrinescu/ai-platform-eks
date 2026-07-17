@@ -70,10 +70,10 @@ internally, so governance still applies. See **[docs/llm-d-and-ingress-architect
 
 ## Quick start
 
-Provision → use Opus 4.8 with zero GPUs → deploy a self-hosted model → serve your
-own fine-tuned weights → prove the savings. Mind the prerequisites that matter:
-fork the repo, reach the UIs via `./platformctl tunnel` (the ALB is internal by
-default), and supply gated-model tokens where needed. The shape of it:
+Provision → use Opus 4.8 with zero GPUs → deploy a self-hosted model → compare cost
+and quality in Langfuse. Mind the prerequisites that matter: fork the repo, reach
+the UIs via `./platformctl tunnel` (the ALB is internal by default), and supply
+gated-model tokens where needed. The shape of it:
 
 > ⚠️ **Before you deploy — this creates real, billable infrastructure in your AWS
 > account.** It provisions an EKS cluster and (on demand) GPU nodes. The platform
@@ -115,10 +115,12 @@ expose it directly.)
 
 ## Beyond the basics
 
-**Serve your own fine-tuned model.** Upload the weights to the model-cache bucket
-and point a `VLLMEndpoint` (or `LLMDEndpoint`) at them with `modelSource: <s3-prefix>`,
-shipped with the same `git push` loop. The platform **serves** tuned models — you
-bring the training (fine-tuning itself is out of scope).
+**Serve a fine-tuned model.** Any HuggingFace model ID works — including a model
+you've fine-tuned and pushed to HF (public, or private with a token). Point a
+`VLLMEndpoint` (or `LLMDEndpoint`) at its HF ID and ship it with the same
+`git push` loop. The platform **serves** models; you bring the training (fine-tuning
+itself is out of scope). Serving weights directly from your own S3 bucket is on the
+roadmap — see [docs/roadmap/bring-your-own-weights.md](docs/roadmap/bring-your-own-weights.md).
 
 **Scale-tier routing (llm-d).** For high-QPS or long, multi-turn/agentic
 workloads, commit an `LLMDEndpoint` (see `workloads/scale-models/`) and the
@@ -127,9 +129,13 @@ prefix, and queue-depth signals, and supports prefill/decode disaggregation. Arc
 **[docs/llm-d-and-ingress-architecture.md](docs/llm-d-and-ingress-architecture.md)**;
 disaggregation roadmap in **[docs/roadmap/disaggregated-inference.md](docs/roadmap/disaggregated-inference.md)**.
 
-**Fast cold starts.** New GPU deployments avoid the multi-minute cold start via
-three layers: EBS image snapshots (0s image pull), SOCI lazy-loading, and an S3
-model-weight cache (~15s load vs ~60s from HuggingFace). All automated by Terraform.
+**Fast cold starts (opt-in).** New GPU deployments can shave the multi-minute cold
+start via three layers, wired through Terraform's image optimization and switched on
+by setting `docker_hub_username` (which enables the ECR pull-through cache): EBS
+image snapshots (near-instant image pull) and SOCI lazy-loading, plus an S3
+model-weight cache — pre-seed a model's HuggingFace weights there and the serving
+initContainer loads them from local disk instead of pulling from HuggingFace. Actual
+savings vary by model and instance.
 
 **Platform Health Agent.** The cluster dashboard can watch for failures, investigate
 them with an LLM, and propose a one-click fix — idle until you provide a Kiro key.

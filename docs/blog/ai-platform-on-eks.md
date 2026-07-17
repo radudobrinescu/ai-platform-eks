@@ -62,7 +62,7 @@ three kinds of models:
 - **Amazon Bedrock** models (AWS's managed access to frontier foundation models such
   as Anthropic's Claude), which need no infrastructure at all;
 - **open-source models** you self-host on GPUs; and
-- **your own fine-tuned models** — you bring the weights and the platform serves them.
+- **your own fine-tuned models** — served by their Hugging Face ID, like any other open model.
 
 Every one of them is called the same way, with the same team API keys, the same
 budgets, and the same tracing. That uniformity is the quiet superpower: there is no
@@ -191,10 +191,10 @@ rather than assumed: send the same prompts to a frontier Bedrock model and to a
 self-hosted model and see the quality and the per-request cost side by side. When a
 self-hosted model is good enough for a task, routing that traffic to it is a
 configuration change — and the traces show the savings. The platform **serves**
-fine-tuned models — upload your weights and point an endpoint at them — so a small
-model you've specialized on a narrow task can stand in for a much larger frontier
-model at a fraction of the cost per request. (Training the model is your own
-workflow; the platform's job is to serve, route, govern, and measure it.)
+fine-tuned models by their Hugging Face ID — so a small model you've specialized on
+a narrow task can stand in for a much larger frontier model at a fraction of the
+cost per request. (Training the model is your own workflow; the platform's job is to
+serve, route, govern, and measure it.)
 
 ## Extending the platform: new capabilities as new resources
 
