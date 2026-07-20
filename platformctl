@@ -1,10 +1,6 @@
 #!/usr/bin/env bash
 # platformctl — the single entry point for operating the AI platform.
 #
-# A thin, unified front door over `make` + Terraform + the helpers in ops/lib/.
-# It removes the "which command in what order" friction; it is NOT a bespoke
-# provisioning engine — every verb shells out to tools that already exist.
-#
 # Usage:
 #   ./platformctl use     <ENV>        Switch the active env: record it, point kubectl at its cluster, pin its region
 #   ./platformctl up      [ENV]        Provision everything (state backend + all Terraform stages)
@@ -12,14 +8,8 @@
 #   ./platformctl tunnel  [ENV]        Reach the private UIs locally (SSM port-forward to the ClusterIPs)
 #   ./platformctl edge    [MODE] [ENV] Choose the public front door: cloudfront | domain | tunnel
 #   ./platformctl new-model MODEL [..] Right-size a model + scaffold its serving YAML (VLLMEndpoint/LLMDEndpoint)
-#   ./platformctl down    [ENV]        Tear everything down (asks to confirm)
+#   ./platformctl down    [ENV] [--purge]  Tear down infra; --purge also deletes the env definition (tfvars + workspaces)
 #   ./platformctl list-envs            List configured environments (cluster + region; marks the active one)
-#
-# ENV is resolved in this order and NEVER guessed: explicit arg > $PLATFORM_ENV >
-# the active env set by `use` (.platformctl/active-env) > the cluster stage's
-# Terraform workspace. `use` is the one command that switches everything together;
-# it pins the region from `region` in the env's tfvars. status/tunnel act on the
-# CURRENT kubectl context and only WARN if it doesn't match the active env.
 set -euo pipefail
 
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -126,13 +116,43 @@ cmd_up() {
   echo "  ./platformctl edge               # (optional) choose a public front door"
 }
 
+# Remove an env's DEFINITION after its infra is destroyed: the per-stage
+# Terraform workspaces (delete refuses non-empty state, so it never orphans
+# resources), the tfvars file, and the active-env pointer if it names this env.
+# Best-effort — never fatal.
+purge_env_definition() {
+  local env="$1" f="${TF_DIR}/00.global/vars/${env}.tfvars" stage d
+  log "Purging the '${env}' env definition (Terraform workspaces + tfvars)"
+  for stage in $(cd "$TF_DIR" && find . -name backend.tf -not -path '*/.terraform/*' -exec dirname {} \; | sort); do
+    d="${TF_DIR}/${stage#./}"
+    terraform -chdir="$d" workspace select default >/dev/null 2>&1 || true
+    if terraform -chdir="$d" workspace delete "$env" >/dev/null 2>&1; then
+      ok "workspace '${env}' deleted in ${stage#./}"
+    fi
+  done
+  [ -f "$f" ] && { rm -f "$f" && ok "removed ${f#"$REPO_ROOT"/}"; }
+  if [ -s "$ACTIVE_ENV_FILE" ] && [ "$(head -1 "$ACTIVE_ENV_FILE")" = "$env" ]; then
+    rm -f "$ACTIVE_ENV_FILE"; ok "cleared active-env pointer (was '${env}')"
+  fi
+}
+
 cmd_down() {
-  local env; env=$(need_env "${1:-}" "down")
+  local purge=0 envarg="" a
+  for a in "$@"; do
+    case "$a" in --purge) purge=1 ;; *) envarg="$a" ;; esac
+  done
+  local env; env=$(need_env "$envarg" "down")
   need terraform; need make; require_tfvars "$env"; pin_region "$env"
-  warn "This DESTROYS all infrastructure for env '${env}'."
+  if [ "$purge" -eq 1 ]; then
+    warn "This DESTROYS all infrastructure for env '${env}' AND removes its definition (tfvars + Terraform workspaces)."
+  else
+    warn "This DESTROYS all infrastructure for env '${env}'."
+  fi
   read -r -p "Type the environment name ('${env}') to confirm: " confirm
   [ "$confirm" = "$env" ] || die "confirmation mismatch — aborted (nothing changed)."
   make -C "$TF_DIR" destroy-all ENVIRONMENT="$env"
+  [ "$purge" -eq 1 ] && purge_env_definition "$env"
+  true
 }
 
 # ---- status [--check] ------------------------------------------------------ #
