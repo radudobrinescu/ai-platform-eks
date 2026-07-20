@@ -104,8 +104,12 @@ git add workloads/models/qwen3-3b.yaml && git commit -m "feat: deploy qwen3-3b" 
 kubectl get vllmendpoints -n inference -w
 ```
 
-`./platformctl` is the single CLI over `make` + Terraform + `ops/lib/` (`up ·
-status[--check] · tunnel · edge · new-model · down · list-envs`). The UIs sit behind one **internal** ALB
+`./platformctl` is the single CLI over `make` + Terraform + `ops/lib/` (`use ·
+up · status[--check] · tunnel · edge · new-model · down · list-envs`). For multiple
+environments, `./platformctl list-envs` shows them (cluster + region) and
+`./platformctl use <env>` switches the active one — it records your intent, points
+kubectl at that cluster, and pins the region (from `region` in the env's tfvars);
+every other verb then targets it (or takes an explicit `[ENV]`). The UIs sit behind one **internal** ALB
 (Open WebUI `:8080` · LiteLLM `:4000` · Langfuse `:3000` · Dashboard `:9090`) with
 no public IP — reach them with `./platformctl tunnel`, or publicly via the opt-in
 CloudFront edge. (Switch the ALB to `internet-facing` + set an IP allowlist to
@@ -257,7 +261,7 @@ platform/
   services/         litellm, litellm-sync, open-webui, langfuse, gpu-operator,
                     cluster-dashboard (+ Platform Health Agent), inference-gateway
 workloads/          Self-service YAMLs: models/ · scale-models/ · teams/
-platformctl         The unified CLI (up · status · tunnel · edge · new-model · down · list-envs)
+platformctl         The unified CLI (use · up · status · tunnel · edge · new-model · down · list-envs)
 ops/                platformctl implementation: ops/lib/ (helpers) · ops/image/ (cold-start build helpers)
 terraform/          Infrastructure modules (VPC → IAM → EKS → observability)
 docs/               platform-product-report · cloudfront-edge ·

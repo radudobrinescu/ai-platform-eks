@@ -6,17 +6,20 @@
 # provisioning engine — every verb shells out to tools that already exist.
 #
 # Usage:
+#   ./platformctl use     <ENV>        Switch the active env: record it, point kubectl at its cluster, pin its region
 #   ./platformctl up      [ENV]        Provision everything (state backend + all Terraform stages)
-#   ./platformctl status  [--check]    Show health + where the UIs are reachable; --check validates end-to-end
-#   ./platformctl tunnel               Reach the private UIs locally (SSM port-forward to the ClusterIPs)
+#   ./platformctl status  [ENV] [--check]  Show health + where the UIs are reachable; --check validates end-to-end
+#   ./platformctl tunnel  [ENV]        Reach the private UIs locally (SSM port-forward to the ClusterIPs)
 #   ./platformctl edge    [MODE] [ENV] Choose the public front door: cloudfront | domain | tunnel
 #   ./platformctl new-model MODEL [..] Right-size a model + scaffold its serving YAML (VLLMEndpoint/LLMDEndpoint)
 #   ./platformctl down    [ENV]        Tear everything down (asks to confirm)
-#   ./platformctl list-envs            List the configured environments (marks the active default)
+#   ./platformctl list-envs            List configured environments (cluster + region; marks the active one)
 #
 # ENV is resolved in this order and NEVER guessed: explicit arg > $PLATFORM_ENV >
-# the deployed Terraform workspace of the cluster stage. Region comes from
-# $AWS_REGION / your AWS config.
+# the active env set by `use` (.platformctl/active-env) > the cluster stage's
+# Terraform workspace. `use` is the one command that switches everything together;
+# it pins the region from `region` in the env's tfvars. status/tunnel act on the
+# CURRENT kubectl context and only WARN if it doesn't match the active env.
 set -euo pipefail
 
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -24,6 +27,11 @@ TF_DIR="${REPO_ROOT}/terraform"
 LIB_DIR="${REPO_ROOT}/ops/lib"
 CLUSTER_STAGE="30.eks/30.cluster"
 NS_PLATFORM="ai-platform"
+# Single source of truth for the active env (the operator's intent). The
+# Terraform workspace + kubectl context are treated as downstream and only
+# warned against, never used as the truth. Per-checkout, gitignored.
+STATE_DIR="${REPO_ROOT}/.platformctl"
+ACTIVE_ENV_FILE="${STATE_DIR}/active-env"
 
 # UI -> local tunnel port (matches ops/lib/tunnel.sh and the ALB listener ports).
 UI_PORTS=("Open WebUI:8080" "LiteLLM:4000" "Langfuse:3000" "Dashboard:9090")
@@ -46,17 +54,43 @@ require_tfvars() {
   Copy 00.global/vars/example.tfvars and set your Identity Center ARN + gitops_repo_url."
 }
 
-# Resolve the target env WITHOUT ever guessing (guessing 'dev' would point
-# Terraform at the wrong/empty workspace). Order: explicit arg > $PLATFORM_ENV >
-# the cluster stage's selected Terraform workspace. Empty string => unresolved.
+# Resolve the target env WITHOUT ever guessing. Order: explicit arg >
+# $PLATFORM_ENV (one-shot) > the active-env state file (set by `use`) > the
+# cluster stage's Terraform workspace (migration fallback). Empty => unresolved.
 resolve_env() {
   local explicit="${1:-}"
   if [ -n "$explicit" ]; then echo "$explicit"; return 0; fi
   if [ -n "${PLATFORM_ENV:-}" ]; then echo "$PLATFORM_ENV"; return 0; fi
+  if [ -s "$ACTIVE_ENV_FILE" ]; then head -1 "$ACTIVE_ENV_FILE"; return 0; fi
   local ws
   ws=$(cat "${TF_DIR}/${CLUSTER_STAGE}/.terraform/environment" 2>/dev/null || true)
   [ -n "$ws" ] && [ "$ws" != "default" ] && { echo "$ws"; return 0; }
   return 1
+}
+
+# Read scalars from an env's tfvars. region is top-level; resources_prefix is
+# nested in shared_config (grep by exact key name; both are simple "..." values).
+tfvar_region() { grep -E '^[[:space:]]*region[[:space:]]*=' "${TF_DIR}/00.global/vars/${1}.tfvars" 2>/dev/null | head -1 | sed -E 's/^[^"]*"([^"]*)".*/\1/' || true; }
+tfvar_prefix() { grep -E '^[[:space:]]*resources_prefix[[:space:]]*=' "${TF_DIR}/00.global/vars/${1}.tfvars" 2>/dev/null | head -1 | sed -E 's/^[^"]*"([^"]*)".*/\1/' || true; }
+# Cluster name convention (locals.tf: "${resources_prefix}-${workspace}").
+cluster_of() { local p; p="$(tfvar_prefix "$1")"; echo "${p:+${p}-}$1"; }
+
+# Pin AWS_REGION from the env's tfvars so make + Terraform (via data.aws_region)
+# + kubeconfig all target the same region instead of ambient AWS config.
+pin_region() { local r; r="$(tfvar_region "${1}")"; [ -n "$r" ] && export AWS_REGION="$r" || true; }
+
+# Warn (never switch — safest) when the current kubectl context is not the
+# resolved env's cluster. status/tunnel act on the CURRENT context.
+warn_context_mismatch() {
+  local env; env="$(resolve_env "${1:-}" 2>/dev/null || true)"
+  [ -n "$env" ] || return 0
+  command -v kubectl >/dev/null 2>&1 || return 0
+  local want cur; want="$(cluster_of "$env")"
+  cur="$(kubectl config view --minify -o jsonpath='{.clusters[0].name}' 2>/dev/null | awk -F/ '{print $NF}')"
+  [ -n "$cur" ] || return 0
+  [ "$cur" = "$want" ] && return 0
+  warn "active env is '${env}' (cluster ${want}) but the kubectl context points at '${cur}'.
+  status/tunnel act on the CURRENT context — align them with: ./platformctl use ${env}"
 }
 
 need_env() {
@@ -81,7 +115,7 @@ edge_urls_live() {
 
 cmd_up() {
   local env; env=$(need_env "${1:-}" "up")
-  need terraform; need aws; need make; require_tfvars "$env"
+  need terraform; need aws; need make; require_tfvars "$env"; pin_region "$env"
   log "Provisioning '${env}' — EKS + capabilities + Karpenter (takes a while)"
   make -C "$TF_DIR" bootstrap ENVIRONMENT="$env"
   make -C "$TF_DIR" apply-all ENVIRONMENT="$env"
@@ -94,7 +128,7 @@ cmd_up() {
 
 cmd_down() {
   local env; env=$(need_env "${1:-}" "down")
-  need terraform; need make; require_tfvars "$env"
+  need terraform; need make; require_tfvars "$env"; pin_region "$env"
   warn "This DESTROYS all infrastructure for env '${env}'."
   read -r -p "Type the environment name ('${env}') to confirm: " confirm
   [ "$confirm" = "$env" ] || die "confirmation mismatch — aborted (nothing changed)."
@@ -105,8 +139,11 @@ cmd_down() {
 
 cmd_status() {
   need kubectl
-  local deep=0
-  [ "${1:-}" = "--check" ] && deep=1
+  local deep=0 env="" a
+  for a in "$@"; do
+    case "$a" in --check) deep=1 ;; *) env="$a" ;; esac
+  done
+  warn_context_mismatch "$env"
 
   log "ArgoCD applications"
   kubectl get applications -n argocd 2>/dev/null \
@@ -207,7 +244,7 @@ _status_check() {
 
 # ---- tunnel ---------------------------------------------------------------- #
 
-cmd_tunnel() { exec "${LIB_DIR}/tunnel.sh"; }
+cmd_tunnel() { warn_context_mismatch "${1:-}"; exec "${LIB_DIR}/tunnel.sh"; }
 
 # ---- edge ------------------------------------------------------------------ #
 
@@ -232,7 +269,7 @@ _edge_apply() {
   local action="$1" env
   need terraform; need make; need aws
   env=$(need_env "${2:-}" "edge ${action/off/tunnel}")
-  require_tfvars "$env"
+  require_tfvars "$env"; pin_region "$env"
   local want; [ "$action" = cloudfront ] && want=true || want=false
 
   echo
@@ -330,13 +367,38 @@ cmd_new_model() {
   exec python3 "${LIB_DIR}/recommend-instance.py" "$@"
 }
 
+# ---- use ------------------------------------------------------------------- #
+
+# Switch the active env — the single action that aligns everything: records the
+# intent in the state file (which resolve_env reads), pins the region, and points
+# kubectl at that env's cluster. The one place we deliberately touch kubeconfig.
+cmd_use() {
+  local env="${1:-}"
+  [ -n "$env" ] || die "usage: platformctl use <env>   (see: ./platformctl list-envs)"
+  require_tfvars "$env"
+  local region prefix cluster
+  region="$(tfvar_region "$env")"
+  [ -n "$region" ] || die "env '${env}' has no 'region' in 00.global/vars/${env}.tfvars — add:  region = \"<aws-region>\""
+  prefix="$(tfvar_prefix "$env")"; cluster="$(cluster_of "$env")"
+  mkdir -p "$STATE_DIR"; printf '%s\n' "$env" > "$ACTIVE_ENV_FILE"
+  ok "Active env → ${c_bold}${env}${c_rst}  (cluster ${cluster}, region ${region})"
+  if command -v aws >/dev/null 2>&1; then
+    if aws eks update-kubeconfig --name "$cluster" --region "$region" --alias "$env" >/dev/null 2>&1; then
+      ok "kubectl context → ${env}"
+    else
+      warn "kubeconfig not updated — cluster '${cluster}' not found in ${region} (not provisioned yet?).
+  Provision it with './platformctl up ${env}', then re-run './platformctl use ${env}'."
+    fi
+  fi
+}
+
 # ---- list-envs ------------------------------------------------------------- #
 
 # List the configured environments (one per 00.global/vars/<env>.tfvars, minus
-# the example templates) and highlight the one the other verbs resolve to when
-# [ENV] is omitted. Reads only local files — no cluster/AWS access needed.
+# the example templates) with their cluster + region, and highlight the active
+# one (what verbs resolve to when [ENV] is omitted). Local files only — no AWS.
 cmd_list_envs() {
-  local vars_dir="${TF_DIR}/00.global/vars" active found=0 f env
+  local vars_dir="${TF_DIR}/00.global/vars" active found=0 f env region cluster mark
   active=$(resolve_env "" 2>/dev/null || true)
 
   log "Environments (${vars_dir#"$REPO_ROOT"/}/<env>.tfvars)"
@@ -345,20 +407,21 @@ cmd_list_envs() {
     env="$(basename "$f" .tfvars)"
     case "$env" in example|example-*) continue ;; esac
     found=1
-    if [ "$env" = "$active" ]; then
-      echo "  ${c_grn}● ${env}${c_rst}  ${c_dim}(active)${c_rst}"
-    else
-      echo "    ${env}"
-    fi
+    region="$(tfvar_region "$env")"; cluster="$(cluster_of "$env")"
+    if [ "$env" = "$active" ]; then mark="${c_grn}●${c_rst}"; else mark=" "; fi
+    printf "  %b %-14s ${c_dim}%s  %s${c_rst}\n" "$mark" "$env" "${cluster:-?}" "${region:-<no region — add to tfvars>}"
   done
   [ "$found" -eq 1 ] || warn "no environments configured yet — copy ${vars_dir#"$REPO_ROOT"/}/example.tfvars to <env>.tfvars"
 
   echo
   if [ -n "$active" ]; then
-    local src; [ -n "${PLATFORM_ENV:-}" ] && src="\$PLATFORM_ENV" || src="the deployed Terraform workspace"
-    echo "${c_dim}'${active}' (from ${src}) is used when a verb's [ENV] is omitted; override with an explicit arg or PLATFORM_ENV.${c_rst}"
+    local src
+    if [ -n "${PLATFORM_ENV:-}" ]; then src="\$PLATFORM_ENV"
+    elif [ -s "$ACTIVE_ENV_FILE" ]; then src="./platformctl use"
+    else src="the deployed Terraform workspace"; fi
+    echo "${c_dim}Active: '${active}' (from ${src}) — used when [ENV] is omitted. Switch with ./platformctl use <env>.${c_rst}"
   else
-    echo "${c_dim}No active env resolved — pass [ENV] explicitly or set PLATFORM_ENV=<env>.${c_rst}"
+    echo "${c_dim}No active env — set one with ./platformctl use <env> (or pass [ENV] / set PLATFORM_ENV).${c_rst}"
   fi
 }
 
@@ -368,6 +431,7 @@ main() {
   local cmd="${1:-}"; shift || true
   case "$cmd" in
     up)        cmd_up "$@" ;;
+    use)       cmd_use "$@" ;;
     down)      cmd_down "$@" ;;
     status)    cmd_status "$@" ;;
     tunnel)    cmd_tunnel "$@" ;;

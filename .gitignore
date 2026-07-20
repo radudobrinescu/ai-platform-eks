@@ -22,6 +22,8 @@ __pycache__/
 
 # Ops
 ops/.scale-state-*.json
+# platformctl active-env state (per checkout, per operator)
+.platformctl/
 
 # IDE / editor
 .vscode/
