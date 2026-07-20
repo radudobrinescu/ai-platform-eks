@@ -161,8 +161,11 @@ _predown_drain() {
     [ -z "$(kubectl --context "$env" get ingress -A --no-headers 2>/dev/null)" ] && { ok "Ingresses cleared — the ALB has been released."; return 0; }
     sleep 6
   done
-  warn "Ingresses still terminating after 3 min (the ALB controller may already be gone). Continuing;
-  if destroy fails deleting a security group, delete the leftover ALB in the VPC and re-run './platformctl down ${env}'."
+  warn "Ingresses still terminating after 3 min — the ALB controller is likely already gone. Stripping the stuck load-balancer finalizers so the namespace can terminate during destroy…"
+  local r
+  for r in $(kubectl --context "$env" get ingress,targetgroupbindings -n "$NS_PLATFORM" -o name 2>/dev/null); do
+    kubectl --context "$env" patch -n "$NS_PLATFORM" "$r" --type=merge -p '{"metadata":{"finalizers":[]}}' >/dev/null 2>&1 || true
+  done
 }
 
 cmd_down() {
