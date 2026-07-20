@@ -4,6 +4,11 @@
 # whatever you set here — no manifest edits needed.
 vpc_cidr = "10.10.0.0/16"
 
+# AWS region to deploy this environment into. platformctl pins AWS_REGION from
+# this so Terraform, kubeconfig, and the CLI stay on the same region, and derives
+# the cluster name (<resources_prefix>-<env>) for use/status/tunnel.
+region = "us-east-1" # REPLACE with your region, e.g. eu-central-1
+
 tags = {}
 
 shared_config = {
