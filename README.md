@@ -105,7 +105,7 @@ kubectl get vllmendpoints -n inference -w
 ```
 
 `./platformctl` is the single CLI over `make` + Terraform + `ops/lib/` (`up ·
-status[--check] · tunnel · edge · new-model · down`). The UIs sit behind one **internal** ALB
+status[--check] · tunnel · edge · new-model · down · list-envs`). The UIs sit behind one **internal** ALB
 (Open WebUI `:8080` · LiteLLM `:4000` · Langfuse `:3000` · Dashboard `:9090`) with
 no public IP — reach them with `./platformctl tunnel`, or publicly via the opt-in
 CloudFront edge. (Switch the ALB to `internet-facing` + set an IP allowlist to
@@ -257,7 +257,7 @@ platform/
   services/         litellm, litellm-sync, open-webui, langfuse, gpu-operator,
                     cluster-dashboard (+ Platform Health Agent), inference-gateway
 workloads/          Self-service YAMLs: models/ · scale-models/ · teams/
-platformctl         The unified CLI (up · status · tunnel · edge · new-model · down)
+platformctl         The unified CLI (up · status · tunnel · edge · new-model · down · list-envs)
 ops/                platformctl implementation: ops/lib/ (helpers) · ops/image/ (cold-start build helpers)
 terraform/          Infrastructure modules (VPC → IAM → EKS → observability)
 docs/               platform-product-report · cloudfront-edge ·

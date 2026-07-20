@@ -12,6 +12,7 @@
 #   ./platformctl edge    [MODE] [ENV] Choose the public front door: cloudfront | domain | tunnel
 #   ./platformctl new-model MODEL [..] Right-size a model + scaffold its serving YAML (VLLMEndpoint/LLMDEndpoint)
 #   ./platformctl down    [ENV]        Tear everything down (asks to confirm)
+#   ./platformctl list-envs            List the configured environments (marks the active default)
 #
 # ENV is resolved in this order and NEVER guessed: explicit arg > $PLATFORM_ENV >
 # the deployed Terraform workspace of the cluster stage. Region comes from
@@ -329,6 +330,38 @@ cmd_new_model() {
   exec python3 "${LIB_DIR}/recommend-instance.py" "$@"
 }
 
+# ---- list-envs ------------------------------------------------------------- #
+
+# List the configured environments (one per 00.global/vars/<env>.tfvars, minus
+# the example templates) and highlight the one the other verbs resolve to when
+# [ENV] is omitted. Reads only local files — no cluster/AWS access needed.
+cmd_list_envs() {
+  local vars_dir="${TF_DIR}/00.global/vars" active found=0 f env
+  active=$(resolve_env "" 2>/dev/null || true)
+
+  log "Environments (${vars_dir#"$REPO_ROOT"/}/<env>.tfvars)"
+  for f in "$vars_dir"/*.tfvars; do
+    [ -e "$f" ] || continue
+    env="$(basename "$f" .tfvars)"
+    case "$env" in example|example-*) continue ;; esac
+    found=1
+    if [ "$env" = "$active" ]; then
+      echo "  ${c_grn}● ${env}${c_rst}  ${c_dim}(active)${c_rst}"
+    else
+      echo "    ${env}"
+    fi
+  done
+  [ "$found" -eq 1 ] || warn "no environments configured yet — copy ${vars_dir#"$REPO_ROOT"/}/example.tfvars to <env>.tfvars"
+
+  echo
+  if [ -n "$active" ]; then
+    local src; [ -n "${PLATFORM_ENV:-}" ] && src="\$PLATFORM_ENV" || src="the deployed Terraform workspace"
+    echo "${c_dim}'${active}' (from ${src}) is used when a verb's [ENV] is omitted; override with an explicit arg or PLATFORM_ENV.${c_rst}"
+  else
+    echo "${c_dim}No active env resolved — pass [ENV] explicitly or set PLATFORM_ENV=<env>.${c_rst}"
+  fi
+}
+
 # ---- dispatch -------------------------------------------------------------- #
 
 main() {
@@ -340,6 +373,7 @@ main() {
     tunnel)    cmd_tunnel "$@" ;;
     edge)      cmd_edge "$@" ;;
     new-model) cmd_new_model "$@" ;;
+    list-envs|envs) cmd_list_envs "$@" ;;
     ""|-h|--help|help) usage ;;
     *) die "unknown command: ${cmd}
 $(usage)" ;;

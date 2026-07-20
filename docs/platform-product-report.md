@@ -68,7 +68,7 @@ Grouped by capability domain. Legend: ✅ built today · 🔶 partial/gap · �
 
 ### F. Operations & Day-2
 - ✅ Cold-start engineering (opt-in): EBS image snapshot + SOCI + an S3 HF-weight cache, enabled via `docker_hub_username`, to cut GPU-node warmup.
-- ✅ `platformctl` ops CLI (up/status[--check]/tunnel/edge/new-model/down), instance recommender, Platform Health
+- ✅ `platformctl` ops CLI (up/status[--check]/tunnel/edge/new-model/down/list-envs), instance recommender, Platform Health
   Agent (LLM-assisted incident triage with human-approved fixes).
 - ✅ GitOps everything (ArgoCD prune + self-heal + server-side apply).
 
