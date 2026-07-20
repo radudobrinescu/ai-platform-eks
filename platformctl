@@ -136,6 +136,35 @@ purge_env_definition() {
   fi
 }
 
+# Before Terraform runs, delete the in-cluster objects whose controllers create
+# AWS resources Terraform does NOT manage — chiefly the Ingresses, which the AWS
+# Load Balancer Controller turns into an ALB that holds the frontend security
+# group. If that ALB is still there when Terraform deletes the SG, destroy fails
+# with a DependencyViolation. Delete the ArgoCD sources first (so they can't
+# recreate anything), then the Ingresses, and WAIT for the controller to finish
+# removing the ALB (it keeps an Ingress finalizer until the ALB is gone).
+# Best-effort: if the cluster is unreachable, warn and continue.
+_predown_drain() {
+  local env="$1" cluster i; cluster="$(cluster_of "$env")"
+  command -v kubectl >/dev/null 2>&1 || { warn "kubectl not found — skipping in-cluster drain (destroy may fail on the ALB security group)."; return 0; }
+  command -v aws >/dev/null 2>&1 && aws eks update-kubeconfig --name "$cluster" --region "${AWS_REGION:-}" --alias "$env" >/dev/null 2>&1 || true
+  if ! kubectl --context "$env" get namespace argocd >/dev/null 2>&1; then
+    warn "cluster '${cluster}' not reachable — skipping in-cluster drain (Terraform will destroy what it can; sweep orphans afterward)."
+    return 0
+  fi
+  log "Draining in-cluster resources so their controllers release AWS resources (ALB, etc.)…"
+  kubectl --context "$env" delete applicationset --all -n argocd --wait=false >/dev/null 2>&1 || true
+  kubectl --context "$env" delete application --all -n argocd --wait=false >/dev/null 2>&1 || true
+  kubectl --context "$env" delete vllmendpoints,llmdendpoints,llmddisaggendpoints,aiteams --all -A --wait=false >/dev/null 2>&1 || true
+  kubectl --context "$env" delete ingress --all -A --wait=false >/dev/null 2>&1 || true
+  for i in $(seq 1 30); do
+    [ -z "$(kubectl --context "$env" get ingress -A --no-headers 2>/dev/null)" ] && { ok "Ingresses cleared — the ALB has been released."; return 0; }
+    sleep 6
+  done
+  warn "Ingresses still terminating after 3 min (the ALB controller may already be gone). Continuing;
+  if destroy fails deleting a security group, delete the leftover ALB in the VPC and re-run './platformctl down ${env}'."
+}
+
 cmd_down() {
   local purge=0 envarg="" a
   for a in "$@"; do
@@ -150,6 +179,7 @@ cmd_down() {
   fi
   read -r -p "Type the environment name ('${env}') to confirm: " confirm
   [ "$confirm" = "$env" ] || die "confirmation mismatch — aborted (nothing changed)."
+  _predown_drain "$env"
   make -C "$TF_DIR" destroy-all ENVIRONMENT="$env"
   [ "$purge" -eq 1 ] && purge_env_definition "$env"
   true

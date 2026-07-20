@@ -197,19 +197,29 @@ steps below. The script does **not** touch the bootstrap state (S3
 `tfstate-<account>` + DynamoDB `tfstate-lock`), so a subsequent
 `./platformctl up <env>` still works.
 
-### Run this *before* `down` (avoids the gotchas)
+### Teardown drain — now automatic
+
+`./platformctl down <env>` **automatically drains the cluster before Terraform
+runs**: it deletes the ArgoCD ApplicationSets/Applications (so nothing gets
+recreated), the serving endpoints, and the Ingresses, then waits for the AWS Load
+Balancer Controller to delete the ALB. That ALB is what holds the frontend
+security group, so removing it first is what stops `destroy` from failing with a
+`DependencyViolation` on the SG.
+
+If the cluster is unreachable (e.g. a re-run after a partial destroy), `down`
+skips the drain and continues — run these manually first if needed:
 
 ```bash
-# 1. Drain the cluster from the gitops side so destroy doesn't race ArgoCD.
 kubectl delete applicationset --all -n argocd --wait=false
 kubectl delete application    --all -n argocd --wait=false
 kubectl delete vllmendpoints,llmdendpoints,llmddisaggendpoints,aiteams --all -A --wait=false
-# If you enabled the CloudFront edge, disable it first so Terraform removes the
-# distributions + VPC origins cleanly: ./platformctl edge tunnel
-kubectl delete ingress --all -A --wait=false      # → ALB controller cleans up the ALB
+kubectl delete ingress --all -A --wait=false      # → ALB controller deletes the ALB
 
 ./platformctl down <env>
 ```
+
+If you enabled the CloudFront edge, disabling it first keeps the teardown tidy:
+`./platformctl edge tunnel`.
 
 ### Run this *after* `down` (mop up orphans)
 
