@@ -179,6 +179,10 @@ cmd_down() {
   fi
   read -r -p "Type the environment name ('${env}') to confirm: " confirm
   [ "$confirm" = "$env" ] || die "confirmation mismatch — aborted (nothing changed)."
+  # The CloudFront edge's data.aws_lb lookup fails once the ALB is drained (next
+  # step), so disable the edge in the tfvars first: Terraform then drops the edge
+  # resources + that data source from the destroy plan and clears them from state.
+  _edge_set_tfvar "$env" false
   _predown_drain "$env"
   make -C "$TF_DIR" destroy-all ENVIRONMENT="$env"
   [ "$purge" -eq 1 ] && purge_env_definition "$env"
