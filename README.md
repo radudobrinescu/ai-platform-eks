@@ -221,20 +221,26 @@ kubectl delete ingress --all -A --wait=false      # → ALB controller deletes t
 If you enabled the CloudFront edge, disabling it first keeps the teardown tidy:
 `./platformctl edge tunnel`.
 
-### Run this *after* `down` (mop up orphans)
+### Orphan cleanup — now automatic
 
-Several resources legitimately escape Terraform's reach because they're
-created by **in-cluster controllers** rather than Terraform. Sweep them once
-the destroy returns:
+Several resources legitimately escape Terraform's reach because they're created
+by **in-cluster controllers**, Karpenter, or EKS/AWS rather than Terraform — and
+left alone they either pin the VPC (blocking `destroy`) or quietly cost money.
+`./platformctl down` now sweeps them automatically (`ops/lib/sweep_env.py`,
+scoped strictly to the env's cluster so it can never touch another environment):
+if `terraform destroy` fails on a leftover dependency it clears the blockers and
+retries once, then always does a final pass. It removes:
 
-| What | Why it leaks | Fix |
-|---|---|---|
-| Karpenter-spawned EC2 instances | Karpenter is destroyed before it can drain its own NodeClaims. The leftover instance pins a subnet → VPC destroy hangs ~18 min. | `aws ec2 terminate-instances --instance-ids $(aws ec2 describe-instances --filters Name=vpc-id,Values=<vpc> Name=instance-state-name,Values=running --query 'Reservations[].Instances[].InstanceId' --output text)` |
-| ALB controller security group (`k8s-traffic-*`) and EKS cluster security group | Created by the ALB controller / EKS, not Terraform. Pin the VPC. | `aws ec2 delete-security-group --group-id <id>` for each non-default SG in the VPC |
-| Orphaned EBS volumes from PVCs | When you force-strip namespace finalizers (needed if `networking.k8s.aws/resources` finalizers hang on stale NetworkPolicies), the PV→PVC→volume reclaim chain breaks. ~20 small volumes get left in `available`. | `aws ec2 delete-volume --volume-id <id>` for each volume with cluster tags |
-| SOCI/data-volume EBS snapshot | Created out-of-band by `ops/create-data-volume-snapshot.sh`. Never tracked by terraform. | `aws ec2 delete-snapshot --snapshot-id <id>` |
-| Unassociated EIPs | Released cleanly only if NAT GW destruction was clean; can leak if the destroy hit a timeout. | `aws ec2 release-address --allocation-id <id>` |
-| CloudWatch log groups (`/aws/containerinsights/<cluster>/...`) | CloudWatch Container Insights addon writes outside Terraform's view. | `aws logs delete-log-group --log-group-name <name>` |
+- Karpenter EC2 instances, EC2 fleets, launch templates, and instance-profiles
+- the ALB-controller / EKS security groups and stray ENIs that pin the VPC
+- NAT gateways and unassociated Elastic IPs
+- orphaned `available` EBS volumes left from PVCs
+- the EKS cluster KMS key (scheduled for deletion) and its CloudWatch log groups
+
+The one thing it deliberately leaves is the **SOCI / data-volume EBS snapshot**
+(`ops/create-data-volume-snapshot.sh`) — a reusable build artifact, not
+per-cluster. Delete it by hand once you're done with it:
+`aws ec2 delete-snapshot --snapshot-id <id>`.
 
 ### Things you'll hit (and the cause)
 
