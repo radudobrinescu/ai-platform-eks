@@ -143,8 +143,19 @@ plan: init tf-select-ws
 	@echo ENVIRONMENT=$(ENVIRONMENT) MODULE=$(MODULE) terraform::plan
 	@$(call execute_terraform,$(MODULE),plan)
 
+# First-apply bootstrap for EKS stages: create module.eks BEFORE the
+# kubernetes/helm/kubectl providers configure. Those providers point at
+# module.eks.cluster_endpoint, which isn't known until the cluster exists, so on
+# a brand-new cluster the alekc/kubectl provider fails with "invalid provider
+# configuration: no configuration has been provided". Targeting module.eks first
+# creates the cluster so the providers resolve. Runs only when module.eks isn't
+# in state yet (the very first apply); it's a no-op on every apply after that.
 apply: init tf-select-ws
 	@echo ENVIRONMENT=$(ENVIRONMENT) MODULE=$(MODULE) terraform::apply
+	@if grep -rqsE '^[[:space:]]*module[[:space:]]+"eks"' $(MODULE)/*.tf 2>/dev/null && ! terraform -chdir=$(MODULE) state list 2>/dev/null | grep -q '^module\.eks'; then \
+		echo ">> First apply: creating the EKS cluster (module.eks) first so the Kubernetes providers can configure"; \
+		terraform -chdir=$(MODULE) apply -target=module.eks -input=false -lock=true -auto-approve -var-file=$(VAR_FILE) 2>&1 | tee -a tf-logs/$(notdir $(MODULE))-apply.log || { echo "targeted module.eks apply failed for $(MODULE)"; exit 1; }; \
+	fi
 	@$(call execute_terraform,$(MODULE),apply,"-auto-approve")
 
 destroy: init tf-select-ws
