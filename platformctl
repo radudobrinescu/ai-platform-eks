@@ -116,6 +116,16 @@ cmd_up() {
   echo "  ./platformctl edge               # (optional) choose a public front door"
 }
 
+# Remove the orphans Terraform doesn't manage (controller security groups,
+# Karpenter instances/fleets/launch-templates/instance-profiles, the EKS KMS key
+# + log groups, stray ENIs/EBS/EIPs/NAT). Env-scoped to the cluster so it can't
+# touch other environments. Best-effort — never fatal to the teardown.
+_postdown_sweep() {
+  command -v python3 >/dev/null 2>&1 && command -v aws >/dev/null 2>&1 || { warn "python3/aws unavailable — skipping orphan sweep."; return 0; }
+  local region; region="${AWS_REGION:-$(aws configure get region 2>/dev/null)}"
+  python3 "${LIB_DIR}/sweep_env.py" --env "$1" --cluster "$(cluster_of "$1")" --region "$region" || true
+}
+
 # Remove an env's DEFINITION after its infra is destroyed: the per-stage
 # Terraform workspaces (delete refuses non-empty state, so it never orphans
 # resources), the tfvars file, and the active-env pointer if it names this env.
@@ -187,7 +197,14 @@ cmd_down() {
   # resources + that data source from the destroy plan and clears them from state.
   _edge_set_tfvar "$env" false
   _predown_drain "$env"
-  make -C "$TF_DIR" destroy-all ENVIRONMENT="$env"
+  if ! make -C "$TF_DIR" destroy-all ENVIRONMENT="$env"; then
+    warn "Terraform destroy hit leftover dependencies — sweeping orphans and retrying once."
+    _postdown_sweep "$env"
+    make -C "$TF_DIR" destroy-all ENVIRONMENT="$env" || warn "destroy still failing after the sweep — inspect the error above; re-running './platformctl down ${env}' is safe (idempotent)."
+  fi
+  # Final sweep: clear post-destroy orphans Terraform never manages so nothing
+  # lingers billing (Karpenter instance-profiles, EKS KMS key + log groups, etc.).
+  _postdown_sweep "$env"
   [ "$purge" -eq 1 ] && purge_env_definition "$env"
   true
 }
