@@ -68,6 +68,21 @@ internally, so governance still applies. See **[docs/llm-d-and-ingress-architect
 
 ---
 
+## Prerequisites
+
+**Tools** (on the machine you run `./platformctl` from):
+- **AWS CLI v2** with credentials configured (`aws sts get-caller-identity` must work), plus the
+  [Session Manager plugin](https://docs.aws.amazon.com/systems-manager/latest/userguide/session-manager-working-with-install-plugin.html) (for `./platformctl tunnel`)
+- **Terraform**, **kubectl**, **make**, **jq**, **git**, and **python3** with **boto3**
+
+**AWS account setup**:
+- An **IAM Identity Center** instance — its ARN goes in the tfvars (ArgoCD SSO)
+- **Amazon Bedrock model access** enabled in your region (for the day-one Claude Opus — enable it in the Bedrock console)
+- Enough **service quota** for the GPU instance types you plan to self-host on (not needed for the Bedrock-only path)
+- A **fork of this repo** that ArgoCD can read — its URL goes in `gitops_repo_url`
+
+**Configure** — copy `terraform/00.global/vars/example.tfvars` to `<env>.tfvars` and fill the `REPLACE` markers: your Identity Center ARN, `gitops_repo_url` (your fork), `region`, and a unique `resources_prefix`.
+
 ## Quick start
 
 Provision → use Opus 4.8 with zero GPUs → deploy a self-hosted model → compare cost
@@ -86,14 +101,14 @@ gated-model tokens where needed. The shape of it:
 
 
 ```bash
-# 1. Configure: copy a tfvars, set your Identity Center ARN + gitops repo URL.
-cd terraform/00.global/vars && cp example.tfvars dev.tfvars   # set ARN + gitops repo URL
+# 1. Configure: copy the template, then set your Identity Center ARN, gitops repo URL, and region.
+cd terraform/00.global/vars && cp example.tfvars dev.tfvars   # edit dev.tfvars — fill every REPLACE marker
 
 # 2. Provision everything (VPC → EKS + capabilities → Karpenter → secrets).
-export AWS_REGION=<your-region>   # e.g. eu-central-1
+#    platformctl reads `region` from dev.tfvars and pins AWS_REGION for you.
 ./platformctl up dev
 
-# 3. Use it immediately — no GPUs yet.
+# 3. Use it immediately — no GPUs yet (up already pointed kubectl at the new cluster).
 ./platformctl tunnel        # forward the UIs (WebUI / LiteLLM / Langfuse)
 ./platformctl status --check  # verify Bedrock + models answer AND Langfuse tracing works
 
