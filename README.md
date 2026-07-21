@@ -112,10 +112,13 @@ cd terraform/00.global/vars && cp example.tfvars dev.tfvars   # edit dev.tfvars 
 ./platformctl tunnel        # forward the UIs (WebUI / LiteLLM / Langfuse)
 ./platformctl status --check  # verify Bedrock + models answer AND Langfuse tracing works
 
-# 4. Deploy a self-hosted model — commit a YAML and push.
-cp workloads/models/TEMPLATE.yaml.example workloads/models/qwen3-3b.yaml
+# 4. Deploy a self-hosted model. The directory IS the target namespace
+#    ('inference' is the platform default, created at provision time), so drop the
+#    YAML under it (leave metadata.namespace unset) and push to your fork.
+mkdir -p workloads/models/inference
+cp workloads/models/TEMPLATE.yaml.example workloads/models/inference/qwen3-3b.yaml
 # edit: set name + model (e.g. Qwen/Qwen2.5-3B-Instruct), then:
-git add workloads/models/qwen3-3b.yaml && git commit -m "feat: deploy qwen3-3b" && git push
+git add workloads/models/inference/qwen3-3b.yaml && git commit -m "feat: deploy qwen3-3b" && git push
 kubectl get vllmendpoints -n inference -w
 ```
 
