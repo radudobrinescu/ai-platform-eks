@@ -44,6 +44,18 @@ require_tfvars() {
   Copy 00.global/vars/example.tfvars and set your Identity Center ARN + gitops_repo_url."
 }
 
+# Fail fast if the tfvars still contains example placeholders (a common forker
+# mistake that otherwise surfaces as a cryptic error deep in the cluster apply,
+# after the cluster is already created). Strips comments first so the commented
+# example lines don't false-positive.
+check_tfvars_filled() {
+  local env="$1" f="${TF_DIR}/00.global/vars/${env}.tfvars" hits
+  hits=$(sed 's/#.*//' "$f" 2>/dev/null | grep -nE 'XXXXXXXXXX|YOUR-ORG|YOUR-REPO|REPLACE-WITH' || true)
+  [ -z "$hits" ] || die "'${env}.tfvars' still has unfilled example placeholders — set the real values first:
+${hits}
+  (e.g. Identity Center ARN + region, gitops_repo_url, seed SSO user/group ids)."
+}
+
 # Resolve the target env WITHOUT ever guessing. Order: explicit arg >
 # $PLATFORM_ENV (one-shot) > the active-env state file (set by `use`) > the
 # cluster stage's Terraform workspace (migration fallback). Empty => unresolved.
@@ -105,7 +117,7 @@ edge_urls_live() {
 
 cmd_up() {
   local env; env=$(need_env "${1:-}" "up")
-  need terraform; need aws; need make; require_tfvars "$env"; pin_region "$env"
+  need terraform; need aws; need make; require_tfvars "$env"; check_tfvars_filled "$env"; pin_region "$env"
   log "Provisioning '${env}' — EKS + capabilities + Karpenter (takes a while)"
   make -C "$TF_DIR" bootstrap ENVIRONMENT="$env"
   make -C "$TF_DIR" apply-all ENVIRONMENT="$env"
