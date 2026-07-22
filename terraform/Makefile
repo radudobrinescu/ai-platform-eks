@@ -6,7 +6,13 @@ ENVIRONMENT ?= dev
 AWS_REGION ?= $(shell aws configure get region)
 AWS_ACCOUNT_ID ?= $(shell aws sts get-caller-identity --output json | jq -r '.Account')
 TFSTATE_S3_BUCKET ?= "tfstate-$(AWS_ACCOUNT_ID)"
-TFSTATE_REGION ?= $(AWS_REGION)
+# The Terraform state bucket is account-wide and physically lives in ONE region
+# (whichever env was provisioned first). Use its ACTUAL region for the S3 backend
+# — independent of the env's deploy region (AWS_REGION) — so envs in different
+# regions share the one state bucket instead of hitting a 301 region mismatch.
+# If the bucket doesn't exist yet, fall back to AWS_REGION so the first provision
+# creates it there (that becomes the state "home" region).
+TFSTATE_REGION ?= $(shell loc=$$(aws s3api get-bucket-location --bucket tfstate-$(AWS_ACCOUNT_ID) --query LocationConstraint --output text 2>/dev/null); if [ -z "$$loc" ]; then echo "$(AWS_REGION)"; elif [ "$$loc" = "None" ] || [ "$$loc" = "null" ]; then echo "us-east-1"; else echo "$$loc"; fi)
 TFSTATE_DDB_TABLE ?= "tfstate-lock"
 VAR_FILE := $(CURDIR)/00.global/vars/$(ENVIRONMENT).tfvars
 
