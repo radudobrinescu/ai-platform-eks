@@ -456,9 +456,17 @@ function healthView(){const al=alertList();$('health-alerts').innerHTML=(invs.le
 async function approve(id,b){b.disabled=true;b.textContent='…';try{await fetch('/investigations/'+id+'/approve',{method:'POST'});}catch(e){}poll();}
 async function dismiss(id,b){b.disabled=true;try{await fetch('/investigations/'+id+'/dismiss',{method:'POST'});}catch(e){}poll();}
 
-function links(){const l=D.links||[];$('nav-links').innerHTML=l.map(x=>`<a class="nav-link" href="${esc(x.url)}" target="_blank" rel="noopener" title="${esc(x.desc||'')}">${x.icon||'🔗'} ${esc(x.label)} ↗</a>`).join('');}
+// Over `platformctl tunnel` you reach the dashboard at localhost:9090 and the
+// other UIs are port-forwarded to localhost too — but the server-built links
+// point at the edge or the internal ALB (neither reachable from your laptop).
+// When we're served from localhost, rewrite the UI links to localhost:<port> so
+// the Quick Links work through the tunnel. Edge / in-VPC (ALB) access is left as
+// the server built it. ArgoCD has its own endpoint and is never rewritten.
+const TUNNEL_URLS={webui:'http://localhost:8080/',litellm:'http://localhost:4000/ui/',langfuse:'http://localhost:3000/'};
+function resolveLinkUrl(x){if(!x||!x.url)return'#';const h=location.hostname;if(h==='localhost'||h==='127.0.0.1'){const lbl=(x.label||'').toLowerCase();if(lbl.includes('webui'))return TUNNEL_URLS.webui;if(lbl.includes('litellm'))return TUNNEL_URLS.litellm;if(lbl.includes('langfuse'))return TUNNEL_URLS.langfuse;}return x.url;}
+function links(){const l=D.links||[];$('nav-links').innerHTML=l.map(x=>`<a class="nav-link" href="${esc(resolveLinkUrl(x))}" target="_blank" rel="noopener" title="${esc(x.desc||'')}">${x.icon||'🔗'} ${esc(x.label)} ↗</a>`).join('');}
 function linkFor(kind){return (D.links||[]).find(l=>l.label.toLowerCase().includes(kind))||{}}
-function openLink(kind){const u=linkFor(kind).url;if(u&&u!=='#')window.open(u,'_blank');}
+function openLink(kind){const u=resolveLinkUrl(linkFor(kind));if(u&&u!=='#')window.open(u,'_blank');}
 function copyCurl(name,ev){const u=(linkFor('litellm').url||'$LITELLM').replace(/\/ui.*/,'');const t=`curl ${u}/v1/chat/completions -H "Authorization: Bearer $LITELLM_KEY" -H "Content-Type: application/json" -d '{"model":"${name}","messages":[{"role":"user","content":"Hello"}]}'`;const fb=()=>{try{const b=ev&&ev.target&&ev.target.closest('button');if(b){const o=b.innerHTML;b.innerHTML='✓ copied';setTimeout(()=>{b.innerHTML=o;},1200);}}catch(e){}};if(navigator.clipboard&&navigator.clipboard.writeText){navigator.clipboard.writeText(t).then(fb,fb);}else{fb();}}
 
 function deployHTML(m){
