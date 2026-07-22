@@ -120,7 +120,6 @@ init: check-env
 	@echo ENVIRONMENT=$(ENVIRONMENT) MODULE=$(MODULE) terraform::init
 	@terraform -chdir=$(MODULE) init \
 		-input=false \
-		-upgrade \
 		-backend=true \
 		-backend-config="region=$(TFSTATE_REGION)" \
 		-backend-config="bucket=$(TFSTATE_S3_BUCKET)" \
