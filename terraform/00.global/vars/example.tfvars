@@ -18,6 +18,13 @@ shared_config = {
 cluster_config = {
   kubernetes_version  = "1.36"
   eks_auto_mode       = false
+  # false = public+private API endpoint (works with laptop provisioning — this is
+  # what ./platformctl up assumes). true = PRIVATE-ONLY endpoint: the cluster API
+  # is reachable only from inside the VPC, so you must run Terraform/platformctl
+  # from a host in the VPC (bastion EC2, CloudShell-in-VPC, or over a VPN into the
+  # VPC) — a laptop over the public internet CANNOT provision it (the kubernetes/
+  # kubectl/helm resources will time out on the private endpoint). Leave false
+  # unless you have that in-VPC path.
   private_eks_cluster = false
   create_mng_system   = true # Required — runs Karpenter, CoreDNS, VPC CNI
 

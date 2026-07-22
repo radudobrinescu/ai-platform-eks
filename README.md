@@ -83,6 +83,11 @@ internally, so governance still applies. See **[docs/llm-d-and-ingress-architect
 
 **Configure** — copy `terraform/00.global/vars/example.tfvars` to `<env>.tfvars` and fill the `REPLACE` markers: your Identity Center ARN, `gitops_repo_url` (your fork), `region`, and a unique `resources_prefix`.
 
+> Keep `private_eks_cluster = false` (the default). A private-only cluster's API is
+> reachable only from inside the VPC, so `./platformctl up` from a laptop can't
+> provision it — the Kubernetes resources time out on the private endpoint. Only
+> set it `true` if you run Terraform from an in-VPC host (bastion / CloudShell-in-VPC / VPN).
+
 ## Quick start
 
 Provision → use Opus 4.8 with zero GPUs → deploy a self-hosted model → compare cost
