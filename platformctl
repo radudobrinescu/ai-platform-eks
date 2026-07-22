@@ -330,7 +330,12 @@ _status_check() {
 
 # ---- tunnel ---------------------------------------------------------------- #
 
-cmd_tunnel() { warn_context_mismatch "${1:-}"; exec "${LIB_DIR}/tunnel.sh"; }
+cmd_tunnel() {
+  local env; env=$(resolve_env "${1:-}" 2>/dev/null || true)
+  [ -n "$env" ] && pin_region "$env"   # tunnel.sh queries EC2 in AWS_REGION — target the env's region
+  warn_context_mismatch "${1:-}"
+  exec "${LIB_DIR}/tunnel.sh"
+}
 
 # ---- edge ------------------------------------------------------------------ #
 
