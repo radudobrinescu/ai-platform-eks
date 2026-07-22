@@ -132,7 +132,11 @@ up · status[--check] · tunnel · edge · new-model · down · list-envs`). For
 environments, `./platformctl list-envs` shows them (cluster + region) and
 `./platformctl use <env>` switches the active one — it records your intent, points
 kubectl at that cluster, and pins the region (from `region` in the env's tfvars);
-every other verb then targets it (or takes an explicit `[ENV]`). The UIs sit behind one **internal** ALB
+every other verb then targets it (or takes an explicit `[ENV]`). All environments
+share one **account-wide Terraform state bucket** (`tfstate-<account>`), created in
+your first env's region; envs in other regions detect and reuse it automatically,
+so an env's *state* may live in a different region than its *infrastructure* — no
+per-region setup needed. The UIs sit behind one **internal** ALB
 (Open WebUI `:8080` · LiteLLM `:4000` · Langfuse `:3000` · Dashboard `:9090`) with
 no public IP — reach them with `./platformctl tunnel`, or publicly via the opt-in
 CloudFront edge. (Switch the ALB to `internet-facing` + set an IP allowlist to
