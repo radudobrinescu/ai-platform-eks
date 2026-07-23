@@ -113,7 +113,12 @@ spec:
                   PUBLIC=$(kubectl get secret sso-secrets -n "$NS" \
                     -o jsonpath='{.data.langfuse-public-url}' 2>/dev/null \
                     | base64 -d 2>/dev/null || true)
-                  case "$PUBLIC" in ""|*localhost*) PUBLIC="" ;; esac
+                  # Use it as-is — INCLUDING the localhost tunnel URL, which is the
+                  # sanctioned edge-off access and matches the localhost Cognito
+                  # callback (NextAuth's redirect_uri must equal NEXTAUTH_URL, and
+                  # only the localhost callback is registered when the edge is off).
+                  # The ALB branch below is only a fallback when the secret can't
+                  # be read — it broke SSO over the tunnel when used unconditionally.
 
                   # 2. Current NEXTAUTH_URL on the Deployment (first match wins).
                   CURRENT=$(kubectl get deploy "$DEPLOY" -n "$NS" \
@@ -122,10 +127,12 @@ spec:
                   CURRENT=$(printf '%s' "$CURRENT" | awk '{print $1}')
 
                   if [ -n "$PUBLIC" ]; then
-                    # Public front door set — reconcile straight to it.
+                    # Public front door: the CloudFront edge URL, or the localhost
+                    # tunnel URL when the edge is off. Either matches the Cognito
+                    # callback, so NextAuth's sign-in redirect completes.
                     DESIRED="$PUBLIC"
                   else
-                    # Wait for the ALB hostname on the ingress status (~5 min).
+                    # Last resort (sso-secrets unreadable): derive the ALB hostname.
                     HOST=""
                     for i in $(seq 1 30); do
                       HOST=$(kubectl get ingress "$ING" -n "$NS" \
@@ -137,14 +144,15 @@ spec:
                       echo "ALB hostname not ready yet; will retry next run."; exit 0
                     fi
                     DESIRED="http://${HOST}:${PORT}"
-                    # Defer to an operator-pinned custom URL. We manage only the
-                    # chart placeholder (localhost), our ALB value, and our own
-                    # prior CloudFront value (so disabling the edge reverts here).
-                    case "$CURRENT" in
-                      ""|*localhost*|*elb.amazonaws.com*|*cloudfront.net*) : ;;
-                      *) echo "NEXTAUTH_URL pinned to '$CURRENT' — leaving as-is."; exit 0 ;;
-                    esac
                   fi
+
+                  # Manage only our own values (chart localhost placeholder, our
+                  # CloudFront/ALB value, or the value we're about to set) — defer
+                  # to an operator-pinned custom URL.
+                  case "$CURRENT" in
+                    ""|*localhost*|*elb.amazonaws.com*|*cloudfront.net*|"$DESIRED") : ;;
+                    *) echo "NEXTAUTH_URL pinned to '$CURRENT' — leaving as-is."; exit 0 ;;
+                  esac
 
                   # 3. Idempotent: patch + roll only when the value changes.
                   if [ "$CURRENT" = "$DESIRED" ]; then
