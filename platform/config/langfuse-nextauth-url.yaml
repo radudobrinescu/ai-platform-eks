@@ -8,10 +8,12 @@
 # isn't known until the AWS Load Balancer Controller provisions it (after the
 # ingress syncs), so it can't be baked into git or Terraform a priori.
 #
-# This CronJob closes the loop: it reads the ALB hostname off the
-# `ai-platform-langfuse` ingress status and sets NEXTAUTH_URL on the langfuse-web
-# Deployment to match. It is the event-less reconciler counterpart to
-# litellm-cleanup (platform/config/litellm-cleanup.yaml).
+# This CronJob closes the loop: it sets NEXTAUTH_URL on the langfuse-web
+# Deployment to the platform's browser-facing origin — the CloudFront edge URL,
+# or the localhost tunnel URL when the edge is off (both match the registered
+# Cognito callback, so SSO completes) — falling back to the auto-provisioned ALB
+# hostname only if that public URL can't be read. It is the event-less reconciler
+# counterpart to litellm-cleanup (platform/config/litellm-cleanup.yaml).
 #
 # Paired requirement: ArgoCD's selfHeal would otherwise revert NEXTAUTH_URL to
 # the chart placeholder every sync (flapping the pod). An `ignoreDifferences`
