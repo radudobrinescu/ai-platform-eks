@@ -188,8 +188,14 @@ never the platform repo. See [`workloads/models/README.md`](workloads/models/REA
 
 **Single sign-on, per-user cost & budgets.** SSO ships enabled (`enable_sso`,
 default on): Terraform stands up an **Amazon Cognito** user pool with a hosted login
-page, role groups (`admins`/`developers`/`users`), and three seed users whose
-generated passwords are printed as the `sso_seed_user_passwords` output. Open WebUI,
+page, role groups (`admins`/`developers`/`users`), and three seed users — log in
+by email (`admin@example.com` / `developer@example.com` / `user@example.com`),
+whose generated passwords are the `sso_seed_user_passwords` output. Retrieve them
+any time (the `up` output scrolls away) with:
+> ```bash
+> TF_WORKSPACE=<env> terraform -chdir=terraform/30.eks/30.cluster output -json sso_seed_user_passwords
+> ```
+Open WebUI,
 the LiteLLM admin UI, and Langfuse all federate to it, and Open WebUI forwards the
 signed-in identity so **cost is attributed per user** in LiteLLM's spend reports.
 LiteLLM also enforces a **default per-user budget + rpm/tpm throttle** on the chat
