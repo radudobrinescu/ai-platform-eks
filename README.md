@@ -1,8 +1,8 @@
-# AI Platform on EKS
+# Inference Platform on Amazon EKS
 
-**A self-service AI gateway for your own AWS account.** One OpenAI-compatible API
-fronts every model — Amazon Bedrock, any HuggingFace model, and your fine-tuned
-ones — with per-team keys, budgets, and rate limits. Teams ship models the way
+**A self-service, multi-tenant inference platform for your own AWS account.** One
+OpenAI-compatible API fronts every model — Amazon Bedrock and any Hugging Face
+model served on GPUs — with per-team keys, budgets, and rate limits. Teams ship models the way
 they ship code: commit a short YAML, `git push`, and the platform handles GPU
 provisioning, serving, routing, and observability. A frontier model
 (**Bedrock Claude Opus 4.8**) works on day one with **zero GPUs**.
