@@ -271,7 +271,7 @@ retries once, then always does a final pass. It removes:
 - the EKS cluster KMS key (scheduled for deletion) and its CloudWatch log groups
 
 The one thing it deliberately leaves is the **SOCI / data-volume EBS snapshot**
-(`ops/create-data-volume-snapshot.sh`) — a reusable build artifact, not
+(`ops/image/create-data-volume-snapshot.sh`) — a reusable build artifact, not
 per-cluster. Delete it by hand once you're done with it:
 `aws ec2 delete-snapshot --snapshot-id <id>`.
 

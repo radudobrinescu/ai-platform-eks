@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Build and push a SOCI index for an ECR image using a temporary EC2 instance.
-# Usage: ./ops/create-soci-index.sh [-p <instance-profile>] [-n <cluster>] [-r <region>] <ecr-image-uri>
-# Example: ./ops/create-soci-index.sh <account-id>.dkr.ecr.<region>.amazonaws.com/docker-hub/vllm/vllm-openai:v0.24.0
+# Usage: ./ops/image/create-soci-index.sh [-p <instance-profile>] [-n <cluster>] [-r <region>] <ecr-image-uri>
+# Example: ./ops/image/create-soci-index.sh <account-id>.dkr.ecr.<region>.amazonaws.com/docker-hub/vllm/vllm-openai:v0.24.0
 #
 # The temp instance must run under an instance profile that can BOTH pull and
 # PUSH to ECR (soci push uploads the index as a referrer artifact). The EKS
@@ -33,9 +33,48 @@ done
 shift $((OPTIND - 1))
 
 IMAGE="${1:?Usage: $0 [-p <instance-profile>] [-n <cluster>] [-r <region>] <ecr-image-uri>}"
-# REGION precedence: -r flag > AWS_REGION env > parsed from the ECR image URI.
-REGION="${REGION:-${AWS_REGION:-$(echo "$IMAGE" | grep -oE '[a-z]+-[a-z]+-[0-9]+')}}"
-ACCOUNT=$(echo "$IMAGE" | grep -oE '^[0-9]+')
+
+# Validate the image URI up front: it is interpolated into a shell script that
+# runs as ROOT on the temporary builder (via `aws ssm send-command`), so a URI
+# containing shell metacharacters (;, $(), backticks, spaces) would be command
+# injection under a push-capable ECR role. Restrict to the characters a real
+# image reference uses. (Matches create-data-volume-snapshot.sh.)
+IMAGE_PATTERN='^[a-zA-Z0-9._:/@-]+$'
+if [[ ! "$IMAGE" =~ $IMAGE_PATTERN ]]; then
+  echo "Error: invalid characters in image URI: $IMAGE" >&2
+  echo "  Image URIs must match: $IMAGE_PATTERN" >&2
+  exit 1
+fi
+
+# Parse account + region STRUCTURALLY from the ECR registry host
+# (<acct>.dkr.ecr.<region>.amazonaws.com[.cn]/...), rather than regex-scraping
+# the whole URI — a repo path segment like "us-west-2" or a govcloud region
+# ("us-gov-west-1", which the old '[a-z]+-[a-z]+-[0-9]+' regex mangled to
+# "gov-west-1") both broke that. The host is the first path segment.
+IMAGE_HOST="${IMAGE%%/*}"
+ACCOUNT=""
+REGION_FROM_IMAGE=""
+case "$IMAGE_HOST" in
+  *.dkr.ecr.*.amazonaws.com | *.dkr.ecr.*.amazonaws.com.cn)
+    ACCOUNT="${IMAGE_HOST%%.*}"                       # field 1
+    REGION_FROM_IMAGE="$(echo "$IMAGE_HOST" | cut -d. -f4)"  # <acct>.dkr.ecr.<REGION>...
+    ;;
+esac
+
+# REGION precedence: -r flag > AWS_REGION env > parsed from the ECR host.
+REGION="${REGION:-${AWS_REGION:-$REGION_FROM_IMAGE}}"
+if [ -z "$REGION" ]; then
+  echo "Error: cannot determine region — pass -r <region> or set AWS_REGION." >&2
+  exit 1
+fi
+# ACCOUNT is required to build the ECR registry login below. Fail with a clear
+# message for a non-ECR URI instead of dying mid-script under `set -e`.
+if [ -z "$ACCOUNT" ]; then
+  echo "Error: '$IMAGE' is not an ECR image URI (expected" >&2
+  echo "  <account-id>.dkr.ecr.<region>.amazonaws.com/...). This tool builds and" >&2
+  echo "  pushes a SOCI index to ECR, so only ECR images are supported." >&2
+  exit 1
+fi
 
 # Self-protect: if the target image isn't in ECR yet, there's nothing to index.
 # This makes the script safe to call from Terraform when an image isn't in ECR
@@ -126,7 +165,14 @@ CMD_ID=$(aws ssm send-command --instance-ids "$INSTANCE_ID" --region "$REGION" \
   ]" \
   --query "Command.CommandId" --output text)
 
-while true; do
+# Bounded poll: the SSM command has an 1800s server-side timeout, so give it a
+# wall-clock deadline with margin (150 × 15s = ~37 min) rather than looping
+# forever. Without a bound, an instance that never registers with SSM makes
+# get-command-invocation error indefinitely — masked as "Pending" by the
+# fallback below — and a Terraform-invoked run would wedge the apply.
+MAX_POLLS=150
+STATUS="Pending"
+for _ in $(seq 1 "$MAX_POLLS"); do
   sleep 15
   STATUS=$(aws ssm get-command-invocation --command-id "$CMD_ID" --instance-id "$INSTANCE_ID" --region "$REGION" \
     --query "Status" --output text 2>/dev/null || echo "Pending")
@@ -134,8 +180,8 @@ while true; do
     Success)
       echo "✓ SOCI index created and pushed for $IMAGE"
       exit 0 ;;
-    Failed|TimedOut)
-      echo "✗ Failed. Output:"
+    Failed|TimedOut|Cancelled)
+      echo "✗ Failed (status: $STATUS). Output:"
       aws ssm get-command-invocation --command-id "$CMD_ID" --instance-id "$INSTANCE_ID" --region "$REGION" \
         --query "StandardErrorContent" --output text
       exit 1 ;;
@@ -143,3 +189,7 @@ while true; do
       echo "  $(date +%H:%M:%S) $STATUS..." ;;
   esac
 done
+
+echo "✗ Timed out after ~$((MAX_POLLS * 15))s waiting for the SSM command (last status: ${STATUS})." >&2
+echo "  The instance may not have registered with SSM (check the instance profile has the SSM managed policy)." >&2
+exit 1

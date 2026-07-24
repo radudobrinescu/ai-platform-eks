@@ -42,7 +42,10 @@ spec:
         app.kubernetes.io/part-of: ai-platform
         tier: workloads
     spec:
-      project: default
+      # Restricted project (templates/projects.yaml): KRO kinds only, serving
+      # namespaces only, no cluster-scoped resources — enforces the tenant
+      # boundary that repo write access alone does not.
+      project: ai-platform-workloads
       source:
         repoURL: {{ $wr }}
         targetRevision: {{ $rev }}
@@ -88,7 +91,10 @@ spec:
         app.kubernetes.io/part-of: ai-platform
         tier: workloads
     spec:
-      project: default
+      # Restricted project (templates/projects.yaml): KRO kinds only, serving
+      # namespaces only, no cluster-scoped resources — enforces the tenant
+      # boundary that repo write access alone does not.
+      project: ai-platform-workloads
       source:
         repoURL: {{ $wr }}
         targetRevision: {{ $rev }}

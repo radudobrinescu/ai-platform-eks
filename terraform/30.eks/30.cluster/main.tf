@@ -12,13 +12,36 @@ data "aws_iam_session_context" "current" {
 ################################################################################
 # EKS Cluster
 ################################################################################
+# Fail-closed guard: if the public EKS API endpoint is enabled it must be scoped
+# to a non-open CIDR allowlist. Evaluated at plan time (not `terraform validate`,
+# so CI's schema check is unaffected), it stops an apply that would expose the
+# control plane to 0.0.0.0/0. Private-only clusters (private_eks_cluster = true)
+# skip the requirement.
+resource "terraform_data" "validate_public_endpoint" {
+  lifecycle {
+    precondition {
+      condition = try(!var.cluster_config.private_eks_cluster, false) == false || (
+        length(var.cluster_endpoint_public_access_cidrs) > 0 &&
+        !contains(var.cluster_endpoint_public_access_cidrs, "0.0.0.0/0")
+      )
+      error_message = "The EKS public API endpoint is enabled (cluster_config.private_eks_cluster = false) but is not scoped. Set cluster_endpoint_public_access_cidrs to your operator IP/CIDR range(s) (never 0.0.0.0/0), or set private_eks_cluster = true for a VPC-private endpoint."
+    }
+  }
+}
+
 module "eks" {
   source  = "terraform-aws-modules/eks/aws"
   version = "= 21.1.5"
 
-  name                   = local.cluster_name
-  kubernetes_version     = local.cluster_version
-  endpoint_public_access = try(!var.cluster_config.private_eks_cluster, false)
+  name               = local.cluster_name
+  kubernetes_version = local.cluster_version
+  # When the public API endpoint is enabled (private_eks_cluster = false, the
+  # laptop-provisioning default) it MUST be scoped to an operator CIDR allowlist.
+  # The terraform_data.validate_public_endpoint precondition below fail-closes if
+  # this is empty or open, so a fork can't leave the API server reachable from
+  # 0.0.0.0/0 (the old behaviour). Ignored for private-only clusters.
+  endpoint_public_access       = try(!var.cluster_config.private_eks_cluster, false)
+  endpoint_public_access_cidrs = var.cluster_endpoint_public_access_cidrs
 
   create_iam_role          = try(var.cluster_config.create_iam_role, true)
   iam_role_arn             = try(var.cluster_config.cluster_iam_role_arn, null)
@@ -57,6 +80,12 @@ module "eks" {
         most_recent    = true # To ensure access to the latest settings provided
         preserve       = false
         configuration_values = jsonencode({
+          # Enforce Kubernetes NetworkPolicy. Without this the VPC CNI IGNORES
+          # every NetworkPolicy in the cluster, so the team isolation and
+          # platform-db policies would be decorative — teams could reach each
+          # other and the platform Postgres regardless. Auto Mode enforces via
+          # the NodeClass networkPolicy field instead (auto-mode/default.yaml).
+          enableNetworkPolicy = "true"
           env = {
             ENABLE_PREFIX_DELEGATION = "false"
             WARM_ENI_TARGET          = "0"
@@ -360,14 +389,20 @@ resource "kubernetes_storage_class_v1" "automode" {
 # EKS Auto Mode Ingress
 ################################################################################
 resource "kubectl_manifest" "automode_ingressclass_params" {
-  count     = local.eks_auto_mode ? 1 : 0
+  count = local.eks_auto_mode ? 1 : 0
+  # scheme: internal — the secure default, matching the non-Auto-Mode ingresses
+  # (platform/config/ingress.yaml) and the whole edge design (private ALB reached
+  # via the CloudFront VPC-origin edge or the SSM tunnel). As the DEFAULT
+  # IngressClass this governs any Ingress that doesn't name a class, so an
+  # internet-facing default would silently expose every such Ingress to the
+  # public internet. Expose intentionally instead (own class / annotation).
   yaml_body = <<YAML
 apiVersion: eks.amazonaws.com/v1
 kind: IngressClassParams
 metadata:
   name: auto-alb
 spec:
-  scheme: internet-facing
+  scheme: internal
 YAML
   depends_on = [
     module.eks

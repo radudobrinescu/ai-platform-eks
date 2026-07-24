@@ -164,9 +164,14 @@ resource "aws_iam_policy" "ecr_pull_through" {
     Statement = [{
       Sid    = "PullThroughImport"
       Effect = "Allow"
+      # ecr:CreateRepository is intentionally NOT granted: the
+      # aws_ecr_repository_creation_template above lets ECR create the
+      # docker-hub/* cache repos itself on first pull, so pullers only need
+      # BatchImportUpstreamImage. This policy is attached to every Karpenter GPU
+      # node, so dropping CreateRepository stops nodes from creating arbitrary
+      # docker-hub/* repositories.
       Action = [
         "ecr:BatchImportUpstreamImage",
-        "ecr:CreateRepository",
       ]
       Resource = "arn:aws:ecr:${local.region}:${data.aws_caller_identity.current.account_id}:repository/docker-hub/*"
     }]

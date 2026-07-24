@@ -166,9 +166,12 @@ resource "aws_cognito_user_pool_client" "apps" {
   callback_urls = local.sso_callbacks[each.key]
   logout_urls   = local.sso_logouts[each.key]
 
+  # SRP (Secure Remote Password) + refresh only. ALLOW_USER_PASSWORD_AUTH is
+  # deliberately omitted: it transmits the plaintext password to Cognito and
+  # enables scripted credential-stuffing. The hosted-UI authorization-code flow
+  # these apps use relies on SRP, so dropping it doesn't affect normal sign-in.
   explicit_auth_flows = [
     "ALLOW_USER_SRP_AUTH",
-    "ALLOW_USER_PASSWORD_AUTH",
     "ALLOW_REFRESH_TOKEN_AUTH",
   ]
 

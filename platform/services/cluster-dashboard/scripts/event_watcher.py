@@ -676,60 +676,71 @@ def _stop(*_):
     stop_event.set()
 
 
-def watch_pods(conn_factory) -> None:
-    while not stop_event.is_set():
+def _db_alive(conn) -> bool:
+    """True if the connection is usable. psycopg exposes `closed`; `broken` is
+    set after a failed operation."""
+    return not conn.closed and not getattr(conn, "broken", False)
+
+
+def _watch_loop(label, conn_factory, lister, detect) -> None:
+    """Generic K8s watch loop, shared by the pod/event/node watchers.
+
+    Opens ONE postgres connection and REUSES it across the ~5-minute watch-stream
+    restarts (the stream returns every timeout_seconds and on transient errors).
+    The previous code re-opened `conn_factory()` on every loop iteration and never
+    closed the old connection, leaking ~1 connection per 5 minutes per thread and
+    eventually exhausting the shared platform Postgres. We reconnect ONLY when the
+    connection has actually broken, and always close it on shutdown.
+
+    Args:
+        label: short name for log lines ("pod"/"event"/"node").
+        conn_factory: returns a live psycopg connection (db_with_retry).
+        lister: given a CoreV1Api, returns the list_* method to stream.
+        detect: given the streamed object, returns a trigger tuple or None.
+    """
+    conn = conn_factory()
+    batch_v1 = client.BatchV1Api()
+    try:
+        while not stop_event.is_set():
+            try:
+                if not _db_alive(conn):
+                    conn = conn_factory()
+                v1 = client.CoreV1Api()
+                w = watch.Watch()
+                for ev in w.stream(lister(v1), timeout_seconds=300):
+                    if stop_event.is_set():
+                        w.stop(); break
+                    trig = detect(ev["object"])
+                    if trig:
+                        spawn_investigation(conn, batch_v1, trig[0], trig[1])
+            except Exception as e:
+                log.warning("%s watch error: %s — restarting", label, e)
+                # Reconnect only if the DB connection is the casualty; a K8s
+                # stream error leaves the connection healthy and reusable.
+                if not _db_alive(conn):
+                    try:
+                        conn.close()
+                    except Exception:
+                        pass
+                    conn = conn_factory()
+                time.sleep(5)
+    finally:
         try:
-            conn = conn_factory()
-            v1 = client.CoreV1Api()
-            batch_v1 = client.BatchV1Api()
-            w = watch.Watch()
-            for ev in w.stream(v1.list_pod_for_all_namespaces, timeout_seconds=300):
-                if stop_event.is_set():
-                    w.stop(); break
-                pod = ev["object"]
-                trig = detect_pod_trigger(pod)
-                if trig:
-                    spawn_investigation(conn, batch_v1, trig[0], trig[1])
-        except Exception as e:
-            log.warning("pod watch error: %s — restarting", e)
-            time.sleep(5)
+            conn.close()
+        except Exception:
+            pass
+
+
+def watch_pods(conn_factory) -> None:
+    _watch_loop("pod", conn_factory, lambda v1: v1.list_pod_for_all_namespaces, detect_pod_trigger)
 
 
 def watch_events(conn_factory) -> None:
-    while not stop_event.is_set():
-        try:
-            conn = conn_factory()
-            v1 = client.CoreV1Api()
-            batch_v1 = client.BatchV1Api()
-            w = watch.Watch()
-            for ev in w.stream(v1.list_event_for_all_namespaces, timeout_seconds=300):
-                if stop_event.is_set():
-                    w.stop(); break
-                evt = ev["object"]
-                trig = detect_event_trigger(evt)
-                if trig:
-                    spawn_investigation(conn, batch_v1, trig[0], trig[1])
-        except Exception as e:
-            log.warning("event watch error: %s — restarting", e)
-            time.sleep(5)
+    _watch_loop("event", conn_factory, lambda v1: v1.list_event_for_all_namespaces, detect_event_trigger)
 
 
 def watch_nodes(conn_factory) -> None:
-    while not stop_event.is_set():
-        try:
-            conn = conn_factory()
-            v1 = client.CoreV1Api()
-            batch_v1 = client.BatchV1Api()
-            w = watch.Watch()
-            for ev in w.stream(v1.list_node, timeout_seconds=300):
-                if stop_event.is_set():
-                    w.stop(); break
-                trig = detect_node_trigger(ev["object"])
-                if trig:
-                    spawn_investigation(conn, batch_v1, trig[0], trig[1])
-        except Exception as e:
-            log.warning("node watch error: %s — restarting", e)
-            time.sleep(5)
+    _watch_loop("node", conn_factory, lambda v1: v1.list_node, detect_node_trigger)
 
 
 # ---------------------------------------------------------------------------

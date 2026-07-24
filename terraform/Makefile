@@ -77,6 +77,9 @@ bootstrap: check-env
 		aws s3api put-public-access-block --bucket $(TFSTATE_S3_BUCKET) --public-access-block-configuration "BlockPublicAcls=true,IgnorePublicAcls=true,BlockPublicPolicy=true,RestrictPublicBuckets=true" > /dev/null 2>&1; \
 		aws s3api put-bucket-versioning --region $(TFSTATE_REGION) --bucket $(TFSTATE_S3_BUCKET) --versioning-configuration Status=Enabled > /dev/null 2>&1; \
 		aws s3api put-bucket-encryption --region $(TFSTATE_REGION) --bucket $(TFSTATE_S3_BUCKET) --server-side-encryption-configuration '{"Rules":[{"ApplyServerSideEncryptionByDefault":{"SSEAlgorithm":"aws:kms"},"BucketKeyEnabled":true}]}' > /dev/null 2>&1; \
+		bkt=$(TFSTATE_S3_BUCKET); \
+		aws s3api put-bucket-policy --region $(TFSTATE_REGION) --bucket "$$bkt" \
+			--policy "$$(printf '{"Version":"2012-10-17","Statement":[{"Sid":"DenyInsecureTransport","Effect":"Deny","Principal":"*","Action":"s3:*","Resource":["arn:aws:s3:::%s","arn:aws:s3:::%s/*"],"Condition":{"Bool":{"aws:SecureTransport":"false"}}}]}' "$$bkt" "$$bkt")" > /dev/null 2>&1; \
 		echo "Created S3 Bucket $(TFSTATE_S3_BUCKET)."; \
 	 else \
 		echo "S3 Bucket $(TFSTATE_S3_BUCKET) exists."; \

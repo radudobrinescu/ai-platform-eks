@@ -38,8 +38,23 @@ def persist_investigation(investigation_id: str, findings_path: str) -> int:
         findings = json.load(f)
 
     out_of_scope = bool(findings.get("out_of_scope", False))
-    new_status = "dismissed" if out_of_scope else "awaiting_approval"
     fix_commands = findings.get("fix_commands") or []
+
+    # Run the deterministic allowlist over the proposed commands so the operator
+    # sees, at approval time, whether the plan is within policy. Violations are
+    # recorded on the finding and force manual review; the remediator re-checks
+    # and hard-refuses (fix_command_policy.py), so this is advisory-for-display,
+    # not the enforcement point. Import is best-effort (same /scripts dir).
+    try:
+        import fix_command_policy
+        policy_violations = fix_command_policy.validate(fix_commands)
+    except Exception as e:  # never fail persistence because the checker errored
+        policy_violations = [f"policy check unavailable: {type(e).__name__}"]
+    if policy_violations:
+        findings["policy_violations"] = policy_violations
+        findings["requires_manual_review"] = True
+
+    new_status = "dismissed" if out_of_scope else "awaiting_approval"
 
     with db_conn() as conn:
         with conn.cursor() as cur:

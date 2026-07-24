@@ -61,11 +61,15 @@ rules:
       - events
       - nodes
       - services
-      - configmaps
       - persistentvolumeclaims
       - namespaces
       - endpoints
       - serviceaccounts
+    # configmaps deliberately EXCLUDED from cluster-wide read: they routinely
+    # hold quasi-secrets (and kube-system's aws-auth), so a prompt-injected
+    # investigator must not be able to read every ConfigMap in the cluster. The
+    # writer role still gets namespaced configmap get/patch in inference/team-*
+    # for remediation.
     verbs: ["get", "list", "watch"]
   - apiGroups: ["apps"]
     resources: ["deployments", "replicasets", "statefulsets", "daemonsets"]
@@ -245,3 +249,39 @@ roleRef:
   kind: ClusterRole
   name: platform-health-agent-rolebinding-manager
   apiGroup: rbac.authorization.k8s.io
+---
+# Admission guardrail: the rolebinding-manager grant above is cluster-wide
+# (RBAC can't scope create-in-arbitrary-namespace to a namespace pattern, and
+# team-* namespaces appear dynamically). This ValidatingAdmissionPolicy bounds
+# it at admission: the PHA reader SA (the event-watcher identity) may only
+# create/delete RoleBindings in 'inference' or 'team-*' namespaces. Without it,
+# a compromised watcher could bind the writer role into kube-system/ai-platform
+# and escalate. Scoped by matchConditions to ONLY that SA, so all other
+# RoleBinding traffic is untouched; failurePolicy: Fail = fail-closed.
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingAdmissionPolicy
+metadata:
+  name: pha-rolebinding-scope
+spec:
+  failurePolicy: Fail
+  matchConstraints:
+    resourceRules:
+      - apiGroups: ["rbac.authorization.k8s.io"]
+        apiVersions: ["v1"]
+        operations: ["CREATE", "DELETE"]
+        resources: ["rolebindings"]
+  matchConditions:
+    - name: only-pha-reader
+      expression: "request.userInfo.username == 'system:serviceaccount:ai-platform:platform-health-agent-reader'"
+  validations:
+    # Namespaced resource → request.namespace is populated on CREATE and DELETE.
+    - expression: "request.namespace.matches('^(inference|team-.+)$')"
+      message: "Platform Health Agent may only manage RoleBindings in the 'inference' or 'team-*' namespaces."
+---
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingAdmissionPolicyBinding
+metadata:
+  name: pha-rolebinding-scope
+spec:
+  policyName: pha-rolebinding-scope
+  validationActions: ["Deny"]

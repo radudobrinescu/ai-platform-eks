@@ -6,9 +6,13 @@
 #     (via env var; handled by kubelet, no explicit RBAC needed).
 #   - Write the team's scoped API key into team-<name>/<team>-api-key.
 #
-# Secret writes are granted per-team via a RoleBinding (created by the AITeam
-# KRO resource graph) that references the ClusterRole below. The SA itself
-# lives in ai-platform; the master key never leaves ai-platform.
+# Secret writes are granted per-team by a namespaced Role + RoleBinding that the
+# AITeam KRO resource graph creates in each team namespace (see the
+# onboardingSecretRole/onboardingRolebinding resources in
+# platform/config/kro/team-onboarding.yaml). That Role is scoped by resourceName
+# to the single <team>-api-key Secret — NOT a cluster-wide secrets grant — so
+# this file only needs to define the ServiceAccount. The SA lives in ai-platform;
+# the master key never leaves ai-platform.
 ---
 apiVersion: v1
 kind: ServiceAccount
@@ -18,15 +22,3 @@ metadata:
   labels:
     app.kubernetes.io/part-of: ai-platform
     ai-platform/managed-by: platform-team
----
-apiVersion: rbac.authorization.k8s.io/v1
-kind: ClusterRole
-metadata:
-  name: team-onboarding-secret-writer
-  labels:
-    app.kubernetes.io/part-of: ai-platform
-    ai-platform/managed-by: platform-team
-rules:
-  - apiGroups: [""]
-    resources: ["secrets"]
-    verbs: ["get", "create", "update", "patch"]

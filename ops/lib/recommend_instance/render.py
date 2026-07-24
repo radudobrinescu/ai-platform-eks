@@ -5,9 +5,11 @@ from __future__ import annotations
 import argparse
 import json
 import math
+import sys
 
 from .catalog import TIME_SLICE_REPLICAS
 from .model import ModelSpec
+from .paths import KIND_DIR, is_valid_hf_model_id, is_valid_model_name
 from .recommend import Option, find_options
 from .scaling import ScalingRecommendation, compute_scaling
 from .throughput import _parallelism_efficiency, per_user_tok_s
@@ -861,11 +863,8 @@ def model_name_from_id(model_id: str) -> str:
 # names, target directory) differs.
 TIER_KIND = {"vllm": "VLLMEndpoint", "llm-d": "LLMDEndpoint",
              "llm-d-disagg": "LLMDDisaggEndpoint"}
-KIND_DIR = {
-    "VLLMEndpoint": "workloads/models/inference",
-    "LLMDEndpoint": "workloads/scale-models",
-    "LLMDDisaggEndpoint": "workloads/scale-models",
-}
+# KIND_DIR (which directory each kind's manifest is written to) is imported from
+# .paths — the single source of truth shared with gitops.py's --undeploy search.
 # Workload -> llm-d EPP routing profile (LLMDEndpoint.spec.routingProfile).
 # Shared-prefix / multi-turn workloads win most from prefix+KV-aware routing;
 # high-volume independent workloads want queue (load) balancing.
@@ -950,6 +949,16 @@ def build_endpoint_yaml(
     commit_msg); used for both the printed snippet and --deploy so they can't
     drift."""
     name = model_name_from_id(model.model_id)
+    # Validate the two externally-derived values before they are interpolated
+    # into the manifest that --deploy commits and ArgoCD applies. model_id goes
+    # into `model: "..."` and `name` into `name:`/the filename; a value with a
+    # quote or newline would otherwise break or inject YAML (GitOps injection).
+    if not is_valid_hf_model_id(model.model_id):
+        sys.exit(f"error: refusing to emit a manifest for an unsafe model id: {model.model_id!r} "
+                 f"(expected a Hugging Face id like org/name).")
+    if not is_valid_model_name(name):
+        sys.exit(f"error: model id {model.model_id!r} derives an invalid Kubernetes name {name!r} "
+                 f"(must be an RFC 1123 label). Rename or pick a different model.")
     max_len = args.seq
     if scaling:
         best = scaling[0].option

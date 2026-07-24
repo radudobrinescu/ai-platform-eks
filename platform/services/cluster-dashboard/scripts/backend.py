@@ -63,6 +63,16 @@ try:
 except Exception:
     HAVE_BOTO3 = False
 
+# PyJWT (with cryptography) verifies the OIDC token that gates the mutating
+# endpoints. Optional import: if it's missing AND auth is required, mutations
+# fail closed (see authorize_mutation) rather than silently running unauthenticated.
+try:
+    import jwt                            # type: ignore[import-not-found]
+    from jwt import PyJWKClient           # type: ignore[import-not-found]
+    HAVE_JWT = True
+except Exception:
+    HAVE_JWT = False
+
 
 # ---------------------------------------------------------------------------
 # Config
@@ -94,6 +104,84 @@ MAX_REMEDIATIONS_PER_DAY = int(os.environ.get("MAX_REMEDIATIONS_PER_DAY", "20"))
 KIRO_MODEL_REMEDIATE = os.environ.get("KIRO_MODEL_REMEDIATE", "auto")
 PYTHON_IMAGE = os.environ.get("PYTHON_IMAGE", "python:3.12-slim")
 KUBECTL_VERSION = os.environ.get("KUBECTL_VERSION", "v1.32.5")
+
+# ---------------------------------------------------------------------------
+# Authentication / authorization for MUTATING endpoints
+# ---------------------------------------------------------------------------
+# The mutating endpoints (approve / dismiss / delete an investigation) spawn a
+# cluster-mutating Remediator Job or destroy audit history, so they MUST be
+# gated by a verified admin identity — never by network position.
+#
+# Why not trust oauth2-proxy's forwarded headers? Because the dashboard's own
+# `platformctl tunnel` forwards straight to this pod's ClusterIP, BYPASSING
+# oauth2-proxy — so any X-Forwarded-* / X-Auth-Request-* header is attacker-
+# settable on that path. Instead the backend cryptographically verifies the
+# OIDC ID token that oauth2-proxy injects as `Authorization: Bearer <jwt>`
+# (--set-authorization-header) against the Cognito JWKS. That check is
+# path-independent: a tunnel client with no valid, correctly-signed, in-group
+# token is refused, and no header can forge a Cognito signature.
+#
+# Config (from the Terraform-managed oauth2-proxy-secrets + deployment env):
+#   OIDC_ISSUER_URL   Cognito user-pool issuer (…/cognito-idp/<region>/<pool>)
+#   OIDC_CLIENT_ID    app client id = expected `aud` of the ID token
+#   OIDC_ALLOWED_GROUPS  comma-separated cognito:groups permitted to MUTATE
+#                        (default: admins only — stricter than the view, which
+#                         oauth2-proxy also opens to developers)
+#   DASHBOARD_AUTH_REQUIRED  "true" (default) = fail closed when a request is
+#                        unauthenticated OR auth is not configured. Set "false"
+#                        ONLY on a trusted network with SSO disabled — mutations
+#                        then run unauthenticated (logged loudly).
+OIDC_ISSUER_URL = os.environ.get("OIDC_ISSUER_URL", "").rstrip("/")
+OIDC_CLIENT_ID = os.environ.get("OIDC_CLIENT_ID", "")
+OIDC_ALLOWED_GROUPS = [
+    g.strip() for g in os.environ.get("OIDC_ALLOWED_GROUPS", "ai-platform-admins").split(",") if g.strip()
+]
+DASHBOARD_AUTH_REQUIRED = os.environ.get("DASHBOARD_AUTH_REQUIRED", "true").lower() not in ("false", "0", "no")
+
+_AUTH_CONFIGURED = bool(OIDC_ISSUER_URL and OIDC_CLIENT_ID and HAVE_JWT)
+_jwks_client = None
+_jwks_lock = threading.Lock()
+
+
+def _get_jwks_client():
+    """Lazily build (and cache) the Cognito JWKS client. Thread-safe."""
+    global _jwks_client
+    if _jwks_client is None:
+        with _jwks_lock:
+            if _jwks_client is None:
+                _jwks_client = PyJWKClient(f"{OIDC_ISSUER_URL}/.well-known/jwks.json")
+    return _jwks_client
+
+
+def verify_identity(auth_header: str) -> tuple[str | None, str]:
+    """Verify a Bearer OIDC token and authorize the caller for mutations.
+
+    Returns (identity, "") on success, or (None, reason) on failure. `identity`
+    is the verified email / username / sub — safe to record as the approver.
+    """
+    if not auth_header:
+        return None, "missing bearer token"
+    parts = auth_header.split(None, 1)
+    if len(parts) != 2 or parts[0].lower() != "bearer" or not parts[1].strip():
+        return None, "malformed Authorization header"
+    token = parts[1].strip()
+    try:
+        signing_key = _get_jwks_client().get_signing_key_from_jwt(token)
+        claims = jwt.decode(
+            token,
+            signing_key.key,
+            algorithms=["RS256"],
+            audience=OIDC_CLIENT_ID,
+            issuer=OIDC_ISSUER_URL,
+            options={"require": ["exp", "iss", "aud"]},
+        )
+    except Exception as e:  # signature/exp/iss/aud failure — deny
+        return None, f"token verification failed: {type(e).__name__}"
+    groups = claims.get("cognito:groups") or []
+    if not any(g in OIDC_ALLOWED_GROUPS for g in groups):
+        return None, "caller not in an allowed admin group"
+    identity = claims.get("email") or claims.get("cognito:username") or claims.get("sub") or "unknown"
+    return identity, ""
 
 # Quick links — centralised entry points to the platform's web UIs, surfaced in
 # the dashboard so users don't have to hunt for per-cluster hostnames.
@@ -1541,6 +1629,39 @@ class Handler(http.server.SimpleHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(data)
 
+    def _authorize_mutation(self) -> str | None:
+        """Gate a mutating request. Returns the approver identity if allowed;
+        otherwise writes the error response and returns None (caller must stop).
+
+        Two independent checks:
+        1. CSRF: require the custom `X-Requested-With` header. A cross-origin page
+           cannot set it on a "simple" request, and setting it forces a CORS
+           preflight this server never approves — so a browser CSRF (even one
+           riding a valid oauth2-proxy session cookie) is blocked. Same-origin
+           dashboard JS sets it explicitly.
+        2. AuthN/AuthZ: a verified, in-group OIDC token (see verify_identity).
+        """
+        if not self.headers.get("X-Requested-With"):
+            self._json(403, {"error": "missing X-Requested-With header (CSRF protection)"})
+            return None
+        if not DASHBOARD_AUTH_REQUIRED:
+            # Explicit, deliberate opt-out (trusted network, SSO disabled).
+            approver = (self.headers.get("X-Forwarded-Email")
+                        or self.headers.get("X-Auth-Request-Email")
+                        or "auth-disabled")
+            print(f"WARNING: DASHBOARD_AUTH_REQUIRED=false — mutation allowed unauthenticated (approver={approver})", flush=True)
+            return approver
+        if not _AUTH_CONFIGURED:
+            self._json(503, {"error": "dashboard auth is required but not configured "
+                                      "(need OIDC_ISSUER_URL, OIDC_CLIENT_ID, and PyJWT); "
+                                      "set DASHBOARD_AUTH_REQUIRED=false to override on a trusted network"})
+            return None
+        identity, reason = verify_identity(self.headers.get("Authorization", ""))
+        if identity is None:
+            self._json(401, {"error": f"unauthorized: {reason}"})
+            return None
+        return identity
+
     def do_GET(self) -> None:  # type: ignore[override]
         # Root → cluster-topology.html (no Apache-style directory listing).
         if self.path == "/" or self.path == "":
@@ -1587,10 +1708,12 @@ class Handler(http.server.SimpleHTTPRequestHandler):
                 uuid.UUID(investigation_id)
             except ValueError:
                 return self._json(400, {"error": "invalid investigation id"})
-            # No body required; we rely on the ALB allowlist for "auth".
-            # Caller identity is the X-Forwarded-For header (best-effort
-            # audit only — not a security boundary).
-            approver = self.headers.get("X-Forwarded-For", "anon").split(",")[0].strip() or "anon"
+            # Gate on a verified admin identity (approve spawns a cluster-mutating
+            # Remediator Job). The verified token subject is the audit approver —
+            # unspoofable, unlike the former X-Forwarded-For.
+            approver = self._authorize_mutation()
+            if approver is None:
+                return  # error already written
             if parts[2] == "approve":
                 status, body = approve_investigation(investigation_id, approver)
             else:
@@ -1604,6 +1727,11 @@ class Handler(http.server.SimpleHTTPRequestHandler):
         # Used by the dashboard's History tab to clear noise. NOT recoverable.
         parsed = urlparse(self.path)
         parts = [p for p in parsed.path.split("/") if p]
+        # Deleting audit history is destructive and unrecoverable — same admin
+        # gate as approve/dismiss.
+        if parts[:1] == ["investigations"] and len(parts) in (1, 2):
+            if self._authorize_mutation() is None:
+                return  # error already written
         # DELETE /investigations — bulk "dismiss all" of terminal rows.
         if len(parts) == 1 and parts[0] == "investigations":
             status, body = delete_all_investigations()

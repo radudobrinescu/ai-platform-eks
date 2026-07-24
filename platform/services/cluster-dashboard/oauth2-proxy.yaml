@@ -42,6 +42,14 @@ spec:
             - --allowed-group=ai-platform-developers
             - --upstream=http://cluster-dashboard.ai-platform.svc.cluster.local:9090
             - --reverse-proxy=true
+            # Forward the verified identity to the dashboard. --set-authorization-header
+            # injects `Authorization: Bearer <OIDC id_token>`, which the backend
+            # cryptographically verifies before allowing any mutation (approve /
+            # dismiss / delete) — so authorization does not depend on network path
+            # (the tunnel bypasses this proxy). --set-xauthrequest adds
+            # X-Auth-Request-Email/-Groups for audit/read context.
+            - --set-authorization-header=true
+            - --set-xauthrequest=true
             # HTTP today (tunnel/ALB). Set --cookie-secure=true once fronted by
             # CloudFront/HTTPS.
             - --cookie-secure=false

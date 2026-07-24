@@ -48,7 +48,9 @@ spec:
       workerCpu:            "string  | default=8"
       vllmImage:            "string  | default=vllm/vllm-openai:v0.24.0"
       routerChartVersion:   "string  | default=v0.9.0"
-      routingProfile:       "string  | default=balanced"   # balanced|prefix|throughput|latency -> EPP scorer weights
+      # enum rejects typos at admission; without it a misspelled profile silently
+      # fell through the CEL scorer-weight ternaries to the 'balanced' weights.
+      routingProfile:       'string | default=balanced enum="balanced,prefix,throughput,latency"'   # -> EPP scorer weights
     status:
       ready:             "${vllmdeployment.status.?availableReplicas.orValue(0) > 0 ? 'True' : 'False'}"
       availableReplicas: ${vllmdeployment.status.?availableReplicas.orValue(0)}

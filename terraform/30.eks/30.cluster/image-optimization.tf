@@ -194,7 +194,11 @@ resource "aws_iam_role_policy" "soci_builder_ecr" {
         Resource = "*"
       },
       {
-        # Pull + push the SOCI index (referrer artifact) on this account's repos.
+        # Pull + push the SOCI index (referrer artifact). Scoped to the
+        # docker-hub/* pull-through cache repos this builder actually touches —
+        # NOT repository/*, which let a builder compromise overwrite ANY image in
+        # the account (supply-chain risk). The PullThroughImport stanza below is
+        # already docker-hub/*-scoped for the same reason.
         Sid    = "EcrPullPush"
         Effect = "Allow"
         Action = [
@@ -206,7 +210,7 @@ resource "aws_iam_role_policy" "soci_builder_ecr" {
           "ecr:CompleteLayerUpload",
           "ecr:PutImage",
         ]
-        Resource = "arn:aws:ecr:${local.region}:${data.aws_caller_identity.current.account_id}:repository/*"
+        Resource = "arn:aws:ecr:${local.region}:${data.aws_caller_identity.current.account_id}:repository/docker-hub/*"
       },
       {
         # The SOCI builder is the apply-time FIRST puller of the vLLM image

@@ -44,9 +44,14 @@ resource "aws_iam_role_policy" "litellm_bedrock" {
   name  = "bedrock-invoke"
   role  = aws_iam_role.litellm_bedrock[0].id
 
-  # Resource = "*" covers foundation models and cross-region inference profiles
-  # (the `us.` prefix routes across regional model ARNs). Tighten to specific
-  # model/inference-profile ARNs if your security posture requires it.
+  # Scoped to Bedrock MODEL invocation only — foundation models (ARNs carry an
+  # empty account) plus this account's inference profiles (system-defined
+  # cross-region profiles like `global.`/`us.` and any application profiles).
+  # Invoking via an inference profile requires BOTH the profile ARN AND the
+  # underlying foundation-model ARNs, so both are listed. This is far tighter
+  # than Resource="*", which also granted every other Bedrock resource (agents,
+  # knowledge bases, guardrails, custom models, provisioned throughput). Tighten
+  # further to e.g. foundation-model/anthropic.* if your posture requires it.
   policy = jsonencode({
     Version = "2012-10-17"
     Statement = [{
@@ -57,7 +62,10 @@ resource "aws_iam_role_policy" "litellm_bedrock" {
         "bedrock:Converse",
         "bedrock:ConverseStream",
       ]
-      Resource = "*"
+      Resource = [
+        "arn:aws:bedrock:*::foundation-model/*",
+        "arn:aws:bedrock:*:${data.aws_caller_identity.current.account_id}:inference-profile/*",
+      ]
     }]
   })
 }

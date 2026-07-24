@@ -19,6 +19,7 @@ errored.tfstate
 # Python
 __pycache__/
 *.pyc
+.pytest_cache/
 
 # Ops
 ops/.scale-state-*.json

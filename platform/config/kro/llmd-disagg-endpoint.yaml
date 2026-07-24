@@ -62,14 +62,14 @@ spec:
       workerCpu:            "string  | default=8"
       vllmImage:            "string  | default=vllm/vllm-openai:v0.24.0"
       routerChartVersion:   "string  | default=v0.9.0"
-      routingProfile:       "string  | default=prefix"   # balanced|prefix|throughput|latency
+      routingProfile:       'string | default=prefix enum="balanced,prefix,throughput,latency"'
       # True prefill/decode disaggregation (via the decode routing-sidecar + EPP
       # disagg-profile-handler). pdDisaggregation selects the PD decider:
       #   prefix-based (DEFAULT, all clusters) — disaggregate only when the
       #     non-cached prompt suffix exceeds pdNonCachedTokens (skips the network
       #     hop for short/cached prompts);
       #   always — force disaggregation on every request (validation/benchmark).
-      pdDisaggregation:     "string  | default=prefix-based"   # prefix-based|always
+      pdDisaggregation:     'string | default=prefix-based enum="prefix-based,always"'
       pdNonCachedTokens:    "integer | default=8"              # prefix-based decider threshold
       routingSidecarImage:  "string  | default=ghcr.io/llm-d/llm-d-routing-sidecar:v0.7.1"
       # Opt-in P/D nodepool split (large-scale only). Default = the shared

@@ -48,5 +48,6 @@ configMapGenerator:
       - scripts/investigate.sh
       - scripts/remediate.sh
       - scripts/persist_findings.py
+      - scripts/fix_command_policy.py
       - scripts/db_init.sh
       - scripts/ddl.sql

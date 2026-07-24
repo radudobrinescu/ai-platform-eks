@@ -15,11 +15,19 @@ shared_config = {
   resources_prefix = "ai-platform"
 }
 
+# Operator CIDR allowlist for the EKS PUBLIC API endpoint. REQUIRED whenever
+# private_eks_cluster = false (below): a plan-time check refuses to expose the
+# control plane to 0.0.0.0/0. Set this to the public egress IP/CIDR(s) you run
+# platformctl/kubectl from (office, VPN, CI). Uncomment and replace:
+#   cluster_endpoint_public_access_cidrs = ["203.0.113.10/32"]
+
 cluster_config = {
-  kubernetes_version  = "1.36"
-  eks_auto_mode       = false
+  kubernetes_version = "1.36"
+  eks_auto_mode      = false
   # false = public+private API endpoint (works with laptop provisioning — this is
-  # what ./platformctl up assumes). true = PRIVATE-ONLY endpoint: the cluster API
+  # what ./platformctl up assumes). When false you MUST scope the public endpoint
+  # with cluster_endpoint_public_access_cidrs below (a plan-time check refuses an
+  # empty or 0.0.0.0/0 allowlist). true = PRIVATE-ONLY endpoint: the cluster API
   # is reachable only from inside the VPC, so you must run Terraform/platformctl
   # from a host in the VPC (bastion EC2, CloudShell-in-VPC, or over a VPN into the
   # VPC) — a laptop over the public internet CANNOT provision it (the kubernetes/

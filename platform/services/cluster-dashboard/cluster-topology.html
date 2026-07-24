@@ -453,8 +453,18 @@ function invCard(iv){const f=iv.findings;const isObj=f&&typeof f==='object';
   return `<div class="alert"><span class="ai">🔧</span><div style="flex:1"><div class="at">${esc(iv.resource_kind||'')} ${esc(iv.resource_name||'')} — fix ready ${sevB}</div><div class="ad">${esc(summary.slice(0,240))}</div><a class="inv-more" onclick="var e=document.getElementById('${did}');var o=e.style.display==='none';e.style.display=o?'block':'none';this.textContent=o?'hide details ▾':'details ▸'">details ▸</a>${detail}</div><div class="ax"><button class="btn approve" onclick="approve('${iv.id}',this)">Approve fix</button><button class="btn dismiss" onclick="dismiss('${iv.id}',this)">Dismiss</button></div></div>`;}
 function healthView(){const al=alertList();$('health-alerts').innerHTML=(invs.length?invs.map(invCard).join(''):'')+(al.length?al.map(alertRow).join(''):(invs.length?'':'<div class="muted" style="padding:8px 0">✓ All models and apps healthy · no pending fixes</div>'));
   const a=D.argocd||[];$('argo-sync').innerHTML=(D.sources||{}).argocd?(a.length?a.map(x=>`<div class="alert"><span class="ai">${x.health==='Healthy'&&x.sync==='Synced'?'🟢':'🟡'}</span><div><div class="at">${esc(x.name)}</div><div class="ad">${esc(x.sync)} · ${esc(x.health)}</div></div></div>`).join(''):'<div class="muted">no applications</div>'):'<div class="muted">ArgoCD status unavailable</div>';}
-async function approve(id,b){b.disabled=true;b.textContent='…';try{await fetch('/investigations/'+id+'/approve',{method:'POST'});}catch(e){}poll();}
-async function dismiss(id,b){b.disabled=true;try{await fetch('/investigations/'+id+'/dismiss',{method:'POST'});}catch(e){}poll();}
+// Mutating calls carry X-Requested-With: the backend requires it as CSRF
+// protection and (on the ALB path) oauth2-proxy injects the verified identity
+// token. A non-OK response means auth/CSRF was refused — surface it rather than
+// silently resetting the button (e.g. approvals aren't available on the raw
+// tunnel path, which has no verified identity).
+async function mutate(url){
+  const r=await fetch(url,{method:'POST',headers:{'X-Requested-With':'dashboard'}});
+  if(!r.ok){let m='';try{m=(await r.json()).error||'';}catch(e){}
+    alert('Action refused ('+r.status+'): '+(m||'not authorized'));}
+  return r.ok;}
+async function approve(id,b){b.disabled=true;b.textContent='…';try{await mutate('/investigations/'+id+'/approve');}catch(e){}poll();}
+async function dismiss(id,b){b.disabled=true;try{await mutate('/investigations/'+id+'/dismiss');}catch(e){}poll();}
 
 // Over `platformctl tunnel` you reach the dashboard at localhost:9090 and the
 // other UIs are port-forwarded to localhost too — but the server-built links

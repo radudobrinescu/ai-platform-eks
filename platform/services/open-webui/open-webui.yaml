@@ -35,11 +35,20 @@ spec:
           env:
             - name: OPENAI_API_BASE_URL
               value: "http://litellm.ai-platform.svc.cluster.local:4000/v1"
+            # Scoped, NON-admin LiteLLM virtual key — NOT the master key. The
+            # master key can mint/delete keys, teams and budgets and edit config,
+            # so handing it to the most-exposed UI (public SSO signup) meant any
+            # Open WebUI compromise owned the whole gateway. This key can only
+            # make inference calls; per-user budgets/limits still apply via the
+            # forwarded x-openwebui-user-email header (see litellm config §1a).
+            # Minted + written to this Secret by the litellm-openwebui-key Job
+            # below. optional:true so the pod boots before the Job has run on a
+            # fresh install; the Job restarts this Deployment once the key exists.
             - name: OPENAI_API_KEY
               valueFrom:
                 secretKeyRef:
-                  name: litellm-secrets
-                  key: master-key
+                  name: open-webui-litellm-key
+                  key: api-key
                   optional: true
             - name: WEBUI_AUTH
               value: "true"
@@ -159,13 +168,134 @@ spec:
       targetPort: 8080
       name: http
 ---
-apiVersion: policy/v1
-kind: PodDisruptionBudget
+# No PodDisruptionBudget: Open WebUI uses a ReadWriteOnce PVC and a Recreate
+# rollout strategy, so it is intentionally single-replica (a second pod can't
+# mount the volume). maxUnavailable:1 over 1 replica is a no-op, and any stricter
+# PDB would only block node drains — so we omit it rather than imply an HA the
+# storage model can't provide.
+---
+# --- Scoped LiteLLM key provisioning for Open WebUI ---
+# Mints a NON-admin LiteLLM virtual key (via the master key, which never leaves
+# the ai-platform namespace) and stores it in the `open-webui-litellm-key`
+# Secret that the Deployment above reads. Replaces giving Open WebUI the master
+# key directly. Dedicated ServiceAccount with least privilege: create/read that
+# one Secret and restart only the open-webui Deployment.
+apiVersion: v1
+kind: ServiceAccount
 metadata:
-  name: open-webui
+  name: litellm-openwebui-key
   namespace: ai-platform
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: litellm-openwebui-key
+  namespace: ai-platform
+rules:
+  # create is not name-restrictable; get/patch are scoped to the two objects
+  # this Job touches. No list/watch, no access to other Secrets.
+  - apiGroups: [""]
+    resources: ["secrets"]
+    verbs: ["create"]
+  - apiGroups: [""]
+    resources: ["secrets"]
+    verbs: ["get"]
+    resourceNames: ["open-webui-litellm-key"]
+  - apiGroups: ["apps"]
+    resources: ["deployments"]
+    verbs: ["get", "patch"]
+    resourceNames: ["open-webui"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: litellm-openwebui-key
+  namespace: ai-platform
+subjects:
+  - kind: ServiceAccount
+    name: litellm-openwebui-key
+    namespace: ai-platform
+roleRef:
+  kind: Role
+  name: litellm-openwebui-key
+  apiGroup: rbac.authorization.k8s.io
+---
+# Runs as a PostSync hook (like litellm-enduser-budget): waits for LiteLLM, then
+# idempotently ensures the scoped key exists. If the Secret is already present
+# it does nothing (no key churn, no restart) — so it's safe on every sync.
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: litellm-openwebui-key
+  namespace: ai-platform
+  annotations:
+    argocd.argoproj.io/hook: PostSync
+    argocd.argoproj.io/hook-delete-policy: BeforeHookCreation
 spec:
-  maxUnavailable: 1
-  selector:
-    matchLabels:
-      app: open-webui
+  backoffLimit: 20
+  template:
+    metadata:
+      labels:
+        app: open-webui
+        ai-platform/job: openwebui-key
+    spec:
+      restartPolicy: OnFailure
+      serviceAccountName: litellm-openwebui-key
+      containers:
+        - name: mint-key
+          image: alpine/k8s:1.35.4
+          env:
+            - name: MASTER_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: litellm-secrets
+                  key: master-key
+          command: ["bash", "-c"]
+          args:
+            - |
+              set -euo pipefail
+              BASE=http://litellm.ai-platform.svc.cluster.local:4000
+              NS=ai-platform
+              SECRET=open-webui-litellm-key
+
+              # Idempotent: if the key Secret already exists, leave it (and the
+              # running Open WebUI) untouched.
+              if kubectl get secret "$SECRET" -n "$NS" >/dev/null 2>&1; then
+                echo "Secret $SECRET already exists — nothing to do."
+                exit 0
+              fi
+
+              echo "Waiting for LiteLLM..."
+              for i in $(seq 1 60); do
+                if curl -fsS "$BASE/health/liveliness" >/dev/null 2>&1; then break; fi
+                sleep 5
+              done
+
+              # Mint a NON-admin virtual key. No models restriction (Open WebUI
+              # is the general chat front door; models are registered dynamically
+              # by litellm-sync). No key-level budget: per-user governance is
+              # enforced via the forwarded end-user header, not this shared key.
+              # key_alias makes it identifiable/rotatable in the LiteLLM UI.
+              API_KEY=$(curl -fsS -X POST "$BASE/key/generate" \
+                -H "Authorization: Bearer $MASTER_KEY" \
+                -H "Content-Type: application/json" \
+                -d '{"key_alias":"open-webui","metadata":{"managed_by":"platform","service":"open-webui"}}' \
+                | jq -r '.key')
+
+              [ -n "$API_KEY" ] && [ "$API_KEY" != "null" ] || { echo "ERROR: key generation failed"; exit 1; }
+
+              kubectl create secret generic "$SECRET" -n "$NS" \
+                --from-literal=api-key="$API_KEY"
+              echo "Created $SECRET."
+
+              # Open WebUI read OPENAI_API_KEY at startup and booted before this
+              # key existed — restart it once so it picks the key up.
+              kubectl rollout restart deployment/open-webui -n "$NS"
+              echo "Restarted open-webui to load the scoped key."
+          resources:
+            requests:
+              cpu: 50m
+              memory: 64Mi
+            limits:
+              cpu: 100m
+              memory: 128Mi

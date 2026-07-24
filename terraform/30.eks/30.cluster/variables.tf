@@ -29,6 +29,17 @@ variable "shared_config" {
   default     = {}
 }
 
+variable "cluster_endpoint_public_access_cidrs" {
+  description = "CIDR allowlist for the EKS PUBLIC API endpoint. Required (and must be scoped — never 0.0.0.0/0) whenever the public endpoint is enabled (cluster_config.private_eks_cluster = false, the laptop-provisioning default). Set to your operator/office/VPN egress ranges, e.g. [\"203.0.113.10/32\"]. Ignored for private-only clusters."
+  type        = list(string)
+  default     = []
+
+  validation {
+    condition     = !contains(var.cluster_endpoint_public_access_cidrs, "0.0.0.0/0")
+    error_message = "Refusing 0.0.0.0/0 on the EKS public API endpoint. Scope it to your operator IP/CIDR range(s), or use a private endpoint (cluster_config.private_eks_cluster = true)."
+  }
+}
+
 variable "docker_hub_username" {
   description = "Docker Hub username for ECR pull-through cache. Set via TF_VAR_docker_hub_username env var."
   type        = string

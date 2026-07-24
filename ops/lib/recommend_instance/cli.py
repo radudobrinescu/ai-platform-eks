@@ -106,10 +106,12 @@ def main(argv: list[str] | None = None) -> int:
                         "git commit + push so ArgoCD deploys it (instead of only "
                         "printing the snippet).")
     p.add_argument("--undeploy", metavar="NAME", default=None,
-                   help="Delete workloads/models/<NAME>.yaml and git commit + push "
-                        "so ArgoCD removes the model (and LiteLLM deregisters it). "
-                        "Operates on the file by name — no model lookup; the "
-                        "positional model arg is not required with --undeploy.")
+                   help="Delete the model's <NAME>.yaml (found recursively under "
+                        "workloads/models/ — inference/ or team-*/ — or in "
+                        "workloads/scale-models/) and git commit + push so ArgoCD "
+                        "removes the model (and LiteLLM deregisters it). Operates on "
+                        "the file by name — no model lookup; the positional model arg "
+                        "is not required with --undeploy.")
     p.add_argument("--yes", "-y", action="store_true",
                    help="Skip the confirmation prompt for --deploy/--undeploy.")
     args = p.parse_args(argv)

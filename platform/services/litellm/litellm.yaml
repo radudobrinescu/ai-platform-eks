@@ -6,7 +6,12 @@ metadata:
   labels:
     app: litellm
 spec:
-  replicas: 1
+  # 2 replicas: LiteLLM is the single front door for ALL inference (Open WebUI,
+  # every team API key, the Bedrock path), and it's stateless (state lives in
+  # platform-db), so a second replica removes it as a single point of failure and
+  # makes the PodDisruptionBudget below meaningful (maxUnavailable:1 on 1 replica
+  # was a no-op). Requests are idempotent proxy calls, so round-robin is fine.
+  replicas: 2
   selector:
     matchLabels:
       app: litellm
@@ -360,6 +365,24 @@ spec:
               mountPath: /var/lib/postgresql/data
             - name: init-scripts
               mountPath: /docker-entrypoint-initdb.d
+          # Probes so a wedged Postgres is actually noticed. Without a readiness
+          # probe the pod stays Ready (and keeps its Service Endpoints) even when
+          # the DB is not accepting connections, so every client — LiteLLM auth
+          # on EVERY request, Langfuse, the dashboard — hangs instead of failing
+          # over; without a liveness probe a hung postmaster is never restarted.
+          readinessProbe:
+            exec:
+              command: ["sh", "-c", 'pg_isready -U "$POSTGRES_USER" -d "$POSTGRES_DB"']
+            initialDelaySeconds: 10
+            periodSeconds: 10
+            timeoutSeconds: 5
+          livenessProbe:
+            exec:
+              command: ["sh", "-c", 'pg_isready -U "$POSTGRES_USER" -d "$POSTGRES_DB"']
+            initialDelaySeconds: 30
+            periodSeconds: 15
+            timeoutSeconds: 5
+            failureThreshold: 6
           resources:
             requests:
               cpu: 200m
@@ -409,10 +432,18 @@ spec:
   policyTypes:
     - Ingress
   ingress:
+    # Postgres is reachable ONLY from the ai-platform namespace — every DB
+    # client (LiteLLM, Langfuse, the dashboard backend/event-watcher, and the
+    # Platform Health Agent Jobs) runs there. Previously this admitted any
+    # namespace carrying app.kubernetes.io/part-of=ai-platform, which every
+    # tenant namespace also carries — so team workloads could open connections
+    # straight to the platform state store (LiteLLM keys, budgets, Langfuse,
+    # PHA findings). Selecting by the immutable namespace-name label closes that
+    # and does not depend on any custom namespace labelling.
     - from:
         - namespaceSelector:
             matchLabels:
-              app.kubernetes.io/part-of: ai-platform
+              kubernetes.io/metadata.name: ai-platform
       ports:
         - protocol: TCP
           port: 5432
@@ -427,3 +458,108 @@ spec:
   selector:
     matchLabels:
       app: litellm
+---
+# --- platform-db backup (opt-in) ---
+# The shared Postgres is a single in-cluster replica holding LiteLLM keys/budgets,
+# Langfuse, and Platform Health Agent state — losing it loses all of that. This
+# CronJob takes a full pg_dumpall and uploads it to S3. It ships SUSPENDED because
+# the backup destination is environment-specific; enabling it is a 3-step,
+# fork-local change (see the CronJob comment). RPO = the schedule interval.
+# For PRODUCTION, prefer Amazon RDS (managed automated backups + point-in-time
+# recovery + Multi-AZ) over backing up a single-replica in-cluster Postgres.
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: platform-db-backup
+  namespace: ai-platform
+  # To enable uploads, grant this SA s3:PutObject on your backup bucket via
+  # IRSA / EKS Pod Identity (Terraform can add the eks.amazonaws.com/role-arn
+  # annotation). Left unannotated by default (backups are opt-in).
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: platform-db-backup-config
+  namespace: ai-platform
+data:
+  # Destination S3 bucket for backups. Empty by default — set it (and enable the
+  # CronJob) to turn backups on. Example: "my-org-ai-platform-backups".
+  bucket: ""
+---
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: platform-db-backup
+  namespace: ai-platform
+spec:
+  # SUSPENDED by default. To enable: (1) create an S3 bucket and grant the
+  # platform-db-backup ServiceAccount s3:PutObject on it (IRSA/Pod Identity);
+  # (2) set `bucket` in the platform-db-backup-config ConfigMap above;
+  # (3) set suspend: false here. RPO = the schedule interval (daily below).
+  suspend: true
+  schedule: "0 2 * * *"
+  concurrencyPolicy: Forbid
+  successfulJobsHistoryLimit: 3
+  failedJobsHistoryLimit: 3
+  jobTemplate:
+    spec:
+      backoffLimit: 2
+      template:
+        spec:
+          serviceAccountName: platform-db-backup
+          restartPolicy: OnFailure
+          securityContext:
+            runAsNonRoot: true
+            runAsUser: 65532
+            fsGroup: 65532          # so the non-root uid can write the emptyDir
+          # pg_dumpall (superuser client) writes a gzip to the shared emptyDir…
+          initContainers:
+            - name: dump
+              image: postgres:16.6-alpine
+              command: ["sh", "-c"]
+              args:
+                - |
+                  set -euo pipefail
+                  ts=$(date +%Y%m%d-%H%M%S)
+                  pg_dumpall -h platform-db.ai-platform.svc.cluster.local -U "$PGUSER" \
+                    | gzip > "/backup/platform-db-${ts}.sql.gz"
+                  echo "dumped /backup/platform-db-${ts}.sql.gz"
+              env:
+                - name: PGUSER
+                  valueFrom: { secretKeyRef: { name: platform-db-credentials, key: username } }
+                - name: PGPASSWORD
+                  valueFrom: { secretKeyRef: { name: platform-db-credentials, key: password } }
+              volumeMounts:
+                - name: backup
+                  mountPath: /backup
+              securityContext:
+                allowPrivilegeEscalation: false
+                capabilities: { drop: ["ALL"] }
+          # …then the aws-cli container uploads it to S3 and the emptyDir is discarded.
+          containers:
+            - name: upload
+              image: amazon/aws-cli:2.24.5
+              command: ["sh", "-c"]
+              args:
+                - |
+                  set -euo pipefail
+                  [ -n "${BACKUP_BUCKET:-}" ] || { echo "BACKUP_BUCKET not set — set it in the platform-db-backup-config ConfigMap"; exit 1; }
+                  aws s3 cp /backup/ "s3://${BACKUP_BUCKET}/platform-db/" --recursive --only-show-errors
+                  echo "uploaded to s3://${BACKUP_BUCKET}/platform-db/"
+              env:
+                - name: BACKUP_BUCKET
+                  valueFrom:
+                    configMapKeyRef:
+                      name: platform-db-backup-config
+                      key: bucket
+                      optional: true
+              volumeMounts:
+                - name: backup
+                  mountPath: /backup
+                  readOnly: true
+              securityContext:
+                allowPrivilegeEscalation: false
+                capabilities: { drop: ["ALL"] }
+          volumes:
+            - name: backup
+              emptyDir: {}

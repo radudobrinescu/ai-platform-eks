@@ -48,10 +48,10 @@ rules:
   - apiGroups: ["autoscaling"]
     resources: ["horizontalpodautoscalers"]
     verbs: ["get", "list"]
-  # Read the litellm-config ConfigMap (Bedrock model_list) for the unified model list.
-  - apiGroups: [""]
-    resources: ["configmaps"]
-    verbs: ["get", "list"]
+  # ConfigMap reads are namespaced (litellm-config / node-prices in ai-platform,
+  # by name) — granted via the cluster-dashboard-config Role below, NOT here.
+  # Keeping configmaps out of this ClusterRole stops the dashboard from reading
+  # every ConfigMap in every namespace (kube-system's aws-auth, tenant config…).
   # Read ArgoCD Applications for the Health view's GitOps sync status.
   - apiGroups: ["argoproj.io"]
     resources: ["applications"]
@@ -76,6 +76,34 @@ subjects:
 roleRef:
   kind: ClusterRole
   name: cluster-dashboard
+  apiGroup: rbac.authorization.k8s.io
+---
+# Namespaced ConfigMap read (ai-platform only): the dashboard fetches
+# litellm-config (Bedrock model_list) and node-prices by name from ai-platform.
+# Scoped to a Role here instead of the cluster-wide ClusterRole above so it can't
+# read ConfigMaps in other namespaces.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: cluster-dashboard-config
+  namespace: ai-platform
+rules:
+  - apiGroups: [""]
+    resources: ["configmaps"]
+    verbs: ["get", "list"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: cluster-dashboard-config
+  namespace: ai-platform
+subjects:
+  - kind: ServiceAccount
+    name: cluster-dashboard
+    namespace: ai-platform
+roleRef:
+  kind: Role
+  name: cluster-dashboard-config
   apiGroup: rbac.authorization.k8s.io
 ---
 # NOTE: the dashboard's Job-creation rights for spawning Remediator Jobs now
@@ -113,7 +141,7 @@ spec:
               # psycopg is optional from the backend's POV — if pip fails
               # (e.g. air-gapped), the dashboard still serves the topology
               # view, just without approvals.
-              pip install --no-cache-dir --target=/pydeps psycopg[binary]==3.2.3 pyyaml==6.0.2 'boto3>=1.34,<2' || true
+              pip install --no-cache-dir --target=/pydeps psycopg[binary]==3.2.3 pyyaml==6.0.2 'boto3>=1.34,<2' 'pyjwt[crypto]==2.9.0' || true
           volumeMounts:
             - name: pydeps
               mountPath: /pydeps
@@ -149,6 +177,32 @@ spec:
               valueFrom: { secretKeyRef: { name: platform-db-credentials, key: password } }
             - name: PLATFORM_HEALTH_AGENT_NAMESPACE
               value: ai-platform
+            # --- Auth for mutating endpoints (approve/dismiss/delete) ---
+            # The backend verifies the OIDC ID token oauth2-proxy injects, so a
+            # cluster remediation can only be approved by a verified admin — on
+            # the ALB path AND the tunnel path. Issuer + client-id come from the
+            # same Terraform-managed Secret oauth2-proxy uses. optional: true so
+            # the dashboard still serves the read-only topology view if unset;
+            # when unset, mutations fail closed unless DASHBOARD_AUTH_REQUIRED is
+            # explicitly set to "false" (trusted network / SSO disabled).
+            - name: OIDC_ISSUER_URL
+              valueFrom:
+                secretKeyRef:
+                  name: oauth2-proxy-secrets
+                  key: issuer
+                  optional: true
+            - name: OIDC_CLIENT_ID
+              valueFrom:
+                secretKeyRef:
+                  name: oauth2-proxy-secrets
+                  key: client-id
+                  optional: true
+            # Only these Cognito groups may APPROVE remediations (stricter than
+            # the view, which oauth2-proxy also opens to developers).
+            - name: OIDC_ALLOWED_GROUPS
+              value: "ai-platform-admins"
+            - name: DASHBOARD_AUTH_REQUIRED
+              value: "true"
             - name: APPROVAL_EXPIRY_HOURS
               value: "24"
             - name: MAX_REMEDIATIONS_PER_DAY
