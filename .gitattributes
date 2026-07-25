@@ -1,7 +1,0 @@
-# Files excluded from `git archive` exports (the tarball used to publish this
-# sample). They stay tracked on the internal repo but never ship in an export.
-#
-# .secreview — AWS Talos security-review engagement metadata. It belongs on the
-# internal repo (that's where the review runs) but must NOT reach the public
-# aws-samples repository.
-.secreview export-ignore

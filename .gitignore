@@ -48,7 +48,8 @@ output*.md
 # Internal strategy doc (kept locally, not tracked)
 docs/enterprise-ai-platform-strategy.md
 
-# AWS Talos security-review engagement metadata. Kept on the internal repo for
-# the review, but excluded from the public sample (see .gitattributes
-# export-ignore). Never publish to aws-samples.
+# AWS Talos security-review engagement metadata. Untracked — kept only as a
+# local file — so the git-mirror publish never carries it to the public
+# aws-samples repo. If your Talos review runs on a fresh clone rather than your
+# local checkout, re-add it to the internal repo ONLY with `git add -f .secreview`.
 .secreview
