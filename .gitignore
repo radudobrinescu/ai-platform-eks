@@ -47,3 +47,8 @@ output*.md
 
 # Internal strategy doc (kept locally, not tracked)
 docs/enterprise-ai-platform-strategy.md
+
+# AWS Talos security-review engagement metadata. Kept on the internal repo for
+# the review, but excluded from the public sample (see .gitattributes
+# export-ignore). Never publish to aws-samples.
+.secreview
