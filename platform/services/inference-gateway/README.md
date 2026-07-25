@@ -13,7 +13,7 @@ The minimal cluster substrate the **llm-d scale tier** (`LLMDEndpoint`) needs:
 The productized scale tier runs the llm-d router in **standalone mode** (the
 router carries its own Envoy proxy + EPP per `InferencePool`). Per the llm-d
 guide, standalone mode requires **only the GIE CRDs** — no shared Envoy Gateway.
-Ingress is **ALB → LiteLLM** (see `docs/llm-d-and-ingress-architecture.md`), so
+Ingress is **ALB → LiteLLM**, so
 there is no Envoy front door either. The earlier Envoy Gateway / Envoy AI Gateway
 / Gateway-CR stack was therefore unused and has been removed.
 

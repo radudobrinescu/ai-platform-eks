@@ -64,7 +64,7 @@ them there and every model/team inherits the change.
 scale tier (`LLMDEndpoint`) adds KV-cache-, prefix-, and load-aware routing across
 replicas (via the Gateway API Inference Extension), and `LLMDDisaggEndpoint` splits
 prefill and decode into independently autoscaled pools; LiteLLM forwards to both
-internally, so governance still applies. See **[docs/llm-d-and-ingress-architecture.md](docs/llm-d-and-ingress-architecture.md)**.
+internally, so governance still applies.
 
 ---
 
@@ -156,9 +156,8 @@ roadmap — see [docs/roadmap/bring-your-own-weights.md](docs/roadmap/bring-your
 **Scale-tier routing (llm-d).** For high-QPS or long, multi-turn/agentic
 workloads, commit an `LLMDEndpoint` (see `workloads/scale-models/`) and the
 optional llm-d tier schedules requests across vLLM replicas using live KV-cache,
-prefix, and queue-depth signals, and supports prefill/decode disaggregation. Architecture and the ALB-vs-Envoy ingress decision are in
-**[docs/llm-d-and-ingress-architecture.md](docs/llm-d-and-ingress-architecture.md)**;
-disaggregation roadmap in **[docs/roadmap/disaggregated-inference.md](docs/roadmap/disaggregated-inference.md)**.
+prefix, and queue-depth signals, and supports prefill/decode disaggregation.
+Disaggregation roadmap in **[docs/roadmap/disaggregated-inference.md](docs/roadmap/disaggregated-inference.md)**.
 
 **Fast cold starts (opt-in).** New GPU deployments can shave the multi-minute cold
 start via three layers, wired through Terraform's image optimization and switched on
@@ -313,8 +312,7 @@ workloads/          Self-service YAMLs: models/ · scale-models/ · teams/
 platformctl         The unified CLI (use · up · status · tunnel · edge · new-model · down · list-envs)
 ops/                platformctl implementation: ops/lib/ (helpers) · ops/image/ (cold-start build helpers)
 terraform/          Infrastructure modules (VPC → IAM → EKS → observability)
-docs/               platform-product-report · cloudfront-edge ·
-                    llm-d-and-ingress-architecture · roadmap/
+docs/               cloudfront-edge · roadmap/
 ```
 
 ## Acknowledgments
