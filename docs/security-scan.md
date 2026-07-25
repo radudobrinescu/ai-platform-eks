@@ -58,14 +58,14 @@ future cluster inherits them).
 | `amazon/aws-cli` | 0 / 87 | **0 / 0** | `2.24.5` → `2.36.8` |
 | `curlimages/curl` | 2 / 20 | **0 / 1** | `8.11.0` → `8.21.0` |
 | `postgres` | 7 / 75 | **1 / 14** | `16.6-alpine` & `16-alpine` → `16.14-alpine` |
-| `litellm/litellm` | 10 / 142 | **6 / 67** | `v1.81.9-stable.patch.1` → `v1.83.14-stable.patch.3` |
+| `litellm/litellm` | 10 / 142 | 10 / 142 | **held at `v1.81.9-stable.patch.1`** — `v1.83.14` regressed (OOM at 1Gi, liveness failures at 2Gi); revisit with validation |
 | `alpine/k8s` | 7 / 309 | **4 / 207** | `1.35.4` → `1.35.6` (same k8s minor) |
 | `ghcr.io/open-webui/open-webui` | 38 / 471 | 38 / 471 | already latest release (`v0.10.2`) |
 | `prom/prometheus` | 4 / 76 | 4 / 76 | already latest 2.x (`v2.55.1`) |
 | `peakcom/s5cmd` | 3 / 33 | 3 / 33 | already latest (`v2.3.0`) |
 | `python` | 4 / 19 | 4 / 19 | rolling `3.12-slim` (auto-patches on pull) |
 
-**Totals:** CRITICAL 81 → 60, HIGH 1284 → 890.
+**Totals:** CRITICAL 81 → 64, HIGH 1284 → 965.
 
 ### Residual findings (not fixable by a tag bump)
 

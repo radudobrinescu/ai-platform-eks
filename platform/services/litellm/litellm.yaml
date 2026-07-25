@@ -28,7 +28,7 @@ spec:
       serviceAccountName: litellm
       containers:
         - name: litellm
-          image: litellm/litellm:v1.83.14-stable.patch.3
+          image: litellm/litellm:v1.81.9-stable.patch.1
           args: ["--config", "/app/config.yaml"]
           ports:
             - containerPort: 4000
