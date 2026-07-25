@@ -76,9 +76,100 @@ resource "aws_cloudfront_vpc_origin" "edge" {
   tags = local.tags
 }
 
+# Access logs for the edge distributions (CKV_AWS_86). CloudFront *standard*
+# logging delivers to S3 through its log-delivery group, which requires the
+# bucket to have ACLs enabled (BucketOwnerPreferred) and to use SSE-S3 —
+# CloudFront standard logging does not support SSE-KMS buckets. Public access
+# stays fully blocked; the log-delivery grant is account-scoped, not public.
+resource "aws_s3_bucket" "edge_logs" {
+  #checkov:skip=CKV_AWS_18:This IS the access-log bucket; enabling access logging on it would be circular.
+  #checkov:skip=CKV_AWS_144:Cross-region replication is unwarranted for regenerable CloudFront access logs.
+  #checkov:skip=CKV_AWS_145:CloudFront standard logging cannot deliver to SSE-KMS buckets; SSE-S3 (AES256) is required.
+  #checkov:skip=CKV2_AWS_62:Access-log sink; S3 event notifications are unnecessary.
+  count         = local.enable_cloudfront_edge ? 1 : 0
+  bucket_prefix = "${local.cluster_name}-cf-edge-logs-"
+  force_destroy = true # logs are regenerable; safe to destroy with the cluster
+
+  tags = merge(local.tags, { Purpose = "cloudfront-edge-access-logs" })
+}
+
+resource "aws_s3_bucket_ownership_controls" "edge_logs" {
+  #checkov:skip=CKV2_AWS_65:ACLs must stay enabled (BucketOwnerPreferred) for CloudFront standard logging's log-delivery group to write.
+  count  = local.enable_cloudfront_edge ? 1 : 0
+  bucket = aws_s3_bucket.edge_logs[0].id
+  rule {
+    # ACLs ON — required by CloudFront standard logging's log-delivery group.
+    object_ownership = "BucketOwnerPreferred"
+  }
+}
+
+resource "aws_s3_bucket_public_access_block" "edge_logs" {
+  count                   = local.enable_cloudfront_edge ? 1 : 0
+  bucket                  = aws_s3_bucket.edge_logs[0].id
+  block_public_acls       = true
+  block_public_policy     = true
+  ignore_public_acls      = true
+  restrict_public_buckets = true
+}
+
+resource "aws_s3_bucket_server_side_encryption_configuration" "edge_logs" {
+  count  = local.enable_cloudfront_edge ? 1 : 0
+  bucket = aws_s3_bucket.edge_logs[0].id
+  rule {
+    apply_server_side_encryption_by_default {
+      sse_algorithm = "AES256"
+    }
+  }
+}
+
+resource "aws_s3_bucket_versioning" "edge_logs" {
+  count  = local.enable_cloudfront_edge ? 1 : 0
+  bucket = aws_s3_bucket.edge_logs[0].id
+  versioning_configuration {
+    status = "Enabled"
+  }
+}
+
+resource "aws_s3_bucket_lifecycle_configuration" "edge_logs" {
+  count  = local.enable_cloudfront_edge ? 1 : 0
+  bucket = aws_s3_bucket.edge_logs[0].id
+
+  rule {
+    id     = "expire-edge-logs"
+    status = "Enabled"
+    filter {}
+    abort_incomplete_multipart_upload {
+      days_after_initiation = 7
+    }
+    expiration {
+      days = 90
+    }
+    noncurrent_version_expiration {
+      noncurrent_days = 7
+    }
+  }
+}
+
 # One distribution per UI, fronting its VPC origin. No caching (auth'd apps).
 resource "aws_cloudfront_distribution" "edge" {
+  # CKV_AWS_174: A minimum TLS version (>= 1.2) can only be enforced with a
+  # custom ACM certificate. This edge intentionally uses the free
+  # *.cloudfront.net default certificate (no domain required), whose TLS
+  # security policy is managed by AWS and cannot be raised via
+  # minimum_protocol_version. Operators who must pin TLS 1.2+ use
+  # `./platformctl edge domain` (internet-facing ALB + their own ACM cert).
+  #checkov:skip=CKV_AWS_174:Default *.cloudfront.net cert TLS policy is AWS-managed; use `edge domain` mode (ACM cert) to pin TLS1.2+.
+  # CKV_AWS_305: no default_root_object by design — each distribution is a
+  # reverse proxy to a single application on the ALB, and the application owns
+  # "/". Setting a root object would make CloudFront rewrite "/" to a static
+  # object the origin does not serve, breaking the app's landing page.
+  #checkov:skip=CKV_AWS_305:Reverse proxy to an app origin; the app serves "/", a default root object would break it.
+
   for_each = local.enable_cloudfront_edge ? local.edge_ports : {}
+
+  # Make sure the log bucket's ownership (ACLs enabled) is in place before
+  # CloudFront's log-delivery group needs to write to it.
+  depends_on = [aws_s3_bucket_ownership_controls.edge_logs]
 
   enabled     = true
   comment     = "ai-platform ${each.key}"
@@ -114,6 +205,12 @@ resource "aws_cloudfront_distribution" "edge" {
     geo_restriction {
       restriction_type = "none"
     }
+  }
+
+  logging_config {
+    bucket          = aws_s3_bucket.edge_logs[0].bucket_domain_name
+    include_cookies = false
+    prefix          = "${each.key}/"
   }
 
   viewer_certificate {
