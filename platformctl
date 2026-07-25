@@ -333,6 +333,9 @@ _status_check() {
 # ---- tunnel ---------------------------------------------------------------- #
 
 cmd_tunnel() {
+  need kubectl; need aws
+  command -v session-manager-plugin >/dev/null 2>&1 || \
+    die "missing required tool: session-manager-plugin (AWS Session Manager plugin — see README prerequisites)"
   local env; env=$(resolve_env "${1:-}" 2>/dev/null || true)
   [ -n "$env" ] && pin_region "$env"   # tunnel.sh queries EC2 in AWS_REGION — target the env's region
   warn_context_mismatch "${1:-}"

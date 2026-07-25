@@ -3,6 +3,13 @@
 # Forwards directly to ClusterIPs, bypassing the ALB and its IP allowlist.
 set -euo pipefail
 
+# Pre-flight tool check — this script is runnable directly (not only via
+# ./platformctl), so fail fast with a clear message instead of a cryptic
+# "command not found" partway through.
+for _tool in kubectl aws session-manager-plugin; do
+  command -v "$_tool" >/dev/null 2>&1 || { echo "Error: missing required tool: ${_tool} (see README prerequisites)" >&2; exit 1; }
+done
+
 NAMESPACE="ai-platform"
 
 CLUSTER_NAME=$(kubectl config view --minify -o jsonpath='{.clusters[0].name}' | awk -F/ '{print $NF}')
