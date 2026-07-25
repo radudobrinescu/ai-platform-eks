@@ -36,6 +36,16 @@ spec:
       maxModelLen:          "integer | default=8192"
       minVramPerGpuGiB:     "integer | default=0"
       vllmImage:            "string  | default=vllm/vllm-openai:v0.24.0"
+      # Optional tool/function calling. When set, the server starts with
+      # `--enable-auto-tool-choice --tool-call-parser <name>`. The parser is
+      # model-family-specific (e.g. gemma4_engine, llama4_pythonic, hermes,
+      # mistral); `platformctl new-model` auto-fills it from the model's
+      # architecture. Leave empty for chat-only models.
+      toolCallParser:       "string"
+      # Escape hatch: extra raw flags appended verbatim to `vllm serve`
+      # (quantization, dtype, kv-cache, etc.). Advanced use — most models need
+      # nothing here.
+      extraArgs:            "[]string"
     status:
       ready:             "${vllmdeployment.status.?availableReplicas.orValue(0) > 0 ? 'True' : 'False'}"
       availableReplicas: ${vllmdeployment.status.?availableReplicas.orValue(0)}
@@ -143,20 +153,20 @@ spec:
                 - name: vllm
                   image: ${platformConfig.data.?vllmImage.orValue(schema.spec.vllmImage)}
                   command: ["vllm", "serve"]
-                  args:
-                    - "${schema.spec.model}"
-                    - "--served-model-name"
-                    - "${schema.spec.model}"
-                    - "--tensor-parallel-size"
-                    - "${string(schema.spec.tensorParallelSize > 0 ? schema.spec.tensorParallelSize : schema.spec.gpuCount)}"
-                    - "--pipeline-parallel-size"
-                    - "${string(schema.spec.pipelineParallelSize)}"
-                    - "--max-model-len"
-                    - "${string(schema.spec.maxModelLen)}"
-                    - "--gpu-memory-utilization"
-                    - "0.9"
-                    - "--port"
-                    - "8000"
+                  # Base flags, then (optionally) tool calling and any extra
+                  # flags. Built as a single CEL list so the optional parts
+                  # append cleanly — an empty toolCallParser / extraArgs adds
+                  # nothing, so existing endpoints are unaffected.
+                  args: >-
+                    ${[schema.spec.model,
+                       "--served-model-name", schema.spec.model,
+                       "--tensor-parallel-size", string(schema.spec.tensorParallelSize > 0 ? schema.spec.tensorParallelSize : schema.spec.gpuCount),
+                       "--pipeline-parallel-size", string(schema.spec.pipelineParallelSize),
+                       "--max-model-len", string(schema.spec.maxModelLen),
+                       "--gpu-memory-utilization", "0.9",
+                       "--port", "8000"]
+                    + (schema.spec.?toolCallParser.orValue("") != "" ? ["--enable-auto-tool-choice", "--tool-call-parser", schema.spec.?toolCallParser.orValue("")] : [])
+                    + schema.spec.?extraArgs.orValue([])}
                   env:
                     - name: HF_TOKEN
                       valueFrom:
