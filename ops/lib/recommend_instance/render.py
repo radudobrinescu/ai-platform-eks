@@ -1084,14 +1084,15 @@ def build_endpoint_yaml(
         # replica count (not min/max). The llm-d tier is the scale path.
         lines.append(f"  # maxNumSeqs: {max_num_seqs}")
         lines.append(f"  replicas: {min_replicas}")
-        # Auto-enable function calling for known tool-capable families, so the
-        # model answers tool_choice:auto requests (e.g. from Open WebUI) out of
-        # the box instead of erroring. Parser is derived from the architecture;
-        # written explicitly here so it's visible and overridable (delete for
-        # chat-only, or change if you pin a different vllmImage).
-        parser = tool_call_parser_for(model.architecture)
-        if parser:
-            lines.append(f"  toolCallParser: {parser}   # auto-detected from {model.architecture} — enables tool calling; remove for chat-only")
+
+    # Tool/function calling applies to all three tiers (each fronts vLLM). Auto-
+    # enable it for known tool-capable families so tool_choice:auto works out of
+    # the box; written explicitly so it's visible and overridable (delete for
+    # chat-only, or change if you pin a different vllmImage). Unknown families
+    # emit nothing (chat-only).
+    parser = tool_call_parser_for(model.architecture)
+    if parser:
+        lines.append(f"  toolCallParser: {parser}   # auto-detected from {model.architecture} — enables tool calling; remove for chat-only")
 
     yaml_body = "\n".join(lines) + "\n"
     return name, yaml_path, yaml_body, commit_msg
@@ -1109,11 +1110,10 @@ def _print_yaml_snippet(model: ModelSpec, vram: VramEstimate, best: Option,
            "LLMDEndpoint": "fleet of 2+ replicas -> llm-d scale tier (KV/prefix/load-aware routing)",
            "VLLMEndpoint": "single replica -> plain vLLM (simplest, no router)"}.get(kind, kind)
     print(f"\n{C.BOLD}Serving tier:{C.RESET} {C.BOLD}{kind}{C.RESET} {C.DIM}- {why}{C.RESET}")
-    if kind == "VLLMEndpoint":
-        parser = tool_call_parser_for(model.architecture)
-        if parser:
-            print(f"{C.DIM}  tool calling: enabled — --tool-call-parser {parser} "
-                  f"(auto-detected from {model.architecture}; remove toolCallParser for chat-only).{C.RESET}")
+    parser = tool_call_parser_for(model.architecture)
+    if parser:
+        print(f"{C.DIM}  tool calling: enabled — --tool-call-parser {parser} "
+              f"(auto-detected from {model.architecture}; remove toolCallParser for chat-only).{C.RESET}")
     if kind in ("LLMDEndpoint", "LLMDDisaggEndpoint"):
         prof = pick_routing_profile(args)
         print(f"{C.DIM}  routingProfile '{prof}' baked into the manifest (EPP scorer weights).{C.RESET}")
