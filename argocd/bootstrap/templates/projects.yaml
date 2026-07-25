@@ -36,6 +36,13 @@ spec:
     Self-service workloads (models, scale-models, teams). Restricted to KRO
     endpoint/team CRs in the platform serving namespaces; no cluster-scoped
     resources permitted.
+  # Applications in this project live in the argocd control-plane namespace.
+  # The ArgoCD controller runs in a separate EKS-managed namespace, so the
+  # permitted app namespace must be explicit here (the built-in `default`
+  # project sets the same). Without it, ArgoCD refuses the Application with
+  # "not permitted to use project 'ai-platform-workloads'".
+  sourceNamespaces:
+    - argocd
   # Only the workloads repo may be a source for Applications in this project.
   sourceRepos:
     - {{ $wr | quote }}
