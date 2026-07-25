@@ -936,6 +936,36 @@ def resolve_kind(tier: str, args, scaling) -> str:
     return TIER_KIND[tier]
 
 
+# HuggingFace architecture (config.json `architectures[0]`) -> vLLM
+# `--tool-call-parser` id (vLLM v0.24.0 registered names). Ordered most-specific
+# first (llama4 before llama, gemma4 before gemma). Only high-confidence,
+# tool-capable families are listed; anything else returns "" so the model
+# deploys chat-only — the operator can still set toolCallParser by hand. This is
+# the ONE place that knows the mapping, and the choice is written into the
+# generated manifest: visible in the preview, versioned in git, overridable.
+_ARCH_TOOL_PARSERS: list[tuple[str, str]] = [
+    ("gemma4", "gemma4"),
+    ("llama4", "llama4_pythonic"),
+    ("qwen3", "hermes"),
+    ("qwen2", "hermes"),
+    ("mistral", "mistral"),
+    ("mixtral", "mistral"),
+    ("granite", "granite"),
+    ("llama", "llama3_json"),
+]
+
+
+def tool_call_parser_for(architecture: str) -> str:
+    """Best-effort vLLM tool-call parser for a model architecture, or "" if none
+    is known (deploy chat-only). Prefix match on the lowercased architecture,
+    most specific first."""
+    a = (architecture or "").lower()
+    for prefix, parser in _ARCH_TOOL_PARSERS:
+        if a.startswith(prefix):
+            return parser
+    return ""
+
+
 def build_endpoint_yaml(
     kind: str,
     model: ModelSpec, vram: VramEstimate, best: Option,
@@ -1054,6 +1084,14 @@ def build_endpoint_yaml(
         # replica count (not min/max). The llm-d tier is the scale path.
         lines.append(f"  # maxNumSeqs: {max_num_seqs}")
         lines.append(f"  replicas: {min_replicas}")
+        # Auto-enable function calling for known tool-capable families, so the
+        # model answers tool_choice:auto requests (e.g. from Open WebUI) out of
+        # the box instead of erroring. Parser is derived from the architecture;
+        # written explicitly here so it's visible and overridable (delete for
+        # chat-only, or change if you pin a different vllmImage).
+        parser = tool_call_parser_for(model.architecture)
+        if parser:
+            lines.append(f"  toolCallParser: {parser}   # auto-detected from {model.architecture} — enables tool calling; remove for chat-only")
 
     yaml_body = "\n".join(lines) + "\n"
     return name, yaml_path, yaml_body, commit_msg
@@ -1071,6 +1109,11 @@ def _print_yaml_snippet(model: ModelSpec, vram: VramEstimate, best: Option,
            "LLMDEndpoint": "fleet of 2+ replicas -> llm-d scale tier (KV/prefix/load-aware routing)",
            "VLLMEndpoint": "single replica -> plain vLLM (simplest, no router)"}.get(kind, kind)
     print(f"\n{C.BOLD}Serving tier:{C.RESET} {C.BOLD}{kind}{C.RESET} {C.DIM}- {why}{C.RESET}")
+    if kind == "VLLMEndpoint":
+        parser = tool_call_parser_for(model.architecture)
+        if parser:
+            print(f"{C.DIM}  tool calling: enabled — --tool-call-parser {parser} "
+                  f"(auto-detected from {model.architecture}; remove toolCallParser for chat-only).{C.RESET}")
     if kind in ("LLMDEndpoint", "LLMDDisaggEndpoint"):
         prof = pick_routing_profile(args)
         print(f"{C.DIM}  routingProfile '{prof}' baked into the manifest (EPP scorer weights).{C.RESET}")
