@@ -28,7 +28,7 @@ spec:
       serviceAccountName: litellm
       containers:
         - name: litellm
-          image: litellm/litellm:v1.81.9-stable.patch.1
+          image: litellm/litellm:v1.83.14-stable.patch.3
           args: ["--config", "/app/config.yaml"]
           ports:
             - containerPort: 4000
@@ -267,7 +267,7 @@ spec:
       restartPolicy: OnFailure
       containers:
         - name: seed-budget
-          image: curlimages/curl:8.11.0
+          image: curlimages/curl:8.21.0
           env:
             - name: MASTER_KEY
               valueFrom:
@@ -342,7 +342,7 @@ spec:
     spec:
       containers:
         - name: postgres
-          image: postgres:16.6-alpine
+          image: postgres:16.14-alpine
           ports:
             - containerPort: 5432
           env:
@@ -515,7 +515,7 @@ spec:
           # pg_dumpall (superuser client) writes a gzip to the shared emptyDir…
           initContainers:
             - name: dump
-              image: postgres:16.6-alpine
+              image: postgres:16.14-alpine
               command: ["sh", "-c"]
               args:
                 - |
@@ -538,7 +538,7 @@ spec:
           # …then the aws-cli container uploads it to S3 and the emptyDir is discarded.
           containers:
             - name: upload
-              image: amazon/aws-cli:2.24.5
+              image: amazon/aws-cli:2.36.8
               command: ["sh", "-c"]
               args:
                 - |
