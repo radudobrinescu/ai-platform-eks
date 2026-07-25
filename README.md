@@ -148,7 +148,6 @@ itself is out of scope).
 workloads, commit an `LLMDEndpoint` (see `workloads/scale-models/`) and the
 optional llm-d tier schedules requests across vLLM replicas using live KV-cache,
 prefix, and queue-depth signals, and supports prefill/decode disaggregation.
-Disaggregation roadmap in **[docs/roadmap/disaggregated-inference.md](docs/roadmap/disaggregated-inference.md)**.
 
 **Fast cold starts (opt-in).** New GPU deployments can shave the multi-minute cold
 start via three layers, wired through Terraform's image optimization and switched on
