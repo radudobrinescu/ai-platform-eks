@@ -142,8 +142,7 @@ expose it directly.)
 you've fine-tuned and pushed to HF (public, or private with a token). Point a
 `VLLMEndpoint` (or `LLMDEndpoint`) at its HF ID and ship it with the same
 `git push` loop. The platform **serves** models; you bring the training (fine-tuning
-itself is out of scope). Serving weights directly from your own S3 bucket is on the
-roadmap — see [docs/roadmap/bring-your-own-weights.md](docs/roadmap/bring-your-own-weights.md).
+itself is out of scope).
 
 **Scale-tier routing (llm-d).** For high-QPS or long, multi-turn/agentic
 workloads, commit an `LLMDEndpoint` (see `workloads/scale-models/`) and the
