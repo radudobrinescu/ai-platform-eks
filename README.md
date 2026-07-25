@@ -9,10 +9,11 @@ provisioning, serving, routing, and observability. A frontier model
 
 **Two things make it work:**
 
-- **One gateway, every model.** LiteLLM puts Bedrock, vLLM-served open models, and
-  fine-tuned models behind a single `/v1/chat/completions` endpoint — with team
-  isolation, budgets, and Langfuse tracing built in.
-- **Proven, extendable templates.** Four [KRO](https://kro.run) resources
+- **One gateway, every model.** LiteLLM puts Bedrock and any vLLM-served Hugging
+  Face model (including your fine-tuned ones) behind a single
+  `/v1/chat/completions` endpoint — with team isolation, budgets, and Langfuse
+  tracing built in.
+- **Extendable templates.** Four [KRO](https://kro.run) resources
   (`VLLMEndpoint`, `LLMDEndpoint`, `LLMDDisaggEndpoint`, `AITeam`)
   capture the hard parts — tensor-parallelism, GPU sizing, elastic autoscaling,
   scale-tier routing, prefill/decode disaggregation — as a few lines of YAML.
@@ -38,7 +39,7 @@ The custom resources **are** the self-service interface:
 
 | Resource | What it does |
 |---|---|
-| **`VLLMEndpoint`** | Serve a model on vLLM — the simple default: one model, one pod, one instance (HuggingFace ID, or a fine-tuned model from S3) |
+| **`VLLMEndpoint`** | Serve a model on vLLM — the simple default: one model, one pod, one instance (any Hugging Face model ID) |
 | **`LLMDEndpoint`** | Serve a model on the llm-d scale tier — KV-cache/load/prefix-aware routing across replicas (the `inference-gateway` substrate ships on every cluster; no toggle) |
 | **`LLMDDisaggEndpoint`** | Serve on the llm-d scale + performance tier — independently autoscaled prefill/decode pools (same llm-d substrate; no toggle) |
 | **`AITeam`** | Onboard a team: namespace, RBAC, budget, rate limits, scoped API key |
@@ -58,13 +59,9 @@ Bedrock models need no resource — they're a few lines of LiteLLM config, live 
 moment the cluster is up. KRO definitions live in `platform/config/kro/`; extend
 them there and every model/team inherits the change.
 
-**One front door, tiers as you grow.** Every model — Bedrock and self-hosted
-(`VLLMEndpoint`, the simple default) — answers through the same LiteLLM `/v1` API
-(governance, budgets, tracing). For high-throughput workloads the optional **llm-d**
-scale tier (`LLMDEndpoint`) adds KV-cache-, prefix-, and load-aware routing across
-replicas (via the Gateway API Inference Extension), and `LLMDDisaggEndpoint` splits
-prefill and decode into independently autoscaled pools; LiteLLM forwards to both
-internally, so governance still applies.
+Every model answers through the same LiteLLM `/v1` API, so governance, budgets, and
+tracing apply uniformly — including the optional **llm-d** scale tier
+(`LLMDEndpoint` / `LLMDDisaggEndpoint`), which LiteLLM forwards to internally.
 
 ---
 
@@ -90,10 +87,8 @@ internally, so governance still applies.
 
 ## Quick start
 
-Provision → use Opus 4.8 with zero GPUs → deploy a self-hosted model → compare cost
-and quality in Langfuse. Mind the prerequisites that matter: fork the repo, reach
-the UIs via `./platformctl tunnel` (the ALB is internal by default), and supply
-gated-model tokens where needed. The shape of it:
+Provision, use **Claude Opus 4.8** with zero GPUs, deploy a self-hosted model, then
+compare cost and quality in Langfuse:
 
 > ⚠️ **Before you deploy — this creates real, billable infrastructure in your AWS
 > account.** It provisions an EKS cluster and (on demand) GPU nodes. The platform
@@ -177,7 +172,8 @@ physical GPU across up to 4 small models.
 
 **Team self-service (GitOps).** Onboard a team with an `AITeam` YAML in
 `workloads/teams/` — it creates a `team-<name>` namespace with a GPU quota, RBAC,
-default-deny egress, and a scoped LiteLLM key (budget + rpm/tpm). The team then
+namespace isolation (a default-deny **ingress** NetworkPolicy — only same-team and
+platform namespaces can reach in), and a scoped LiteLLM key (budget + rpm/tpm). The team then
 deploys models by committing a `VLLMEndpoint` under **`workloads/models/team-<name>/`**
 — the directory name is the target namespace, so models land in that team's quota
 and key (no `kubectl`, no console; removal is `git rm`). By default workloads live
@@ -189,14 +185,16 @@ never the platform repo. See [`workloads/models/README.md`](workloads/models/REA
 default on): Terraform stands up an **Amazon Cognito** user pool with a hosted login
 page, role groups (`admins`/`developers`/`users`), and three seed users — log in
 by email (`admin@example.com` / `developer@example.com` / `user@example.com`),
-whose generated passwords are the `sso_seed_user_passwords` output. Retrieve them
-any time (the `up` output scrolls away) with:
-> ```bash
-> TF_WORKSPACE=<env> terraform -chdir=terraform/30.eks/30.cluster output -json sso_seed_user_passwords
-> ```
-Open WebUI,
-the LiteLLM admin UI, and Langfuse all federate to it, and Open WebUI forwards the
-signed-in identity so **cost is attributed per user** in LiteLLM's spend reports.
+whose generated passwords are the `sso_seed_user_passwords` Terraform output —
+retrieve them any time (the `up` output scrolls away) with:
+
+```bash
+TF_WORKSPACE=<env> terraform -chdir=terraform/30.eks/30.cluster output -json sso_seed_user_passwords
+```
+
+Open WebUI, the LiteLLM admin UI, and Langfuse all federate to Cognito, and Open
+WebUI forwards the signed-in identity so **cost is attributed per user** in
+LiteLLM's spend reports.
 LiteLLM also enforces a **default per-user budget + rpm/tpm throttle** on the chat
 path (from that forwarded identity, no keys needed) and caps any API key a user
 mints for themselves — tune the defaults in
