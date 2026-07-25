@@ -11,3 +11,4 @@ spec:
   workerMemory: "27Gi"
   # maxNumSeqs: 64
   replicas: 1
+  toolCallParser: gemma4   # vLLM parser for Gemma 4 (enables function calling)
