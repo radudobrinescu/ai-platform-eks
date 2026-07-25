@@ -1,0 +1,5 @@
+{
+  "service_id": null,
+  "service_name": "Inference Platform on Amazon EKS",
+  "engagement_id": "arn:aws:talos-engagement:engagement/7ed3fa19-17a3-4bae-8236-d53b471495c7"
+}

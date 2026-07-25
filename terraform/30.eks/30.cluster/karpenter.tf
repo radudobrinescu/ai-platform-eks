@@ -86,8 +86,18 @@ resource "helm_release" "karpenter" {
   repository_username = data.aws_ecrpublic_authorization_token.token.user_name
   repository_password = data.aws_ecrpublic_authorization_token.token.password
   chart               = "karpenter"
-  version             = "1.13.0"
-  wait                = false
+  # NOTE (CRDs): Helm does NOT upgrade CRDs bundled under the chart's `crds/`
+  # directory on `helm upgrade` — it only installs them on first `helm install`.
+  # Karpenter v1.14 moves the CapacityBuffer CRD to apiVersion v1beta1, so an
+  # in-place upgrade of a LIVE cluster requires the CRDs to be applied first
+  # (e.g. via the karpenter-crd chart / kubectl apply) BEFORE this release is
+  # upgraded. This only affects future/new clusters here, where the CRDs are
+  # installed fresh on the initial `helm install`, so no manual step is needed.
+  # NOTE (DRA): Dynamic Resource Allocation is enabled by default in v1.14.
+  # `IGNORE_DRA_REQUESTS` is the escape hatch to opt back out. It is harmless
+  # for this cluster (no DRA-based scheduling in use), so left at the default.
+  version = "1.14.0"
+  wait    = false
 
   values = [
     yamlencode({
