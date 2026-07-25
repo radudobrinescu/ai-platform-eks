@@ -49,7 +49,8 @@ require_tfvars() {
 # after the cluster is already created). Strips comments first so the commented
 # example lines don't false-positive.
 check_tfvars_filled() {
-  local env="$1" f="${TF_DIR}/00.global/vars/${env}.tfvars" hits
+  local env="$1"
+  local f="${TF_DIR}/00.global/vars/${env}.tfvars" hits
   hits=$(sed 's/#.*//' "$f" 2>/dev/null | grep -nE 'XXXXXXXXXX|YOUR-ORG|YOUR-REPO|REPLACE-WITH' || true)
   [ -z "$hits" ] || die "'${env}.tfvars' still has unfilled example placeholders — set the real values first:
 ${hits}
@@ -143,7 +144,8 @@ _postdown_sweep() {
 # resources), the tfvars file, and the active-env pointer if it names this env.
 # Best-effort — never fatal.
 purge_env_definition() {
-  local env="$1" f="${TF_DIR}/00.global/vars/${env}.tfvars" stage d
+  local env="$1"
+  local f="${TF_DIR}/00.global/vars/${env}.tfvars" stage d
   log "Purging the '${env}' env definition (Terraform workspaces + tfvars)"
   for stage in $(cd "$TF_DIR" && find . -name backend.tf -not -path '*/.terraform/*' -exec dirname {} \; | sort); do
     d="${TF_DIR}/${stage#./}"
@@ -167,7 +169,7 @@ purge_env_definition() {
 # removing the ALB (it keeps an Ingress finalizer until the ALB is gone).
 # Best-effort: if the cluster is unreachable, warn and continue.
 _predown_drain() {
-  local env="$1" cluster i; cluster="$(cluster_of "$env")"
+  local env="$1" cluster; cluster="$(cluster_of "$env")"
   command -v kubectl >/dev/null 2>&1 || { warn "kubectl not found — skipping in-cluster drain (destroy may fail on the ALB security group)."; return 0; }
   command -v aws >/dev/null 2>&1 && aws eks update-kubeconfig --name "$cluster" --region "${AWS_REGION:-}" --alias "$env" >/dev/null 2>&1 || true
   if ! kubectl --context "$env" get namespace argocd >/dev/null 2>&1; then
@@ -179,7 +181,7 @@ _predown_drain() {
   kubectl --context "$env" delete application --all -n argocd --wait=false >/dev/null 2>&1 || true
   kubectl --context "$env" delete vllmendpoints,llmdendpoints,llmddisaggendpoints,aiteams --all -A --wait=false >/dev/null 2>&1 || true
   kubectl --context "$env" delete ingress --all -A --wait=false >/dev/null 2>&1 || true
-  for i in $(seq 1 30); do
+  for _ in $(seq 1 30); do
     [ -z "$(kubectl --context "$env" get ingress -A --no-headers 2>/dev/null)" ] && { ok "Ingresses cleared — the ALB has been released."; return 0; }
     sleep 6
   done
@@ -467,10 +469,10 @@ cmd_use() {
   local env="${1:-}"
   [ -n "$env" ] || die "usage: platformctl use <env>   (see: ./platformctl list-envs)"
   require_tfvars "$env"
-  local region prefix cluster
+  local region cluster
   region="$(tfvar_region "$env")"
   [ -n "$region" ] || die "env '${env}' has no 'region' in 00.global/vars/${env}.tfvars — add:  region = \"<aws-region>\""
-  prefix="$(tfvar_prefix "$env")"; cluster="$(cluster_of "$env")"
+  cluster="$(cluster_of "$env")"
   mkdir -p "$STATE_DIR"; printf '%s\n' "$env" > "$ACTIVE_ENV_FILE"
   ok "Active env → ${c_bold}${env}${c_rst}  (cluster ${cluster}, region ${region})"
   if command -v aws >/dev/null 2>&1; then

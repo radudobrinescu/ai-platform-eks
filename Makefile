@@ -58,9 +58,14 @@ check-yaml: ## Parse every plain-YAML manifest (multi-doc aware)
 	@echo "==> yaml parse"
 	@python3 tools/check_yaml.py $(YAML_ROOTS)
 
-check-sh: ## Syntax-check every shell script (bash -n)
+check-sh: ## Syntax-check (bash -n) + lint (shellcheck, if installed) every script
 	@echo "==> bash -n"
 	@for f in $(SH_SCRIPTS); do bash -n "$$f" || exit 1; done
+	@if command -v shellcheck >/dev/null 2>&1; then \
+		echo "==> shellcheck"; shellcheck $(SH_SCRIPTS); \
+	else \
+		echo "!! shellcheck not installed — skipping lint (matches CI's shellcheck step)"; \
+	fi
 
 help: ## List targets
 	@grep -hE '^[a-zA-Z_-]+:.*?## ' $(MAKEFILE_LIST) \

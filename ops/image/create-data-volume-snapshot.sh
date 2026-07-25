@@ -248,7 +248,7 @@ trap cleanup EXIT
 # --- Wait for node to join cluster --------------------------------------------
 echo "→ Waiting for builder node to join the cluster..."
 NODE_NAME=""
-for attempt in $(seq 1 72); do
+for _ in $(seq 1 72); do
   NODE_NAME=$(kubectl get nodes -l node.kubernetes.io/purpose=snapshot-builder \
     --no-headers -o custom-columns=':metadata.name' 2>/dev/null | head -1)
   if [[ -n "$NODE_NAME" ]]; then
