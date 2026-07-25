@@ -58,6 +58,7 @@ resource "aws_ssm_parameter" "secret" {
   name        = "/eks-accelerator/${terraform.workspace}/grafana-api-key"
   description = "SSM Secret to store grafana API Key"
   type        = "SecureString"
+  key_id      = aws_kms_key.secrets[count.index].key_id
   value = jsonencode({
     GF_SECURITY_ADMIN_APIKEY = tostring(aws_grafana_workspace_api_key.this[count.index].key)
     key_id                   = aws_kms_key.secrets[count.index].id

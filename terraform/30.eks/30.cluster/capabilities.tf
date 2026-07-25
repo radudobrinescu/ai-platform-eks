@@ -112,6 +112,13 @@ resource "aws_eks_access_policy_association" "kro_edit" {
 # Without it, KRO falls back to pulling directly from Docker Hub.
 ################################################################################
 resource "aws_secretsmanager_secret" "docker_hub" {
+  # CKV_AWS_149: this is an ECR pull-through cache credential secret (name must
+  # start with "ecr-pullthroughcache/"). Amazon ECR does NOT support a
+  # customer-managed KMS key for these secrets — it requires the default
+  # aws/secretsmanager key, so a CMK would break the pull-through cache.
+  # https://docs.aws.amazon.com/AmazonECR/latest/userguide/pull-through-cache-creating-secret.html
+  #checkov:skip=CKV_AWS_149:ECR pull-through cache secrets must use the default aws/secretsmanager key; ECR does not support a CMK for them.
+  #checkov:skip=CKV2_AWS_57:This holds a static Docker Hub access token supplied by the operator; there is no AWS-native automatic rotation for Docker Hub credentials.
   count                   = var.docker_hub_username != "" ? 1 : 0
   name                    = "ecr-pullthroughcache/docker-hub"
   recovery_window_in_days = 0
