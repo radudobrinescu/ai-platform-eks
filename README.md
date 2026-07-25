@@ -87,9 +87,6 @@ tracing apply uniformly — including the optional **llm-d** scale tier
 
 ## Quick start
 
-Provision, use **Claude Opus 4.8** with zero GPUs, deploy a self-hosted model, then
-compare cost and quality in Langfuse:
-
 > ⚠️ **Before you deploy — this creates real, billable infrastructure in your AWS
 > account.** It provisions an EKS cluster and (on demand) GPU nodes. The platform
 > UIs sit behind an **internal ALB** by default (no public IP) — reach them via
