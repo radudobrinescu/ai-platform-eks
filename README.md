@@ -93,7 +93,7 @@ tracing apply uniformly — including the optional **llm-d** scale tier
 > `./platformctl tunnel` or the opt-in CloudFront edge. If you switch the ALB to
 > **internet-facing**, restrict it to your own IP ranges via the **IP allowlist**
 > first — never leave it open to the public internet (`0.0.0.0/0`). GPU nodes and
-> the cluster incur significant cost; use [Tear down](#tear-down) to remove
+> the cluster incur significant cost; use [Cleanup](#cleanup) to remove
 > everything when finished. See [SECURITY.md](SECURITY.md).
 
 
@@ -207,7 +207,7 @@ edge gotchas the Terraform handles.
 
 ---
 
-## Tear down
+## Cleanup
 
 ```bash
 ./platformctl down <env>          # → make destroy-all ENVIRONMENT=<env>
@@ -222,7 +222,7 @@ steps below. The script does **not** touch the bootstrap state (S3
 `tfstate-<account>` + DynamoDB `tfstate-lock`), so a subsequent
 `./platformctl up <env>` still works.
 
-### Teardown drain — now automatic
+### Cleanup drain — now automatic
 
 `./platformctl down <env>` **automatically drains the cluster before Terraform
 runs**: it deletes the ArgoCD ApplicationSets/Applications (so nothing gets
@@ -243,7 +243,7 @@ kubectl delete ingress --all -A --wait=false      # → ALB controller deletes t
 ./platformctl down <env>
 ```
 
-If you enabled the CloudFront edge, disabling it first keeps the teardown tidy:
+If you enabled the CloudFront edge, disabling it first keeps the cleanup tidy:
 `./platformctl edge tunnel`.
 
 ### Orphan cleanup — now automatic
