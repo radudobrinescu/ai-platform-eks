@@ -1,0 +1,12 @@
+apiVersion: kro.run/v1alpha1
+kind: AITeam
+metadata:
+  name: qa-test
+  namespace: ai-platform
+spec:
+  teamName: qa-test
+  maxBudget: "25.0"
+  budgetDuration: 30d
+  rpmLimit: 60
+  tpmLimit: 50000
+  gpuQuota: 0
