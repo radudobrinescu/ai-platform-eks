@@ -1,0 +1,14 @@
+apiVersion: kro.run/v1alpha1
+kind: VLLMEndpoint
+metadata:
+  name: nemotron-3-embed-1b-bf16
+  namespace: inference
+spec:
+  model: "nvidia/Nemotron-3-Embed-1B-BF16"
+  gpuCount: 1
+  shared: true          # fits with headroom — up to 4 models share the GPU
+  maxModelLen: 8192
+  minVramPerGpuGiB: 14
+  workerMemory: "8Gi"
+  # maxNumSeqs: 64
+  replicas: 1
