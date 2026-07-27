@@ -86,12 +86,30 @@ spec:
         - key: karpenter.k8s.aws/instance-gpu-manufacturer
           operator: In
           values: ["nvidia"]
-        # Exclude pre-Ampere NVIDIA GPUs (T4 in g4dn, V100 in p3). Modern
-        # vLLM model defaults use bfloat16, which requires compute capability
-        # ≥ 8.0 (Ampere/Ada/Hopper). T4 is CC 7.5, V100 is CC 7.0.
+        # Exclude pre-Ampere NVIDIA GPUs (T4 in g4dn, V100 in p3/p3dn/p2). Modern
+        # vLLM model defaults (and quantized formats like gpt_oss_mxfp4) require
+        # compute capability >= 8.0 (Ampere/Ada/Hopper). T4 is CC 7.5, V100 is CC
+        # 7.0.
+        #
+        # The family-name list below is NOT sufficient on its own: AWS gives GPU
+        # variants their OWN family string rather than reusing the base family —
+        # p3dn.24xlarge (still V100/CC 7.0) reports instance-family=p3dn, which
+        # does not match "p3" and slipped through this exclusion (observed live:
+        # Karpenter provisioned a p3dn.24xlarge for a gpt-oss-20b deploy, which
+        # then crash-looped on vLLM's "quantization method ... not supported for
+        # the current GPU" check). The generation floor right below is the real
+        # guard — it's numeric and immune to family-name spelling — kept both for
+        # defense in depth and because the family list still narrows the search
+        # space Karpenter considers.
         - key: karpenter.k8s.aws/instance-family
           operator: NotIn
-          values: ["g4dn", "g4ad", "p3", "p2"]
+          values: ["g4dn", "g4ad", "p3", "p3dn", "p2"]
+        # Ampere is generation 5 in G-family numbering (g5/g6/g6e/g7e are all
+        # >= 5); P3(dn) is generation 3, P2 is generation 2 — both correctly
+        # excluded by this floor regardless of what AWS names the variant.
+        - key: karpenter.k8s.aws/instance-generation
+          operator: Gte
+          values: ["5"]
         # No instance-size cap. Multi-GPU serving (tensor/pipeline parallelism,
         # i.e. gpuCount 2/4/8) needs the multi-GPU node sizes: for g5/g6/g6e the
         # 4-GPU variant is *.12xlarge and the 8-GPU is *.48xlarge. Capping at

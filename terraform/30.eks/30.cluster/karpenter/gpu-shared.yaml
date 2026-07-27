@@ -93,6 +93,12 @@ spec:
         - key: karpenter.k8s.aws/instance-family
           operator: NotIn
           values: ["g4dn", "g4ad"]
+        # Numeric backstop (see gpu-inference.yaml for why the family-name list
+        # alone isn't reliable: AWS gives GPU variants their own family string,
+        # e.g. p3dn != p3). g5/g6/g6e are all generation >= 5.
+        - key: karpenter.k8s.aws/instance-generation
+          operator: Gte
+          values: ["5"]
         - key: karpenter.k8s.aws/instance-gpu-count
           operator: In
           values: ["1"]
