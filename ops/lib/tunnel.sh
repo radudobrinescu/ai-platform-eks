@@ -28,11 +28,20 @@ echo "→ Resolving Kubernetes service ClusterIPs..."
 OPENWEBUI_IP=$(kubectl get svc open-webui -n "$NAMESPACE" -o jsonpath='{.spec.clusterIP}')
 LITELLM_IP=$(kubectl get svc litellm -n "$NAMESPACE" -o jsonpath='{.spec.clusterIP}')
 LANGFUSE_IP=$(kubectl get svc langfuse-web -n "$NAMESPACE" -o jsonpath='{.spec.clusterIP}')
-DASHBOARD_IP=$(kubectl get svc cluster-dashboard -n "$NAMESPACE" -o jsonpath='{.spec.clusterIP}')
+# The dashboard's Approve/Dismiss mutations require the OIDC bearer token that
+# oauth2-proxy injects (--set-authorization-header=true) before forwarding to
+# cluster-dashboard:9090 — the same path the ALB ingress uses. Forwarding
+# straight to the cluster-dashboard Service (port 9090) skips oauth2-proxy
+# entirely: the read-only topology view still renders (no auth needed), but
+# any mutation 401s with "missing bearer token" even though you're logged in,
+# because the backend never receives the header. So we tunnel oauth2-proxy's
+# port (4180) and map it to local :9090, keeping the same URL for the operator.
+DASHBOARD_IP=$(kubectl get svc oauth2-proxy -n "$NAMESPACE" -o jsonpath='{.spec.clusterIP}')
+DASHBOARD_REMOTE_PORT=$(kubectl get svc oauth2-proxy -n "$NAMESPACE" -o jsonpath='{.spec.ports[0].port}')
 echo "  open-webui:        $OPENWEBUI_IP:8080"
 echo "  litellm:           $LITELLM_IP:4000"
 echo "  langfuse-web:      $LANGFUSE_IP:3000"
-echo "  cluster-dashboard: $DASHBOARD_IP:9090"
+echo "  cluster-dashboard: $DASHBOARD_IP:$DASHBOARD_REMOTE_PORT (via oauth2-proxy, so Approve/Dismiss are authenticated)"
 
 echo ""
 echo "→ Starting SSM tunnels (via ClusterIP — bypasses ALB allowlist)..."
@@ -42,21 +51,45 @@ echo "  Langfuse:    http://localhost:3000"
 echo "  Dashboard:   http://localhost:9090"
 echo ""
 
-aws ssm start-session --target "$INSTANCE_ID" \
-  --document-name AWS-StartPortForwardingSessionToRemoteHost \
-  --parameters "{\"host\":[\"$OPENWEBUI_IP\"],\"portNumber\":[\"8080\"],\"localPortNumber\":[\"8080\"]}" &
+# Each SSM port-forwarding session can go idle and exit on its own (default
+# ~20min inactivity timeout) while the local port stays bound — curl/browsers
+# then get instant, generic 500s that look like the *application* is broken,
+# when the tunnel session is simply gone. A small watchdog polls each local
+# port and relaunches only the ones that died, so a long dashboard session
+# keeps working without the operator having to notice and restart everything.
+# Each SSM port-forwarding session can go idle and exit on its own (default
+# ~20min inactivity timeout) while the local port stays bound — curl/browsers
+# then get instant, generic 500s that look like the *application* is broken,
+# when the tunnel session is simply gone. A small watchdog polls each local
+# port and relaunches only the ones that died, so a long dashboard session
+# keeps working without the operator having to notice and restart everything.
+# (Plain indexed arrays, not associative — this must run on bash 3.2, macOS's
+# default /bin/bash, which has no `declare -A`.)
+LOCAL_PORTS=(8080 4000 3000 9090)
+REMOTE_HOSTS=("$OPENWEBUI_IP" "$LITELLM_IP" "$LANGFUSE_IP" "$DASHBOARD_IP")
+REMOTE_PORTS=(8080 4000 3000 "$DASHBOARD_REMOTE_PORT")
+SSM_PIDS=(0 0 0 0)
 
-aws ssm start-session --target "$INSTANCE_ID" \
-  --document-name AWS-StartPortForwardingSessionToRemoteHost \
-  --parameters "{\"host\":[\"$LITELLM_IP\"],\"portNumber\":[\"4000\"],\"localPortNumber\":[\"4000\"]}" &
+start_forward() {
+  local i="$1"
+  aws ssm start-session --target "$INSTANCE_ID" \
+    --document-name AWS-StartPortForwardingSessionToRemoteHost \
+    --parameters "{\"host\":[\"${REMOTE_HOSTS[$i]}\"],\"portNumber\":[\"${REMOTE_PORTS[$i]}\"],\"localPortNumber\":[\"${LOCAL_PORTS[$i]}\"]}" \
+    >/dev/null 2>&1 &
+  SSM_PIDS[$i]=$!
+}
 
-aws ssm start-session --target "$INSTANCE_ID" \
-  --document-name AWS-StartPortForwardingSessionToRemoteHost \
-  --parameters "{\"host\":[\"$LANGFUSE_IP\"],\"portNumber\":[\"3000\"],\"localPortNumber\":[\"3000\"]}" &
+for i in 0 1 2 3; do start_forward "$i"; done
 
-aws ssm start-session --target "$INSTANCE_ID" \
-  --document-name AWS-StartPortForwardingSessionToRemoteHost \
-  --parameters "{\"host\":[\"$DASHBOARD_IP\"],\"portNumber\":[\"9090\"],\"localPortNumber\":[\"9090\"]}" &
+cleanup() { kill "${SSM_PIDS[@]}" 2>/dev/null; exit; }
+trap cleanup INT TERM
 
-trap 'kill $(jobs -p) 2>/dev/null; exit' INT TERM
-wait
+while true; do
+  sleep 30
+  for i in 0 1 2 3; do
+    if ! kill -0 "${SSM_PIDS[$i]}" 2>/dev/null; then
+      echo "→ tunnel :${LOCAL_PORTS[$i]} died, restarting..." >&2
+      start_forward "$i"
+    fi
+  done
+done
