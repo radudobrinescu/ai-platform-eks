@@ -1,0 +1,14 @@
+apiVersion: kro.run/v1alpha1
+kind: VLLMEndpoint
+metadata:
+  name: gpt-oss-20b
+  namespace: inference
+spec:
+  model: "openai/gpt-oss-20b"
+  gpuCount: 4
+  tensorParallelSize: 4
+  maxModelLen: 8192
+  minVramPerGpuGiB: 15
+  workerMemory: "45Gi"
+  # maxNumSeqs: 64
+  replicas: 1
