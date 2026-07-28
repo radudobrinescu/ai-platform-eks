@@ -1,26 +1,16 @@
 apiVersion: kustomize.config.k8s.io/v1beta1
 kind: Kustomization
 
-# Gateway API Inference Extension (GIE) CRDs — pulled from upstream at a PINNED
-# tag rather than vendored into this repo.
+# Gateway API Inference Extension (GIE) CRDs, pulled from upstream at a PINNED
+# tag. ArgoCD auto-detects this kustomization.yaml for the `inference-gateway`
+# app (see argocd/bootstrap/templates/platform.yaml) and runs `kustomize build`
+# at sync time to fetch and install the CRDs. They stay GitOps-managed (synced,
+# and pruned on teardown). To upgrade, bump the `?ref=` tag below.
 #
-# Why a remote fetch (not a copied-in file): this sample is published under
-# MIT-0, whose point is that you can copy the code with no attribution strings
-# attached. The GIE CRDs are Apache-2.0 (which carries an attribution
-# requirement), so bundling them here would attach that obligation to a file in
-# an otherwise attribution-free repo. Referencing them at a pinned tag keeps the
-# repo purely MIT-0 while still installing the exact same CRDs.
-#
-# How it works: ArgoCD auto-detects this kustomization.yaml for the
-# `inference-gateway` app (see argocd/bootstrap/templates/platform.yaml) and runs
-# `kustomize build` at sync time, which fetches the CRDs from the pinned tag
-# below. They remain fully GitOps-managed (synced, and pruned on teardown) —
-# identical lifecycle to when they were vendored.
-#
-# Upgrading: bump the `?ref=` tag to a newer GIE release. The four CRDs this
-# resolves to (InferenceModelRewrite, InferenceObjective, InferencePoolImport,
-# InferencePool) are the substrate the llm-d scale tier (LLMDEndpoint) needs;
-# standalone-mode llm-d requires only these CRDs — no shared Envoy Gateway.
+# The four CRDs this resolves to (InferenceModelRewrite, InferenceObjective,
+# InferencePoolImport, InferencePool) are the substrate the llm-d scale tier
+# (LLMDEndpoint) needs; standalone-mode llm-d requires only these CRDs — no
+# shared Envoy Gateway.
 resources:
   - https://github.com/kubernetes-sigs/gateway-api-inference-extension/config/crd?ref=v1.5.0
   - repo-secret.yaml
