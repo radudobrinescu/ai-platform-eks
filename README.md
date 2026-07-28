@@ -313,3 +313,18 @@ docs/               cloudfront-edge · roadmap/
 Infrastructure based on [Automated Provisioning of Application-Ready Amazon EKS Clusters](https://aws-solutions-library-samples.github.io/compute/automated-provisioning-of-application-ready-amazon-eks-clusters.html)
 from the AWS Solutions Library, extended with EKS Managed Capabilities,
 GPU-optimized Karpenter NodePools, and the self-service AI platform layer.
+
+## License
+
+This sample is licensed under **MIT-0** (see [LICENSE](LICENSE)). It does not
+vendor any third-party source; all third-party components are pulled at deploy
+time from their official registries/charts (or, for the Gateway API Inference
+Extension CRDs, a pinned upstream Git tag) and remain under their own licenses.
+See [THIRD-PARTY-LICENSES](THIRD-PARTY-LICENSES) for attribution.
+
+> Although this repository is released under the MIT-0 license, its chat-UI
+> component uses the third-party Open WebUI project. The Open WebUI project's
+> licensing includes the Open WebUI License (a modified BSD-3-Clause with a
+> branding-retention clause). It is pulled at runtime by image reference and is
+> not part of this sample's source; operators who deploy the sample pull that
+> image and are subject to its terms.
