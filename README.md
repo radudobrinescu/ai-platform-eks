@@ -318,8 +318,7 @@ GPU-optimized Karpenter NodePools, and the self-service AI platform layer.
 
 This sample is licensed under **MIT-0** (see [LICENSE](LICENSE)). It does not
 vendor any third-party source; all third-party components are pulled at deploy
-time from their official registries/charts (or, for the Gateway API Inference
-Extension CRDs, a pinned upstream Git tag) and remain under their own licenses.
+time from their official registries/charts and remain under their own licenses.
 See [THIRD-PARTY-LICENSES](THIRD-PARTY-LICENSES) for attribution.
 
 > Although this repository is released under the MIT-0 license, its chat-UI
