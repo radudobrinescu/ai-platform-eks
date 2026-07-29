@@ -2,9 +2,9 @@
 # Prefill is COMPUTE-bound (bursty prompt processing → drives TTFT), so this pool
 # is restricted to high-FLOPS, fp8-capable families (Ada L40S, Ampere A100,
 # Hopper H100/H200). A disagg endpoint opts in by setting `prefillNodePool:
-# gpu-prefill`; by default it stays on the shared `gpu-inference` pool. See
-# docs/roadmap/disaggregated-inference.md — the split only pays off for large
-# models (≥~30B) under sustained multi-replica decode.
+# gpu-prefill`; by default it stays on the shared `gpu-inference` pool. The
+# split only pays off for large models (≥~30B) under sustained multi-replica
+# decode.
 ---
 apiVersion: karpenter.k8s.aws/v1
 kind: EC2NodeClass

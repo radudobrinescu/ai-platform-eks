@@ -12,8 +12,6 @@
 # and keep fixed replicas. KEDA is not needed at bootstrap (it acts on workloads
 # that appear later), so it schedules on default Karpenter nodes — no need for
 # the CriticalAddonsOnly toleration the bootstrap addons use.
-#
-# See docs/roadmap/elastic-serving-autoscaling.md.
 ################################################################################
 resource "helm_release" "keda" {
   count = local.capabilities.autoscaling ? 1 : 0

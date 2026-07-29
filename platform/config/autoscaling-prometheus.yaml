@@ -8,8 +8,6 @@
 # picks up vLLM saturation metrics (vllm:num_requests_waiting, kv_cache_usage)
 # with no per-pod annotations. Ephemeral storage, 2h retention (KEDA only needs
 # recent values). KEDA's built-in Prometheus scaler queries the Service below.
-#
-# See docs/roadmap/elastic-serving-autoscaling.md.
 ---
 apiVersion: v1
 kind: ServiceAccount

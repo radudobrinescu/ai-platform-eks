@@ -39,7 +39,7 @@ spec:
       # Retained (not removed) to avoid a breaking CRD change (KRO refuses to
       # drop schema properties in place).
       replicas:             "integer | default=1 minimum=0"
-      minReplicas:          "integer | default=1 minimum=1"   # floor (>=1). Scale-to-zero (minReplicas 0) is PARKED — see docs/roadmap/elastic-serving-autoscaling.md: it needs llm-d image pre-baking + a LiteLLM cooldown/hold fix that aren't worth the ~2min cold-start floor yet. The arrival trigger in the ScaledObject below is the inert foundation for it.
+      minReplicas:          "integer | default=1 minimum=1"   # floor (>=1). Scale-to-zero (minReplicas 0) is PARKED: it needs llm-d image pre-baking + a LiteLLM cooldown/hold fix that aren't worth the ~2min cold-start floor yet. The arrival trigger in the ScaledObject below is the inert foundation for it.
       maxReplicas:          "integer | default=3 minimum=1"   # ceiling; > minReplicas enables KEDA autoscaling
       targetQueueDepth:     "integer | default=20"            # per-pod vllm:num_requests_waiting scale target
       maxModelLen:          "integer | default=8192"

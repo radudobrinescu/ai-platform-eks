@@ -48,6 +48,12 @@ output*.md
 # Internal strategy doc (kept locally, not tracked)
 docs/enterprise-ai-platform-strategy.md
 
+# Internal/pre-publication docs — kept locally, not tracked, so the public
+# aws-samples mirror never carries them.
+docs/roadmap/
+docs/blog/
+docs/security-scan.md
+
 # AWS Talos security-review engagement metadata. Untracked — kept only as a
 # local file — so the git-mirror publish never carries it to the public
 # aws-samples repo. If your Talos review runs on a fresh clone rather than your

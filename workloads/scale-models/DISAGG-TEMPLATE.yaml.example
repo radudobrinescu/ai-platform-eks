@@ -6,8 +6,7 @@
 # the KV-cache/bandwidth-bound decode phases INDEPENDENTLY: the two run as
 # separate vLLM pools, each autoscaled on its own signal (prefill on queue depth,
 # decode on KV-cache utilization), with llm-d routing across them behind the same
-# LiteLLM /v1 API. See docs/roadmap/disaggregated-inference.md and
-# docs/llm-d-and-ingress-architecture.md.
+# LiteLLM /v1 API.
 #
 # The llm-d substrate (GIE CRDs + the llm-d OCI Helm repo registered in ArgoCD)
 # ships on every cluster via the `inference-gateway` platform app — no toggle.

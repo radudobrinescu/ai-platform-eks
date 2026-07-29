@@ -38,8 +38,7 @@ Bedrock's `claude-opus-4-8` is a static LiteLLM entry (no GPUs, no CR), so a
 fresh install serves against it immediately. To serve any other model, point a
 `VLLMEndpoint` at a HuggingFace model ID — including a model you've fine-tuned and
 pushed to HF (private repos need a token). The platform serves models; it does not
-train them. (Serving weights directly from your own S3 bucket is on the roadmap —
-see `docs/roadmap/bring-your-own-weights.md`.)
+train them. (Serving weights directly from your own S3 bucket is on the roadmap.)
 
 ## Tool / function calling
 

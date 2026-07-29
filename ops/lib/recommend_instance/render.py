@@ -1120,7 +1120,7 @@ def _print_yaml_snippet(model: ModelSpec, vram: VramEstimate, best: Option,
         if kind == "LLMDDisaggEndpoint":
             print(f"{C.BOLD}  ⚑ disaggregated: separate prefill (KV producer) + decode (KV consumer) pools "
                   f"for long context (~{disagg_context(args)} tok).{C.RESET}")
-            print(f"{C.DIM}    Runtime P/D needs a NIXL-enabled vLLM image — see docs/roadmap/disaggregated-inference.md.{C.RESET}")
+            print(f"{C.DIM}    Runtime P/D needs a NIXL-enabled vLLM image.{C.RESET}")
         elif scaling:
             base = scaling[0].replicas
             eff = llmd_replicas(base, prof)

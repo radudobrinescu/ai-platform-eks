@@ -30,7 +30,6 @@
 #      prefill pod, dispatches a remote prefill (max_tokens=1) there and pulls the
 #      KV over NIXL — so prefill runs only on prefill pods, decode only on decode
 #      pods. Both vLLMs use kv_role=kv_both (the sidecar drives per-request P/D).
-# See docs/roadmap/disaggregated-inference.md.
 apiVersion: kro.run/v1alpha1
 kind: ResourceGraphDefinition
 metadata:

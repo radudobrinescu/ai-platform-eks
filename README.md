@@ -305,7 +305,7 @@ workloads/          Self-service YAMLs: models/ · scale-models/ · teams/
 platformctl         The unified CLI (use · up · status · tunnel · edge · new-model · down · list-envs)
 ops/                platformctl implementation: ops/lib/ (helpers) · ops/image/ (cold-start build helpers)
 terraform/          Infrastructure modules (VPC → IAM → EKS → observability)
-docs/               cloudfront-edge · roadmap/
+docs/               cloudfront-edge
 ```
 
 ## Acknowledgments

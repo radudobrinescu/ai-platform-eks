@@ -5,7 +5,7 @@
 # Use this instead of VLLMEndpoint when you need high-throughput
 # or long multi-turn/agentic serving: llm-d spreads requests across replicas using
 # live KV-cache, prefix-reuse, and queue-depth signals (Endpoint Picker), all still
-# behind the same LiteLLM /v1 API. See docs/llm-d-and-ingress-architecture.md.
+# behind the same LiteLLM /v1 API.
 # For independent prefill/decode scaling, use LLMDDisaggEndpoint (DISAGG-TEMPLATE).
 #
 # The llm-d substrate (GIE CRDs + the llm-d OCI Helm repo registered in ArgoCD)
