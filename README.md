@@ -139,21 +139,6 @@ model is the mirror image: `./platformctl new-model <name> --undeploy` (or just
 > hourly cost) may differ from the recommendation. The model still fits and serves
 > correctly; only the specific instance may vary.
 
-`./platformctl` is the single CLI over `make` + Terraform + `ops/lib/` (`use ·
-up · status[--check] · tunnel · edge · new-model · down · list-envs`). For multiple
-environments, `./platformctl list-envs` shows them (cluster + region) and
-`./platformctl use <env>` switches the active one — it records your intent, points
-kubectl at that cluster, and pins the region (from `region` in the env's tfvars);
-every other verb then targets it (or takes an explicit `[ENV]`). All environments
-share one **account-wide Terraform state bucket** (`tfstate-<account>`), created in
-your first env's region; envs in other regions detect and reuse it automatically,
-so an env's *state* may live in a different region than its *infrastructure* — no
-per-region setup needed. The UIs sit behind one **internal** ALB
-(Open WebUI `:8080` · LiteLLM `:4000` · Langfuse `:3000` · Dashboard `:9090`) with
-no public IP — reach them with `./platformctl tunnel`, or publicly via the opt-in
-CloudFront edge. (Switch the ALB to `internet-facing` + set an IP allowlist to
-expose it directly.)
-
 ---
 
 ## Beyond the basics
@@ -242,51 +227,6 @@ steps below. The script does **not** touch the bootstrap state (S3
 `tfstate-<account>` + DynamoDB `tfstate-lock`), so a subsequent
 `./platformctl up <env>` still works.
 
-### Cleanup drain — now automatic
-
-`./platformctl down <env>` **automatically drains the cluster before Terraform
-runs**: it deletes the ArgoCD ApplicationSets/Applications (so nothing gets
-recreated), the serving endpoints, and the Ingresses, then waits for the AWS Load
-Balancer Controller to delete the ALB. That ALB is what holds the frontend
-security group, so removing it first is what stops `destroy` from failing with a
-`DependencyViolation` on the SG.
-
-If the cluster is unreachable (e.g. a re-run after a partial destroy), `down`
-skips the drain and continues — run these manually first if needed:
-
-```bash
-kubectl delete applicationset --all -n argocd --wait=false
-kubectl delete application    --all -n argocd --wait=false
-kubectl delete vllmendpoints,llmdendpoints,llmddisaggendpoints,aiteams --all -A --wait=false
-kubectl delete ingress --all -A --wait=false      # → ALB controller deletes the ALB
-
-./platformctl down <env>
-```
-
-If you enabled the CloudFront edge, disabling it first keeps the cleanup tidy:
-`./platformctl edge tunnel`.
-
-### Orphan cleanup — now automatic
-
-Several resources legitimately escape Terraform's reach because they're created
-by **in-cluster controllers**, Karpenter, or EKS/AWS rather than Terraform — and
-left alone they either pin the VPC (blocking `destroy`) or quietly cost money.
-`./platformctl down` now sweeps them automatically (`ops/lib/sweep_env.py`,
-scoped strictly to the env's cluster so it can never touch another environment):
-if `terraform destroy` fails on a leftover dependency it clears the blockers and
-retries once, then always does a final pass. It removes:
-
-- Karpenter EC2 instances, EC2 fleets, launch templates, and instance-profiles
-- the ALB-controller / EKS security groups and stray ENIs that pin the VPC
-- NAT gateways and unassociated Elastic IPs
-- orphaned `available` EBS volumes left from PVCs
-- the EKS cluster KMS key (scheduled for deletion) and its CloudWatch log groups
-
-The one thing it deliberately leaves is the **SOCI / data-volume EBS snapshot**
-(`ops/image/create-data-volume-snapshot.sh`) — a reusable build artifact, not
-per-cluster. Delete it by hand once you're done with it:
-`aws ec2 delete-snapshot --snapshot-id <id>`.
-
 ### Things you'll hit (and the cause)
 
 * **`Error acquiring the state lock`** — a previous `terraform` run was
@@ -299,7 +239,7 @@ per-cluster. Delete it by hand once you're done with it:
   `kubectl get networkpolicies -n ai-platform -o name | xargs -I {} kubectl patch -n ai-platform {} --type=merge -p '{"metadata":{"finalizers":[]}}'`
 * **`ECR Repository ... not empty`** — empty it with `aws ecr batch-delete-image`, then re-run.
 * **Subnet stuck destroying for 15+ min** — almost always an orphan
-  Karpenter EC2 instance. See the table above.
+  Karpenter EC2 instance still pinning the subnet; terminate it, then re-run.
 
 When in doubt, the final state should match this:
 
