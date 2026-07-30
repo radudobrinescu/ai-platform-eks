@@ -109,15 +109,35 @@ cd terraform/00.global/vars && cp example.tfvars dev.tfvars   # edit dev.tfvars 
 ./platformctl tunnel        # forward the UIs (WebUI / LiteLLM / Langfuse)
 ./platformctl status --check  # verify Bedrock + models answer AND Langfuse tracing works
 
-# 4. Deploy a self-hosted model. The directory IS the target namespace
-#    ('inference' is the platform default, created at provision time), so drop the
-#    YAML under it (leave metadata.namespace unset) and push to your fork.
-mkdir -p workloads/models/inference
-cp workloads/models/TEMPLATE.yaml.example workloads/models/inference/qwen3-3b.yaml
-# edit: set name + model (e.g. Qwen/Qwen2.5-3B-Instruct), then:
-git add workloads/models/inference/qwen3-3b.yaml && git commit -m "feat: deploy qwen3-3b" && git push
-kubectl get vllmendpoints -n inference -w
+# 4. Deploy a self-hosted model with one command. `new-model` right-sizes it and
+#    ships it end to end:
+#      - reads the model's config from Hugging Face and computes its VRAM +
+#        tensor-parallelism needs;
+#      - picks a cost-ranked GPU instance type allowed by your Karpenter NodePools;
+#      - scaffolds the matching endpoint CRD — VLLMEndpoint, or an LLMDEndpoint /
+#        LLMDDisaggEndpoint for the llm-d scale tier (--tier, else auto-selected);
+#      - with --deploy: writes it to workloads/models/inference/<name>.yaml, then
+#        git commits + pushes and nudges ArgoCD to sync.
+#    ArgoCD applies it -> Karpenter provisions a GPU node -> vLLM loads the model
+#    -> LiteLLM registers it on the /v1 API.
+./platformctl new-model Qwen/Qwen2.5-3B-Instruct --deploy   # add -y to skip the confirm prompt
+kubectl get vllmendpoints -n inference -w                   # watch it come up (GPU cold start ~ a few min)
 ```
+
+Drop `--deploy` to just print the recommendation and the ready-to-commit YAML for
+review (nothing is pushed). Size for your traffic with `--seq`, `--users`, or
+`--workload`, force a serving tier with `--tier`, or point at a private/gated model
+with `--hf-token` — see `./platformctl new-model --help` for all flags. Removing a
+model is the mirror image: `./platformctl new-model <name> --undeploy` (or just
+`git rm` its YAML).
+
+> ⚠️ **The recommended instance type is a sizing guide, not a guarantee.** It's
+> computed from the model's memory footprint and current on-demand pricing. What
+> Karpenter actually launches is decided at provisioning time from *real* capacity:
+> it picks a compatible type from the GPU NodePool's allowed set based on what's
+> available in your region/AZs at that moment — so the node you get (and its
+> hourly cost) may differ from the recommendation. The model still fits and serves
+> correctly; only the specific instance may vary.
 
 `./platformctl` is the single CLI over `make` + Terraform + `ops/lib/` (`use ·
 up · status[--check] · tunnel · edge · new-model · down · list-envs`). For multiple
