@@ -1,0 +1,15 @@
+# Gitleaks fingerprint suppressions — historical false positives only.
+# Format: <commit>:<file>:<rule>:<line>  (printed as "Fingerprint:" in scan output)
+# These commits predate the current .gitleaks.toml allowlist wording, so the
+# line-regex allowlist doesn't match their older revisions.
+
+# terraform/30.eks/30.cluster/capabilities.tf — for_each list of secret NAMES
+# fed to random_password (values are generated at deploy time, never in git).
+# Older revisions of the list ("pg-password", no "s3-secret-key") aren't
+# covered by the allowlist regex in .gitleaks.toml.
+9d824c1db6db9548eb5e13001b4d23d15aea6c7d:terraform/30.eks/30.cluster/capabilities.tf:hashicorp-tf-password:162
+2e50bd011d9b72d62e366d9b56405335e9603239:terraform/30.eks/30.cluster/capabilities.tf:hashicorp-tf-password:162
+
+# README.md — documentation curl example with the literal placeholder
+# "Authorization: Bearer YOUR_MASTER_KEY" (removed from later revisions).
+020a8be4b6f181aa780e85e45a0127226027e625:README.md:curl-auth-header:222
