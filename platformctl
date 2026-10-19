@@ -122,8 +122,11 @@ cmd_up() {
   local env; env=$(need_env "${1:-}" "up")
   need terraform; need aws; need make; require_tfvars "$env"; check_tfvars_filled "$env"; pin_region "$env"
   log "Provisioning '${env}' — EKS + capabilities + Karpenter (takes a while)"
-  make -C "$TF_DIR" bootstrap ENVIRONMENT="$env"
-  make -C "$TF_DIR" apply-all ENVIRONMENT="$env"
+  # Explicit checks: when cmd_up is invoked in a `||` context (platformctl e2e)
+  # bash suppresses errexit inside the function, so a failed make would
+  # otherwise fall through to the "Done" banner and return 0.
+  make -C "$TF_DIR" bootstrap ENVIRONMENT="$env" || { warn "state backend bootstrap failed"; return 1; }
+  make -C "$TF_DIR" apply-all ENVIRONMENT="$env" || { warn "terraform apply failed (see above)"; return 1; }
   echo
   ok "Done. Next:"
   echo "  ./platformctl status --check     # confirm it's healthy AND working"
