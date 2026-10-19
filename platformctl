@@ -9,7 +9,8 @@
 #   ./platformctl edge    [MODE] [ENV] Choose the public front door: cloudfront | domain | tunnel
 #   ./platformctl new-model MODEL [..] Right-size a model + scaffold its serving YAML (VLLMEndpoint/LLMDEndpoint)
 #   ./platformctl onboard-team NAME [..] Scaffold an AITeam YAML (namespace + GPU quota + budget + scoped key) for a new team
-#   ./platformctl down    [ENV] [--purge]  Tear down infra; --purge also deletes the env definition (tfvars + workspaces)
+#   ./platformctl down    [ENV] [--purge] [--yes]  Tear down infra; --purge also deletes the env definition; --yes skips the typed confirm
+#   ./platformctl e2e     [ENV] [--keep] [--skip-up] [--with-llmd] [--yes]  Provision, smoke-test every upgrade domain, tear down (see COMPATIBILITY.md)
 #   ./platformctl list-envs            List configured environments (cluster + region; marks the active one)
 set -euo pipefail
 
@@ -275,9 +276,9 @@ _predown_drain() {
 }
 
 cmd_down() {
-  local purge=0 envarg="" a
+  local purge=0 yes=0 envarg="" a
   for a in "$@"; do
-    case "$a" in --purge) purge=1 ;; *) envarg="$a" ;; esac
+    case "$a" in --purge) purge=1 ;; --yes|-y) yes=1 ;; *) envarg="$a" ;; esac
   done
   local env; env=$(need_env "$envarg" "down")
   need terraform; need make; require_tfvars "$env"; pin_region "$env"
@@ -286,8 +287,12 @@ cmd_down() {
   else
     warn "This DESTROYS all infrastructure for env '${env}'."
   fi
-  read -r -p "Type the environment name ('${env}') to confirm: " confirm
-  [ "$confirm" = "$env" ] || die "confirmation mismatch — aborted (nothing changed)."
+  # --yes is for unattended runs (platformctl e2e, CI); interactive use keeps the
+  # typed confirmation so a mistyped env name can never destroy the wrong cluster.
+  if [ "$yes" -eq 0 ]; then
+    read -r -p "Type the environment name ('${env}') to confirm: " confirm
+    [ "$confirm" = "$env" ] || die "confirmation mismatch — aborted (nothing changed)."
+  fi
   # The CloudFront edge's data.aws_lb lookup fails once the ALB is drained (next
   # step), so disable the edge in the tfvars first: Terraform then drops the edge
   # resources + that data source from the destroy plan and clears them from state.
@@ -320,6 +325,59 @@ cmd_down() {
   _postdown_sweep "$env"
   [ "$purge" -eq 1 ] && purge_env_definition "$env"
   true
+}
+
+# ---- e2e ------------------------------------------------------------------- #
+
+# End-to-end gate for the component upgrade lifecycle (COMPATIBILITY.md):
+# provision the env, wait until ArgoCD has converged, smoke-test every upgrade
+# domain on the real cluster (ops/lib/e2e.py), tear down. Creates BILLABLE
+# infrastructure (EKS + one small GPU node for ~25 min). The exit code is the
+# smoke result; teardown failures are reported but never mask it.
+cmd_e2e() {
+  local keep=0 skip_up=0 yes=0 with_llmd=0 envarg="" a
+  for a in "$@"; do
+    case "$a" in
+      --keep) keep=1 ;; --skip-up) skip_up=1 ;; --yes|-y) yes=1 ;; --with-llmd) with_llmd=1 ;;
+      -*) die "e2e: unknown flag $a" ;; *) envarg="$a" ;;
+    esac
+  done
+  local env; env=$(need_env "$envarg" "e2e")
+  need terraform; need aws; need make; need kubectl; need python3; need curl
+  require_tfvars "$env"; check_tfvars_filled "$env"; pin_region "$env"
+  local cluster; cluster="$(cluster_of "$env")"
+  log "E2E gate for env '${env}' (cluster ${cluster}, region ${AWS_REGION:-default})"
+  echo "  up: $([ "$skip_up" -eq 1 ] && echo skip || echo yes)   teardown: $([ "$keep" -eq 1 ] && echo 'NO (--keep)' || echo yes)   llm-d tier: $([ "$with_llmd" -eq 1 ] && echo yes || echo no)"
+  warn "This creates billable infrastructure (EKS control plane, system nodes, one GPU node)."
+  if [ "$yes" -eq 0 ]; then
+    read -r -p "Type the environment name ('${env}') to continue: " confirm
+    [ "$confirm" = "$env" ] || die "confirmation mismatch — aborted (nothing changed)."
+  fi
+
+  local started rc=0 report_dir="${REPO_ROOT}/.platformctl/e2e"
+  started="$(date -u +%Y%m%dT%H%M%SZ)"; mkdir -p "$report_dir"
+  if [ "$skip_up" -eq 0 ]; then
+    cmd_up "$env" || { warn "provisioning failed — attempting teardown"; rc=1; }
+  fi
+  if [ "$rc" -eq 0 ]; then
+    aws eks update-kubeconfig --name "$cluster" >/dev/null || rc=1
+  fi
+  if [ "$rc" -eq 0 ]; then
+    local llmd_flag=""; [ "$with_llmd" -eq 1 ] && llmd_flag="--with-llmd"
+    # shellcheck disable=SC2086
+    python3 "${LIB_DIR}/e2e.py" --env "$env" --cluster "$cluster" --region "${AWS_REGION:-}" \
+      --repo-root "$REPO_ROOT" $llmd_flag \
+      --report-json "${report_dir}/${started}.json" --report-md "${report_dir}/${started}.md" || rc=$?
+    echo; log "Report: ${report_dir}/${started}.md"
+  fi
+  if [ "$keep" -eq 1 ]; then
+    warn "--keep: cluster '${cluster}' is still running and billing. Tear down with: ./platformctl down ${env} --yes"
+  else
+    log "Tearing down '${env}'"
+    cmd_down "$env" --yes || warn "teardown reported errors — re-run './platformctl down ${env}' (idempotent) and check for orphans."
+  fi
+  if [ "$rc" -eq 0 ]; then ok "E2E PASSED"; else warn "E2E FAILED (exit ${rc})"; fi
+  return "$rc"
 }
 
 # ---- status [--check] ------------------------------------------------------ #
@@ -778,6 +836,7 @@ main() {
     up)        cmd_up "$@" ;;
     use)       cmd_use "$@" ;;
     down)      cmd_down "$@" ;;
+    e2e)       cmd_e2e "$@" ;;
     status)    cmd_status "$@" ;;
     tunnel)    cmd_tunnel "$@" ;;
     edge)      cmd_edge "$@" ;;

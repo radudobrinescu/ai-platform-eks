@@ -441,6 +441,10 @@ def _enroll(region: str, args: argparse.Namespace) -> int:
     name, yaml_path, yaml_body, commit_msg = build_yaml(
         alias, invocation_id, partition, region, in_cost, out_cost)
 
+    if getattr(args, "emit", None):
+        from .cli import emit_manifest
+        return emit_manifest(args.emit, yaml_body, name)
+
     if not args.deploy:
         print(f"\n{C.BOLD}You'll enroll this{C.RESET} {C.DIM}→ {yaml_path}{C.RESET}")
         for ln in yaml_body.rstrip().splitlines():

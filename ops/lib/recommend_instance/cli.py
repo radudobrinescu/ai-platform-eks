@@ -33,6 +33,19 @@ __doc__ = _PKG_DOC
 # CLI                                                                         #
 # --------------------------------------------------------------------------- #
 
+def emit_manifest(path: str, yaml_body: str, name: str) -> int:
+    """--emit: write the generated CR to `path` (or stdout for '-') and return 0.
+    Deliberately touches neither git nor the cluster; the caller owns what
+    happens next (platformctl e2e applies it with kubectl)."""
+    if path == "-":
+        sys.stdout.write(yaml_body if yaml_body.endswith("\n") else yaml_body + "\n")
+    else:
+        with open(path, "w", encoding="utf-8") as fh:
+            fh.write(yaml_body if yaml_body.endswith("\n") else yaml_body + "\n")
+        print(f"wrote {name} manifest to {path} (not deployed)", file=sys.stderr)
+    return 0
+
+
 def main(argv: list[str] | None = None) -> int:
     p = argparse.ArgumentParser(
         description="Recommend EC2 GPU instances for serving an LLM on EKS.",
@@ -147,6 +160,12 @@ def main(argv: list[str] | None = None) -> int:
                         "is not required with --undeploy.")
     p.add_argument("--yes", "-y", action="store_true",
                    help="Skip the confirmation prompt for --deploy/--undeploy.")
+    p.add_argument("--emit", metavar="FILE", default=None,
+                   help="Write the generated manifest (VLLMEndpoint/LLMDEndpoint/"
+                        "LLMDDisaggEndpoint, or BedrockModel with --source bedrock) to "
+                        "FILE and exit. No git, no prompt, nothing deployed — for "
+                        "automation that applies the CR itself (e.g. platformctl e2e). "
+                        "Mutually exclusive with --deploy/--undeploy.")
 
     # --- Amazon Bedrock enrollment (--source bedrock) ------------------------ #
     # A Bedrock model runs in AWS — no GPU sizing. These flags drive a separate
@@ -168,6 +187,9 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--output-cost", type=float, default=None, metavar="USD_PER_TOKEN",
                    help="With --source bedrock: override output $/token. See --input-cost.")
     args = p.parse_args(argv)
+
+    if args.emit and (args.deploy or args.undeploy is not None):
+        p.error("--emit is mutually exclusive with --deploy/--undeploy")
 
     # --undeploy is a pure file/git operation: short-circuit before any HF fetch
     # or pricing call (no model metadata needed to delete a manifest).
@@ -303,18 +325,21 @@ def main(argv: list[str] | None = None) -> int:
     else:
         print_human(model, vram, opts, best, args, price_src, scaling, prices)
 
-    # --deploy: write the recommended manifest + commit + push. Requires a real
-    # recommendation — refuse if nothing fits within the constraints.
-    if args.deploy:
+    # --deploy / --emit: both need a real recommendation — refuse if nothing fits
+    # within the constraints. --deploy writes the manifest into the repo and
+    # commits + pushes; --emit writes the same manifest to FILE and stops.
+    if args.deploy or args.emit:
         if best is None:
-            sys.stderr.write("\ncannot --deploy: no instance fits the model within "
+            sys.stderr.write("\ncannot --deploy/--emit: no instance fits the model within "
                              "the given constraints (raise --max-price or adjust flags).\n")
             return 2
-        from .gitops import deploy_model
         from .render import build_endpoint_yaml, pick_tier, resolve_kind
         kind = resolve_kind(pick_tier(args, best, scaling), args, scaling)
         name, yaml_path, yaml_body, commit_msg = build_endpoint_yaml(
             kind, model, vram, best, args, scaling)
+        if args.emit:
+            return emit_manifest(args.emit, yaml_body, name)
+        from .gitops import deploy_model
         return deploy_model(name, yaml_path, yaml_body, commit_msg, args)
 
     return 0 if best else 2
