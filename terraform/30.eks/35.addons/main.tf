@@ -37,6 +37,7 @@ module "eks_blueprints_addons" {
     # apply the latest CRDs first:
     #   kubectl apply -k "github.com/aws/eks-charts/stable/aws-load-balancer-controller/crds?ref=master"
     # Fresh installs (new forker clusters) get current CRDs automatically.
+    # renovate: datasource=helm depName=aws-load-balancer-controller registryUrl=https://aws.github.io/eks-charts
     chart_version = "3.4.3"
     # LBC v3 needs ec2:DescribeRouteTables (subnet discovery), which the
     # pinned module's built-in policy predates. Merged in via the module's
