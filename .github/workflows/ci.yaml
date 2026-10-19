@@ -20,8 +20,8 @@ jobs:
     name: terraform fmt + validate
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: hashicorp/setup-terraform@v3
+      - uses: actions/checkout@v7
+      - uses: hashicorp/setup-terraform@v4
         with:
           terraform_version: "v1.16.6"
       - name: terraform fmt (check)
@@ -55,8 +55,8 @@ jobs:
       # renovate: datasource=pypi depName=ruff
       RUFF_VERSION: "0.17.1"
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
         with:
           python-version: "3.15"
       - name: byte-compile every tracked module (catches syntax/indentation)
@@ -74,12 +74,12 @@ jobs:
     runs-on: ubuntu-latest
     env:
       # renovate: datasource=pypi depName=pytest
-      PYTEST_VERSION: "8.4.2"
+      PYTEST_VERSION: "9.1.1"
       # renovate: datasource=pypi depName=pyyaml
       PYYAML_VERSION: "6.0.3"
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
         with:
           python-version: "3.15"
       - name: install test deps
@@ -99,7 +99,7 @@ jobs:
     name: shellcheck
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - name: shellcheck all tracked shell scripts + platformctl
         run: |
           set -euo pipefail
@@ -120,11 +120,11 @@ jobs:
       # Custom kinds kubeconform has no schema for: KRO RGDs + the kinds they define.
       KUBECONFORM_SKIP: "ResourceGraphDefinition,LLMDEndpoint,LLMDDisaggEndpoint,VLLMEndpoint,AITeam"
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
         with:
           python-version: "3.15"
-      - uses: azure/setup-helm@v4
+      - uses: azure/setup-helm@v5
       - name: install tools
         run: |
           set -euo pipefail
@@ -190,8 +190,8 @@ jobs:
       # renovate: datasource=npm depName=renovate
       RENOVATE_VERSION: "44.169.0"
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
         with:
           node-version: "24"
       - name: validate renovate.json (strict)
@@ -203,7 +203,7 @@ jobs:
     name: secret scan (gitleaks)
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           fetch-depth: 0
       # Run the gitleaks CLI directly (MIT-licensed) — the gitleaks-action@v2
