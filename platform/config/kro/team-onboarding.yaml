@@ -255,7 +255,7 @@ spec:
               serviceAccountName: team-onboarding
               containers:
                 - name: onboard
-                  image: alpine/k8s:1.35.6
+                  image: alpine/k8s:1.37.1
                   command: ["bash", "-c"]
                   args:
                     - |
