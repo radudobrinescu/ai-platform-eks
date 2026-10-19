@@ -236,7 +236,26 @@ _teardown_watchdog() {
   while aws eks describe-cluster --name "$cluster" --region "$region" >/dev/null 2>&1; do
     _delete_cluster_albs "$cluster" "$vpc"
     _strip_teardown_finalizers "$env"
+    _force_delete_orphaned_pods "$env"
     sleep 8
+  done
+}
+
+# Pods whose node is NotReady (Karpenter/sweep terminated the instance under
+# them) can never be confirmed dead by a kubelet, so their namespace sits in
+# Terminating until Terraform's delete times out ("context deadline exceeded").
+# Observed on the first E2E teardown with langfuse pods in ai-platform. Force
+# the API-side delete; the instance is gone, nothing is actually running.
+_force_delete_orphaned_pods() {
+  local env="$1" notready node r
+  notready="$(kubectl --context "$env" get nodes --no-headers 2>/dev/null | awk '$2 ~ /NotReady|Unknown/ {print $1}')"
+  [ -n "$notready" ] || return 0
+  for node in $notready; do
+    for r in $(kubectl --context "$env" get pods -A --field-selector "spec.nodeName=${node}" \
+        -o jsonpath='{range .items[*]}{.metadata.namespace}/{.metadata.name}{"\n"}{end}' 2>/dev/null); do
+      [ -n "$r" ] || continue
+      kubectl --context "$env" delete pod "${r#*/}" -n "${r%%/*}" --force --grace-period=0 >/dev/null 2>&1 || true
+    done
   done
 }
 

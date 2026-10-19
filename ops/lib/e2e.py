@@ -233,7 +233,7 @@ def versions_under_test(repo_root: str) -> dict:
         pass
     grab("platform/services/litellm/litellm.yaml", r"image:\s*litellm/litellm:(\S+)", "litellm")
     grab("platform/services/open-webui/open-webui.yaml", r"image:\s*ghcr.io/open-webui/open-webui:(\S+)", "open-webui")
-    grab("platform/services/inference-gateway/kustomization.yaml", r"\?ref=(\S+)", "gie-crds")
+    grab("platform/services/inference-gateway/kustomization.yaml", r"gateway-api-inference-extension/[^\s?]*\?ref=(v?[0-9][^\s\"]*)", "gie-crds")
     grab("terraform/30.eks/30.cluster/karpenter.tf", r'version\s*=\s*"(\d[^"]*)"', "karpenter")
     grab("terraform/30.eks/35.addons/main.tf", r'chart_version\s*=\s*"([^"]+)"', "aws-load-balancer-controller")
     grab("terraform/30.eks/35.addons/keda.tf", r'version\s*=\s*"([^"]+)"', "keda")
@@ -442,9 +442,13 @@ def chk_dcgm_metrics(c: Ctx):
 
 
 def chk_dashboard_health(c: Ctx):
+    # The dashboard's own liveness/readiness probes hit /data.json (there is no
+    # /healthz); it returns the live topology JSON, so a 200 proves the backend
+    # is up AND can read the cluster.
     with PortForward(NS_PLATFORM, "svc/cluster-dashboard", 9090) as pf:
-        code, _ = http("GET", f"{pf.base}/healthz")
-    return code == 200, f"/healthz HTTP {code}"
+        code, body = http("GET", f"{pf.base}/data.json")
+    ok = code == 200 and body.lstrip().startswith("{")
+    return ok, f"/data.json HTTP {code}" + ("" if ok else f": {body[:80]}")
 
 
 def chk_llmd_roundtrip(c: Ctx):
