@@ -255,8 +255,11 @@ version falling behind *between* applies, a weekly **report-only** GitHub Action
 ([`.github/workflows/addon-freshness.yaml`](.github/workflows/addon-freshness.yaml))
 checks each managed addon against the newest available and opens a GitHub issue with
 the exact `update-addon` commands when any is behind - it never mutates the cluster.
-It's scoped to EKS **managed addons only**; OSS components (LiteLLM, Open WebUI,
-Langfuse, etc.) stay operator-pinned. Enable it by setting the `ADDON_RECONCILER_*`
+It's scoped to EKS **managed addons only**. OSS components (LiteLLM, Open WebUI,
+Langfuse, vLLM, Karpenter, etc.) are pinned and upgraded through a separate
+Renovate-based lifecycle: [`renovate.json`](renovate.json) proposes grouped PRs per
+upgrade domain and [`COMPATIBILITY.md`](COMPATIBILITY.md) records which versions were
+validated together and why the groups are shaped as they are. Enable it by setting the `ADDON_RECONCILER_*`
 repo variables (see the workflow header).
 
 **Team self-service (GitOps).** Onboard a team with an `AITeam` YAML in
