@@ -81,20 +81,20 @@ jobs:
             echo "configured=true" >> "$GITHUB_OUTPUT"
           fi
 
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         if: steps.cfg.outputs.configured == 'true'
 
       - name: Tooling (terraform, kubectl, helm, python)
         if: steps.cfg.outputs.configured == 'true'
-        uses: hashicorp/setup-terraform@v3
+        uses: hashicorp/setup-terraform@v4
         with:
           terraform_version: "v1.16.6"
           terraform_wrapper: false
-      - uses: azure/setup-kubectl@v4
+      - uses: azure/setup-kubectl@v5
         if: steps.cfg.outputs.configured == 'true'
-      - uses: azure/setup-helm@v4
+      - uses: azure/setup-helm@v5
         if: steps.cfg.outputs.configured == 'true'
-      - uses: actions/setup-python@v5
+      - uses: actions/setup-python@v7
         if: steps.cfg.outputs.configured == 'true'
         with:
           python-version: "3.15"
@@ -134,7 +134,7 @@ jobs:
 
       - name: Configure AWS credentials (OIDC -> E2E provisioning role)
         if: steps.cfg.outputs.configured == 'true'
-        uses: aws-actions/configure-aws-credentials@v4
+        uses: aws-actions/configure-aws-credentials@v6
         with:
           role-to-assume: ${{ vars.E2E_ROLE_ARN }}
           aws-region: ${{ env.AWS_REGION }}
@@ -166,7 +166,7 @@ jobs:
           latest=$(ls -t .platformctl/e2e/*.md 2>/dev/null | head -1 || true)
           if [ -n "$latest" ]; then cp "$latest" e2e-report.md; else printf '## E2E gate\n\nNo report produced (provisioning or runner failure). See the job log.\n' > e2e-report.md; fi
           cat e2e-report.md >> "$GITHUB_STEP_SUMMARY"
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         if: steps.cfg.outputs.configured == 'true' && always()
         with:
           name: e2e-report
@@ -177,7 +177,7 @@ jobs:
 
       - name: Post report on the PR (sticky comment)
         if: steps.cfg.outputs.configured == 'true' && always() && github.event_name == 'pull_request'
-        uses: actions/github-script@v7
+        uses: actions/github-script@v9
         with:
           script: |
             const fs = require('fs');
