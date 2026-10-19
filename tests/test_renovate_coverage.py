@@ -172,7 +172,8 @@ class TestEveryPinIsRenovateVisible:
                 for m in rx.finditer(_read(rel)):
                     deps[m.group("depName")] = m.group("currentValue")
         assert deps.get("vllm/vllm-openai", "").startswith("v0."), deps
-        assert deps.get("aws-load-balancer-controller") == "3.4.3", deps
+        # Shape, not value: Renovate bumps this line, and the test must keep passing.
+        assert re.fullmatch(r"\d+\.\d+\.\d+", deps.get("aws-load-balancer-controller", "")), deps
         assert "gitleaks/gitleaks" in deps, deps
 
     def test_every_renovate_annotation_is_parsed(self):
