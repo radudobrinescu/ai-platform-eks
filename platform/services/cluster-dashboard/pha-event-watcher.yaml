@@ -38,7 +38,7 @@ spec:
           # Idempotent DB provisioning. Runs on every pod restart but is
           # near-instant once the database + tables already exist.
           # Uses the same db_init.sh + ddl.sql from the scripts ConfigMap.
-          image: postgres:16.14-alpine
+          image: postgres:16.15-alpine
           command: ["/bin/sh", "/scripts/db_init.sh"]
           env:
             - name: DB_HOST
@@ -64,14 +64,14 @@ spec:
             runAsUser: 70                  # 'postgres' uid in postgres:16.14-alpine
             capabilities: { drop: ["ALL"] }
         - name: install-pydeps
-          image: python:3.12-slim
+          image: python:3.15-slim
           command: ["/bin/sh", "-c"]
           args:
             - |
               set -eu
               pip install --no-cache-dir --target=/pydeps \
                   kubernetes==31.0.0 \
-                  psycopg[binary]==3.2.3
+                  psycopg[binary]==3.3.6
           volumeMounts:
             - name: pydeps
               mountPath: /pydeps
@@ -82,7 +82,7 @@ spec:
             capabilities: { drop: ["ALL"] }
       containers:
         - name: watcher
-          image: python:3.12-slim
+          image: python:3.15-slim
           command: ["python3", "/scripts/event_watcher.py"]
           env:
             - name: PYTHONPATH
