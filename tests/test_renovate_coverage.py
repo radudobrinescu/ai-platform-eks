@@ -78,6 +78,8 @@ PIN_SHAPES = [
     (r"routerChartVersion:\s*\"string\s*\|\s*default=", "platform/config/kro/*.yaml"),
     (r"\?ref=v?\d", "platform/**/kustomization.yaml"),
     (r"[A-Za-z0-9_-]+(\[[^\]]+\])?==\d", "platform/services/**/*.yaml"),
+    # pip pins inside Python string literals (Job specs built at runtime).
+    (r"[A-Za-z0-9_-]+\[[^\]]+\]==\d", "platform/services/**/scripts/*.py"),
     (r"PYTHON_IMAGE:", "platform/services/cluster-dashboard/*.yaml"),
     (r"(?m)^\s*vllm_image_tag\s*=", "terraform/**/*.tf"),
     (r"(?m)^\s*chart_version\s*=", "terraform/**/*.tf"),
@@ -95,7 +97,7 @@ def _files_with_pins():
             rel = os.path.relpath(path, REPO_ROOT)
             if "/.terraform/" in f"/{rel}" or rel.startswith(("aidlc-docs/", "docs/")):
                 continue
-            if rel.endswith((".md", ".json", ".py", ".example")):
+            if rel.endswith((".md", ".json", ".example")) or (rel.endswith(".py") and "/scripts/" not in rel):
                 continue
             if not os.path.isfile(path):
                 continue
@@ -171,10 +173,28 @@ class TestEveryPinIsRenovateVisible:
                     continue
                 for m in rx.finditer(_read(rel)):
                     deps[m.group("depName")] = m.group("currentValue")
-        assert deps.get("vllm/vllm-openai", "").startswith("v0."), deps
+        assert re.fullmatch(r"v\d+\.\d+\.\d+", deps.get("vllm/vllm-openai", "")), deps
         # Shape, not value: Renovate bumps this line, and the test must keep passing.
         assert re.fullmatch(r"\d+\.\d+\.\d+", deps.get("aws-load-balancer-controller", "")), deps
         assert "gitleaks/gitleaks" in deps, deps
+
+    def test_pip_pins_agree_across_files(self):
+        """The same package must be pinned to one version everywhere: init
+        containers and runtime-built Jobs share PYTHON_IMAGE, so a split pin
+        means one of them was missed by Renovate (the psycopg 3.2.3-on-python-3.15
+        break found during validation)."""
+        rx = re.compile(r"([A-Za-z0-9][A-Za-z0-9._-]*)(?:\[[^\]]+\])?==([0-9][A-Za-z0-9.]*)")
+        seen = {}
+        for rel in _tracked_files():
+            if not rel.startswith("platform/services/") or "__pycache__" in rel:
+                continue
+            if not rel.endswith((".yaml", ".py")):
+                continue
+            for m in rx.finditer(_read(rel)):
+                seen.setdefault(m.group(1).lower(), set()).add(m.group(2))
+        split = {k: sorted(v) for k, v in seen.items() if len(v) > 1}
+        assert not split, f"pip pins disagree across files: {split}"
+
 
     def test_every_renovate_annotation_is_parsed(self):
         """A '# renovate:' comment that the generic regex cannot parse is a silent

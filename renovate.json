@@ -117,11 +117,13 @@
     },
     {
       "customType": "regex",
-      "description": "Inline 'pip install name==version' pins inside init containers (litellm-sync, cluster-dashboard, PHA event-watcher).",
+      "description": "Inline 'pip install name==version' pins inside init containers (litellm-sync, cluster-dashboard, PHA event-watcher) AND inside the Job specs the dashboard/PHA Python builds at runtime (backend.py, event_watcher.py). Those Jobs run on PYTHON_IMAGE, so a python bump needs wheels for these pins.",
       "managerFilePatterns": [
         "/^platform/services/litellm-sync/deployment\\.yaml$/",
         "/^platform/services/cluster-dashboard/manifests\\.yaml$/",
-        "/^platform/services/cluster-dashboard/pha-event-watcher\\.yaml$/"
+        "/^platform/services/cluster-dashboard/pha-event-watcher\\.yaml$/",
+        "/^platform/services/cluster-dashboard/scripts/backend\\.py$/",
+        "/^platform/services/cluster-dashboard/scripts/event_watcher\\.py$/"
       ],
       "matchStrings": [
         "['\"]?(?<depName>[A-Za-z0-9][A-Za-z0-9._-]*)(?:\\[[^\\]]+\\])?==(?<currentValue>[0-9][A-Za-z0-9.]*)['\"]?"
