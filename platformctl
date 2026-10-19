@@ -239,6 +239,27 @@ _teardown_watchdog() {
     _strip_teardown_finalizers "$env"
     sleep 8
   done
+  # Cluster is gone. Karpenter's controller went with it, so nothing will ever
+  # terminate the nodes it launched, and they pin the subnets: the networking
+  # destroy would otherwise wait out Terraform's 20-minute DeleteSubnet timeout
+  # before the post-failure sweep runs (seen on both E2E teardowns).
+  _terminate_karpenter_orphans "$vpc" "$region"
+}
+
+# Terminate instances Karpenter launched into this cluster's VPC. Scoped by
+# BOTH the VPC id and the karpenter.sh/nodepool tag, so nothing outside this
+# env (or not launched by Karpenter) is touched.
+_terminate_karpenter_orphans() {
+  local vpc="$1" region="$2" ids
+  [ -n "$vpc" ] || return 0
+  ids="$(aws ec2 describe-instances --region "$region" \
+    --filters "Name=vpc-id,Values=${vpc}" "Name=tag-key,Values=karpenter.sh/nodepool" \
+              "Name=instance-state-name,Values=pending,running,stopping,stopped" \
+    --query 'Reservations[].Instances[].InstanceId' --output text 2>/dev/null || true)"
+  [ -n "$ids" ] && [ "$ids" != "None" ] || return 0
+  # shellcheck disable=SC2086
+  aws ec2 terminate-instances --region "$region" --instance-ids $ids >/dev/null 2>&1 || true
+  echo "  [watchdog] cluster gone; terminated orphaned Karpenter instance(s): ${ids}"
 }
 
 # Before Terraform runs, delete the in-cluster objects whose controllers create
