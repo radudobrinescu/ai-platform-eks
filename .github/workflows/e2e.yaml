@@ -1,0 +1,197 @@
+# E2E gate — provision a real cluster from the PR's code, smoke-test every
+# upgrade domain (COMPATIBILITY.md), tear it down. Opt-in, human-approved.
+#
+# WHY. ci.yaml is static: it cannot tell whether a Renovate chart/image bump
+# actually runs. `main` auto-syncs to the cluster via ArgoCD, so this workflow is
+# the only pre-merge proof on a live cluster. It runs `./platformctl e2e` — the
+# same command an operator runs locally — nothing CI-specific is tested.
+#
+# COST + SAFETY. Every run creates BILLABLE infrastructure (EKS + system nodes +
+# one small GPU node; roughly $1-2 per 90-minute run) using a PROVISIONING role.
+# Therefore:
+#   * the job runs in the GitHub Environment `e2e`; configure a REQUIRED REVIEWER
+#     on it (Settings -> Environments -> e2e). Nothing touches AWS until a human
+#     approves the run. Fork PRs never get the id-token, the secrets, or the
+#     environment, so they cannot trigger it at all.
+#   * trigger is `pull_request` (never pull_request_target) + the label `e2e`,
+#     or a manual dispatch. Not every PR: cost.
+#   * the AWS role's trust is pinned to this repo AND this environment
+#     (terraform/ci/github-oidc). See that file for what the role can do.
+#   * teardown always runs unless `keep` is requested; a teardown error is
+#     reported but does not hide the smoke result.
+#
+# ENABLING (opt-in; forks that only consume release tags never need this):
+#   repo variable  E2E_ROLE_ARN   output of terraform/ci/github-oidc
+#   repo variable  E2E_ENV        tfvars env name, e.g. e2e
+#   repo secret    E2E_TFVARS     the full contents of your local
+#                                 terraform/00.global/vars/<E2E_ENV>.tfvars
+#                                 (it is gitignored: Identity Center ARN, SSO ids)
+#   environment    e2e            with a required reviewer
+# Until the two variables and the secret are set, the job runs green and skips.
+#
+# PRIVACY. The posted report redacts account ids, ARNs and AWS hostnames
+# (ops/lib/e2e.py); the workflow never echoes the tfvars.
+name: e2e
+
+on:
+  pull_request:
+    types: [labeled, synchronize]
+  workflow_dispatch:
+    inputs:
+      keep:
+        description: "Keep the cluster after the run (billing continues; tear down with ./platformctl down <env> --yes)"
+        type: boolean
+        default: false
+      with_llmd:
+        description: "Also exercise the llm-d scale tier (second GPU node)"
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+  id-token: write
+  pull-requests: write
+
+# One cluster at a time; a new run waits rather than racing the teardown.
+concurrency:
+  group: e2e
+  cancel-in-progress: false
+
+jobs:
+  gate:
+    name: provision + smoke + teardown (human-approved)
+    # Label-gated on PRs; `synchronize` only re-runs if the label is already on.
+    if: github.event_name == 'workflow_dispatch' || contains(github.event.pull_request.labels.*.name, 'e2e')
+    runs-on: ubuntu-latest
+    timeout-minutes: 180
+    environment: e2e
+    env:
+      E2E_ENV: ${{ vars.E2E_ENV }}
+    steps:
+      - name: Check configuration (skip cleanly if unset)
+        id: cfg
+        env:
+          ROLE: ${{ vars.E2E_ROLE_ARN }}
+          HAS_TFVARS: ${{ secrets.E2E_TFVARS != '' }}
+        run: |
+          if [ -z "$ROLE" ] || [ -z "$E2E_ENV" ] || [ "$HAS_TFVARS" != "true" ]; then
+            echo "::notice::e2e not configured — set repo variables E2E_ROLE_ARN, E2E_ENV and the secret E2E_TFVARS to enable. Skipping."
+            echo "configured=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "configured=true" >> "$GITHUB_OUTPUT"
+          fi
+
+      - uses: actions/checkout@v4
+        if: steps.cfg.outputs.configured == 'true'
+
+      - name: Tooling (terraform, kubectl, helm, python)
+        if: steps.cfg.outputs.configured == 'true'
+        uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: "1.9.8"
+          terraform_wrapper: false
+      - uses: azure/setup-kubectl@v4
+        if: steps.cfg.outputs.configured == 'true'
+      - uses: azure/setup-helm@v4
+        if: steps.cfg.outputs.configured == 'true'
+      - uses: actions/setup-python@v5
+        if: steps.cfg.outputs.configured == 'true'
+        with:
+          python-version: "3.12"
+      - name: Install python deps + jq
+        if: steps.cfg.outputs.configured == 'true'
+        run: |
+          pip install --quiet boto3 pyyaml
+          sudo apt-get update -qq && sudo apt-get install -y -qq jq make >/dev/null
+
+      - name: Write tfvars for the env (from secret) and point ArgoCD at THIS code
+        if: steps.cfg.outputs.configured == 'true'
+        env:
+          TFVARS: ${{ secrets.E2E_TFVARS }}
+          REPO_URL: https://github.com/${{ github.repository }}.git
+          REVISION: ${{ github.event_name == 'pull_request' && github.head_ref || github.ref_name }}
+        run: |
+          set -euo pipefail
+          f="terraform/00.global/vars/${E2E_ENV}.tfvars"
+          printf '%s\n' "$TFVARS" > "$f"
+          # The E2E cluster must sync the branch under test, not whatever the
+          # secret says. Replace or append the two gitops values.
+          python3 - "$f" "$REPO_URL" "$REVISION" <<'PY'
+          import re, sys
+          path, url, rev = sys.argv[1:]
+          s = open(path).read()
+          def setvar(s, k, v):
+              line = f'{k} = "{v}"'
+              return re.sub(rf'(?m)^\s*{k}\s*=.*$', line, s) if re.search(rf'(?m)^\s*{k}\s*=', s) else s + f"\n{line}\n"
+          s = setvar(s, "gitops_repo_url", url)
+          s = setvar(s, "gitops_revision", rev)
+          open(path, "w").write(s)
+          PY
+          terraform fmt "$f" >/dev/null
+          echo "ArgoCD will track ${REPO_URL} @ ${REVISION}"
+          # Region from the tfvars (platformctl pins it the same way).
+          echo "AWS_REGION=$(grep -E '^\s*region\s*=' "$f" | head -1 | sed -E 's/^[^"]*"([^"]*)".*/\1/')" >> "$GITHUB_ENV"
+
+      - name: Configure AWS credentials (OIDC -> E2E provisioning role)
+        if: steps.cfg.outputs.configured == 'true'
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ vars.E2E_ROLE_ARN }}
+          aws-region: ${{ env.AWS_REGION }}
+          role-duration-seconds: 14400
+
+      - name: platformctl e2e
+        id: e2e
+        if: steps.cfg.outputs.configured == 'true'
+        env:
+          KEEP: ${{ github.event_name == 'workflow_dispatch' && inputs.keep && '--keep' || '' }}
+          LLMD: ${{ github.event_name == 'workflow_dispatch' && inputs.with_llmd && '--with-llmd' || '' }}
+        run: |
+          set -o pipefail
+          # shellcheck disable=SC2086
+          ./platformctl e2e "$E2E_ENV" --yes $KEEP $LLMD 2>&1 | tee e2e.log
+          echo "rc=${PIPESTATUS[0]}" >> "$GITHUB_OUTPUT"
+
+      - name: Safety net — tear down if the previous step died before its own teardown
+        if: steps.cfg.outputs.configured == 'true' && always() && !(github.event_name == 'workflow_dispatch' && inputs.keep)
+        run: |
+          # platformctl e2e tears down itself; this only matters if the runner
+          # killed it (timeout/cancel). `down` is idempotent and a no-op when
+          # nothing is left.
+          ./platformctl down "$E2E_ENV" --yes || echo "::warning::teardown reported errors — check for orphans with ./platformctl down ${E2E_ENV}"
+
+      - name: Collect report
+        if: steps.cfg.outputs.configured == 'true' && always()
+        run: |
+          latest=$(ls -t .platformctl/e2e/*.md 2>/dev/null | head -1 || true)
+          if [ -n "$latest" ]; then cp "$latest" e2e-report.md; else printf '## E2E gate\n\nNo report produced (provisioning or runner failure). See the job log.\n' > e2e-report.md; fi
+          cat e2e-report.md >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v4
+        if: steps.cfg.outputs.configured == 'true' && always()
+        with:
+          name: e2e-report
+          path: |
+            e2e-report.md
+            .platformctl/e2e/*.json
+          if-no-files-found: ignore
+
+      - name: Post report on the PR (sticky comment)
+        if: steps.cfg.outputs.configured == 'true' && always() && github.event_name == 'pull_request'
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const fs = require('fs');
+            const marker = '<!-- e2e-gate-report -->';
+            const body = marker + '\n' + fs.readFileSync('e2e-report.md', 'utf8') +
+              `\n<sub>run ${context.runId} · ${new Date().toISOString()}</sub>`;
+            const { data: comments } = await github.rest.issues.listComments({ ...context.repo, issue_number: context.issue.number, per_page: 100 });
+            const mine = comments.find(c => c.body && c.body.startsWith(marker));
+            if (mine) await github.rest.issues.updateComment({ ...context.repo, comment_id: mine.id, body });
+            else await github.rest.issues.createComment({ ...context.repo, issue_number: context.issue.number, body });
+
+      - name: Result
+        if: steps.cfg.outputs.configured == 'true'
+        run: |
+          rc="${{ steps.e2e.outputs.rc }}"
+          [ "$rc" = "0" ] || { echo "::error::E2E gate failed (exit $rc) — see the report above"; exit 1; }
+          echo "E2E gate passed"

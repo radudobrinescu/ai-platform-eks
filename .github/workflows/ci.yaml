@@ -39,6 +39,14 @@ jobs:
                 terraform -chdir="$dir" validate
                 echo "::endgroup::"
               done
+          # Admin-applied modules without a backend.tf (deliberately outside
+          # apply-all discovery) still get validated.
+          for dir in terraform/ci/github-oidc; do
+            echo "::group::validate $dir"
+            terraform -chdir="$dir" init -backend=false -input=false >/dev/null
+            terraform -chdir="$dir" validate
+            echo "::endgroup::"
+          done
 
   python:
     name: python compile + lint

@@ -1,0 +1,5 @@
+# Local state only: this role is applied once by an admin, never by apply-all.
+.terraform/
+*.tfstate
+*.tfstate.*
+*.tfvars
