@@ -15,35 +15,55 @@
     "Merge policy (initial): nothing automerges; majors need a tick on the Dependency Dashboard",
     "before a PR is even opened. Loosen per group once the E2E gate has earned trust."
   ],
-  "extends": ["config:recommended", ":disableRateLimiting"],
-  "baseBranchPatterns": ["feat/upgrade-lifecycle"],
+  "extends": [
+    "config:recommended",
+    ":disableRateLimiting"
+  ],
+  "baseBranchPatterns": [
+    "feat/upgrade-lifecycle"
+  ],
   "dependencyDashboard": true,
   "dependencyDashboardTitle": "Component upgrade dashboard",
-  "schedule": ["before 6am on monday"],
+  "schedule": [
+    "before 6am on monday"
+  ],
   "timezone": "Europe/Bucharest",
   "prConcurrentLimit": 5,
   "prHourlyLimit": 0,
-  "labels": ["dependencies"],
+  "labels": [
+    "dependencies"
+  ],
   "commitMessagePrefix": "chore(deps):",
   "rebaseWhen": "behind-base-branch",
   "pinDigests": false,
-  "ignorePaths": ["**/.terraform/**", "**/node_modules/**", "docs/**", "aidlc-docs/**"],
-
+  "ignorePaths": [
+    "**/.terraform/**",
+    "**/node_modules/**",
+    "docs/**",
+    "aidlc-docs/**"
+  ],
   "kubernetes": {
-    "managerFilePatterns": ["/^platform/.+\\.ya?ml$/"]
+    "managerFilePatterns": [
+      "/^platform/.+\\.ya?ml$/"
+    ]
   },
   "kustomize": {
-    "managerFilePatterns": ["/(^|/)kustomization\\.ya?ml$/"]
+    "managerFilePatterns": [
+      "/(^|/)kustomization\\.ya?ml$/"
+    ]
   },
   "terraform": {
-    "managerFilePatterns": ["/\\.tf$/"]
+    "managerFilePatterns": [
+      "/\\.tf$/"
+    ]
   },
-
   "customManagers": [
     {
       "customType": "regex",
       "description": "Helm charts declared in the ArgoCD platform ApplicationSet (chart / chartRepo / chartVersion triplets).",
-      "managerFilePatterns": ["/^argocd/bootstrap/templates/platform\\.yaml$/"],
+      "managerFilePatterns": [
+        "/^argocd/bootstrap/templates/platform\\.yaml$/"
+      ],
       "matchStrings": [
         "chart:\\s*(?<depName>[^\\s]+)\\s*\\n\\s*chartRepo:\\s*(?<registryUrl>[^\\s]+)\\s*\\n\\s*chartVersion:\\s*\"?(?<currentValue>[^\"\\s]+)\"?"
       ],
@@ -52,7 +72,10 @@
     {
       "customType": "regex",
       "description": "Generic '# renovate: datasource=... depName=...' annotation on the line above a KEY = \"value\" / KEY: \"value\" / KEY=value assignment (Terraform locals, CI tool versions).",
-      "managerFilePatterns": ["/^terraform/.+\\.tf$/", "/^\\.github/workflows/.+\\.ya?ml$/"],
+      "managerFilePatterns": [
+        "/^terraform/.+\\.tf$/",
+        "/^\\.github/workflows/.+\\.ya?ml$/"
+      ],
       "matchStrings": [
         "# renovate: datasource=(?<datasource>[a-z-.]+?) depName=(?<depName>[^\\s]+?)(?: (?:lookupName|packageName)=(?<packageName>[^\\s]+?))?(?: versioning=(?<versioning>[^\\s]+?))?(?: extractVersion=(?<extractVersion>[^\\s]+?))?(?: registryUrl=(?<registryUrl>[^\\s]+?))?\\s+[A-Za-z0-9_-]+?\\s*[:=]\\s*\"?(?<currentValue>[^\"\\s]+)\"?\\s"
       ]
@@ -60,15 +83,23 @@
     {
       "customType": "regex",
       "description": "vLLM serving image default baked into the KRO serving-tier schemas (VLLMEndpoint, LLMDEndpoint, LLMDDisaggEndpoint). Must track terraform/30.eks/30.cluster/locals.tf vllm_image_tag; same group so they move together.",
-      "managerFilePatterns": ["/^platform/config/kro/.+\\.ya?ml$/"],
-      "matchStrings": ["default=(?<depName>vllm/vllm-openai):(?<currentValue>v?[0-9][^\"\\s]*)"],
+      "managerFilePatterns": [
+        "/^platform/config/kro/.+\\.ya?ml$/"
+      ],
+      "matchStrings": [
+        "default=(?<depName>vllm/vllm-openai):(?<currentValue>v?[0-9][^\"\\s]*)"
+      ],
       "datasourceTemplate": "docker"
     },
     {
       "customType": "regex",
       "description": "llm-d router Helm chart (OCI, ghcr.io/llm-d/charts) default in the LLMD* KRO schemas.",
-      "managerFilePatterns": ["/^platform/config/kro/llmd-.+\\.ya?ml$/"],
-      "matchStrings": ["routerChartVersion:\\s*\"string\\s*\\|\\s*default=(?<currentValue>v?[0-9][^\"\\s]*)\""],
+      "managerFilePatterns": [
+        "/^platform/config/kro/llmd-.+\\.ya?ml$/"
+      ],
+      "matchStrings": [
+        "routerChartVersion:\\s*\"string\\s*\\|\\s*default=(?<currentValue>v?[0-9][^\"\\s]*)\""
+      ],
       "depNameTemplate": "llm-d-router-standalone",
       "packageNameTemplate": "ghcr.io/llm-d/charts/llm-d-router-standalone",
       "datasourceTemplate": "docker"
@@ -76,8 +107,12 @@
     {
       "customType": "regex",
       "description": "Python base image used by the Platform Health Agent's spawned Jobs (a ConfigMap value, not an image: field).",
-      "managerFilePatterns": ["/^platform/services/cluster-dashboard/pha-config\\.yaml$/"],
-      "matchStrings": ["PYTHON_IMAGE:\\s*\"(?<depName>[^:\"]+):(?<currentValue>[^\"]+)\""],
+      "managerFilePatterns": [
+        "/^platform/services/cluster-dashboard/pha-config\\.yaml$/"
+      ],
+      "matchStrings": [
+        "PYTHON_IMAGE:\\s*\"(?<depName>[^:\"]+):(?<currentValue>[^\"]+)\""
+      ],
       "datasourceTemplate": "docker"
     },
     {
@@ -88,16 +123,19 @@
         "/^platform/services/cluster-dashboard/manifests\\.yaml$/",
         "/^platform/services/cluster-dashboard/pha-event-watcher\\.yaml$/"
       ],
-      "matchStrings": ["['\"]?(?<depName>[A-Za-z0-9][A-Za-z0-9._-]*)(?:\\[[^\\]]+\\])?==(?<currentValue>[0-9][A-Za-z0-9.]*)['\"]?"],
+      "matchStrings": [
+        "['\"]?(?<depName>[A-Za-z0-9][A-Za-z0-9._-]*)(?:\\[[^\\]]+\\])?==(?<currentValue>[0-9][A-Za-z0-9.]*)['\"]?"
+      ],
       "datasourceTemplate": "pypi",
       "versioningTemplate": "pep440"
     }
   ],
-
   "packageRules": [
     {
       "description": "Default: every Terraform provider/module is infra (control-plane adjacent). Later rules override for specific deps.",
-      "matchManagers": ["terraform"],
+      "matchManagers": [
+        "terraform"
+      ],
       "groupName": "infra",
       "groupSlug": "infra"
     },
@@ -115,13 +153,19 @@
     },
     {
       "description": "k8s Python client must stay within +/-1 minor of the API server (kubernetes-client policy). Current anchor k8s 1.36 -> client 31..33 OK; raise the ceiling when bumping kubernetes_version.",
-      "matchDatasources": ["pypi"],
-      "matchDepNames": ["kubernetes"],
+      "matchDatasources": [
+        "pypi"
+      ],
+      "matchDepNames": [
+        "kubernetes"
+      ],
       "allowedVersions": "<34"
     },
     {
       "description": "alpine/k8s bundles kubectl; keep within +/-1 minor of the API server (kubectl skew policy). Raise with the anchor.",
-      "matchDepNames": ["alpine/k8s"],
+      "matchDepNames": [
+        "alpine/k8s"
+      ],
       "allowedVersions": "<1.38"
     },
     {
@@ -158,34 +202,64 @@
     },
     {
       "description": "gitops domain - the engine that applies everything else (self-managed ESC path; managed capabilities are AWS-owned).",
-      "matchDepNames": ["argo-cd", "kro"],
+      "matchDepNames": [
+        "argo-cd",
+        "kro"
+      ],
       "groupName": "gitops",
       "groupSlug": "gitops"
     },
     {
       "description": "tooling domain - CI only, no cluster impact.",
-      "matchManagers": ["github-actions"],
+      "matchManagers": [
+        "github-actions"
+      ],
       "groupName": "tooling",
       "groupSlug": "tooling"
     },
     {
-      "matchDepNames": ["hashicorp/terraform", "gitleaks/gitleaks", "yannh/kubeconform", "ruff", "pytest", "yamllint"],
+      "matchDepNames": [
+        "hashicorp/terraform",
+        "gitleaks/gitleaks",
+        "yannh/kubeconform",
+        "ruff",
+        "pytest",
+        "yamllint",
+        "renovate"
+      ],
+      "groupName": "tooling",
+      "groupSlug": "tooling"
+    },
+    {
+      "description": "Anything found in a GitHub workflow is CI-only, whatever its dep name (python, pyyaml, kubernetes... also exist cluster-side). File-based so it overrides the dep-name groups above.",
+      "matchFileNames": [
+        ".github/workflows/**"
+      ],
       "groupName": "tooling",
       "groupSlug": "tooling"
     },
     {
       "description": "LiteLLM publishes '-stable' tags; only follow those, never nightlies.",
-      "matchDepNames": ["litellm/litellm"],
+      "matchDepNames": [
+        "litellm/litellm"
+      ],
       "allowedVersions": "/-stable/"
     },
     {
       "description": "Majors anywhere: a human ticks the checkbox on the Dependency Dashboard before the PR is opened.",
-      "matchUpdateTypes": ["major"],
+      "matchUpdateTypes": [
+        "major"
+      ],
       "dependencyDashboardApproval": true
     },
     {
       "description": "Anchors: any change (even a patch) is reviewed deliberately, so never automerge and always surface on the dashboard.",
-      "matchDepNames": ["vllm/vllm-openai", "karpenter", "argo-cd", "kro"],
+      "matchDepNames": [
+        "vllm/vllm-openai",
+        "karpenter",
+        "argo-cd",
+        "kro"
+      ],
       "automerge": false,
       "dependencyDashboardApproval": true
     }
