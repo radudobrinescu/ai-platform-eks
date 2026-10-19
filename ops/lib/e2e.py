@@ -432,13 +432,34 @@ def chk_karpenter_nodeclaim(c: Ctx):
 
 
 def chk_dcgm_metrics(c: Ctx):
-    pods = kubectl_json("get", "pods", "-n", "gpu-operator", "-l", "app=nvidia-dcgm-exporter").get("items", [])
-    if not pods:
-        return False, "no nvidia-dcgm-exporter pods (GPU node gone already, or operator not ready)"
-    pod = pods[0]["metadata"]["name"]
-    with PortForward("gpu-operator", f"pod/{pod}", 9400) as pf:
-        code, body = http("GET", f"{pf.base}/metrics")
-    return code == 200 and "DCGM_FI_DEV_GPU_UTIL" in body, f"dcgm-exporter HTTP {code}, GPU util metric {'present' if 'DCGM_FI_DEV_GPU_UTIL' in body else 'absent'}"
+    # Wait for a READY exporter pod: gpu-operator v26 added a readiness probe
+    # with initialDelaySeconds=45, and on a freshly provisioned GPU node the
+    # vLLM pod can be Ready before the exporter listens (seen on the k8s 1.37
+    # run as "RemoteDisconnected"). Port comes from the pod spec, not a literal.
+    def ready_pod():
+        for p in kubectl_json("get", "pods", "-n", "gpu-operator", "-l", "app=nvidia-dcgm-exporter").get("items", []):
+            conds = (p.get("status") or {}).get("conditions", [])
+            if any(cd.get("type") == "Ready" and cd.get("status") == "True" for cd in conds):
+                return p
+        return None
+    try:
+        pod = wait_for("Ready nvidia-dcgm-exporter pod", ready_pod, 300, 10)
+    except TimeoutError as e:
+        return False, str(e)
+    port = next((pt["containerPort"] for ct in pod["spec"]["containers"] for pt in ct.get("ports", [])
+                 if pt.get("name") == "metrics" or pt.get("containerPort") == 9400), 9400)
+    name = pod["metadata"]["name"]
+
+    def scrape():
+        with PortForward("gpu-operator", f"pod/{name}", port) as pf:
+            code, body = http("GET", f"{pf.base}/metrics")
+        return (code, body) if code == 200 else None
+    try:
+        code, body = wait_for("dcgm-exporter /metrics 200", scrape, 120, 10)
+    except TimeoutError as e:
+        return False, str(e)
+    has = "DCGM_FI_DEV_GPU_UTIL" in body
+    return has, f"dcgm-exporter HTTP {code}, GPU util metric {'present' if has else 'absent'}"
 
 
 def chk_dashboard_health(c: Ctx):
