@@ -152,21 +152,21 @@
       "groupSlug": "infra"
     },
     {
-      "description": "k8s Python client must stay within +/-1 minor of the API server (kubernetes-client policy). Current anchor k8s 1.36 -> client 31..33 OK; raise the ceiling when bumping kubernetes_version.",
+      "description": "k8s Python client must stay within +/-1 minor of the API server (kubernetes-client policy). Current anchor k8s 1.37 -> client 32..34 OK; raise the ceiling when bumping kubernetes_version.",
       "matchDatasources": [
         "pypi"
       ],
       "matchDepNames": [
         "kubernetes"
       ],
-      "allowedVersions": "<34"
+      "allowedVersions": "<35"
     },
     {
       "description": "alpine/k8s bundles kubectl; keep within +/-1 minor of the API server (kubectl skew policy). Raise with the anchor.",
       "matchDepNames": [
         "alpine/k8s"
       ],
-      "allowedVersions": "<1.38"
+      "allowedVersions": "<1.39"
     },
     {
       "description": "inference domain - anchored on the vLLM image. GPU operator driver/CUDA >= vLLM's CUDA runtime; GIE CRDs + llm-d router must match the vLLM routing protocol.",
