@@ -273,8 +273,8 @@ _delete_cluster_security_groups() {
   # Retry: an SG still referenced by a detaching ENI (or by the other SG's
   # rules) fails with DependencyViolation. One attempt deleted only one of the
   # two on the k8s 1.37 run, and the VPC delete then waited 20 minutes.
-  local left="$sgs" i
-  for i in $(seq 1 20); do
+  local left="$sgs" _
+  for _ in $(seq 1 20); do
     local next=""
     for sg in $left; do
       if aws ec2 delete-security-group --region "$region" --group-id "$sg" >/dev/null 2>&1; then
