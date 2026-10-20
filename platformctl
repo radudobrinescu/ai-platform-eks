@@ -445,6 +445,11 @@ cmd_e2e() {
   log "E2E gate for env '${env}' (cluster ${cluster}, region ${AWS_REGION:-default})"
   echo "  up: $([ "$skip_up" -eq 1 ] && echo skip || echo yes)   teardown: $([ "$keep" -eq 1 ] && echo 'NO (--keep)' || echo yes)   llm-d tier: $([ "$with_llmd" -eq 1 ] && echo yes || echo no)"
   warn "This creates billable infrastructure (EKS control plane, system nodes, one GPU node)."
+  # caffeinate cannot stop lid-close sleep on battery; a run interrupted that
+  # way lost DNS mid-apply and left state unsaved (see COMPATIBILITY.md).
+  if [ "$(uname -s)" = "Darwin" ] && pmset -g batt 2>/dev/null | grep -q "Battery Power"; then
+    warn "On battery: closing the lid will sleep the machine and break the run. Plug in, or keep the lid open."
+  fi
   if [ "$yes" -eq 0 ]; then
     read -r -p "Type the environment name ('${env}') to continue: " confirm
     [ "$confirm" = "$env" ] || die "confirmation mismatch — aborted (nothing changed)."
