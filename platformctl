@@ -6,6 +6,7 @@
 #   ./platformctl up      [ENV]        Provision everything (state backend + all Terraform stages)
 #   ./platformctl status  [ENV] [--check]  Show health + where the UIs are reachable; --check validates end-to-end
 #   ./platformctl tunnel  [ENV]        Reach the private UIs locally (SSM port-forward to the ClusterIPs)
+#   ./platformctl allow-ip [ENV] [--ip CIDR] [--keep]  Allow your current IP on the EKS API (run when your IP changes)
 #   ./platformctl edge    [MODE] [ENV] Choose the public front door: cloudfront | domain | tunnel
 #   ./platformctl new-model MODEL [..] Right-size a model + scaffold its serving YAML (VLLMEndpoint/LLMDEndpoint)
 #   ./platformctl onboard-team NAME [..] Scaffold an AITeam YAML (namespace + GPU quota + budget + scoped key) for a new team
@@ -463,7 +464,136 @@ cmd_tunnel() {
   local env; env=$(resolve_env "${1:-}" 2>/dev/null || true)
   [ -n "$env" ] && pin_region "$env"   # tunnel.sh queries EC2 in AWS_REGION — target the env's region
   warn_context_mismatch "${1:-}"
+  # tunnel.sh resolves the service ClusterIPs with kubectl, which goes through the EKS
+  # public API endpoint — restricted to an IP allowlist. Fail fast with the fix.
+  [ "$(kubectl --request-timeout=8s get --raw /readyz 2>/dev/null)" = "ok" ] || \
+    die "cannot reach the cluster API with the current kubectl context — your IP is probably not allowlisted.
+  Fix:  ./platformctl allow-ip${env:+ ${env}}    (then re-run tunnel)"
   exec "${LIB_DIR}/tunnel.sh"
+}
+
+# ---- allow-ip -------------------------------------------------------------- #
+
+# Validate an IPv4 address or IPv4 CIDR and echo it in CIDR form (bare IP => /32).
+# Refuses /0 and anything that isn't plain IPv4 (EKS publicAccessCidrs is IPv4).
+_normalize_cidr() {
+  local c="$1" ip pfx o
+  case "$c" in */*) ip="${c%/*}"; pfx="${c#*/}" ;; *) ip="$c"; pfx=32 ;; esac
+  [[ "$pfx" =~ ^[0-9]+$ ]] || return 1
+  [ "$pfx" -ge 1 ] && [ "$pfx" -le 32 ] || return 1
+  [[ "$ip" =~ ^([0-9]{1,3})\.([0-9]{1,3})\.([0-9]{1,3})\.([0-9]{1,3})$ ]] || return 1
+  for o in "${BASH_REMATCH[@]:1}"; do [ "$o" -le 255 ] || return 1; done
+  echo "${ip}/${pfx}"
+}
+
+# Space-separated words -> unique, sorted, space-separated (order-insensitive compare).
+_uniq_sorted() { echo "$*" | tr ' ' '\n' | sed '/^$/d' | sort -u | paste -sd' ' -; }
+
+# Rewrite (or append) the cluster_endpoint_public_access_cidrs line in a tfvars file
+# so Terraform's view matches the live cluster. $2 is an HCL list, e.g. ["1.2.3.4/32"].
+_tfvars_set_cidrs() {
+  local f="$1" list="$2" tmp line
+  line="$(grep -E '^[[:space:]]*cluster_endpoint_public_access_cidrs[[:space:]]*=' "$f" | head -1 || true)"
+  if [ -n "$line" ]; then
+    case "$line" in *"]"*) ;; *) die "cluster_endpoint_public_access_cidrs in ${f#"$REPO_ROOT"/} spans several lines — edit it by hand to: ${list}" ;; esac
+  fi
+  tmp="$(mktemp)"
+  if [ -n "$line" ]; then
+    awk -v v="$list" '/^[[:space:]]*cluster_endpoint_public_access_cidrs[[:space:]]*=/ && !done { print "cluster_endpoint_public_access_cidrs = " v; done=1; next } { print }' "$f" > "$tmp"
+  else
+    { cat "$f"; printf '\ncluster_endpoint_public_access_cidrs = %s\n' "$list"; } > "$tmp"
+  fi
+  cat "$tmp" > "$f"; rm -f "$tmp"
+}
+
+# Point the EKS public API allowlist at the operator's CURRENT IP (or the --ip given)
+# in one step: updates the live cluster, waits for it, syncs <env>.tfvars so the next
+# `up` doesn't revert it, and confirms kubectl can reach the API. The UIs need nothing:
+# the ALB is internal and the SSM tunnel doesn't use this allowlist.
+cmd_allow_ip() {
+  need aws; need curl
+  local env_arg="" keep=0 dry=0 given=""
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      --keep)    keep=1 ;;
+      --dry-run) dry=1 ;;
+      --ip)      shift; [ $# -gt 0 ] || die "--ip needs a value (IPv4 or CIDR)"; given="${given:+${given} }$1" ;;
+      -h|--help) echo "usage: platformctl allow-ip [ENV] [--ip IP|CIDR]... [--keep] [--dry-run]
+  Default: replace the EKS API allowlist with your current public IP (/32).
+  --ip     allow this IPv4/CIDR instead of auto-detecting (repeatable)
+  --keep   ADD to the existing allowlist instead of replacing it (e.g. two locations)
+  --dry-run  show what would change, change nothing"; return 0 ;;
+      -*)        die "unknown flag: $1 (see: ./platformctl allow-ip --help)" ;;
+      *)         env_arg="$1" ;;
+    esac
+    shift
+  done
+
+  local env; env=$(need_env "$env_arg" "allow-ip")
+  require_tfvars "$env"; pin_region "$env"
+  local region cluster tfvars; region="${AWS_REGION:-$(tfvar_region "$env")}"; cluster="$(cluster_of "$env")"
+  tfvars="${TF_DIR}/00.global/vars/${env}.tfvars"
+
+  if [ -z "$given" ]; then
+    given="$(curl -fsS --max-time 10 https://checkip.amazonaws.com 2>/dev/null | tr -d '[:space:]')" \
+      || die "could not detect your public IP — pass it explicitly:  ./platformctl allow-ip --ip <a.b.c.d>"
+    [ -n "$given" ] || die "could not detect your public IP — pass it explicitly:  ./platformctl allow-ip --ip <a.b.c.d>"
+  fi
+  local want="" c n
+  for c in $given; do
+    n="$(_normalize_cidr "$c")" || die "'${c}' is not a valid IPv4/CIDR (and /0 is refused — never expose the API to the internet)."
+    want="${want:+${want} }${n}"
+  done
+
+  local current final
+  current="$(aws eks describe-cluster --name "$cluster" --region "$region" \
+    --query 'cluster.resourcesVpcConfig.publicAccessCidrs' --output text 2>/dev/null | tr '\t' ' ')" \
+    || die "cluster '${cluster}' not found in ${region} (provision it with './platformctl up ${env}' first)."
+  if [ "$keep" -eq 1 ]; then final="$(_uniq_sorted "$current $want")"; else final="$(_uniq_sorted "$want")"; fi
+
+  log "EKS API allowlist for '${cluster}' (${region})"
+  echo "  current: ${current:-<none>}"
+  echo "  new:     ${final}"
+  [ "$dry" -eq 0 ] || { warn "dry-run — nothing changed."; return 0; }
+
+  local hcl="" w
+  for w in $final; do hcl="${hcl:+${hcl}, }\"${w}\""; done
+  hcl="[${hcl}]"
+
+  if [ "$(_uniq_sorted "$current")" = "$final" ]; then
+    ok "cluster already allows exactly this — no AWS change needed."
+  else
+    local upd
+    if ! upd="$(aws eks update-cluster-config --name "$cluster" --region "$region" \
+          --resources-vpc-config "publicAccessCidrs=${final// /,}" --query 'update.id' --output text 2>&1)"; then
+      case "$upd" in *"No changes needed"*) upd="" ;; *) die "update-cluster-config failed: ${upd}" ;; esac
+    fi
+    if [ -n "$upd" ]; then
+      log "Applying (usually 1–2 min)…"
+      local st="Unknown"
+      for _ in $(seq 1 60); do
+        st="$(aws eks describe-update --name "$cluster" --region "$region" --update-id "$upd" \
+              --query 'update.status' --output text 2>/dev/null || echo Unknown)"
+        case "$st" in Successful) break ;; Failed|Cancelled) die "EKS update ${upd} ${st} — check: aws eks describe-update --name ${cluster} --update-id ${upd}" ;; esac
+        sleep 10
+      done
+      [ "$st" = "Successful" ] || die "timed out waiting for EKS update ${upd} (last status: ${st})."
+      ok "cluster allowlist updated."
+    fi
+  fi
+
+  _tfvars_set_cidrs "$tfvars" "$hcl"
+  ok "synced ${tfvars#"$REPO_ROOT"/} (so the next 'up' keeps it)"
+
+  aws eks update-kubeconfig --name "$cluster" --region "$region" --alias "$env" >/dev/null 2>&1 || true
+  for _ in 1 2 3 4 5 6; do
+    if kubectl --context "$env" --request-timeout=10s get --raw /readyz >/dev/null 2>&1; then
+      ok "kubectl can reach the cluster API. Next: ./platformctl tunnel ${env}"
+      return 0
+    fi
+    sleep 5
+  done
+  warn "allowlist updated, but kubectl still can't reach the API from here yet (propagation can take a minute). Retry shortly; check your IP: curl https://checkip.amazonaws.com"
 }
 
 # ---- edge ------------------------------------------------------------------ #
@@ -780,6 +910,7 @@ main() {
     down)      cmd_down "$@" ;;
     status)    cmd_status "$@" ;;
     tunnel)    cmd_tunnel "$@" ;;
+    allow-ip)  cmd_allow_ip "$@" ;;
     edge)      cmd_edge "$@" ;;
     new-model) cmd_new_model "$@" ;;
     onboard-team) cmd_onboard_team "$@" ;;

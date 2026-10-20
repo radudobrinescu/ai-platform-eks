@@ -122,6 +122,13 @@ cd terraform/00.global/vars && cp example.tfvars dev.tfvars
 ./platformctl up dev
 ```
 
+> **Working from a new IP or location?** The EKS API is public but locked to an
+> allowlist (`cluster_endpoint_public_access_cidrs`), and `kubectl`, `platformctl
+> tunnel` and `new-model` all need it. Run `./platformctl allow-ip` to point it at your
+> current IP in one step (`--keep` adds it to the existing list). It updates the cluster,
+> syncs your tfvars, and checks `kubectl` works. The UIs themselves need nothing (internal
+> ALB + SSM tunnel).
+
 4. Test - no GPUs yet (up already pointed kubectl at the new cluster)
 ```bash
 ./platformctl tunnel        # forward the UIs (WebUI / LiteLLM / Langfuse / Grafana / ArgoCD)
