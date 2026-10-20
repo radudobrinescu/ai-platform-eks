@@ -334,10 +334,24 @@ def chk_alb_provisioned(c: Ctx):
 
 
 def chk_litellm_ready(c: Ctx):
-    wait_for("litellm pod Ready", lambda: sh(["kubectl", "wait", "-n", NS_PLATFORM, "--for=condition=Ready", "pod", "-l", "app=litellm", "--timeout=30s"], check=False).returncode == 0, 900, 10)
+    # Judge the Deployment, not every pod matching the label: an evicted pod
+    # stays in phase Failed (never Ready) until something garbage-collects it,
+    # and `kubectl wait pod -l` then waits forever even with 2/2 replicas
+    # serving (seen on the k8s 1.37 run after a memory eviction).
+    def deploy_ready():
+        d = kubectl_json("get", "deployment", "litellm", "-n", NS_PLATFORM)
+        want, ready = (d.get("spec") or {}).get("replicas", 1), (d.get("status") or {}).get("readyReplicas", 0)
+        return (ready, want) if ready and ready >= want else None
+    ready, want = wait_for("litellm Deployment ready", deploy_ready, 900, 10)
+    failed = [p["metadata"]["name"] + ":" + str((p.get("status") or {}).get("reason"))
+              for p in kubectl_json("get", "pods", "-n", NS_PLATFORM, "-l", "app=litellm").get("items", [])
+              if (p.get("status") or {}).get("phase") == "Failed"]
     with PortForward(NS_PLATFORM, "svc/litellm", 4000) as pf:
         code, body = http("GET", f"{pf.base}/health/readiness")
-    return code == 200, f"readiness HTTP {code}" + ("" if code == 200 else f": {body[:120]}")
+    detail = f"{ready}/{want} replicas ready; readiness HTTP {code}" + ("" if code == 200 else f": {body[:120]}")
+    if failed:
+        detail += f"; note: failed pod(s) {', '.join(failed)}"
+    return code == 200, detail
 
 
 def _emit_cr(c: Ctx, path: str, *args: str) -> None:
