@@ -262,6 +262,22 @@ upgrade domain and [`COMPATIBILITY.md`](COMPATIBILITY.md) records which versions
 validated together and why the groups are shaped as they are. Enable it by setting the `ADDON_RECONCILER_*`
 repo variables (see the workflow header).
 
+**Proving an upgrade end to end.** `./platformctl e2e <env>` provisions a
+throwaway environment from the branch under test, checks every upgrade domain on
+the real cluster, and tears it down (roughly 60-90 minutes and a few dollars;
+one small GPU node). The checks cover ArgoCD/KRO convergence, addons, ALBs and
+Karpenter; a Bedrock model enrolled, answering, traced in Langfuse and
+deregistered; a self-hosted model on a GPU (`--with-llmd` adds the llm-d tier);
+GPU metrics; and SSO: each seeded Cognito user signs in to Open WebUI, the
+LiteLLM UI, Langfuse and the dashboard with the expected role, a wrong password
+is rejected, and chat spend is attributed per user. The redacted report is
+written to `.platformctl/e2e/`. Use a dedicated env (e.g. an `e2e.tfvars` whose
+`gitops_revision` is your branch); `--keep` leaves the cluster up for debugging.
+The same gate runs as an opt-in, human-approved GitHub Action
+([`.github/workflows/e2e.yaml`](.github/workflows/e2e.yaml)); see
+[`COMPATIBILITY.md`](COMPATIBILITY.md#the-e2e-gate) for the full check list and
+the validated version sets.
+
 **Team self-service (GitOps).** Onboard a team with an `AITeam` YAML in
 `workloads/teams/` - it creates a `team-<name>` namespace with a GPU quota, RBAC,
 namespace isolation (a default-deny **ingress** NetworkPolicy - only same-team and
@@ -358,11 +374,13 @@ platform/
   services/         litellm, litellm-sync, open-webui, langfuse, gpu-operator,
                     cluster-dashboard (+ Platform Health Agent), inference-gateway
 workloads/          Self-service YAMLs: models/ · scale-models/ · teams/
-platformctl         The unified CLI (use · up · status · tunnel · edge · new-model · onboard-team · down · list-envs)
+platformctl         The unified CLI (use · up · status · tunnel · edge · new-model · onboard-team · e2e · down · list-envs)
 ops/                platformctl implementation: ops/lib/ (helpers) · ops/image/ (cold-start build helpers)
 terraform/          Infrastructure modules (VPC → IAM → EKS → observability)
 docs/               cloudfront-edge
-.github/workflows/  ci (pre-merge validation) · addon-freshness (weekly report-only EKS-addon drift check)
+.github/workflows/  ci (pre-merge validation) · e2e (opt-in E2E gate) · addon-freshness (weekly report-only EKS-addon drift check)
+renovate.json       Grouped dependency-upgrade PRs (see COMPATIBILITY.md)
+COMPATIBILITY.md    Validated version sets, coupling notes, upgrade procedure
 ```
 
 ## Acknowledgments

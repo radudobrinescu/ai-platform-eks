@@ -38,7 +38,7 @@ Newest first. "Validated" means the whole column ran together on a real cluster.
 
 ### Set 2026-10-20 — k8s 1.37 (validation: E2E gate, eu-central-1)
 
-**E2E result:** E2E_RESULT_PLACEHOLDER
+**E2E result:** 19 of 21 checks passed on 2026-10-20 (run started 05:12Z, `--with-llmd`, fresh cluster). The two failures were in the gateway domain and both were platform defects: a LiteLLM replica evicted for memory (fixed in `e6490c3`) and litellm-sync stalling deregistration on a 400 "not found in db" (fixed in `662741e`). Those two fixes have unit tests but **have not yet passed a cluster run**; this set is validated once they do.
 
 Moved from the baseline by the k8s anchor commit plus six Renovate group PRs
 (#4 gateway, #5 inference, #6 infra, #7 tooling, #9 inference major,
