@@ -176,7 +176,6 @@ class TestEveryPinIsRenovateVisible:
         assert re.fullmatch(r"v\d+\.\d+\.\d+", deps.get("vllm/vllm-openai", "")), deps
         # Shape, not value: Renovate bumps this line, and the test must keep passing.
         assert re.fullmatch(r"\d+\.\d+\.\d+", deps.get("aws-load-balancer-controller", "")), deps
-        assert "gitleaks/gitleaks" in deps, deps
 
     def test_pip_pins_agree_across_files(self):
         """The same package must be pinned to one version everywhere: init

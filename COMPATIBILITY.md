@@ -30,7 +30,7 @@ not manage them) and should be done first, alone, with an E2E run.
 | `inference` | vLLM | vLLM, gpu-operator, GIE CRDs, llm-d router, s5cmd, prometheus | a small model serves a completion on a GPU via `VLLMEndpoint`; DCGM metrics flow; `LLMDEndpoint` routes |
 | `gateway` | LiteLLM | LiteLLM, litellm-sync libs, Postgres, Langfuse, Open WebUI, oauth2-proxy, python base image, aws-cli, curl | LiteLLM boots + migrates DB; litellm-sync registers/deregisters; a chat call lands a Langfuse trace; a `BedrockModel` answers on `/v1`; every seed user signs in via Cognito SSO to each UI with the right role |
 | `gitops` | ArgoCD / KRO | argo-cd chart, kro chart (self-managed path) | ApplicationSets render; all apps Synced/Healthy; KRO expands a `VLLMEndpoint` |
-| `tooling` | — | GitHub Actions, terraform CLI, gitleaks, ruff, pytest, kubeconform, yamllint | `ci.yaml` green |
+| `tooling` | — | GitHub Actions, terraform CLI, ruff, pytest, kubeconform, yamllint | `ci.yaml` green |
 
 ## Validated sets
 

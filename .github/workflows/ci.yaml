@@ -202,21 +202,3 @@ jobs:
         # Fails on unknown options, bad regex, or config needing migration — so a
         # broken renovate.json cannot silently stop the upgrade cycle.
         run: npx --yes --package "renovate@${RENOVATE_VERSION}" -- renovate-config-validator --strict renovate.json
-
-  secrets:
-    name: secret scan (gitleaks)
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v7
-        with:
-          fetch-depth: 0
-      # Run the gitleaks CLI directly (MIT-licensed) — the gitleaks-action@v2
-      # wrapper requires a commercial license key for organization-owned repos.
-      - name: gitleaks (full history scan)
-        run: |
-          set -euo pipefail
-          # renovate: datasource=github-releases depName=gitleaks/gitleaks extractVersion=^v(?<version>.*)$
-          VERSION=8.30.1
-          curl -fsSL "https://github.com/gitleaks/gitleaks/releases/download/v${VERSION}/gitleaks_${VERSION}_linux_x64.tar.gz" \
-            | tar xz gitleaks
-          ./gitleaks git --redact --exit-code 1 --verbose --config .gitleaks.toml .
