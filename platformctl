@@ -244,6 +244,36 @@ _teardown_watchdog() {
   # destroy would otherwise wait out Terraform's 20-minute DeleteSubnet timeout
   # before the post-failure sweep runs (seen on both E2E teardowns).
   _terminate_karpenter_orphans "$vpc" "$region"
+  _delete_cluster_security_groups "$cluster" "$vpc" "$region"
+}
+
+# Security groups Terraform does not own that outlive the cluster and pin the
+# VPC: the EKS-created cluster SG (eks-cluster-sg-<cluster>-*) and the AWS Load
+# Balancer Controller's shared backend SG (k8s-traffic-<cluster sans dashes>-*).
+# On the k8s 1.37 run they held the VPC delete for 45 min. Name-scoped to this
+# cluster AND filtered to its VPC. Rules are revoked first because the two
+# reference each other.
+_delete_cluster_security_groups() {
+  local cluster="$1" vpc="$2" region="$3" compact sg sgs perms
+  [ -n "$vpc" ] || return 0
+  compact="${cluster//-/}"
+  # Instances terminated a moment ago still hold ENIs; give them time to detach.
+  sleep 60
+  sgs="$(aws ec2 describe-security-groups --region "$region" --filters "Name=vpc-id,Values=${vpc}" \
+    --query "SecurityGroups[?starts_with(GroupName, 'eks-cluster-sg-${cluster}-') || starts_with(GroupName, 'k8s-traffic-${compact}-')].GroupId" \
+    --output text 2>/dev/null || true)"
+  [ -n "$sgs" ] && [ "$sgs" != "None" ] || return 0
+  for sg in $sgs; do
+    for dir in ingress egress; do
+      perms="$(aws ec2 describe-security-groups --region "$region" --group-ids "$sg" \
+        --query "SecurityGroups[0].$([ "$dir" = ingress ] && echo IpPermissions || echo IpPermissionsEgress)" --output json 2>/dev/null || echo '[]')"
+      [ "$perms" = "[]" ] || aws ec2 "revoke-security-group-${dir}" --region "$region" --group-id "$sg" --ip-permissions "$perms" >/dev/null 2>&1 || true
+    done
+  done
+  for sg in $sgs; do
+    aws ec2 delete-security-group --region "$region" --group-id "$sg" >/dev/null 2>&1 \
+      && echo "  [watchdog] deleted leftover security group ${sg}" || true
+  done
 }
 
 # Terminate instances Karpenter launched into this cluster's VPC. Scoped by
@@ -378,6 +408,15 @@ cmd_down() {
 # infrastructure (EKS + one small GPU node for ~25 min). The exit code is the
 # smoke result; teardown failures are reported but never mask it.
 cmd_e2e() {
+  # A run lasts 60-90 min and the smoke checks talk to the cluster through
+  # kubectl port-forwards, which die when the host sleeps (an overnight run on a
+  # laptop failed three checks exactly at sleep events). On macOS, re-exec once
+  # under `caffeinate -ims` so idle/system sleep is held off until the run ends.
+  # Closing the lid still sleeps the machine.
+  if [ "$(uname -s)" = "Darwin" ] && [ -z "${PLATFORMCTL_CAFFEINATED:-}" ] && command -v caffeinate >/dev/null 2>&1; then
+    log "macOS: holding a sleep assertion for the duration of the run (caffeinate)"
+    PLATFORMCTL_CAFFEINATED=1 exec caffeinate -ims "${BASH_SOURCE[0]}" e2e "$@"
+  fi
   local keep=0 skip_up=0 yes=0 with_llmd=0 envarg="" a
   for a in "$@"; do
     case "$a" in
