@@ -252,6 +252,18 @@ class Ctx:
         self.run_start = datetime.now(timezone.utc)
         self.master_key: str | None = None
         self.gpu_node_seen = False
+        self._sso = None
+
+    def sso(self):
+        if self._sso is None:
+            import e2e_sso
+            self._sso = e2e_sso.SsoEnv(self.repo_root, self.env, PortForward, kubectl_json, secret_value)
+        return self._sso
+
+    def tf_output(self, name: str) -> str | None:
+        out = sh(["terraform", f"-chdir={os.path.join(self.repo_root, 'terraform/30.eks/30.cluster')}",
+                  "output", "-raw", name], check=False, timeout=120)
+        return out.stdout.strip() if out.returncode == 0 and out.stdout.strip() else None
 
     def litellm_key(self) -> str:
         if self.master_key is None:
@@ -490,6 +502,37 @@ def chk_llmd_roundtrip(c: Ctx):
         _delete_if_exists(path)
 
 
+# --- SSO / UI logins (gateway domain: the UIs and oauth2-proxy live there) --- #
+
+def _sso_check(name):
+    def fn(c: Ctx):
+        import e2e_sso
+        return getattr(e2e_sso, name)(c, c.sso())
+    fn.__name__ = name
+    return fn
+
+
+def chk_sso_cost_attribution(c: Ctx):
+    import e2e_sso
+    path = f"/tmp/e2e-bedrock-attr-{c.env}.yaml"
+
+    def enroll():
+        _emit_cr(c, path, "--source", "bedrock", BEDROCK_SMOKE_MODEL)
+        _apply_labeled(path)
+        key = c.litellm_key()
+        with PortForward(NS_PLATFORM, "svc/litellm", 4000) as pf:
+            return wait_for("Bedrock alias in /v1/models",
+                            lambda: next((m for m in _models(pf, key) if BEDROCK_SMOKE_MODEL in m), None),
+                            c.t["bedrock"], 10)
+    return e2e_sso.chk_openwebui_chat_attribution(c, c.sso(), enroll, lambda: _delete_if_exists(path),
+                                                  _models, c.litellm_key, PortForward)
+
+
+def chk_argocd_sso(c: Ctx):
+    import e2e_sso
+    return e2e_sso.chk_argocd_sso_redirect(c, c.sso(), c.tf_output("argocd_url"))
+
+
 # (domain, name, fn, optional-flag). Order matters: GPU before the checks that
 # depend on a GPU node having existed (NodeClaim, DCGM).
 CHECKS: list[tuple[str, str, object, str | None]] = [
@@ -501,6 +544,15 @@ CHECKS: list[tuple[str, str, object, str | None]] = [
     ("gateway",   "litellm-ready",                  chk_litellm_ready,      None),
     ("gateway",   "bedrock-enroll-chat-trace-deregister", chk_bedrock_roundtrip, None),
     ("gateway",   "cluster-dashboard-healthz",      chk_dashboard_health,   None),
+    ("gateway",   "sso-seed-users-provisioned",     _sso_check("chk_seed_users"),            None),
+    ("gateway",   "sso-login-open-webui",           _sso_check("chk_open_webui_logins"),     None),
+    ("gateway",   "sso-login-litellm-ui",           _sso_check("chk_litellm_ui_logins"),     None),
+    ("gateway",   "sso-login-langfuse",             _sso_check("chk_langfuse_logins"),       None),
+    ("gateway",   "sso-login-dashboard-oauth2-proxy", _sso_check("chk_dashboard_logins"),    None),
+    ("gateway",   "sso-wrong-password-rejected",    _sso_check("chk_wrong_password_rejected"), None),
+    ("gateway",   "sso-single-sign-on-across-uis",  _sso_check("chk_single_sign_on"),       None),
+    ("gateway",   "sso-openwebui-chat-cost-attributed", chk_sso_cost_attribution,          None),
+    ("gitops",    "argocd-ui-identity-center-redirect", chk_argocd_sso,                    None),
     ("inference", "vllmendpoint-gpu-chat",          chk_gpu_model_roundtrip, None),
     ("infra",     "karpenter-nodeclaim-ready",      chk_karpenter_nodeclaim, None),
     ("inference", "dcgm-gpu-metrics",               chk_dcgm_metrics,       None),

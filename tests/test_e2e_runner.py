@@ -13,14 +13,12 @@ import argparse
 import os
 import re
 import subprocess
-import sys
 
 import pytest
 
-REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-sys.path.insert(0, os.path.join(REPO_ROOT, "ops", "lib"))
-
 import e2e
+
+REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
 
 def _compat_domains():
