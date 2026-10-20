@@ -220,7 +220,6 @@
     {
       "matchDepNames": [
         "hashicorp/terraform",
-        "gitleaks/gitleaks",
         "yannh/kubeconform",
         "ruff",
         "pytest",

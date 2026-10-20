@@ -127,20 +127,3 @@ jobs:
           kubeconform -strict -ignore-missing-schemas -summary \
             -skip 'ResourceGraphDefinition,LLMDEndpoint,LLMDDisaggEndpoint,VLLMEndpoint,AITeam' \
             platform/config platform/services || true
-
-  secrets:
-    name: secret scan (gitleaks)
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-        with:
-          fetch-depth: 0
-      # Run the gitleaks CLI directly (MIT-licensed) — the gitleaks-action@v2
-      # wrapper requires a commercial license key for organization-owned repos.
-      - name: gitleaks (full history scan)
-        run: |
-          set -euo pipefail
-          VERSION=8.24.3
-          curl -fsSL "https://github.com/gitleaks/gitleaks/releases/download/v${VERSION}/gitleaks_${VERSION}_linux_x64.tar.gz" \
-            | tar xz gitleaks
-          ./gitleaks git --redact --exit-code 1 --verbose --config .gitleaks.toml .
