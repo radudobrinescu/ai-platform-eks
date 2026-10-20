@@ -9,7 +9,10 @@ locals {
   # Single source of truth for the vLLM serving image version.
   # Surfaced to KRO via the platform-config ConfigMap (vllmImage); the
   # VLLMEndpoint RGD reads it via externalRef, falling back to its schema default.
-  vllm_image_tag = "v0.24.0"
+  # Renovate tracks this line (inference group, see renovate.json / COMPATIBILITY.md);
+  # the RGD schema defaults in platform/config/kro/ are bumped in the same PR.
+  # renovate: datasource=docker depName=vllm/vllm-openai
+  vllm_image_tag = "v0.32.0"
   vllm_image     = "vllm/vllm-openai:${local.vllm_image_tag}"
 
   # HuggingFace model-weights cache.

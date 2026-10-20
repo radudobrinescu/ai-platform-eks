@@ -47,6 +47,25 @@ GitHub provides additional documentation on
 [forking a repository](https://help.github.com/articles/fork-a-repo/) and
 [creating a pull request](https://help.github.com/articles/creating-a-pull-request/).
 
+## Component versions and upgrades
+
+Third-party versions (Helm charts, container images, Terraform modules and
+providers, inline `pip` pins, CI tools) are tracked by Renovate
+([`renovate.json`](renovate.json)), which proposes one PR per upgrade domain.
+[`COMPATIBILITY.md`](COMPATIBILITY.md) explains the domains, the two anchors
+(the EKS Kubernetes version and the vLLM image), the version sets validated
+together, and the coupling notes behind each pin. When you change a version by
+hand or add a new pin:
+
+* Put it in a shape Renovate already reads, or add a `# renovate:` annotation
+  on the line above. `tests/test_renovate_coverage.py` fails if a pin is not
+  visible to Renovate or if one package is pinned to different versions.
+* Bump the Kubernetes or vLLM anchor in its own PR.
+* For `infra`, `inference` and `gitops` changes, prove the set on a real
+  cluster with `./platformctl e2e <env>` (or the `e2e` label on your PR, if
+  the repository has the E2E gate configured) and record the result in
+  `COMPATIBILITY.md`.
+
 ## Finding contributions to work on
 
 Looking at the existing issues is a great way to find something to contribute on. As our

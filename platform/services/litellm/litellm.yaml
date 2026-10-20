@@ -28,7 +28,7 @@ spec:
       serviceAccountName: litellm
       containers:
         - name: litellm
-          image: litellm/litellm:v1.81.9-stable.patch.1
+          image: litellm/litellm:v1.83.14-stable.patch.1
           args: ["--config", "/app/config.yaml"]
           ports:
             - containerPort: 4000
@@ -160,9 +160,13 @@ spec:
             initialDelaySeconds: 30
             periodSeconds: 15
           resources:
+            # Request sized to observed use on LiteLLM v1.83.14: 1.0-1.35Gi per
+            # replica at idle after boot + prisma migrate. With a 1Gi request the
+            # kubelet evicted a replica from a 4GiB node under memory pressure
+            # (E2E gate, k8s 1.37). The 2Gi limit is unchanged.
             requests:
               cpu: 500m
-              memory: 1Gi
+              memory: 1536Mi
             limits:
               cpu: "1"
               memory: 2Gi
@@ -287,7 +291,7 @@ spec:
       restartPolicy: OnFailure
       containers:
         - name: seed-budget
-          image: curlimages/curl:8.21.0
+          image: curlimages/curl:8.23.0
           env:
             - name: MASTER_KEY
               valueFrom:
@@ -362,7 +366,7 @@ spec:
     spec:
       containers:
         - name: postgres
-          image: postgres:16.14-alpine
+          image: postgres:16.15-alpine
           ports:
             - containerPort: 5432
           env:
@@ -535,7 +539,7 @@ spec:
           # pg_dumpall (superuser client) writes a gzip to the shared emptyDir…
           initContainers:
             - name: dump
-              image: postgres:16.14-alpine
+              image: postgres:16.15-alpine
               command: ["sh", "-c"]
               args:
                 - |
@@ -558,7 +562,7 @@ spec:
           # …then the aws-cli container uploads it to S3 and the emptyDir is discarded.
           containers:
             - name: upload
-              image: amazon/aws-cli:2.36.8
+              image: amazon/aws-cli:2.38.1
               command: ["sh", "-c"]
               args:
                 - |

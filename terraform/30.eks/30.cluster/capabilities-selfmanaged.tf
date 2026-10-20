@@ -20,9 +20,13 @@
 resource "helm_release" "argocd_selfmanaged" {
   count = local.capabilities.gitops && !local.use_managed_capabilities ? 1 : 0
 
+  # Chart version is pinned (gitops group in renovate.json / COMPATIBILITY.md). An
+  # unpinned GitOps engine is the one component that can break the mechanism you
+  # would use to recover; 10.10.5 = ArgoCD app v3.5.5, latest at pin time (2026-10-19).
   name             = "argocd"
   repository       = "https://argoproj.github.io/argo-helm"
   chart            = "argo-cd"
+  version          = "10.10.5"
   namespace        = "argocd"
   create_namespace = true
 
