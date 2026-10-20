@@ -43,6 +43,11 @@ rules:
   - apiGroups: ["kro.run"]
     resources: ["vllmendpoints", "llmdendpoints", "llmddisaggendpoints"]
     verbs: ["list"]
+  # Bedrock models enrolled via `platformctl new-model --source bedrock` are
+  # BedrockModel CRs (not litellm-config entries) — list them for the model views.
+  - apiGroups: ["bedrock.ai-platform"]
+    resources: ["bedrockmodels"]
+    verbs: ["list"]
   # Autoscaling visibility: read the KEDA-managed HPAs (current/desired/min/max +
   # the driving metric value/target) so the dashboard shows per-pool scaling.
   - apiGroups: ["autoscaling"]
