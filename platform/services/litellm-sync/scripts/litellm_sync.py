@@ -149,6 +149,39 @@ def _litellm_request(method: str, path: str, body: dict | None = None) -> dict |
     return None
 
 
+def _delete_model_row(model_id: str) -> bool:
+    """POST /model/delete for one DB row. Idempotent: a row that is already gone
+    counts as deleted.
+
+    LiteLLM runs 2 replicas, and /model/info answered by one replica can still
+    list a row another replica (or an earlier pass) has just removed. LiteLLM
+    then answers HTTP 400 "Model with id=... not found in db". Treating that as
+    a failure kept the finalizer on a deleted CR until a later reconcile, so
+    deregistration stalled for minutes (found by the E2E gate on LiteLLM
+    v1.83.14). Any other error still returns False and is retried.
+    """
+    url = f"{LITELLM_BASE_URL}/model/delete"
+    req = urllib.request.Request(url=url, data=json.dumps({"id": model_id}).encode(), method="POST")
+    req.add_header("Authorization", f"Bearer {LITELLM_MASTER_KEY}")
+    req.add_header("Content-Type", "application/json")
+    try:
+        with urllib.request.urlopen(req, timeout=HTTP_TIMEOUT_SEC):  # noqa: S310 (internal cluster URL)
+            return True
+    except urllib.error.HTTPError as e:
+        detail = ""
+        try:
+            detail = e.read().decode(errors="replace")
+        except Exception:  # noqa: BLE001 — the body is best-effort context only
+            pass
+        if e.code in (400, 404) and "not found" in detail.lower():
+            log.info("LiteLLM model row %s already gone — treating delete as done", model_id)
+            return True
+        log.warning("LiteLLM POST /model/delete -> HTTP %s: %s", e.code, e.reason)
+    except (urllib.error.URLError, TimeoutError, ValueError) as e:
+        log.warning("LiteLLM POST /model/delete failed: %s", e)
+    return False
+
+
 def list_db_model_ids() -> dict[str, list[tuple[str, dict]]] | None:
     """Return {model_name: [(model_id, litellm_params), ...]} for DB-registered
     models only.
@@ -244,13 +277,13 @@ def register_model(name: str, litellm_params: dict) -> bool:
         if rows:
             keep_id, keep_params = rows[0]
             for extra_id, _ in rows[1:]:
-                _litellm_request("POST", "/model/delete", {"id": extra_id})
+                _delete_model_row(extra_id)
             if len(rows) > 1:
                 log.info("register %s: removed %d duplicate DB row(s)", name, len(rows) - 1)
             if _params_drifted(keep_params, litellm_params):
                 # CR spec changed — re-register so the edit takes effect. Rare (an
                 # apply), so delete+add here can't churn on steady state.
-                _litellm_request("POST", "/model/delete", {"id": keep_id})
+                _delete_model_row(keep_id)
                 resp = _litellm_request("POST", "/model/new", {
                     "model_name": name,
                     "litellm_params": litellm_params,
@@ -287,7 +320,7 @@ def deregister_model(name: str) -> bool:
             return True
         ok = True
         for model_id, _ in rows:
-            if _litellm_request("POST", "/model/delete", {"id": model_id}) is None:
+            if not _delete_model_row(model_id):
                 ok = False
         if ok:
             log.info("deregistered model %s (%d row(s)) from LiteLLM", name, len(rows))
