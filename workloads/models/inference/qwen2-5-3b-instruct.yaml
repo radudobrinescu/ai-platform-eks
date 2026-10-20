@@ -1,0 +1,14 @@
+apiVersion: kro.run/v1alpha1
+kind: VLLMEndpoint
+metadata:
+  name: qwen2-5-3b-instruct
+  namespace: inference
+spec:
+  model: "Qwen/Qwen2.5-3B-Instruct"
+  gpuCount: 1
+  maxModelLen: 8192
+  minVramPerGpuGiB: 9
+  workerMemory: "10Gi"
+  # maxNumSeqs: 64
+  replicas: 1
+  toolCallParser: hermes   # auto-detected from Qwen2ForCausalLM — enables tool calling; remove for chat-only
