@@ -66,6 +66,14 @@ spec:
                   optional: true
             - name: WEBUI_AUTH
               value: "true"
+            # Show every model Open WebUI's LiteLLM key can use to every signed-in
+            # user. Without this, Open WebUI hides models from non-admin users
+            # (role "user", e.g. ai-platform-developers) until an admin grants
+            # access per model in the UI, so newly enrolled models never appear
+            # for them. Model access control stays in LiteLLM (this key's model
+            # list, per-user budgets and spend tracking).
+            - name: BYPASS_MODEL_ACCESS_CONTROL
+              value: "true"
             # --- SSO (Cognito OIDC) + per-user cost attribution ---
             # All secret refs are optional: until Terraform (enable_sso) creates
             # `sso-secrets`, OAuth stays disabled and local login still works.
