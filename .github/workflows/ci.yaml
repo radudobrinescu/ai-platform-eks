@@ -100,9 +100,12 @@ jobs:
       - name: install tools
         run: |
           set -euo pipefail
-          # kustomize
-          curl -fsSL https://raw.githubusercontent.com/kubernetes-sigs/kustomize/master/hack/install_kustomize.sh | bash
-          sudo mv kustomize /usr/local/bin/
+          # kustomize: pinned release tarball. The upstream install_kustomize.sh
+          # installs whatever is newest and calls the GitHub API unauthenticated,
+          # so CI failed whenever the runner's shared IP was rate-limited.
+          KUSTOMIZE_VERSION="5.8.3"
+          curl -fsSL "https://github.com/kubernetes-sigs/kustomize/releases/download/kustomize%2Fv${KUSTOMIZE_VERSION}/kustomize_v${KUSTOMIZE_VERSION}_linux_amd64.tar.gz" \
+            | tar xz kustomize && sudo mv kustomize /usr/local/bin/
           # kubeconform (schema validation; skips CRD kinds it doesn't know)
           curl -fsSL https://github.com/yannh/kubeconform/releases/download/v0.6.7/kubeconform-linux-amd64.tar.gz \
             | tar xz kubeconform && sudo mv kubeconform /usr/local/bin/
