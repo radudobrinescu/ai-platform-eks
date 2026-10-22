@@ -1,0 +1,273 @@
+# E2E: provision a product ref on a real cluster, prove it works, tear it down.
+#
+# Dispatch only (Actions -> e2e -> Run workflow). Two checkouts: this branch at
+# the workspace root (the harness) and the product ref under test in subject/.
+# The harness drives the subject only through its own ./platformctl, on a
+# throwaway GitOps branch e2e/<env> that Argo CD tracks and that is deleted at
+# teardown (harness/e2e.py).
+#
+#   mode fresh     subject = the ref under test
+#   mode upgrade   base = what is provisioned first (previous release or main),
+#                  subject = the candidate merged into it, upgraded with the
+#                  candidate's `./platformctl upgrade`
+#
+# Results: commit status `e2e/<mode>-<profile>` (pending -> success | failure)
+# on the subject SHA (upgrade mode: the candidate SHA), linking to this run;
+# a redacted report as the job summary and an artifact.
+#
+# COST + SAFETY. Every run creates billable infrastructure with a provisioning
+# role. Therefore: the job runs in the GitHub Environment `e2e`, which has a
+# required reviewer (nothing touches AWS before a human approves); the role's
+# trust is pinned to this repo and that environment (terraform/github-oidc);
+# teardown always runs unless `keep`, with a safety net if the harness is
+# killed. No pull_request trigger of any kind.
+#
+# CONFIGURATION (repository settings; the job skips green until the first two exist):
+#   variable E2E_ROLE_ARN         role_arn output of terraform/github-oidc
+#   secret   E2E_PUSH_TOKEN       fine-grained PAT on this repo: Contents + Workflows
+#                                 write (pushes e2e/* branches that may change workflows)
+#   variable E2E_REGION           optional, default eu-central-1
+#   variables E2E_IDC_INSTANCE_ARN, E2E_IDC_REGION, E2E_IDC_GROUP_ID
+#                                 Identity Center for profile `managed`
+#   environment e2e               with a required reviewer
+name: e2e
+
+on:
+  workflow_dispatch:
+    inputs:
+      mode:
+        description: "fresh (provision subject) or upgrade (provision base, upgrade to subject)"
+        type: choice
+        options: [fresh, upgrade]
+        default: fresh
+      subject:
+        description: "Ref under test: branch, tag or SHA (upgrade mode: the candidate)"
+        type: string
+        required: true
+        default: main
+      base:
+        description: "Upgrade mode only: ref provisioned first (previous release tag or main)"
+        type: string
+        default: main
+      profiles:
+        description: "Comma-separated profiles: default (self-managed Argo CD + kro), managed (EKS Managed Capabilities)"
+        type: string
+        default: "default,managed"
+      keep:
+        description: "Keep the cluster and the e2e branch after the run (billing continues)"
+        type: boolean
+        default: false
+      with_llmd:
+        description: "Also exercise the llm-d tier (second GPU node)"
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+
+concurrency:
+  group: e2e-${{ inputs.mode }}-${{ inputs.subject }}-${{ inputs.base }}
+  cancel-in-progress: false
+
+jobs:
+  plan:
+    name: check configuration and inputs
+    runs-on: ubuntu-latest
+    outputs:
+      configured: ${{ steps.cfg.outputs.configured }}
+      profiles: ${{ steps.cfg.outputs.profiles }}
+    steps:
+      - name: Check configuration (skip cleanly if unset) and validate inputs
+        id: cfg
+        env:
+          ROLE: ${{ vars.E2E_ROLE_ARN }}
+          HAS_PUSH_TOKEN: ${{ secrets.E2E_PUSH_TOKEN != '' }}
+          PROFILES: ${{ inputs.profiles }}
+          SUBJECT_REF: ${{ inputs.subject }}
+          BASE_REF: ${{ inputs.base }}
+        run: |
+          set -euo pipefail
+          ref_rx='^[A-Za-z0-9._/-]+$'
+          [[ "$SUBJECT_REF" =~ $ref_rx ]] || { echo "::error::invalid subject ref"; exit 1; }
+          [[ "$BASE_REF" =~ $ref_rx ]] || { echo "::error::invalid base ref"; exit 1; }
+          json="["
+          IFS=',' read -ra items <<< "$PROFILES"
+          for p in "${items[@]}"; do
+            p="${p//[[:space:]]/}"
+            case "$p" in default|managed) json+="\"$p\"," ;; "") ;; *) echo "::error::unknown profile '$p'"; exit 1 ;; esac
+          done
+          json="${json%,}]"
+          [ "$json" != "[]" ] || { echo "::error::no profile selected"; exit 1; }
+          echo "profiles=$json" >> "$GITHUB_OUTPUT"
+          if [ -z "$ROLE" ] || [ "$HAS_PUSH_TOKEN" != "true" ]; then
+            echo "::notice::e2e not configured: set variable E2E_ROLE_ARN and secret E2E_PUSH_TOKEN to enable. Skipping (no AWS call)."
+            echo "configured=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "configured=true" >> "$GITHUB_OUTPUT"
+          fi
+
+  e2e:
+    name: ${{ inputs.mode }} / ${{ matrix.profile }} (human-approved)
+    needs: plan
+    if: needs.plan.outputs.configured == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 345
+    environment: e2e
+    permissions:
+      contents: read
+      id-token: write
+      statuses: write
+    strategy:
+      fail-fast: false
+      matrix:
+        profile: ${{ fromJSON(needs.plan.outputs.profiles) }}
+    env:
+      MODE: ${{ inputs.mode }}
+      PROFILE: ${{ matrix.profile }}
+      SUBJECT_REF: ${{ inputs.subject }}
+      BASE_REF: ${{ inputs.base }}
+      KEEP: ${{ inputs.keep }}
+      WITH_LLMD: ${{ inputs.with_llmd }}
+      E2E_REGION: ${{ vars.E2E_REGION || 'eu-central-1' }}
+      CONTEXT: e2e/${{ inputs.mode }}-${{ matrix.profile }}
+      RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - name: Check out the harness (this branch)
+        uses: actions/checkout@v7
+
+      - name: Check out the product ref under test into subject/
+        uses: actions/checkout@v7
+        with:
+          ref: ${{ inputs.mode == 'upgrade' && inputs.base || inputs.subject }}
+          path: subject
+          fetch-depth: 0
+          # Pushes the throwaway e2e/* branch (and the commits ./platformctl makes on it).
+          token: ${{ secrets.E2E_PUSH_TOKEN }}
+
+      - name: Resolve SHAs and env name
+        id: refs
+        run: |
+          set -euo pipefail
+          base_sha="$(git -C subject rev-parse HEAD)"
+          if [ "$MODE" = upgrade ]; then
+            git -C subject fetch --quiet origin "$SUBJECT_REF"
+            status_sha="$(git -C subject rev-parse FETCH_HEAD)"
+          else
+            status_sha="$base_sha"
+          fi
+          env_name="e2e-${MODE:0:1}${PROFILE:0:1}-${GITHUB_RUN_NUMBER}"
+          {
+            echo "BASE_SHA=$base_sha"
+            echo "STATUS_SHA=$status_sha"
+            echo "ENV_NAME=$env_name"
+          } >> "$GITHUB_ENV"
+          echo "Testing ${MODE} on ${status_sha} as ${env_name}"
+
+      - name: Commit status pending
+        run: |
+          gh api -X POST "repos/${GITHUB_REPOSITORY}/statuses/${STATUS_SHA}" \
+            -f state=pending -f context="$CONTEXT" -f target_url="$RUN_URL" \
+            -f description="E2E ${MODE} (${PROFILE}) running" >/dev/null
+
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.12"
+      - uses: hashicorp/setup-terraform@v4
+        with:
+          terraform_version: "1.9.8"
+          terraform_wrapper: false
+      - uses: azure/setup-kubectl@v5
+      - uses: azure/setup-helm@v5
+      - name: Install jq, make, session-manager-plugin, Python deps
+        run: |
+          set -euo pipefail
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq jq make >/dev/null
+          curl -fsSL -o /tmp/ssm.deb \
+            "https://s3.amazonaws.com/session-manager-downloads/plugin/latest/ubuntu_64bit/session-manager-plugin.deb"
+          sudo dpkg -i /tmp/ssm.deb >/dev/null
+          pip install --quiet boto3 pyyaml
+
+      - name: Runner egress IP (EKS API allowlist)
+        run: |
+          set -euo pipefail
+          ip="$(curl -fsS https://checkip.amazonaws.com | tr -d '[:space:]')"
+          [[ "$ip" =~ ^[0-9]{1,3}(\.[0-9]{1,3}){3}$ ]] || { echo "::error::could not read the runner egress IP"; exit 1; }
+          echo "::add-mask::$ip"
+          echo "OPERATOR_CIDR=${ip}/32" >> "$GITHUB_ENV"
+
+      - name: Configure AWS credentials (OIDC -> E2E provisioning role)
+        uses: aws-actions/configure-aws-credentials@v6
+        with:
+          role-to-assume: ${{ vars.E2E_ROLE_ARN }}
+          aws-region: ${{ env.E2E_REGION }}
+          role-duration-seconds: 21600
+          mask-aws-account-id: true
+
+      - name: Run the harness
+        id: e2e
+        # Leaves time for the safety net below if the harness hangs.
+        timeout-minutes: 290
+        env:
+          E2E_IDC_INSTANCE_ARN: ${{ vars.E2E_IDC_INSTANCE_ARN }}
+          E2E_IDC_REGION: ${{ vars.E2E_IDC_REGION }}
+          E2E_IDC_GROUP_ID: ${{ vars.E2E_IDC_GROUP_ID }}
+        run: |
+          set -u
+          args=()
+          if [ "$KEEP" = true ]; then args+=(--keep); fi
+          if [ "$WITH_LLMD" = true ]; then args+=(--with-llmd); fi
+          if [ "$MODE" = upgrade ]; then refs=("$BASE_SHA" "$STATUS_SHA"); else refs=("$STATUS_SHA"); fi
+          set +e
+          python3 harness/e2e.py "$MODE" "${refs[@]}" --profile "$PROFILE" \
+            --run-number "$GITHUB_RUN_NUMBER" --region "$E2E_REGION" \
+            --operator-cidr "$OPERATOR_CIDR" --subject-dir subject --report-dir reports "${args[@]}"
+          rc=$?
+          set -e
+          # The step itself succeeds so the status, report and safety-net steps
+          # see a clean outcome; the final Result step fails the job.
+          echo "rc=$rc" >> "$GITHUB_OUTPUT"
+
+      - name: Safety net, tear down if the harness was killed before its own teardown
+        if: always() && steps.e2e.outputs.rc == '' && inputs.keep != true
+        working-directory: subject
+        run: |
+          # The harness tears down itself; this only runs if it never returned
+          # (step timeout, cancel). `down` is idempotent.
+          if [ -f "terraform/00.global/vars/${ENV_NAME}.tfvars" ]; then
+            printf '%s\n' "$ENV_NAME" | ./platformctl down "$ENV_NAME" \
+              || echo "::warning::teardown reported errors; check for orphans of ${ENV_NAME}"
+          fi
+          git push --quiet origin --delete "e2e/${ENV_NAME}" 2>/dev/null || true
+
+      - name: Commit status result
+        if: always()
+        env:
+          RC: ${{ steps.e2e.outputs.rc }}
+        run: |
+          if [ "$RC" = "0" ]; then state=success; desc="E2E ${MODE} (${PROFILE}) passed"
+          else state=failure; desc="E2E ${MODE} (${PROFILE}) failed"; fi
+          gh api -X POST "repos/${GITHUB_REPOSITORY}/statuses/${STATUS_SHA}" \
+            -f state="$state" -f context="$CONTEXT" -f target_url="$RUN_URL" -f description="$desc" >/dev/null
+
+      - name: Report to the job summary
+        if: always()
+        run: |
+          shopt -s nullglob
+          reports=(reports/*.md)
+          if [ "${#reports[@]}" -gt 0 ]; then cat "${reports[@]}" >> "$GITHUB_STEP_SUMMARY"
+          else printf '## E2E %s / %s\n\nNo report produced (setup or runner failure). See the job log.\n' "$MODE" "$PROFILE" >> "$GITHUB_STEP_SUMMARY"; fi
+      - uses: actions/upload-artifact@v7
+        if: always()
+        with:
+          name: e2e-report-${{ inputs.mode }}-${{ matrix.profile }}
+          path: reports/
+          if-no-files-found: ignore
+
+      - name: Result
+        env:
+          RC: ${{ steps.e2e.outputs.rc }}
+        run: |
+          [ "$RC" = "0" ] || { echo "::error::E2E ${MODE} (${PROFILE}) failed (exit ${RC:-none}); see the report"; exit 1; }
+          echo "E2E ${MODE} (${PROFILE}) passed"

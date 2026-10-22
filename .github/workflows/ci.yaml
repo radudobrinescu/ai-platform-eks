@@ -1,0 +1,84 @@
+# CI for the lifecycle branch: static checks only, no cloud credentials.
+#
+# Checks out `main` into subject/ so the tests that read the product tree
+# (Renovate coverage, tfvars rendering, harness interfaces, dry runs) run
+# against the code the harness will actually drive.
+name: ci
+
+on:
+  push:
+    branches: [lifecycle]
+  pull_request:
+    branches: [lifecycle]
+
+permissions:
+  contents: read
+
+jobs:
+  python:
+    name: pytest + ruff
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - name: Check out main into subject/
+        uses: actions/checkout@v7
+        with:
+          ref: main
+          path: subject
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.12"
+      - name: Install test tools
+        run: pip install --quiet pytest==8.3.3 pyyaml==6.0.2 ruff==0.6.9
+      - name: ruff
+        run: ruff check --output-format=github .
+      - name: pytest
+        env:
+          REQUIRE_SUBJECT: "1"
+        run: python3 -m pytest -q
+
+  shell:
+    name: shellcheck (scripts + workflow run steps)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.12"
+      - name: shellcheck
+        run: |
+          set -euo pipefail
+          sudo apt-get update -qq && sudo apt-get install -y -qq shellcheck
+          pip install --quiet pyyaml==6.0.2
+          mapfile -t files < <(git ls-files '*.sh')
+          if [ "${#files[@]}" -gt 0 ]; then shellcheck -S warning "${files[@]}"; fi
+          python3 tools/shellcheck_workflows.py .github/workflows/*.yaml
+
+  renovate-config:
+    name: renovate-config-validator
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
+        with:
+          node-version: "24"
+      - name: Validate renovate.json (strict)
+        # Fails on unknown options, bad regex, or config needing migration.
+        run: npx --yes --package renovate@44.167.7 -- renovate-config-validator --strict renovate.json
+
+  terraform:
+    name: terraform fmt + validate (github-oidc)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: hashicorp/setup-terraform@v4
+        with:
+          terraform_version: "1.9.8"
+          terraform_wrapper: false
+      - name: terraform fmt
+        run: terraform fmt -check -recursive terraform/
+      - name: terraform validate
+        run: |
+          set -euo pipefail
+          terraform -chdir=terraform/github-oidc init -backend=false -input=false >/dev/null
+          terraform -chdir=terraform/github-oidc validate
