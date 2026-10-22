@@ -1,0 +1,25 @@
+# The product tree under test is checked out here at run time (CI) or as a
+# git worktree (local). It is never part of this branch.
+/subject/
+
+# Run outputs (redacted reports are uploaded as CI artifacts instead).
+/reports/
+
+# Python
+__pycache__/
+*.pyc
+.pytest_cache/
+.ruff_cache/
+
+# Terraform (terraform/github-oidc uses local state, applied once by an admin;
+# its .terraform.lock.hcl is committed on purpose, like on main)
+**/.terraform/
+*.tfstate
+*.tfstate.*
+*.tfvars
+*.tfplan
+
+# Node (npx renovate tooling)
+node_modules/
+
+.DS_Store
