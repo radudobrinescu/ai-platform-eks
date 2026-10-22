@@ -312,6 +312,11 @@ edge gotchas the Terraform handles.
 
 ---
 
+## Upgrading
+
+To move an existing environment to a newer release, merge the release tag and
+run `./platformctl upgrade <env>`. See [UPGRADING.md](UPGRADING.md).
+
 ## Cleanup
 
 ```bash
@@ -362,7 +367,7 @@ platform/
   services/         litellm, litellm-sync, open-webui, langfuse, gpu-operator,
                     cluster-dashboard (+ Platform Health Agent), inference-gateway
 workloads/          Self-service YAMLs: models/ · scale-models/ · teams/
-platformctl         The unified CLI (use · up · status · tunnel · edge · new-model · onboard-team · down · list-envs)
+platformctl         The unified CLI (use · up · status · tunnel · edge · new-model · onboard-team · upgrade · down · list-envs)
 ops/                platformctl implementation: ops/lib/ (helpers) · ops/image/ (cold-start build helpers)
 terraform/          Infrastructure modules (VPC → IAM → EKS → observability)
 docs/               cloudfront-edge
