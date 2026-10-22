@@ -562,7 +562,7 @@ spec:
           # …then the aws-cli container uploads it to S3 and the emptyDir is discarded.
           containers:
             - name: upload
-              image: amazon/aws-cli:2.38.1
+              image: amazon/aws-cli:2.38.5
               command: ["sh", "-c"]
               args:
                 - |
