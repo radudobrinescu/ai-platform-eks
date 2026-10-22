@@ -122,8 +122,11 @@ cmd_up() {
   local env; env=$(need_env "${1:-}" "up")
   need terraform; need aws; need make; require_tfvars "$env"; check_tfvars_filled "$env"; pin_region "$env"
   log "Provisioning '${env}' — EKS + capabilities + Karpenter (takes a while)"
-  make -C "$TF_DIR" bootstrap ENVIRONMENT="$env"
-  make -C "$TF_DIR" apply-all ENVIRONMENT="$env"
+  # Explicit checks: when cmd_up is invoked in a `||` context (platformctl e2e)
+  # bash suppresses errexit inside the function, so a failed make would
+  # otherwise fall through to the "Done" banner and return 0.
+  make -C "$TF_DIR" bootstrap ENVIRONMENT="$env" || { warn "state backend bootstrap failed"; return 1; }
+  make -C "$TF_DIR" apply-all ENVIRONMENT="$env" || { warn "terraform apply failed (see above)"; return 1; }
   echo
   ok "Done. Next:"
   echo "  ./platformctl status --check     # confirm it's healthy AND working"
@@ -236,6 +239,71 @@ _teardown_watchdog() {
     _strip_teardown_finalizers "$env"
     sleep 8
   done
+  # Cluster is gone. Karpenter's controller went with it, so nothing will ever
+  # terminate the nodes it launched, and they pin the subnets: the networking
+  # destroy would otherwise wait out Terraform's 20-minute DeleteSubnet timeout
+  # before the post-failure sweep runs (seen on both E2E teardowns).
+  _terminate_karpenter_orphans "$vpc" "$region"
+  _delete_cluster_security_groups "$cluster" "$vpc" "$region"
+}
+
+# Security groups Terraform does not own that outlive the cluster and pin the
+# VPC: the EKS-created cluster SG (eks-cluster-sg-<cluster>-*) and the AWS Load
+# Balancer Controller's shared backend SG (k8s-traffic-<cluster sans dashes>-*).
+# Left behind, they held a VPC delete for 45 min. Name-scoped to this cluster
+# AND filtered to its VPC. Rules are revoked first because the two reference
+# each other.
+_delete_cluster_security_groups() {
+  local cluster="$1" vpc="$2" region="$3" compact sg sgs perms dir
+  [ -n "$vpc" ] || return 0
+  compact="${cluster//-/}"
+  # Instances terminated a moment ago still hold ENIs; give them time to detach.
+  sleep 60
+  sgs="$(aws ec2 describe-security-groups --region "$region" --filters "Name=vpc-id,Values=${vpc}" \
+    --query "SecurityGroups[?starts_with(GroupName, 'eks-cluster-sg-${cluster}-') || starts_with(GroupName, 'k8s-traffic-${compact}-')].GroupId" \
+    --output text 2>/dev/null || true)"
+  [ -n "$sgs" ] && [ "$sgs" != "None" ] || return 0
+  for sg in $sgs; do
+    for dir in ingress egress; do
+      perms="$(aws ec2 describe-security-groups --region "$region" --group-ids "$sg" \
+        --query "SecurityGroups[0].$([ "$dir" = ingress ] && echo IpPermissions || echo IpPermissionsEgress)" --output json 2>/dev/null || echo '[]')"
+      [ "$perms" = "[]" ] || aws ec2 "revoke-security-group-${dir}" --region "$region" --group-id "$sg" --ip-permissions "$perms" >/dev/null 2>&1 || true
+    done
+  done
+  # Retry: an SG still referenced by a detaching ENI (or by the other SG's
+  # rules) fails with DependencyViolation. A single attempt deleted only one of
+  # the two, and the VPC delete then waited 20 minutes.
+  local left="$sgs" next _
+  for _ in $(seq 1 20); do
+    next=""
+    for sg in $left; do
+      if aws ec2 delete-security-group --region "$region" --group-id "$sg" >/dev/null 2>&1; then
+        echo "  [watchdog] deleted leftover security group ${sg}"
+      elif aws ec2 describe-security-groups --region "$region" --group-ids "$sg" >/dev/null 2>&1; then
+        next="$next $sg"
+      fi
+    done
+    left="${next# }"
+    [ -n "$left" ] || return 0
+    sleep 30
+  done
+  echo "  [watchdog] could not delete security group(s) ${left}; the post-destroy sweep will retry"
+}
+
+# Terminate instances Karpenter launched into this cluster's VPC. Scoped by
+# BOTH the VPC id and the karpenter.sh/nodepool tag, so nothing outside this
+# env (or not launched by Karpenter) is touched.
+_terminate_karpenter_orphans() {
+  local vpc="$1" region="$2" ids
+  [ -n "$vpc" ] || return 0
+  ids="$(aws ec2 describe-instances --region "$region" \
+    --filters "Name=vpc-id,Values=${vpc}" "Name=tag-key,Values=karpenter.sh/nodepool" \
+              "Name=instance-state-name,Values=pending,running,stopping,stopped" \
+    --query 'Reservations[].Instances[].InstanceId' --output text 2>/dev/null || true)"
+  [ -n "$ids" ] && [ "$ids" != "None" ] || return 0
+  # shellcheck disable=SC2086
+  aws ec2 terminate-instances --region "$region" --instance-ids $ids >/dev/null 2>&1 || true
+  echo "  [watchdog] cluster gone; terminated orphaned Karpenter instance(s): ${ids}"
 }
 
 # Before Terraform runs, delete the in-cluster objects whose controllers create
