@@ -17,6 +17,12 @@ for rel in ("harness", "tools"):
     if p not in sys.path:
         sys.path.insert(0, p)
 
+# Tests build throwaway git repos and commit in them. CI runners have no global
+# git identity, so give the test process one (an explicit environment wins).
+for _key, _value in (("GIT_AUTHOR_NAME", "lifecycle-tests"), ("GIT_AUTHOR_EMAIL", "tests@example.invalid"),
+                     ("GIT_COMMITTER_NAME", "lifecycle-tests"), ("GIT_COMMITTER_EMAIL", "tests@example.invalid")):
+    os.environ.setdefault(_key, _value)
+
 
 def subject_dir() -> str:
     return os.path.abspath(os.environ.get("SUBJECT_ROOT") or os.path.join(ROOT, "subject"))
