@@ -204,11 +204,12 @@ _delete_cluster_albs() {
 # One quiet, cluster-wide pass that clears the controller finalizers which hang
 # Terraform's namespace deletes once the owning controller is torn down:
 #   - elbv2.k8s.aws/resources on Ingresses + TargetGroupBindings (AWS LB Controller)
-#   - litellm.ai-platform/deregister on the kro serving/team CRs (litellm-sync)
+#   - litellm.ai-platform/deregister on the kro serving/team CRs and on
+#     BedrockModels (litellm-sync)
 # Safe: every one of these objects is being destroyed anyway.
 _strip_teardown_finalizers() {
   local env="$1" kind r
-  for kind in ingress targetgroupbindings.elbv2.k8s.aws vllmendpoints.kro.run llmdendpoints.kro.run llmddisaggendpoints.kro.run aiteams.kro.run; do
+  for kind in ingress targetgroupbindings.elbv2.k8s.aws vllmendpoints.kro.run llmdendpoints.kro.run llmddisaggendpoints.kro.run aiteams.kro.run bedrockmodels.bedrock.ai-platform; do
     for r in $(kubectl --context "$env" get "$kind" -A \
         -o jsonpath='{range .items[*]}{.metadata.namespace}/{.metadata.name}{"\n"}{end}' 2>/dev/null); do
       [ -n "$r" ] || continue
@@ -256,7 +257,7 @@ _predown_drain() {
   log "Draining in-cluster resources so their controllers release AWS resources (ALB, etc.)…"
   kubectl --context "$env" delete applicationset --all -n argocd --wait=false >/dev/null 2>&1 || true
   kubectl --context "$env" delete application --all -n argocd --wait=false >/dev/null 2>&1 || true
-  kubectl --context "$env" delete vllmendpoints,llmdendpoints,llmddisaggendpoints,aiteams --all -A --wait=false >/dev/null 2>&1 || true
+  kubectl --context "$env" delete vllmendpoints,llmdendpoints,llmddisaggendpoints,aiteams,bedrockmodels --all -A --wait=false >/dev/null 2>&1 || true
   kubectl --context "$env" delete ingress --all -A --wait=false >/dev/null 2>&1 || true
   # Deterministically remove the controller-managed ALB(s) too (best-effort here;
   # the teardown watchdog in cmd_down keeps doing this in a loop to beat the
