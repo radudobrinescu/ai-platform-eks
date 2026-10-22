@@ -109,7 +109,7 @@ See COMPATIBILITY.md "Releases". In short:
 python3 tools/release.py --repo subject cut v2026.11.0 renovate/infra renovate/gateway
 python3 tools/release.py --repo subject notes v2026.11.0 --base main      # first release
 # E2E: fresh + upgrade (base = previous tag, or main), both profiles
-python3 tools/release.py --repo subject notes v2026.11.0 --base main --statuses-from-github OWNER/REPO
+python3 tools/release.py --repo subject record v2026.11.0 --github OWNER/REPO     # after all 4 runs pass
 ```
 
 `notes` writes `docs/releases/<v>.md`, `releases/<v>.json` (the manifest
@@ -119,13 +119,21 @@ than the base release, a Kubernetes set that drops a version of the previous
 release or adds more than one newer minor, and any text that would mention
 Renovate, this branch, or an account id.
 
-### Open question: recording E2E results
+### Recording the E2E results (decision A)
 
 The upgrade E2E needs `releases/<v>.json` in the candidate, so `notes` runs
-before E2E. Writing the statuses into the validated-versions row afterwards is a
-new commit, which under BR2 ("any push invalidates the statuses") needs a rerun
-of all four runs. Options: exempt a docs-only commit that touches exactly that
-row, or record the statuses after merge (on `main`, at tag time). To be decided.
+before E2E and the row says "not run". After all four runs pass:
+
+```bash
+python3 tools/release.py --repo subject record v2026.11.0 --github OWNER/REPO
+```
+
+`record` is the one allowed change after E2E (BR2 exception). It refuses unless
+all four `e2e/*` statuses are `success` on the tested head; writes only the E2E
+cell of that release's row as a single commit (`Tested commit: <sha>` in the
+message); checks the commit changes nothing else; pushes; and posts the four
+statuses on the new head, each linking the original run and naming the tested
+SHA. `--no-push` commits and verifies only. Any other change needs a rerun.
 
 ## Checks
 

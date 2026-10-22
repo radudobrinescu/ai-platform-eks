@@ -1,8 +1,9 @@
 #!/usr/bin/env python3
 """Release tooling for the product repo (design section 7).
 
-  release.py cut   <vYYYY.MM.N> <branch>...    [--repo DIR] [--no-push]
-  release.py notes <vYYYY.MM.N> --base <ref>   [--repo DIR] [options] [--no-commit]
+  release.py cut    <vYYYY.MM.N> <branch>...    [--repo DIR] [--no-push]
+  release.py notes  <vYYYY.MM.N> --base <ref>   [--repo DIR] [options] [--no-commit]
+  release.py record <vYYYY.MM.N> --github OWNER/REPO [--repo DIR] [--no-push]
 
 `cut` creates release/<version> from origin/main, merges the listed branches
 (update branches, fixes) with --no-ff, and pushes it. Coupled fixes that need
@@ -20,6 +21,12 @@ files, then commits them to the release branch:
 These files ship to the public product repo, so they name components and
 versions only: nothing about how updates are found, and no account identifiers
 (a test enforces both).
+
+`record` runs after the four E2E runs passed on the release head (decision A).
+It writes the results into that release's row of docs/validated-versions.md as
+ONE follow-up commit, verifies the commit changes nothing but that row's E2E
+cell, pushes it, and posts the four statuses on the new head, each saying which
+commit was actually tested. Any other change after E2E needs a rerun.
 
 Kubernetes rule (enforced here): a release supports every Kubernetes version
 of the previous release plus at most one newer minor, which must be exactly one
@@ -237,14 +244,21 @@ def upsert_row(text: str, version: str, row: str) -> str:
     return "\n".join(lines) + "\n"
 
 
-def statuses_from_github(repo_slug: str, sha: str) -> dict:
-    """Read-only: latest state per E2E context on the release head."""
+def status_details_from_github(repo_slug: str, sha: str) -> dict:
+    """Read-only: newest status per E2E context on `sha` -> {state, target_url, description}."""
     out = subprocess.run(["gh", "api", f"repos/{repo_slug}/commits/{sha}/statuses", "--paginate"],
                          capture_output=True, text=True, check=True).stdout
     latest: dict = {}
-    for st in json.loads(out or "[]"):
-        latest.setdefault(st["context"], st["state"])  # API returns newest first
-    return {k: v for k, v in latest.items() if k in E2E_CONTEXTS}
+    for st in json.loads(out or "[]"):  # the API returns newest first
+        if st.get("context") in E2E_CONTEXTS:
+            latest.setdefault(st["context"], {"state": st.get("state", ""), "target_url": st.get("target_url") or "",
+                                              "description": st.get("description") or ""})
+    return latest
+
+
+def statuses_from_github(repo_slug: str, sha: str) -> dict:
+    """Read-only: latest state per E2E context on the release head."""
+    return {k: v["state"] for k, v in status_details_from_github(repo_slug, sha).items()}
 
 
 def assert_product_safe(*texts: str) -> None:
@@ -305,6 +319,89 @@ def notes(repo: str, version: str, base: str, *, supported: list[str] | None = N
     return manifest
 
 
+# --------------------------------------------------------------------------- #
+# record (decision A: one docs-only commit after E2E)
+# --------------------------------------------------------------------------- #
+
+def require_all_green(details: dict) -> None:
+    bad = [f"{c}={(details.get(c) or {}).get('state', 'missing')}" for c in E2E_CONTEXTS
+           if (details.get(c) or {}).get("state") != "success"]
+    if bad:
+        raise ReleaseError("not every E2E run passed on the tested commit: " + ", ".join(bad)
+                           + ". Fix and rerun; nothing recorded.")
+
+
+def set_e2e_cell(text: str, version: str, details: dict) -> str:
+    """Replace only the E2E cell (last column) of `version`'s row."""
+    key = f"| [{version}]("
+    lines = text.split("\n")
+    hits = [i for i, ln in enumerate(lines) if ln.startswith(key)]
+    if len(hits) != 1:
+        raise ReleaseError(f"docs/validated-versions.md has {len(hits)} rows for {version}; run `notes` first")
+    i = hits[0]
+    cells = lines[i].rstrip().rstrip("|").split("|")
+    cells[-1] = " " + e2e_cell({c: d["state"] for c, d in details.items()}) + " "
+    lines[i] = "|".join(cells) + "|"
+    return "\n".join(lines)
+
+
+def verify_record_commit(repo: str, tested: str, head: str, version: str) -> None:
+    """`head` must be exactly one commit on `tested` that changes one line: `version`'s row."""
+    if git(repo, "rev-parse", f"{head}^").strip() != git(repo, "rev-parse", tested).strip():
+        raise ReleaseError(f"{head[:12]} is not a single commit on the tested commit {tested[:12]}")
+    files = git(repo, "diff", "--name-only", tested, head).split()
+    if files != ["docs/validated-versions.md"]:
+        raise ReleaseError(f"the record commit may change docs/validated-versions.md only, not {files}")
+    diff = git(repo, "diff", "-U0", tested, head, "--", "docs/validated-versions.md").splitlines()
+    removed = [ln[1:] for ln in diff if ln.startswith("-") and not ln.startswith("---")]
+    added = [ln[1:] for ln in diff if ln.startswith("+") and not ln.startswith("+++")]
+    key = f"| [{version}]("
+    if len(removed) != 1 or len(added) != 1 or not removed[0].startswith(key) or not added[0].startswith(key):
+        raise ReleaseError(f"the record commit must change exactly one line, the {version} row")
+    if removed[0].split("|")[:-2] != added[0].split("|")[:-2]:
+        raise ReleaseError(f"the record commit may change only the E2E cell of the {version} row")
+
+
+def carried_status_payloads(details: dict, tested_sha: str) -> list[dict]:
+    """Statuses to post on the record commit: same context, state and run link, plus the tested SHA."""
+    return [{"context": c, "state": "success", "target_url": details[c].get("target_url", ""),
+             "description": f"tested on {tested_sha[:12]}; this commit only records the result"[:140]}
+            for c in E2E_CONTEXTS]
+
+
+def record(repo: str, version: str, details: dict, *, push: bool = False, repo_slug: str = "",
+           remote: str = "origin") -> str:
+    validate_version(version)
+    if git(repo, "status", "--porcelain", "--untracked-files=no").strip():
+        raise ReleaseError("working tree has uncommitted changes")
+    require_all_green(details)
+    tested = git(repo, "rev-parse", "HEAD").strip()
+    path = os.path.join(repo, "docs", "validated-versions.md")
+    if not os.path.exists(path):
+        raise ReleaseError("docs/validated-versions.md is missing; run `notes` first")
+    with open(path, encoding="utf-8") as fh:
+        old = fh.read()
+    new = set_e2e_cell(old, version, details)
+    assert_product_safe(new)
+    if new == old:
+        raise ReleaseError(f"the {version} row already shows these results; nothing to record")
+    with open(path, "w", encoding="utf-8") as fh:
+        fh.write(new)
+    git(repo, "add", "--", "docs/validated-versions.md")
+    git(repo, "commit", "--quiet", "-m", f"docs(release): record E2E results for {version}",
+        "-m", f"Tested commit: {tested}")
+    head = git(repo, "rev-parse", "HEAD").strip()
+    verify_record_commit(repo, tested, head, version)
+    if push:
+        git(repo, "push", "--quiet", remote, "HEAD")
+        for p in carried_status_payloads(details, tested):
+            subprocess.run(["gh", "api", "-X", "POST", f"repos/{repo_slug}/statuses/{head}",
+                            "-f", f"state={p['state']}", "-f", f"context={p['context']}",
+                            "-f", f"target_url={p['target_url']}", "-f", f"description={p['description']}"],
+                           capture_output=True, text=True, check=True)
+    return head
+
+
 def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser(description="Cut a release branch or generate its notes.")
     ap.add_argument("--repo", default=os.path.join(os.getcwd(), "subject"), help="product repo checkout")
@@ -325,10 +422,21 @@ def main(argv: list[str] | None = None) -> int:
     n.add_argument("--statuses-from-github", metavar="OWNER/REPO", default=None,
                    help="read the E2E statuses of HEAD from GitHub (read-only)")
     n.add_argument("--no-commit", action="store_true")
+    r = sub.add_parser("record", help="record green E2E results in one docs-only commit (decision A)")
+    r.add_argument("version")
+    r.add_argument("--github", required=True, metavar="OWNER/REPO", help="repo holding the E2E statuses")
+    r.add_argument("--no-push", action="store_true", help="commit and verify only; do not push or post statuses")
     a = ap.parse_args(argv)
     try:
         if a.cmd == "cut":
             print(cut(a.repo, a.version, a.branches, push=not a.no_push))
+            return 0
+        if a.cmd == "record":
+            tested = git(a.repo, "rev-parse", "HEAD").strip()
+            details = status_details_from_github(a.github, tested)
+            head = record(a.repo, a.version, details, push=not a.no_push, repo_slug=a.github)
+            print(f"recorded E2E results for {a.version}: {tested[:12]} -> {head[:12]}"
+                  + ("" if a.no_push else "; pushed, statuses carried"))
             return 0
         statuses = dict(s.split("=", 1) for s in a.status)
         if a.statuses_from_github:

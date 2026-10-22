@@ -147,8 +147,12 @@ profiles) pending (Unit 1b). Pins: see the left column above, plus kro chart
 5. Run E2E on the release head: `fresh` and `upgrade` (base = previous release
    tag, or `main` for the first), both profiles: four commit statuses
    `e2e/{fresh,upgrade}-{default,managed}`, all required (BR1). Any push to the
-   release branch needs a rerun (BR2).
-6. Record the results: `notes ... --statuses-from-github OWNER/REPO` refreshes
-   the row. That commit changes the head SHA, so under BR2 as written it needs a
-   rerun; see README.md "Open question: recording E2E results".
+   release branch needs a rerun (BR2), with one exception (step 6).
+6. Record the results (decision A, the only exception to BR2):
+   `python3 tools/release.py --repo <checkout> record vYYYY.MM.N --github OWNER/REPO`.
+   It refuses unless all four statuses are `success` on the tested head, writes
+   only the E2E cell of this release's row in `docs/validated-versions.md` as one
+   commit, verifies that commit changes nothing else, pushes it, and posts the
+   four statuses on the new head with the run links and "tested on <sha>".
+   The tested SHA is also in the commit message. Any other change: rerun E2E.
 7. Merge the release PR, tag the merge commit `vYYYY.MM.N`.
