@@ -1,0 +1,37 @@
+{
+  "format_version": "1.2",
+  "terraform_version": "1.9.8",
+  "resource_changes": [
+    {
+      "address": "aws_s3_bucket.model_cache[0]",
+      "mode": "managed",
+      "type": "aws_s3_bucket",
+      "name": "model_cache",
+      "index": 0,
+      "change": {"actions": ["create", "delete"]},
+      "action_reason": "replace_because_cannot_update"
+    },
+    {
+      "address": "aws_s3_bucket_versioning.model_cache[0]",
+      "mode": "managed",
+      "type": "aws_s3_bucket_versioning",
+      "name": "model_cache",
+      "index": 0,
+      "change": {"actions": ["delete", "create"]}
+    },
+    {
+      "address": "aws_iam_policy.model_cache_read",
+      "mode": "managed",
+      "type": "aws_iam_policy",
+      "name": "model_cache_read",
+      "change": {"actions": ["update"]}
+    },
+    {
+      "address": "aws_ssm_parameter.cache_bucket",
+      "mode": "managed",
+      "type": "aws_ssm_parameter",
+      "name": "cache_bucket",
+      "change": {"actions": ["create"]}
+    }
+  ]
+}

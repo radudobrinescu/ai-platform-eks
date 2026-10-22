@@ -1,0 +1,36 @@
+{
+  "format_version": "1.2",
+  "terraform_version": "1.9.8",
+  "resource_changes": [
+    {
+      "address": "module.eks.aws_eks_cluster.this[0]",
+      "mode": "managed",
+      "type": "aws_eks_cluster",
+      "name": "this",
+      "index": 0,
+      "change": {"actions": ["update"]}
+    },
+    {
+      "address": "helm_release.argocd[0]",
+      "mode": "managed",
+      "type": "helm_release",
+      "name": "argocd",
+      "index": 0,
+      "change": {"actions": ["update"]}
+    },
+    {
+      "address": "aws_vpc.main",
+      "mode": "managed",
+      "type": "aws_vpc",
+      "name": "main",
+      "change": {"actions": ["no-op"]}
+    },
+    {
+      "address": "aws_iam_role.old_helper",
+      "mode": "managed",
+      "type": "aws_iam_role",
+      "name": "old_helper",
+      "change": {"actions": ["delete"]}
+    }
+  ]
+}
