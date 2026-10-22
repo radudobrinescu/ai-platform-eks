@@ -10,6 +10,7 @@
 #   ./platformctl edge    [MODE] [ENV] Choose the public front door: cloudfront | domain | tunnel
 #   ./platformctl new-model MODEL [..] Right-size a model + scaffold its serving YAML (VLLMEndpoint/LLMDEndpoint)
 #   ./platformctl onboard-team NAME [..] Scaffold an AITeam YAML (namespace + GPU quota + budget + scoped key) for a new team
+#   ./platformctl upgrade [ENV] [--plan-only] [--yes] [--allow-replace ADDR]...  Upgrade to the release merged into HEAD (see UPGRADING.md)
 #   ./platformctl down    [ENV] [--purge]  Tear down infra; --purge also deletes the env definition (tfvars + workspaces)
 #   ./platformctl list-envs            List configured environments (cluster + region; marks the active one)
 set -euo pipefail
@@ -843,6 +844,246 @@ EOF
   ok "pushed. ArgoCD will onboard team '${team}'. Watch it: kubectl get aiteams -n ai-platform -w"
 }
 
+# ---- upgrade --------------------------------------------------------------- #
+
+# Upgrade an env to the release merged into HEAD (see UPGRADING.md). The forker
+# merges the release tag locally first (not pushed), so the command that runs is
+# the NEW release's. Order matters: Terraform first, push last. Argo CD
+# auto-syncs with prune + selfHeal, so pushing first would roll out chart and
+# manifest changes before the IAM/CRD/ConfigMap changes Terraform makes for them.
+UPGRADE_CONVERGE_TIMEOUT="${UPGRADE_CONVERGE_TIMEOUT:-1800}"   # seconds (30 min)
+
+_upgrade_usage() {
+  cat <<EOF
+usage: platformctl upgrade [ENV] [--plan-only] [--yes] [--allow-replace [STAGE:]ADDR]...
+  Upgrade ENV to the release you merged into this branch (not pushed yet):
+    git fetch upstream --tags && git merge <tag>
+    ./platformctl upgrade <env>
+  Steps: checks -> release notes -> plan guard on every stage -> apply each stage
+  from its saved plan -> git push -> wait for Argo CD -> status --check.
+  --plan-only      run the checks and the plan guard, change nothing
+  --yes, -y        do not ask for confirmation after the release notes
+  --allow-replace  accept a guarded delete/replace at this Terraform address
+                   (repeatable; prefix STAGE: to limit it to one stage)
+  See UPGRADING.md.
+EOF
+}
+
+# Terraform stages in apply order (same discovery as the Makefile's MODULES).
+_upgrade_stages() {
+  (cd "$TF_DIR" && find . -name backend.tf -not -path '*/.terraform/*' -exec dirname {} \; | sort -u)
+}
+
+# ./30.eks/30.cluster -> 30.eks_30.cluster (the Makefile's PLAN_NAME).
+_upgrade_plan_name() { local s="${1#./}"; s="${s%/}"; echo "${s//\//_}"; }
+
+# Plan one stage into tf-plans/ and run the plan guard on it.
+# Returns 0 clean, 3 guarded, anything else = the plan itself failed.
+_upgrade_plan_and_guard() {
+  local env="$1" stage="$2" manifest="$3"; shift 3
+  local json rc=0
+  json="${TF_DIR}/tf-plans/$(_upgrade_plan_name "$stage").json"
+  make -C "$TF_DIR" plan-save MODULE="$stage" ENVIRONMENT="$env" || return 1
+  [ -s "$json" ] || { warn "no plan JSON at ${json#"$REPO_ROOT"/}"; return 1; }
+  python3 "${LIB_DIR}/plan_guard.py" "$json" --stage "$stage" --manifest "$manifest" "$@" || rc=$?
+  return "$rc"
+}
+
+# Wait until every Argo CD Application is Synced + Healthy and every app that
+# tracks the GitOps repo has compared the pushed commit (so the old revision
+# being healthy does not count).
+_upgrade_wait_converged() {
+  local env="$1" head="$2" deadline now lines repo pending total
+  case "$UPGRADE_CONVERGE_TIMEOUT" in ''|*[!0-9]*) die "UPGRADE_CONVERGE_TIMEOUT must be a number of seconds" ;; esac
+  deadline=$(( $(date +%s) + UPGRADE_CONVERGE_TIMEOUT ))
+  repo="$(kubectl --context "$env" get application bootstrap -n argocd -o jsonpath='{.spec.source.repoURL}' 2>/dev/null || true)"
+  log "Waiting for Argo CD: every Application Synced + Healthy at ${head:0:12} (timeout $((UPGRADE_CONVERGE_TIMEOUT / 60)) min)"
+  while :; do
+    lines="$(kubectl --context "$env" get applications -n argocd \
+      -o jsonpath='{range .items[*]}{.metadata.name}{"\t"}{.status.sync.status}{"\t"}{.status.health.status}{"\t"}{.status.sync.revision}{"\t"}{.spec.source.repoURL}{"\n"}{end}' 2>/dev/null || true)"
+    pending="$(printf '%s\n' "$lines" | awk -F'\t' -v head="$head" -v repo="$repo" '
+      NF == 0 || $1 == "" { next }
+      $2 != "Synced" || $3 != "Healthy" || (repo != "" && $5 == repo && $4 != head) {
+        printf "    %-32s sync=%s health=%s revision=%s\n", $1, ($2 == "" ? "?" : $2), ($3 == "" ? "?" : $3), substr($4, 1, 12)
+      }')"
+    total="$(printf '%s\n' "$lines" | awk -F'\t' '$1 != "" { n++ } END { print n + 0 }')"
+    if [ "$total" -gt 0 ] && [ -z "$pending" ]; then
+      ok "all ${total} Argo CD Applications Synced + Healthy"
+      return 0
+    fi
+    now=$(date +%s)
+    if [ "$now" -ge "$deadline" ]; then
+      warn "Argo CD did not converge within $((UPGRADE_CONVERGE_TIMEOUT / 60)) min. Not ready:
+${pending:-    (no Applications found in namespace argocd)}"
+      return 1
+    fi
+    sleep 15
+  done
+}
+
+cmd_upgrade() {
+  local envarg="" plan_only=0 yes=0 allow=()
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      --plan-only) plan_only=1 ;;
+      -y|--yes)    yes=1 ;;
+      --allow-replace)
+        shift; [ $# -gt 0 ] && [ -n "$1" ] || die "--allow-replace needs a Terraform address (e.g. aws_s3_bucket.model_cache[0])"
+        allow+=(--allow-replace "$1") ;;
+      --allow-replace=*) allow+=(--allow-replace "${1#--allow-replace=}") ;;
+      -h|--help)   _upgrade_usage; return 0 ;;
+      -*)          die "unknown flag: $1 (see: ./platformctl upgrade --help)" ;;
+      *)           [ -z "$envarg" ] || die "more than one environment given: '${envarg}' and '$1'"; envarg="$1" ;;
+    esac
+    shift
+  done
+
+  # -- 1. preconditions ---------------------------------------------------- #
+  need git; need python3; need make; need terraform
+  local env; env=$(need_env "$envarg" "upgrade")
+  require_tfvars "$env"; check_tfvars_filled "$env"; pin_region "$env"
+  local tfvars="${TF_DIR}/00.global/vars/${env}.tfvars" g=(git -C "$REPO_ROOT")
+
+  "${g[@]}" rev-parse -q --verify MERGE_HEAD >/dev/null 2>&1 && die "a merge is still in progress.
+  Resolve the conflicts and run 'git commit' (or 'git merge --abort'), then rerun."
+  local dirty; dirty="$("${g[@]}" status --porcelain 2>/dev/null)"
+  [ -z "$dirty" ] || die "the working tree has uncommitted changes (gitignored files such as tfvars do not count):
+$(printf '%s\n' "$dirty" | sed 's/^/    /')
+  Commit or stash them, then rerun."
+  local branch upstream remote merge_ref
+  branch="$("${g[@]}" symbolic-ref -q --short HEAD 2>/dev/null)" || die "HEAD is detached. Check out the branch Argo CD tracks (e.g. git checkout main), merge the release there, then rerun."
+  upstream="$("${g[@]}" rev-parse --abbrev-ref --symbolic-full-name '@{u}' 2>/dev/null)" || die "branch '${branch}' has no upstream, so the deployed release is unknown.
+  Point it at the branch Argo CD tracks, e.g.:  git branch --set-upstream-to=origin/${branch}"
+  remote="$("${g[@]}" config "branch.${branch}.remote")"
+  merge_ref="$("${g[@]}" config "branch.${branch}.merge")"
+  "${g[@]}" fetch --quiet "$remote" "$merge_ref" 2>/dev/null \
+    || warn "could not fetch ${upstream}; using the local copy (the push at the end fails if it is out of date)."
+  "${g[@]}" merge-base --is-ancestor '@{u}' HEAD || die "HEAD does not contain ${upstream} (someone pushed since you merged, or the branches diverged).
+  Bring it in first (git merge ${upstream}), then rerun."
+  local ahead; ahead="$("${g[@]}" rev-list --count '@{u}..HEAD')"
+  [ "$ahead" -gt 0 ] || die "nothing to upgrade: HEAD is the same as ${upstream}.
+  Merge a release first:  git fetch upstream --tags && git merge <tag>
+  If an earlier upgrade already pushed and then stopped, check the platform with:  ./platformctl status ${env} --check"
+
+  # -- 2. release path ------------------------------------------------------ #
+  local path deployed target manifest
+  path="$(python3 "${LIB_DIR}/release_manifest.py" release-path --repo "$REPO_ROOT" --deployed '@{u}' --target HEAD --env "$env")" \
+    || die "cannot upgrade from ${upstream} to HEAD (see above)."
+  deployed="${path% *}"; target="${path#* }"
+  manifest="${REPO_ROOT}/releases/${target}.json"
+  [ -f "$manifest" ] || die "release manifest ${manifest#"$REPO_ROOT"/} is missing from the working tree."
+  log "Upgrade '${env}': ${deployed} -> ${c_bold}${target}${c_rst}  (${ahead} commit(s) ahead of ${upstream})"
+
+  # -- 3. Kubernetes version ----------------------------------------------- #
+  python3 "${LIB_DIR}/release_manifest.py" check-kubernetes --manifest "$manifest" --tfvars "$tfvars" --env "$env" \
+    || die "Kubernetes version not supported by ${target} (see above). Nothing changed."
+  # -- 4. required tfvars --------------------------------------------------- #
+  python3 "${LIB_DIR}/release_manifest.py" check-tfvars --manifest "$manifest" --tfvars "$tfvars" \
+    --example "${TF_DIR}/00.global/vars/example.tfvars" \
+    || die "${env}.tfvars is missing variables ${target} needs (see above). Nothing changed."
+  ok "release path, Kubernetes version and tfvars checked"
+
+  # Cluster access, needed from the first apply on. Checked now so a missing
+  # context or a stale IP allowlist stops the upgrade before anything changes.
+  if [ "$plan_only" -eq 0 ]; then
+    need kubectl
+    kubectl config get-contexts "$env" >/dev/null 2>&1 || die "no kubectl context named '${env}'. Run:  ./platformctl use ${env}"
+    [ "$(kubectl config current-context 2>/dev/null)" = "$env" ] || die "the current kubectl context is not '${env}' (status --check runs against it). Run:  ./platformctl use ${env}"
+    [ "$(kubectl --context "$env" --request-timeout=10s get --raw /readyz 2>/dev/null)" = "ok" ] \
+      || die "cannot reach the '${env}' cluster API (your IP is probably not allowlisted). Run:  ./platformctl allow-ip ${env}"
+  fi
+
+  # -- 5. release notes + manual steps -------------------------------------- #
+  local notes="${REPO_ROOT}/docs/releases/${target}.md" steps
+  echo
+  if [ -f "$notes" ]; then
+    log "Release notes (${notes#"$REPO_ROOT"/})"
+    sed 's/^/  /' "$notes"
+  else
+    warn "no release notes at ${notes#"$REPO_ROOT"/}"
+  fi
+  steps="$(python3 "${LIB_DIR}/release_manifest.py" manual-steps --manifest "$manifest")" || die "cannot read ${manifest#"$REPO_ROOT"/}"
+  if [ -n "$steps" ]; then
+    echo; warn "Manual steps for ${target} (do them before continuing):"; echo "$steps"
+  fi
+  echo
+  if [ "$plan_only" -eq 0 ] && [ "$yes" -eq 0 ]; then
+    local go=""
+    read -r -p "Continue the upgrade of '${env}' to ${target}? Type 'yes' to continue: " go || true
+    [ "$go" = "yes" ] || die "aborted (nothing changed)."
+  fi
+
+  # -- 6. guard pass: plan every stage before anything is applied ----------- #
+  local stages stage rc blocked=""
+  stages="$(_upgrade_stages)"
+  [ -n "$stages" ] || die "no Terraform stages found under ${TF_DIR#"$REPO_ROOT"/}"
+  log "Plan guard: planning every stage (nothing is applied in this pass)"
+  for stage in $stages; do
+    rc=0; _upgrade_plan_and_guard "$env" "$stage" "$manifest" ${allow[@]+"${allow[@]}"} || rc=$?
+    case "$rc" in
+      0) ;;
+      3) blocked="${blocked}    ${stage#./}\n" ;;
+      *) die "terraform plan failed for ${stage#./} (see above). Nothing was applied." ;;
+    esac
+  done
+  if [ -n "$blocked" ]; then
+    warn "the plan guard stopped the upgrade. Guarded changes in:
+$(printf '%b' "$blocked")
+  Nothing was applied. Check each GUARDED line above. If the change is intended,
+  rerun with the --allow-replace flags printed there (see UPGRADING.md, 'When the plan guard stops')."
+    exit 3
+  fi
+  ok "plan guard: no unacknowledged delete or replace of a protected resource"
+  if [ "$plan_only" -eq 1 ]; then
+    ok "--plan-only: nothing changed. Saved plans (they hold sensitive values): ${TF_DIR#"$REPO_ROOT"/}/tf-plans/"
+    return 0
+  fi
+
+  # -- 7. apply each stage from a fresh saved plan, guarded again ----------- #
+  # Re-planned per stage because an earlier stage's outputs can change what a
+  # later one plans. A failure leaves earlier stages applied and nothing pushed;
+  # rerunning is safe (applied stages then plan no changes).
+  local applied=""
+  for stage in $stages; do
+    log "Stage ${stage#./}: plan, guard, apply"
+    rc=0; _upgrade_plan_and_guard "$env" "$stage" "$manifest" ${allow[@]+"${allow[@]}"} || rc=$?
+    case "$rc" in
+      0) ;;
+      3) die "the plan guard stopped stage ${stage#./} (see above).
+  Applied so far: ${applied:-none}. Nothing pushed. Rerun after deciding on the change (see UPGRADING.md)." ;;
+      *) die "terraform plan failed for ${stage#./}. Applied so far: ${applied:-none}. Nothing pushed.
+  Fix the cause and rerun ./platformctl upgrade ${env} (applied stages then show no changes)." ;;
+    esac
+    make -C "$TF_DIR" apply-saved MODULE="$stage" ENVIRONMENT="$env" || die "terraform apply failed for ${stage#./}.
+  Applied so far: ${applied:-none}. Nothing pushed. Fix the cause and rerun ./platformctl upgrade ${env}."
+    rm -f "${TF_DIR}/tf-plans/$(_upgrade_plan_name "$stage")".tfplan "${TF_DIR}/tf-plans/$(_upgrade_plan_name "$stage")".json
+    applied="${applied:+${applied}, }${stage#./}"
+  done
+  ok "all Terraform stages applied"
+
+  # -- 8. push, then nudge Argo CD ------------------------------------------ #
+  local head; head="$("${g[@]}" rev-parse HEAD)"
+  log "Pushing ${target} to ${upstream} (Argo CD syncs from there)"
+  "${g[@]}" push "$remote" "HEAD:${merge_ref}" || die "git push to ${upstream} was rejected. Terraform is already applied.
+  Bring in the remote commits (git pull --no-rebase), then push yourself (git push) and run:  ./platformctl status ${env} --check"
+  kubectl --context "$env" annotate application bootstrap -n argocd argocd.argoproj.io/refresh=hard --overwrite >/dev/null 2>&1 \
+    || warn "could not request an Argo CD refresh of 'bootstrap'; it picks up the commit on its next poll."
+
+  # -- 9. converge, 10. check ----------------------------------------------- #
+  _upgrade_wait_converged "$env" "$head" || die "upgrade pushed, but Argo CD has not converged. Inspect the apps above
+  (kubectl --context ${env} get applications -n argocd), then run:  ./platformctl status ${env} --check"
+  if ! cmd_status "$env" --check; then
+    die "upgrade to ${target} applied and pushed, but status --check failed (see above)."
+  fi
+
+  # -- 11. Kubernetes hint --------------------------------------------------- #
+  local hint
+  hint="$(python3 "${LIB_DIR}/release_manifest.py" kubernetes-hint --manifest "$manifest" --tfvars "$tfvars" --env "$env" 2>/dev/null || true)"
+  [ -z "$hint" ] || { echo; warn "$hint"; }
+  echo
+  ok "'${env}' is on ${target}."
+}
+
 # ---- use ------------------------------------------------------------------- #
 
 # Switch the active env — the single action that aligns everything: records the
@@ -915,6 +1156,7 @@ main() {
     edge)      cmd_edge "$@" ;;
     new-model) cmd_new_model "$@" ;;
     onboard-team) cmd_onboard_team "$@" ;;
+    upgrade)   cmd_upgrade "$@" ;;
     list-envs|envs) cmd_list_envs "$@" ;;
     ""|-h|--help|help) usage ;;
     *) die "unknown command: ${cmd}

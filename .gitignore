@@ -14,6 +14,8 @@ terraform.tfstate.d/
 *.tfvars.backup
 !**/example*.tfvars
 terraform/tf-logs/
+# Saved plans from platformctl upgrade (they hold sensitive values)
+terraform/tf-plans/
 errored.tfstate
 
 # Python
