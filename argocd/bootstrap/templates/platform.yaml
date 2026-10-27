@@ -69,7 +69,7 @@ spec:
             type: helm
             chart: langfuse
             chartRepo: https://langfuse.github.io/langfuse-k8s
-            chartVersion: "1.5.41"
+            chartVersion: "2.1.7"
             valuesPath: platform/services/langfuse/helm-values.yaml
             tier: platform
           # cluster-dashboard ALSO ships the Platform Health Agent as a component
