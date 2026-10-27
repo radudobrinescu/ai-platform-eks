@@ -199,6 +199,19 @@
       "depNameTemplate": "yannh/kubeconform",
       "datasourceTemplate": "github-releases",
       "extractVersionTemplate": "^v(?<version>.+)$"
+    },
+    {
+      "customType": "regex",
+      "description": "kustomize release tarball in CI (`KUSTOMIZE_VERSION=\"<v>\"` shell assignment).",
+      "managerFilePatterns": [
+        "/^\\.github/workflows/.+\\.ya?ml$/"
+      ],
+      "matchStrings": [
+        "KUSTOMIZE_VERSION=\"(?<currentValue>[0-9][^\"\\s]*)\""
+      ],
+      "depNameTemplate": "kubernetes-sigs/kustomize",
+      "datasourceTemplate": "github-releases",
+      "extractVersionTemplate": "^kustomize/v(?<version>.+)$"
     }
   ],
   "packageRules": [
@@ -292,6 +305,7 @@
       "matchDepNames": [
         "hashicorp/terraform",
         "yannh/kubeconform",
+        "kubernetes-sigs/kustomize",
         "ruff",
         "pytest",
         "yamllint",

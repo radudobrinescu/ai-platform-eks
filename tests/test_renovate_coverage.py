@@ -51,6 +51,7 @@ CUSTOM_INVENTORY = [
     (".github/workflows/ci.yaml", "pyyaml"),
     (".github/workflows/ci.yaml", "yamllint"),
     (".github/workflows/ci.yaml", "yannh/kubeconform"),
+    (".github/workflows/ci.yaml", "kubernetes-sigs/kustomize"),
 ]
 
 # Pins read by Renovate's built-in managers (terraform helm_release / modules,
@@ -68,7 +69,6 @@ BUILTIN_SHAPES = [
 # `main` with no version. ack_selfmanaged is a for_each over a user map (opt-in).
 KNOWN_UNPINNED_HELM_RELEASES = {
     "terraform/30.eks/30.cluster/capabilities-selfmanaged.tf:ack_selfmanaged",
-    "terraform/30.eks/30.cluster/capabilities-selfmanaged.tf:argocd_selfmanaged",
 }
 
 
