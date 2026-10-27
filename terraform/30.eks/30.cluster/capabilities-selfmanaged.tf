@@ -20,9 +20,12 @@
 resource "helm_release" "argocd_selfmanaged" {
   count = local.capabilities.gitops && !local.use_managed_capabilities ? 1 : 0
 
-  name             = "argocd"
-  repository       = "https://argoproj.github.io/argo-helm"
-  chart            = "argo-cd"
+  name       = "argocd"
+  repository = "https://argoproj.github.io/argo-helm"
+  chart      = "argo-cd"
+  # Pinned: without a version every new install takes whatever chart is newest
+  # that day, so two installs of the same commit could run different Argo CD.
+  version          = "10.10.5" # Argo CD v3.5.5
   namespace        = "argocd"
   create_namespace = true
 
