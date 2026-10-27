@@ -1,0 +1,30 @@
+{
+  "format_version": "1.2",
+  "terraform_version": "1.9.8",
+  "resource_changes": [
+    {
+      "address": "module.eks.aws_eks_cluster.this[0]",
+      "module_address": "module.eks",
+      "mode": "managed",
+      "type": "aws_eks_cluster",
+      "name": "this",
+      "index": 0,
+      "change": {"actions": ["delete", "create"]},
+      "action_reason": "replace_because_cannot_update"
+    },
+    {
+      "address": "aws_iam_role_policy.extra",
+      "mode": "managed",
+      "type": "aws_iam_role_policy",
+      "name": "extra",
+      "change": {"actions": ["update"]}
+    },
+    {
+      "address": "data.aws_caller_identity.current",
+      "mode": "data",
+      "type": "aws_caller_identity",
+      "name": "current",
+      "change": {"actions": ["read"]}
+    }
+  ]
+}

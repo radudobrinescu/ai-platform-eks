@@ -1,0 +1,15 @@
+{
+  "format_version": "1.2",
+  "terraform_version": "1.9.8",
+  "resource_changes": [
+    {
+      "address": "kubectl_manifest.argocd_bootstrap[0]",
+      "mode": "managed",
+      "type": "kubectl_manifest",
+      "name": "argocd_bootstrap",
+      "index": 0,
+      "change": {"actions": ["delete"]},
+      "action_reason": "delete_because_count_index"
+    }
+  ]
+}
