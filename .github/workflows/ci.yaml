@@ -23,7 +23,7 @@ jobs:
       - uses: actions/checkout@v7
       - uses: hashicorp/setup-terraform@v4
         with:
-          terraform_version: "v1.16.6"
+          terraform_version: "v1.17.1"
       - name: terraform fmt (check)
         run: terraform fmt -check -recursive terraform/
       - name: terraform validate (per module)
@@ -53,7 +53,7 @@ jobs:
     runs-on: ubuntu-latest
     env:
       # renovate: datasource=pypi depName=ruff
-      RUFF_VERSION: "0.17.1"
+      RUFF_VERSION: "0.17.3"
     steps:
       - uses: actions/checkout@v7
       - uses: actions/setup-python@v7
@@ -74,7 +74,7 @@ jobs:
     runs-on: ubuntu-latest
     env:
       # renovate: datasource=pypi depName=pytest
-      PYTEST_VERSION: "9.1.1"
+      PYTEST_VERSION: "9.2.0"
       # renovate: datasource=pypi depName=pyyaml
       PYYAML_VERSION: "6.0.3"
     steps:
@@ -192,7 +192,7 @@ jobs:
     runs-on: ubuntu-latest
     env:
       # renovate: datasource=npm depName=renovate
-      RENOVATE_VERSION: "44.169.0"
+      RENOVATE_VERSION: "44.192.2"
     steps:
       - uses: actions/checkout@v7
       - uses: actions/setup-node@v7
