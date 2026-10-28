@@ -205,6 +205,7 @@ class TestDryRun:
         out = r.stdout
         env_name = e2e.env_name(mode, profile, "7")
         assert f"./platformctl up {env_name}" in out and f"./platformctl down {env_name}" in out
+        assert f"aws eks describe-cluster --name ai-platform-{env_name}" in out
         assert f'gitops_revision = "e2e/{env_name}"' in out
         assert "cluster_endpoint_public_access_cidrs" in out
         assert ("eks_capabilities = true" in out) == (profile == "managed")
@@ -220,3 +221,44 @@ class TestDryRun:
     def test_real_run_requires_operator_cidr_and_repo(self):
         with pytest.raises(SystemExit):
             e2e.parse_args(["fresh", "main", "--repo-url", "https://github.com/o/r.git"])
+
+
+class TestTeardownVerify:
+    """Teardown is judged by AWS state, not by `./platformctl down`'s exit code."""
+
+    class _FakeSubject:
+        def __init__(self, cluster, vpcs):
+            self.cluster, self.vpcs = cluster, vpcs
+
+        def run(self, *cmd, check=True, quiet=False):
+            if cmd[1:3] == ("eks", "describe-cluster"):
+                if self.cluster is None:
+                    return subprocess.CompletedProcess(cmd, 254, "", "An error occurred (ResourceNotFoundException)")
+                return subprocess.CompletedProcess(cmd, 0, f"{self.cluster}\n", "")
+            if cmd[1:3] == ("ec2", "describe-vpcs"):
+                return subprocess.CompletedProcess(cmd, 0, "\t".join(self.vpcs) + "\n", "")
+            raise AssertionError(cmd)
+
+    def _runner(self, cluster, vpcs):
+        r = e2e.Runner.__new__(e2e.Runner)
+        r.dry, r.env, r.cluster = False, "e2e-fd-94", "ai-platform-e2e-fd-94"
+        r.subject = self._FakeSubject(cluster, vpcs)
+        return r
+
+    def test_gone_passes(self):
+        ok, detail = self._runner(None, []).verify_gone()
+        assert ok and "gone" in detail
+
+    def test_cluster_left_fails(self):
+        ok, detail = self._runner("ACTIVE", []).verify_gone()
+        assert not ok and "still billing" in detail and "ai-platform-e2e-fd-94" in detail
+
+    def test_vpc_left_fails(self):
+        ok, detail = self._runner(None, ["vpc-0abc"]).verify_gone()
+        assert not ok and "vpc-0abc" in detail
+
+    def test_cluster_check_error_fails(self):
+        r = self._runner(None, [])
+        r.subject.run = lambda *c, **k: subprocess.CompletedProcess(c, 255, "", "AccessDenied")
+        ok, detail = r.verify_gone()
+        assert not ok and "check failed" in detail

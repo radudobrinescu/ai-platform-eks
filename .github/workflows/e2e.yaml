@@ -205,6 +205,16 @@ jobs:
           role-duration-seconds: 21600
           mask-aws-account-id: true
 
+      - name: Log in to ECR Public (anonymous pulls from runner IPs hit 429 data limits)
+        run: |
+          set -euo pipefail
+          # The Karpenter chart is oci://public.ecr.aws; Terraform's Helm provider
+          # resolves it on apply AND on the refresh before destroy, so an
+          # anonymous 429 breaks both. ECR Public tokens come from us-east-1 only
+          # and last 12 h (the job's limit is 6 h).
+          aws ecr-public get-login-password --region us-east-1 \
+            | helm registry login --username AWS --password-stdin public.ecr.aws
+
       - name: Run the harness
         id: e2e
         # Leaves time for the safety net below if the harness hangs.

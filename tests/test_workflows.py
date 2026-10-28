@@ -121,6 +121,15 @@ class TestE2EWorkflow:
         assert harness["timeout-minutes"] < job["timeout-minutes"]
         assert "python3 harness/e2e.py" in harness["run"] and "--subject-dir subject" in harness["run"]
 
+    def test_ecr_public_login_before_the_harness(self):
+        wf, _ = _load("e2e.yaml")
+        names = [s.get("name", "") for s in _steps(wf["jobs"]["e2e"])]
+        login = next(i for i, n in enumerate(names) if n.startswith("Log in to ECR Public"))
+        creds = next(i for i, n in enumerate(names) if n.startswith("Configure AWS credentials"))
+        assert creds < login < names.index("Run the harness")
+        run = _step(wf["jobs"]["e2e"], "Log in to ECR Public")["run"]
+        assert "ecr-public get-login-password --region us-east-1" in run and "--password-stdin public.ecr.aws" in run
+
     def test_tfvars_never_echoed(self):
         _, text = _load("e2e.yaml")
         assert ".tfvars" not in re.sub(r'\[ -f "terraform/00.global/vars/\$\{ENV_NAME\}.tfvars" \]', "", text)

@@ -246,9 +246,38 @@ class Runner:
             self.step("orphan-sweep", lambda: self.subject.run(
                 "python3", "ops/lib/sweep_env.py", "--env", self.env, "--cluster", self.cluster,
                 "--region", self.a.region, check=False).returncode == 0)
+            self.step("teardown-verify", self.verify_gone)
         if self.branch_pushed:
             self.step("delete-branch", lambda: self.subject.git(
                 "push", "--quiet", self.a.remote, "--delete", self.branch, check=False).returncode == 0)
+
+    def verify_gone(self) -> tuple[bool, str]:
+        """Check AWS, not exit codes: `./platformctl down` on `main` exits 0 even
+        when its destroy keeps failing, which once left two clusters billing
+        behind a teardown PASS. The cluster and the env's VPC must be gone."""
+        cluster_cmd = ("aws", "eks", "describe-cluster", "--name", self.cluster,
+                       "--query", "cluster.status", "--output", "text")
+        vpc_cmd = ("aws", "ec2", "describe-vpcs", "--filters", f"Name=tag:Name,Values={self.cluster}",
+                   "--query", "Vpcs[].VpcId", "--output", "text")
+        if self.dry:
+            self.subject.run(*cluster_cmd)
+            self.subject.run(*vpc_cmd)
+            return True, ""
+        left = []
+        r = self.subject.run(*cluster_cmd, check=False, quiet=True)
+        if r.returncode == 0:
+            left.append(f"EKS cluster {self.cluster} ({r.stdout.strip()})")
+        elif "ResourceNotFoundException" not in r.stderr:
+            left.append(f"cluster check failed: {r.stderr.strip()[:200]}")
+        r = self.subject.run(*vpc_cmd, check=False, quiet=True)
+        if r.returncode != 0:
+            left.append(f"VPC check failed: {r.stderr.strip()[:200]}")
+        elif r.stdout.split():
+            left.append(f"VPC {' '.join(r.stdout.split())}")
+        if left:
+            return False, ("still present, still billing: " + "; ".join(left)
+                           + f". Re-run ./platformctl down {self.env} from a host allowed on the EKS API.")
+        return True, f"cluster {self.cluster} and its VPC are gone"
 
     # -- modes --------------------------------------------------------------- #
 
