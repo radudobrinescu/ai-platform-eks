@@ -1,0 +1,45 @@
+# Relay: run `main`'s scheduled workflows.
+#
+# GitHub runs `schedule` triggers only from the default branch. Here that is
+# `lifecycle`, so the cron in a workflow that lives on `main` never fires. This
+# workflow fires on the same cron and dispatches each listed workflow at
+# `ref: main`, so `main`'s own copy runs with `main`'s code (and an OIDC subject of
+# refs/heads/main). A dispatch made with GITHUB_TOKEN does start a run; other
+# GITHUB_TOKEN events do not.
+#
+# Keep WORKFLOWS in step with the scheduled workflows on `main`;
+# tests/test_workflows.py fails when one is missing or lacks workflow_dispatch.
+# The cron matches main's addon-freshness.yaml (Mondays 08:00 UTC).
+name: main-schedules
+
+on:
+  schedule:
+    - cron: "0 8 * * 1"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  relay:
+    name: dispatch main's scheduled workflows
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      actions: write
+    steps:
+      - name: Dispatch on main
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          WORKFLOWS: addon-freshness.yaml
+        run: |
+          set -euo pipefail
+          for wf in $WORKFLOWS; do
+            if gh api "repos/${REPO}/contents/.github/workflows/${wf}?ref=main" --silent 2>/dev/null; then
+              gh workflow run "$wf" --repo "$REPO" --ref main
+              echo "::notice::dispatched ${wf} on main"
+            else
+              echo "::notice::${wf} is not on main; skipped"
+            fi
+          done

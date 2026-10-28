@@ -14,7 +14,7 @@ here.
 | `tools/shellcheck_workflows.py` | shellcheck every workflow `run:` step |
 | `terraform/github-oidc/` | GitHub OIDC provider + E2E provisioning role (local state, applied once) |
 | `tests/` | unit tests: harness, tools, workflows, Renovate coverage of `main` |
-| `.github/workflows/` | `ci.yaml` (static checks), `e2e.yaml` (dispatch-only E2E), `coverage.yaml` (weekly coverage guard) |
+| `.github/workflows/` | `ci.yaml` (static checks), `e2e.yaml` (dispatch-only E2E), `coverage.yaml` (weekly coverage guard), `main-schedules.yaml` (runs `main`'s scheduled workflows, since `schedule` fires only on the default branch) |
 
 ## How a run works
 

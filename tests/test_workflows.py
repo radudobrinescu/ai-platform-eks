@@ -39,7 +39,7 @@ class TestAllWorkflows:
             assert "pull_request_target" not in text, path
 
     def test_top_level_permissions_are_read_only(self):
-        for name in ("ci.yaml", "e2e.yaml"):
+        for name in ("ci.yaml", "e2e.yaml", "main-schedules.yaml"):
             wf, _ = _load(name)
             assert wf["permissions"] == {"contents": "read"}, name
 
@@ -147,6 +147,36 @@ class TestCiAndCoverage:
         assert "tests/test_renovate_coverage.py" in text and "ref: main" in text
         issue = _step(wf["jobs"]["guard"], "Open or update an issue")
         assert issue["if"] == "failure()" and "gh issue create" in issue["run"]
+
+
+class TestMainSchedulesRelay:
+    """`schedule` fires only on the default branch (`lifecycle`); the relay runs main's."""
+
+    def _relay(self):
+        wf, _ = _load("main-schedules.yaml")
+        job = wf["jobs"]["relay"]
+        step = _step(job, "Dispatch on main")
+        return wf, job, step, step["env"]["WORKFLOWS"].split()
+
+    def test_relay_shape(self):
+        wf, job, step, listed = self._relay()
+        on = _on(wf)
+        assert on["schedule"] and "workflow_dispatch" in on
+        assert job["permissions"] == {"contents": "read", "actions": "write"}
+        assert listed and 'gh workflow run "$wf" --repo "$REPO" --ref main' in step["run"]
+
+    def test_every_scheduled_workflow_on_main_is_relayed(self, subject_root):
+        _, _, _, listed = self._relay()
+        scheduled = set()
+        for path in glob.glob(os.path.join(subject_root, ".github", "workflows", "*.y*ml")):
+            with open(path, encoding="utf-8") as fh:
+                wf = yaml.safe_load(fh)
+            on = _on(wf)
+            if isinstance(on, dict) and "schedule" in on:
+                name = os.path.basename(path)
+                scheduled.add(name)
+                assert "workflow_dispatch" in on, f"{name} on main is scheduled but cannot be dispatched"
+        assert scheduled <= set(listed), f"not relayed: {sorted(scheduled - set(listed))}"
 
 
 class TestOidcModule:
