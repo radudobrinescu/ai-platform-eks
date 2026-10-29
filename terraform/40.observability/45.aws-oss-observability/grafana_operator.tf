@@ -1,5 +1,5 @@
 resource "helm_release" "grafana_operator" {
-  count            = var.observability_configuration.aws_oss_tooling && var.observability_configuration.aws_oss_tooling_config.enable_grafana_operator ? 1 : 0
+  count            = var.observability_configuration.aws_oss_tooling && lookup(var.observability_configuration.aws_oss_tooling_config, "enable_grafana_operator", true) ? 1 : 0
   chart            = var.go_config.helm_chart
   name             = var.go_config.helm_name
   namespace        = var.go_config.k8s_namespace
@@ -23,24 +23,24 @@ locals {
 #---------------------------------------------------------------
 
 resource "aws_kms_key" "secrets" {
-  count               = var.observability_configuration.aws_oss_tooling && var.observability_configuration.aws_oss_tooling_config.enable_grafana_operator ? 1 : 0
+  count               = var.observability_configuration.aws_oss_tooling && lookup(var.observability_configuration.aws_oss_tooling_config, "enable_grafana_operator", true) ? 1 : 0
   enable_key_rotation = true
 }
 
 # handle grafana api key expiration
 # https://github.com/hashicorp/terraform-provider-aws/issues/27043#issuecomment-1614947274
 resource "time_rotating" "this" {
-  count         = var.observability_configuration.aws_oss_tooling && var.observability_configuration.aws_oss_tooling_config.enable_grafana_operator ? 1 : 0
+  count         = var.observability_configuration.aws_oss_tooling && lookup(var.observability_configuration.aws_oss_tooling_config, "enable_grafana_operator", true) ? 1 : 0
   rotation_days = local.grafana_workspace_api_rotation_days
 }
 
 resource "time_static" "this" {
-  count   = var.observability_configuration.aws_oss_tooling && var.observability_configuration.aws_oss_tooling_config.enable_grafana_operator ? 1 : 0
+  count   = var.observability_configuration.aws_oss_tooling && lookup(var.observability_configuration.aws_oss_tooling_config, "enable_grafana_operator", true) ? 1 : 0
   rfc3339 = time_rotating.this[count.index].rfc3339
 }
 
 resource "aws_grafana_workspace_api_key" "this" {
-  count           = var.observability_configuration.aws_oss_tooling && var.observability_configuration.aws_oss_tooling_config.enable_grafana_operator ? 1 : 0
+  count           = var.observability_configuration.aws_oss_tooling && lookup(var.observability_configuration.aws_oss_tooling_config, "enable_grafana_operator", true) ? 1 : 0
   key_name        = "eks-monitoring-grafana-admin-key"
   key_role        = "ADMIN"
   seconds_to_live = local.grafana_workspace_api_expiration_seconds // key TTL; rotated early (rotation_days < expiration_days) by time_rotating.this via replace_triggered_by below, so a valid key is always in place
@@ -54,7 +54,7 @@ resource "aws_grafana_workspace_api_key" "this" {
 }
 
 resource "aws_ssm_parameter" "secret" {
-  count       = var.observability_configuration.aws_oss_tooling && var.observability_configuration.aws_oss_tooling_config.enable_grafana_operator ? 1 : 0
+  count       = var.observability_configuration.aws_oss_tooling && lookup(var.observability_configuration.aws_oss_tooling_config, "enable_grafana_operator", true) ? 1 : 0
   name        = "/eks-accelerator/${terraform.workspace}/grafana-api-key"
   description = "SSM Secret to store grafana API Key"
   type        = "SecureString"
@@ -70,7 +70,7 @@ resource "aws_ssm_parameter" "secret" {
 # External Secrets Operator - Cluster Secret Store
 #---------------------------------------------------------------
 resource "kubectl_manifest" "cluster_secretstore" {
-  count     = var.observability_configuration.aws_oss_tooling && var.observability_configuration.aws_oss_tooling_config.enable_grafana_operator ? 1 : 0
+  count     = var.observability_configuration.aws_oss_tooling && lookup(var.observability_configuration.aws_oss_tooling_config, "enable_grafana_operator", true) ? 1 : 0
   yaml_body = <<YAML
 apiVersion: external-secrets.io/v1beta1
 kind: ClusterSecretStore
@@ -92,7 +92,7 @@ YAML
 
 resource "kubectl_manifest" "secret" {
   depends_on = [helm_release.grafana_operator]
-  count      = var.observability_configuration.aws_oss_tooling && var.observability_configuration.aws_oss_tooling_config.enable_grafana_operator ? 1 : 0
+  count      = var.observability_configuration.aws_oss_tooling && lookup(var.observability_configuration.aws_oss_tooling_config, "enable_grafana_operator", true) ? 1 : 0
   yaml_body  = <<YAML
 apiVersion: external-secrets.io/v1beta1
 kind: ExternalSecret
@@ -121,7 +121,7 @@ YAML
 
 resource "kubectl_manifest" "amg_remote_identity" {
   depends_on = [module.managed_grafana, helm_release.grafana_operator]
-  count      = var.observability_configuration.aws_oss_tooling && var.observability_configuration.aws_oss_tooling_config.enable_grafana_operator ? 1 : 0
+  count      = var.observability_configuration.aws_oss_tooling && lookup(var.observability_configuration.aws_oss_tooling_config, "enable_grafana_operator", true) ? 1 : 0
   yaml_body = templatefile("${path.module}/grafana-operator-manifests/infrastructure/amg-grafana.yaml",
     {
 
@@ -133,7 +133,7 @@ resource "kubectl_manifest" "amg_remote_identity" {
 
 resource "kubectl_manifest" "amp_data_source" {
   depends_on = [module.managed_grafana, helm_release.grafana_operator]
-  count      = var.observability_configuration.aws_oss_tooling && var.observability_configuration.aws_oss_tooling_config.enable_grafana_operator ? 1 : 0
+  count      = var.observability_configuration.aws_oss_tooling && lookup(var.observability_configuration.aws_oss_tooling_config, "enable_grafana_operator", true) ? 1 : 0
   yaml_body = templatefile("${path.module}/grafana-operator-manifests/infrastructure/amp-datasource.yaml",
     {
       AMP_ENDPOINT_URL = aws_prometheus_workspace.this[0].prometheus_endpoint,
@@ -150,6 +150,6 @@ data "kubectl_path_documents" "default_dashboards_manifest" {
 
 resource "kubectl_manifest" "default_dashboards" {
   depends_on = [module.managed_grafana, helm_release.grafana_operator]
-  count      = var.observability_configuration.aws_oss_tooling && var.observability_configuration.aws_oss_tooling_config.enable_grafana_operator ? length(data.kubectl_path_documents.default_dashboards_manifest.documents) : 0
+  count      = var.observability_configuration.aws_oss_tooling && lookup(var.observability_configuration.aws_oss_tooling_config, "enable_grafana_operator", true) ? length(data.kubectl_path_documents.default_dashboards_manifest.documents) : 0
   yaml_body  = element(data.kubectl_path_documents.default_dashboards_manifest.documents, count.index)
 }

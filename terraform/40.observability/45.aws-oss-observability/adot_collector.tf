@@ -5,7 +5,7 @@
 data "aws_eks_addon_version" "adot" {
   count = (
     var.observability_configuration.aws_oss_tooling
-    && var.observability_configuration.aws_oss_tooling_config.enable_adot_collector
+    && lookup(var.observability_configuration.aws_oss_tooling_config, "enable_adot_collector", false)
   ) ? 1 : 0
 
   addon_name         = "adot"
@@ -17,7 +17,7 @@ data "aws_eks_addon_version" "adot" {
 resource "aws_eks_addon" "adot" {
   count = (
     var.observability_configuration.aws_oss_tooling
-    && var.observability_configuration.aws_oss_tooling_config.enable_adot_collector
+    && lookup(var.observability_configuration.aws_oss_tooling_config, "enable_adot_collector", false)
   ) ? 1 : 0
 
   cluster_name                = data.aws_eks_cluster.this.name
