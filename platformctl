@@ -211,6 +211,29 @@ _delete_cluster_albs() {
 #   - litellm.ai-platform/deregister on the kro serving/team CRs and on
 #     BedrockModels (litellm-sync)
 # Safe: every one of these objects is being destroyed anyway.
+# Pods already being deleted on a node whose kubelet is gone never finish:
+# nothing confirms the deletion, so their namespace stays Terminating and
+# Terraform's namespace destroy times out ("context deadline exceeded"). This
+# happens when destroy removes Karpenter's NodePool and controller together:
+# the nodes' instances go, their Node objects stay (karpenter.sh/termination
+# finalizer). Force-delete only pods that are BOTH terminating AND on a node
+# whose Ready condition is not True; `down` is removing the cluster anyway.
+_force_delete_stranded_pods() {
+  local env="$1" dead ns name node
+  dead="$(kubectl --context "$env" get nodes \
+    -o jsonpath='{range .items[*]}{.metadata.name}{" "}{range .status.conditions[?(@.type=="Ready")]}{.status}{end}{"\n"}{end}' 2>/dev/null \
+    | awk '$2 != "True" {print $1}')"
+  [ -n "$dead" ] || return 0
+  kubectl --context "$env" get pods -A \
+    -o jsonpath='{range .items[?(@.metadata.deletionTimestamp)]}{.metadata.namespace}{" "}{.metadata.name}{" "}{.spec.nodeName}{"\n"}{end}' 2>/dev/null \
+    | while read -r ns name node; do
+        if [ -z "$node" ] || ! printf '%s\n' "$dead" | grep -qx "$node"; then continue; fi
+        kubectl --context "$env" delete pod "$name" -n "$ns" --grace-period=0 --force >/dev/null 2>&1 \
+          && echo "  [watchdog] force-deleted pod ${ns}/${name} stranded on unreachable node ${node}"
+      done
+  return 0
+}
+
 _strip_teardown_finalizers() {
   local env="$1" kind r
   for kind in ingress targetgroupbindings.elbv2.k8s.aws vllmendpoints.kro.run llmdendpoints.kro.run llmddisaggendpoints.kro.run aiteams.kro.run bedrockmodels.bedrock.ai-platform; do
@@ -238,6 +261,7 @@ _teardown_watchdog() {
   while aws eks describe-cluster --name "$cluster" --region "$region" >/dev/null 2>&1; do
     _delete_cluster_albs "$cluster" "$vpc"
     _strip_teardown_finalizers "$env"
+    _force_delete_stranded_pods "$env"
     sleep 8
   done
   # Cluster is gone. Karpenter's controller went with it, so nothing will ever
