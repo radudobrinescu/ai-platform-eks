@@ -78,3 +78,54 @@ def test_no_call_site_uses_the_non_idempotent_delete(sync):
     with open(os.path.join(REPO_ROOT, "platform/services/litellm-sync/scripts/litellm_sync.py"), encoding="utf-8") as fh:
         src = fh.read()
     assert '_litellm_request("POST", "/model/delete"' not in src
+
+
+class TestRestartAfterLastModel:
+    """LiteLLM replicas skip evictions when the DB holds no models, so removing
+    the LAST DB model must be followed by a LiteLLM rolling restart."""
+
+    def _setup(self, sync, monkeypatch, db_models):
+        restarts = []
+        monkeypatch.setattr(sync, "list_db_model_ids", lambda: db_models)
+        monkeypatch.setattr(sync, "_delete_model_row", lambda _id: True)
+        monkeypatch.setattr(sync, "_restart_litellm", lambda reason: restarts.append(reason) or True)
+        return restarts
+
+    def test_last_model_triggers_restart(self, sync, monkeypatch):
+        restarts = self._setup(sync, monkeypatch, {"only": [("id-1", {})]})
+        assert sync.deregister_model("only") is True
+        assert len(restarts) == 1 and "only" in restarts[0]
+
+    def test_other_models_left_no_restart(self, sync, monkeypatch):
+        restarts = self._setup(sync, monkeypatch, {"a": [("id-1", {})], "b": [("id-2", {})]})
+        assert sync.deregister_model("a") is True
+        assert restarts == []
+
+    def test_already_gone_no_restart(self, sync, monkeypatch):
+        restarts = self._setup(sync, monkeypatch, {"b": [("id-2", {})]})
+        assert sync.deregister_model("a") is True
+        assert restarts == []
+
+    def test_restart_patches_only_the_template_annotation(self, sync, monkeypatch):
+        calls = []
+
+        class Apps:
+            def patch_namespaced_deployment(self, name, ns, body):
+                calls.append((name, ns, body))
+
+        monkeypatch.setattr(sync.client, "AppsV1Api", Apps, raising=False)
+        assert sync._restart_litellm("test") is True
+        name, ns, body = calls[0]
+        assert (name, ns) == ("litellm", "ai-platform")
+        assert list(body) == ["spec"] and list(body["spec"]["template"]["metadata"]["annotations"]) == [sync.RESTART_ANNOTATION]
+
+
+def test_restart_rbac_is_scoped_to_the_litellm_deployment():
+    import yaml
+    with open(os.path.join(REPO_ROOT, "platform/services/litellm/litellm.yaml"), encoding="utf-8") as fh:
+        docs = [d for d in yaml.safe_load_all(fh) if d]
+    role = next(d for d in docs if d["kind"] == "Role" and d["metadata"]["name"] == "litellm-sync-restart")
+    assert role["rules"] == [{"apiGroups": ["apps"], "resources": ["deployments"],
+                              "resourceNames": ["litellm"], "verbs": ["get", "patch"]}]
+    rb = next(d for d in docs if d["kind"] == "RoleBinding" and d["metadata"]["name"] == "litellm-sync-restart")
+    assert rb["subjects"] == [{"kind": "ServiceAccount", "name": "litellm-sync", "namespace": "inference"}]
