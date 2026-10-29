@@ -44,6 +44,10 @@ ARGOCD_NAMESPACE = "argocd"
 ARGOCD_MODELS_APP = "models"
 # The llm-d scale tier lives in a separate dir owned by its own ArgoCD app.
 ARGOCD_SCALE_MODELS_APP = "scale-models"
+# The ApplicationSet that owns the models-<ns> apps, and the annotation that
+# makes its controller re-read git now instead of on its ~3-minute poll.
+ARGOCD_MODELS_APPSET = "workloads-models"
+APPSET_REFRESH_ANNOTATION = "argocd.argoproj.io/application-set-refresh"
 
 
 def _app_for_path(yaml_path: str) -> str:
@@ -124,6 +128,20 @@ def _pushed_sha(root: str) -> str | None:
     return r.stdout.strip() if r.returncode == 0 and r.stdout.strip() else None
 
 
+def _refresh_models_appset(root: str) -> bool:
+    """Best-effort: ask the workloads-models ApplicationSet to re-read git now.
+
+    Its git directory generator otherwise polls every ~3 minutes (and through
+    the repo server's revision cache), so a namespace's FIRST model, whose
+    models-<ns> app does not exist yet, could take ~5 minutes to appear (seen in
+    E2E). Removing a namespace's LAST model has the mirror-image delay before
+    models-<ns> is deleted. The annotation bypasses the cache and the
+    controller removes it after reconciling."""
+    r = _run(["kubectl", "annotate", "applicationset", ARGOCD_MODELS_APPSET,
+              "-n", ARGOCD_NAMESPACE, f"{APPSET_REFRESH_ANNOTATION}=true", "--overwrite"], cwd=root)
+    return r.returncode == 0
+
+
 def _argocd_sync(root: str, C: type, app: str = ARGOCD_MODELS_APP) -> None:
     """Best-effort: trigger an explicit ArgoCD sync of the `models` app, pinned to
     the just-pushed commit, via `kubectl patch ... operation`.
@@ -142,6 +160,8 @@ def _argocd_sync(root: str, C: type, app: str = ARGOCD_MODELS_APP) -> None:
         print(f"{C.DIM}kubectl not found — ArgoCD will reconcile on its next "
               f"git poll (~3 min).{C.RESET}")
         return
+
+    refreshed = app != ARGOCD_SCALE_MODELS_APP and _refresh_models_appset(root)
 
     sha = _pushed_sha(root)
     # prune=true is mandatory for --undeploy (the resource must be removed).
@@ -165,13 +185,14 @@ def _argocd_sync(root: str, C: type, app: str = ARGOCD_MODELS_APP) -> None:
         err = patch.stderr.strip()
         if "NotFound" in err or "not found" in err:
             # First model in this namespace: the "models-<ns>" app is created
-            # per-namespace by the workloads-models ApplicationSet, which
-            # reconciles the new workloads/models/<ns>/ directory into an
-            # Application within ~a minute and auto-syncs it. Nothing to do.
-            print(f"{C.DIM}ArgoCD app '{app}' doesn't exist yet — it's created "
-                  f"per-namespace by the workloads-models ApplicationSet on the "
-                  f"first model in that namespace, then auto-synced (~1 min). "
-                  f"Nothing to do — the push already applied.{C.RESET}")
+            # per-namespace by the workloads-models ApplicationSet from the new
+            # workloads/models/<ns>/ directory, then auto-synced. The refresh
+            # above makes that happen now rather than on the next git poll.
+            when = ("now (ApplicationSet refresh requested)" if refreshed
+                    else "on the ApplicationSet's next git poll (~3 min)")
+            print(f"{C.DIM}ArgoCD app '{app}' doesn't exist yet — the "
+                  f"workloads-models ApplicationSet creates it for the first model "
+                  f"in that namespace {when}, then auto-syncs it.{C.RESET}")
         else:
             print(f"{C.YELLOW}Could not trigger an ArgoCD sync{C.RESET} "
                   f"({err or 'kubectl failed'}).")

@@ -55,3 +55,43 @@ class TestHfTokenSecret:
                             lambda *a, **k: calls.append((a, k)))
         gitops._ensure_hf_token_secret("inference", TOKEN, "/tmp", _C)
         assert calls == []  # prints a manual fallback; never shells the token
+
+
+class TestArgocdSyncRefreshesAppSet:
+    """Deploy/undeploy ask the workloads-models ApplicationSet to re-read git, so a
+    namespace's first model (no models-<ns> app yet) does not wait ~5 minutes."""
+
+    def _capture(self, monkeypatch, patch_rc=0, patch_err=""):
+        calls = []
+
+        def fake_run(args, cwd):
+            calls.append(args)
+            if args[:2] == ["kubectl", "patch"]:
+                return gitops.subprocess.CompletedProcess(args, patch_rc, "", patch_err)
+            return gitops.subprocess.CompletedProcess(args, 0, "abc1234\n", "")
+
+        monkeypatch.setattr(gitops.shutil, "which", lambda _cmd: "/usr/bin/kubectl")
+        monkeypatch.setattr(gitops, "_run", fake_run)
+        return calls
+
+    def _annotations(self, calls):
+        return [a for a in calls if a[:3] == ["kubectl", "annotate", "applicationset"]]
+
+    def test_models_app_requests_refresh_before_sync(self, monkeypatch, capsys):
+        calls = self._capture(monkeypatch)
+        gitops._argocd_sync("/repo", gitops._palette(False), "models-inference")
+        ann = self._annotations(calls)
+        assert ann and ann[0][3] == "workloads-models"
+        assert "argocd.argoproj.io/application-set-refresh=true" in ann[0]
+        assert calls.index(ann[0]) < next(i for i, a in enumerate(calls) if a[:2] == ["kubectl", "patch"])
+
+    def test_first_model_message_says_now(self, monkeypatch, capsys):
+        self._capture(monkeypatch, patch_rc=1, patch_err='applications.argoproj.io "models-team-x" not found')
+        gitops._argocd_sync("/repo", gitops._palette(False), "models-team-x")
+        assert "refresh requested" in capsys.readouterr().out
+
+    def test_scale_models_app_does_not_touch_the_appset(self, monkeypatch):
+        calls = self._capture(monkeypatch)
+        gitops._argocd_sync("/repo", gitops._palette(False), gitops.ARGOCD_SCALE_MODELS_APP)
+        assert not self._annotations(calls)
+

@@ -583,3 +583,32 @@ spec:
           volumes:
             - name: backup
               emptyDir: {}
+---
+# litellm-sync (namespace inference) rolling-restarts this Deployment after it
+# removes the LAST DB-registered model: LiteLLM replicas do not evict that model
+# on their own (see _restart_litellm in litellm-sync). Scoped to this one
+# Deployment, get + patch only.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: litellm-sync-restart
+  namespace: ai-platform
+rules:
+  - apiGroups: ["apps"]
+    resources: ["deployments"]
+    resourceNames: ["litellm"]
+    verbs: ["get", "patch"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: litellm-sync-restart
+  namespace: ai-platform
+subjects:
+  - kind: ServiceAccount
+    name: litellm-sync
+    namespace: inference
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: litellm-sync-restart

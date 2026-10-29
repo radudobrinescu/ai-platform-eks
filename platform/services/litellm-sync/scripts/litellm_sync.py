@@ -79,6 +79,12 @@ RECONCILE_INTERVAL_SEC = int(os.environ.get("RECONCILE_INTERVAL_SEC", "600"))
 HTTP_TIMEOUT_SEC = int(os.environ.get("HTTP_TIMEOUT_SEC", "15"))
 WATCH_TIMEOUT_SEC = int(os.environ.get("WATCH_TIMEOUT_SEC", "300"))
 
+# The LiteLLM Deployment litellm-sync restarts after removing the last DB model
+# (see _restart_litellm). RBAC: a Role in its namespace, defined with LiteLLM.
+LITELLM_NAMESPACE = os.environ.get("LITELLM_NAMESPACE", "ai-platform")
+LITELLM_DEPLOYMENT = os.environ.get("LITELLM_DEPLOYMENT", "litellm")
+RESTART_ANNOTATION = "litellm.ai-platform/restarted-at"
+
 CR_VERSION = "v1alpha1"
 
 # Serving tiers (KRO, group kro.run): registered as an in-cluster,
@@ -302,6 +308,28 @@ def register_model(name: str, litellm_params: dict) -> bool:
         return True
 
 
+def _restart_litellm(reason: str) -> bool:
+    """Rolling-restart the LiteLLM Deployment (2 replicas + PDB: no downtime).
+
+    Works around a LiteLLM bug (present in v1.81.9 and every v1.83.14-stable
+    patch; fixed on LiteLLM main): each replica's periodic DB sync skips
+    removals when the DB holds zero models (`_delete_deployment` returns early
+    on `len(db_models) == 0`). So after the LAST DB model is deleted, every
+    replica that did not serve the /model/delete call keeps listing and routing
+    it until it restarts (seen in E2E: still served 20+ minutes later). Only
+    called when a deregistration empties the DB, which is rare outside tests.
+    """
+    stamp = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
+    body = {"spec": {"template": {"metadata": {"annotations": {RESTART_ANNOTATION: stamp}}}}}
+    try:
+        client.AppsV1Api().patch_namespaced_deployment(LITELLM_DEPLOYMENT, LITELLM_NAMESPACE, body)
+        log.info("restarted %s/%s: %s", LITELLM_NAMESPACE, LITELLM_DEPLOYMENT, reason)
+        return True
+    except Exception as e:  # noqa: BLE001 — best effort; the model is already deregistered
+        log.warning("could not restart %s/%s (%s): %s", LITELLM_NAMESPACE, LITELLM_DEPLOYMENT, reason, e)
+        return False
+
+
 def deregister_model(name: str) -> bool:
     """Delete ALL DB-registered rows for a model by display name. Idempotent.
 
@@ -324,6 +352,8 @@ def deregister_model(name: str) -> bool:
                 ok = False
         if ok:
             log.info("deregistered model %s (%d row(s)) from LiteLLM", name, len(rows))
+            if set(db_models) == {name}:
+                _restart_litellm(f"{name} was the last DB model; replicas do not evict it on their own")
         return ok
 
 
