@@ -40,6 +40,7 @@ class Sweeper:
         self.elbv2 = boto3.client("elbv2", region_name=region)
         self.kms = boto3.client("kms", region_name=region)
         self.logs = boto3.client("logs", region_name=region)
+        self.eks = boto3.client("eks", region_name=region)
         self.iam = boto3.client("iam")  # IAM is global
         self.actions = []
 
@@ -254,6 +255,16 @@ class Sweeper:
         except ClientError as e:
             self._err("log groups", e)
 
+    def cluster_alive(self):
+        """True unless EKS says the cluster does not exist. Any other answer
+        (throttling, access denied) counts as alive: the callers skip
+        destructive steps on a live cluster, so unknown must mean "keep"."""
+        try:
+            self.eks.describe_cluster(name=self.cluster)
+            return True
+        except ClientError as e:
+            return e.response["Error"]["Code"] != "ResourceNotFoundException"
+
     # ---- orchestration -----------------------------------------------------
     def run(self):
         print(f"  [sweep] scanning for '{self.env}' orphans (cluster {self.cluster}, region {self.region})", flush=True)
@@ -267,9 +278,16 @@ class Sweeper:
         self.clear_launch_templates()
         self.clear_volumes()
         self.clear_eips()
-        self.clear_kms()
+        # `down` also sweeps between two destroy attempts, while the cluster may
+        # still exist. Scheduling its secrets key for deletion then leaves the
+        # cluster unable to decrypt secrets or accept config updates, so a later
+        # destroy cannot recover it. Keys and log groups wait until it is gone.
+        if self.cluster_alive():
+            print(f"  [sweep] cluster {self.cluster} still exists; keeping its KMS key and log groups", flush=True)
+        else:
+            self.clear_kms()
+            self.clear_log_groups()
         self.clear_instance_profiles()
-        self.clear_log_groups()
         if self.actions:
             print(f"  [sweep] removed {len(self.actions)} orphaned resource(s).", flush=True)
         else:

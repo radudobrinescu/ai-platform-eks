@@ -193,3 +193,44 @@ class TestClearInstanceProfiles:
         assert sorted(sweeper.iam.deleted) == [f"{CLUSTER}-node", "karpenter"]
         # Roles are detached only from in-scope profiles before deletion.
         assert sweeper.iam.removed_roles == [(f"{CLUSTER}-node", "r1")]
+
+
+# --------------------------------------------------------------------------- #
+# run — never schedule the KMS key / log groups of a cluster that still exists #
+# --------------------------------------------------------------------------- #
+from botocore.exceptions import ClientError  # noqa: E402
+
+
+class FakeEks:
+    def __init__(self, code=None):
+        self.code = code
+
+    def describe_cluster(self, name):
+        if self.code:
+            raise ClientError({"Error": {"Code": self.code, "Message": "x"}}, "DescribeCluster")
+        return {"cluster": {"name": name, "status": "ACTIVE"}}
+
+
+class TestRunOnLiveCluster:
+    def _run(self, sweeper, monkeypatch, eks):
+        called = []
+        sweeper.eks = eks
+        monkeypatch.setattr(sweeper, "find_vpc", lambda: None)
+        for m in ("clear_fleets", "clear_launch_templates", "clear_volumes", "clear_eips",
+                  "clear_kms", "clear_instance_profiles", "clear_log_groups"):
+            monkeypatch.setattr(sweeper, m, lambda m=m: called.append(m))
+        sweeper.run()
+        return called
+
+    def test_live_cluster_keeps_kms_key_and_log_groups(self, sweeper, monkeypatch):
+        called = self._run(sweeper, monkeypatch, FakeEks())
+        assert "clear_kms" not in called and "clear_log_groups" not in called
+        assert "clear_eips" in called
+
+    def test_unknown_state_counts_as_alive(self, sweeper, monkeypatch):
+        called = self._run(sweeper, monkeypatch, FakeEks("AccessDeniedException"))
+        assert "clear_kms" not in called
+
+    def test_deleted_cluster_clears_them(self, sweeper, monkeypatch):
+        called = self._run(sweeper, monkeypatch, FakeEks("ResourceNotFoundException"))
+        assert "clear_kms" in called and "clear_log_groups" in called
