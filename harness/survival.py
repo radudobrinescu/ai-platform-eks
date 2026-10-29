@@ -59,7 +59,7 @@ def seed(c: checks.Ctx) -> Seed:
     gpu = checks.model_name_from_id(SEED_GPU_MODEL)
     checks.deploy_model(c, gpu, SEED_GPU_MODEL, "--tier", "vllm", "--users", "1", "--seq", "2048")
     checks.wait_endpoint_ready(c, "vllmendpoint", gpu)
-    checks.wait_alias(c, gpu, 300)
+    checks.wait_alias(c, gpu, c.timeouts["bedrock"])
     s.models = [alias, gpu]
 
     with PortForward(NS_PLATFORM, "svc/litellm", 4000) as pf:

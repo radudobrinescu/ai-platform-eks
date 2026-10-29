@@ -79,7 +79,9 @@ class Ctx:
     cluster: str
     profile: str = "default"
     with_llmd: bool = False
-    timeouts: dict = field(default_factory=lambda: {"converge": 1800, "gpu": 1500, "bedrock": 300})
+    # bedrock: enrol or remove a model end to end (git push -> Argo CD -> litellm-sync
+    # -> every LiteLLM replica). Removing a namespace's last model also rolls LiteLLM.
+    timeouts: dict = field(default_factory=lambda: {"converge": 1800, "gpu": 1500, "bedrock": 600})
     run_start: datetime = field(default_factory=lambda: datetime.now(timezone.utc))
     master_key: str | None = None
     gpu_node_seen: bool = False
@@ -160,10 +162,64 @@ def chat(pf: PortForward, key: str, model: str) -> tuple[int, str]:
                       "max_tokens": 8}, timeout=120)
 
 
+def litellm_pods() -> list[str]:
+    """Running, Ready, not-terminating LiteLLM pods. Each replica keeps its own
+    in-memory model list (synced from the DB every 30 s), so registration is only
+    complete when EVERY replica agrees; the Service may route to any of them."""
+    names = []
+    for p in kubectl_json("get", "pods", "-n", NS_PLATFORM, "-l", "app=litellm").get("items", []):
+        meta, st = p.get("metadata") or {}, p.get("status") or {}
+        ready = any(cd.get("type") == "Ready" and cd.get("status") == "True" for cd in st.get("conditions", []))
+        if st.get("phase") == "Running" and ready and not meta.get("deletionTimestamp"):
+            names.append(meta["name"])
+    return names
+
+
+def models_per_replica(key: str) -> dict[str, list[str] | None]:
+    """{pod: model ids, or None if that pod could not be read}. A fresh
+    port-forward per pod per call: a long-lived one dies with its pod (rollouts,
+    restarts) and then refuses every later poll."""
+    out: dict[str, list[str] | None] = {}
+    for pod in litellm_pods():
+        try:
+            with PortForward(NS_PLATFORM, f"pod/{pod}", 4000) as pf:
+                code, body = http("GET", f"{pf.base}/v1/models", headers={"Authorization": f"Bearer {key}"}, timeout=15)
+            out[pod] = [m["id"] for m in json.loads(body).get("data", [])] if code == 200 else None
+        except Exception:  # noqa: BLE001 - unreadable replica: not converged yet
+            out[pod] = None
+    return out
+
+
+def _all_replicas(key: str, alias: str, present: bool):
+    views = models_per_replica(key)
+    if len(views) < 1 or any(v is None for v in views.values()):
+        return None
+    return views if all((alias in v) == present for v in views.values()) else None
+
+
 def wait_alias(c: Ctx, alias: str, timeout: int) -> str:
     key = c.litellm_key()
-    with PortForward(NS_PLATFORM, "svc/litellm", 4000) as pf:
-        return wait_for(f"{alias} in /v1/models", lambda: alias if alias in models(pf, key) else None, timeout, 10)
+    wait_for(f"{alias} in /v1/models on every LiteLLM replica", lambda: _all_replicas(key, alias, True), timeout, 10)
+    return alias
+
+
+def wait_alias_gone(c: Ctx, alias: str, timeout: int) -> None:
+    key = c.litellm_key()
+    wait_for(f"{alias} gone from /v1/models on every LiteLLM replica", lambda: _all_replicas(key, alias, False), timeout, 10)
+
+
+def chat_via_service(key: str, model: str, attempts: int = 3) -> tuple[int, str]:
+    """chat() through svc/litellm with a fresh port-forward per attempt; only a
+    transport failure is retried, never an HTTP answer."""
+    last: Exception | None = None
+    for _ in range(attempts):
+        try:
+            with PortForward(NS_PLATFORM, "svc/litellm", 4000) as pf:
+                return chat(pf, key, model)
+        except Exception as e:  # noqa: BLE001 - port-forward or socket failure
+            last = e
+            time.sleep(5)
+    raise RuntimeError(f"chat via svc/litellm failed {attempts} times: {last}")
 
 
 def wait_endpoint_ready(c: Ctx, kind: str, name: str) -> None:
@@ -280,8 +336,7 @@ def chk_bedrock_roundtrip(c: Ctx):
     try:
         key = c.litellm_key()
         wait_alias(c, alias, c.timeouts["bedrock"])
-        with PortForward(NS_PLATFORM, "svc/litellm", 4000) as pf:
-            code, body = chat(pf, key, alias)
+        code, body = chat_via_service(key, alias)
         if code != 200:
             return False, f"chat via {alias} HTTP {code}: {body[:160]}"
         trace_ok, trace_detail = _langfuse_has_trace_since(c)
@@ -289,8 +344,7 @@ def chk_bedrock_roundtrip(c: Ctx):
             return trace_ok, f"{alias} answered 200 (pre-existing, not undeployed); {trace_detail}"
         undeploy_model(c, alias)
         created = False
-        with PortForward(NS_PLATFORM, "svc/litellm", 4000) as pf:
-            wait_for("Bedrock alias deregistered", lambda: alias not in models(pf, key), 300, 10)
+        wait_alias_gone(c, alias, c.timeouts["bedrock"])
         return trace_ok, f"{alias} answered 200; deregistered on undeploy; {trace_detail}"
     finally:
         if created:
@@ -309,9 +363,8 @@ def chk_gpu_model_roundtrip(c: Ctx):
             any(cond.get("type") == "Ready" and cond.get("status") == "True"
                 for cond in (cl.get("status") or {}).get("conditions", []))
             for cl in claims)
-        wait_alias(c, name, 300)
-        with PortForward(NS_PLATFORM, "svc/litellm", 4000) as pf:
-            code, body = chat(pf, c.litellm_key(), name)
+        wait_alias(c, name, c.timeouts["bedrock"])
+        code, body = chat_via_service(c.litellm_key(), name)
         return code == 200, f"{name} Ready on GPU; chat HTTP {code}" + ("" if code == 200 else f": {body[:160]}")
     finally:
         if created:
@@ -369,9 +422,8 @@ def chk_llmd_roundtrip(c: Ctx):
                            under="workloads/scale-models")
     try:
         wait_endpoint_ready(c, "llmdendpoint", name)
-        wait_alias(c, name, 300)
-        with PortForward(NS_PLATFORM, "svc/litellm", 4000) as pf:
-            code, _body = chat(pf, c.litellm_key(), name)
+        wait_alias(c, name, c.timeouts["bedrock"])
+        code, _body = chat_via_service(c.litellm_key(), name)
         return code == 200, f"{name} routed via llm-d; chat HTTP {code}"
     finally:
         if created:

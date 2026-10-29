@@ -262,3 +262,34 @@ class TestTeardownVerify:
         r.subject.run = lambda *c, **k: subprocess.CompletedProcess(c, 255, "", "AccessDenied")
         ok, detail = r.verify_gone()
         assert not ok and "check failed" in detail
+
+
+class TestLiteLLMReplicaAgreement:
+    """Registration counts only when every LiteLLM replica agrees (each keeps its
+    own model list, and the Service may route a chat to any of them)."""
+
+    def _with(self, monkeypatch, views):
+        monkeypatch.setattr(checks, "models_per_replica", lambda key: views)
+
+    def test_present_needs_every_replica(self, monkeypatch):
+        self._with(monkeypatch, {"a": ["m"], "b": []})
+        assert checks._all_replicas("k", "m", True) is None
+        self._with(monkeypatch, {"a": ["m"], "b": ["m", "x"]})
+        assert checks._all_replicas("k", "m", True)
+
+    def test_absent_needs_every_replica(self, monkeypatch):
+        self._with(monkeypatch, {"a": [], "b": ["m"]})
+        assert checks._all_replicas("k", "m", False) is None
+        self._with(monkeypatch, {"a": [], "b": ["x"]})
+        assert checks._all_replicas("k", "m", False)
+
+    def test_unreadable_replica_is_not_agreement(self, monkeypatch):
+        self._with(monkeypatch, {"a": [], "b": None})
+        assert checks._all_replicas("k", "m", False) is None
+        self._with(monkeypatch, {})
+        assert checks._all_replicas("k", "m", False) is None
+
+    def test_no_check_holds_one_litellm_port_forward_across_a_wait(self):
+        with open(os.path.join(ROOT, "harness", "checks.py"), encoding="utf-8") as fh:
+            text = fh.read()
+        assert "lambda: alias not in models(pf" not in text and "alias if alias in models(pf" not in text
