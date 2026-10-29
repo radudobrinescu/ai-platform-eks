@@ -127,6 +127,7 @@ profiles) pending (Unit 1b). Pins: see the left column above, plus kro chart
 - **vLLM**: one source of truth in `locals.tf`; the RGD schema defaults must match (same dep, one branch). The GPU driver must satisfy the image's CUDA runtime; bump the llm-d router with it.
 - **`kubernetes` Python client / `alpine/k8s`**: ±1 minor of the API server; `allowedVersions` in `renovate.json` enforces the ceiling and must be raised with the Kubernetes anchor.
 - **LiteLLM**: follow `-stable` tags only; litellm-sync and the dashboard use its admin API (`/model/*`, `/team/*`, `/key/*`), so read the changelog on minors.
+- **Release age and container images**: ghcr.io, quay.io, public.ecr.aws and most Docker Hub tags carry no release timestamp. Renovate's default `minimumReleaseAgeBehaviour` (`timestamp-required`) holds such updates as pending forever, so `docker` datasource updates use `timestamp-optional` (no 7-day wait where there is no timestamp; the E2E gate still applies).
 - **Postgres**: a major bump is a dump/restore of the shared LiteLLM DB; never a plain tag change.
 - **Langfuse chart v1 -> v2**: v2 needs `redis.auth.usersExistingSecret` alongside `existingSecret`; `helm template` fails otherwise (blocked in v1).
 - **Argo CD (self-managed path)**: pin it; an unpinned GitOps engine can break the mechanism used to recover from any other break.

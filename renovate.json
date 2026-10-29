@@ -216,6 +216,13 @@
   ],
   "packageRules": [
     {
+      "description": "Container registries (ghcr.io, quay.io, public.ecr.aws, most Docker Hub tags) publish no release timestamp. With the default minimumReleaseAgeBehaviour=timestamp-required those updates stay pending forever and never reach a branch (Karpenter, Open WebUI, oauth2-proxy, llm-d router were silently held). Treat a missing timestamp as stable; the E2E gate still judges every release.",
+      "matchDatasources": [
+        "docker"
+      ],
+      "minimumReleaseAgeBehaviour": "timestamp-optional"
+    },
+    {
       "description": "Default: every Terraform provider/module is infra (control-plane adjacent). Later rules override for specific deps.",
       "matchManagers": [
         "terraform"

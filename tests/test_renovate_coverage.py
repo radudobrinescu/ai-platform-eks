@@ -150,6 +150,14 @@ class TestPolicy:
         va = cfg["vulnerabilityAlerts"]
         assert va["minimumReleaseAge"] is None and "security" in va["labels"]
 
+    def test_images_without_release_timestamps_are_not_held_forever(self):
+        """Registries such as ghcr.io, quay.io and public.ecr.aws publish no release
+        timestamp; under the default timestamp-required behaviour their updates
+        never leave 'pending' (Karpenter was held this way, unnoticed)."""
+        rules = _renovate()["packageRules"]
+        assert any(r.get("matchDatasources") == ["docker"]
+                   and r.get("minimumReleaseAgeBehaviour") == "timestamp-optional" for r in rules)
+
     def test_nothing_automerges(self):
         text = json.dumps(_renovate())
         assert '"automerge": true' not in text
