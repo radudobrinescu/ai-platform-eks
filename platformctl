@@ -220,17 +220,17 @@ _delete_cluster_albs() {
 # whose Ready condition is not True; `down` is removing the cluster anyway.
 _force_delete_stranded_pods() {
   local env="$1" dead ns name node
-  dead="$(kubectl --context "$env" get nodes \
+  dead="$(kubectl --context "$env" --request-timeout=20s get nodes \
     -o jsonpath='{range .items[*]}{.metadata.name}{" "}{range .status.conditions[?(@.type=="Ready")]}{.status}{end}{"\n"}{end}' 2>/dev/null \
-    | awk '$2 != "True" {print $1}')"
+    | awk '$2 != "True" {print $1}')" || return 0
   [ -n "$dead" ] || return 0
-  kubectl --context "$env" get pods -A \
+  kubectl --context "$env" --request-timeout=20s get pods -A \
     -o jsonpath='{range .items[?(@.metadata.deletionTimestamp)]}{.metadata.namespace}{" "}{.metadata.name}{" "}{.spec.nodeName}{"\n"}{end}' 2>/dev/null \
     | while read -r ns name node; do
         if [ -z "$node" ] || ! printf '%s\n' "$dead" | grep -qx "$node"; then continue; fi
-        kubectl --context "$env" delete pod "$name" -n "$ns" --grace-period=0 --force >/dev/null 2>&1 \
+        kubectl --context "$env" --request-timeout=20s delete pod "$name" -n "$ns" --grace-period=0 --force >/dev/null 2>&1 \
           && echo "  [watchdog] force-deleted pod ${ns}/${name} stranded on unreachable node ${node}"
-      done
+      done || true
   return 0
 }
 
@@ -257,6 +257,12 @@ _strip_teardown_finalizers() {
 # finishes with no manual `kubectl patch` / ALB deletion. Runs quietly in the
 # background for the whole destroy; cmd_down kills it when destroy-all returns.
 _teardown_watchdog() {
+  # Best effort by design, and it runs as a background subshell of a
+  # `set -euo pipefail` script: one failing call (kubectl against a cluster that
+  # is being deleted) would otherwise kill it silently, and then nothing
+  # terminates the Karpenter nodes, so the subnet delete waits out its 20-minute
+  # timeout (seen in E2E). Errors here never stop the loop.
+  set +e +o pipefail
   local env="$1" cluster="$2" vpc="$3" region="${AWS_REGION:-$(aws configure get region 2>/dev/null)}"
   while aws eks describe-cluster --name "$cluster" --region "$region" >/dev/null 2>&1; do
     _delete_cluster_albs "$cluster" "$vpc"
