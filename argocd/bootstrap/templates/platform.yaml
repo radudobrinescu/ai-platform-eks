@@ -41,7 +41,7 @@ spec:
             type: helm
             chart: gpu-operator
             chartRepo: https://helm.ngc.nvidia.com/nvidia
-            chartVersion: v25.10.1
+            chartVersion: v26.7.2
             valuesPath: platform/services/gpu-operator/helm-values.yaml
             tier: infra
           # GIE CRDs (InferencePool) + the llm-d OCI Helm repo registration —
