@@ -74,7 +74,8 @@ spec:
           effect: NoSchedule
       # All NVIDIA-backed AWS GPU instance categories (G and P families).
       # Karpenter's scheduler already bin-packs to cheapest-fit, so we don't
-      # enumerate families — new ones (g7, p6, ...) become eligible automatically.
+      # enumerate families — new ones become eligible automatically, except
+      # those excluded below because the node image cannot drive them.
       # Cost blast-radius is bounded by `limits.nvidia.com/gpu` below.
       requirements:
         - key: kubernetes.io/arch
@@ -111,9 +112,13 @@ spec:
         # guard — it's numeric and immune to family-name spelling — kept both for
         # defense in depth and because the family list still narrows the search
         # space Karpenter considers.
+        # g7/g7e (Blackwell RTX PRO) are excluded too: the Bottlerocket NVIDIA
+        # driver rejects them (open kernel modules required,
+        # bottlerocket-os/bottlerocket#4889), so the node never joins. See
+        # gpu-shared.yaml.
         - key: karpenter.k8s.aws/instance-family
           operator: NotIn
-          values: ["g4dn", "g4ad", "p3", "p3dn", "p2"]
+          values: ["g4dn", "g4ad", "p3", "p3dn", "p2", "g7", "g7e"]
         # Ampere is generation 5 in G-family numbering (g5/g6/g6e/g7e are all
         # >= 5); P3(dn) is generation 3, P2 is generation 2 — both correctly
         # excluded by this floor regardless of what AWS names the variant.
