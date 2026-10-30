@@ -90,9 +90,15 @@ spec:
         # Exclude pre-Ampere NVIDIA GPUs (T4 in g4dn). Modern vLLM model
         # defaults use bfloat16, which requires compute capability ≥ 8.0
         # (Ampere/Ada/Hopper). T4 is CC 7.5.
+        # g7/g7e (Blackwell RTX PRO): the Bottlerocket NVIDIA variants ship the
+        # proprietary driver, which rejects these GPUs (they need the open kernel
+        # modules, bottlerocket-os/bottlerocket#4889). The node boots but never
+        # joins; Karpenter retires it after 15 min. Seen in E2E: two g7.4xlarge
+        # launches for one smoke model, then a timeout. Re-enable once the AMI
+        # supports them.
         - key: karpenter.k8s.aws/instance-family
           operator: NotIn
-          values: ["g4dn", "g4ad"]
+          values: ["g4dn", "g4ad", "g7", "g7e"]
         # Numeric backstop (see gpu-inference.yaml for why the family-name list
         # alone isn't reliable: AWS gives GPU variants their own family string,
         # e.g. p3dn != p3). g5/g6/g6e are all generation >= 5.
