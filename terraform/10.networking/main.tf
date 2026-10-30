@@ -46,7 +46,7 @@ module "subnets" {
 
 module "vpc" {
   source  = "terraform-aws-modules/vpc/aws"
-  version = "5.5.3"
+  version = "5.21.0"
 
   name = local.name
   cidr = var.vpc_cidr
@@ -71,7 +71,7 @@ module "vpc" {
 
 module "endpoints" {
   source  = "terraform-aws-modules/vpc/aws//modules/vpc-endpoints"
-  version = "5.5.3"
+  version = "5.21.0"
   count   = var.cluster_config.private_eks_cluster ? 1 : 0
 
   vpc_id                     = module.vpc.vpc_id

@@ -83,7 +83,7 @@ resource "aws_iam_role_policy_attachment" "karpenter_node" {
 ################################################################################
 module "karpenter" {
   source  = "terraform-aws-modules/eks/aws//modules/karpenter"
-  version = "= 21.1.5"
+  version = "21.29.0"
 
   create = local.capabilities.autoscaling
 
@@ -161,7 +161,7 @@ resource "helm_release" "karpenter" {
   # NOTE (DRA): Dynamic Resource Allocation is enabled by default in v1.14.
   # `IGNORE_DRA_REQUESTS` is the escape hatch to opt back out. It is harmless
   # for this cluster (no DRA-based scheduling in use), so left at the default.
-  version = "1.14.0"
+  version = "1.15.1"
   wait    = false
 
   values = [
