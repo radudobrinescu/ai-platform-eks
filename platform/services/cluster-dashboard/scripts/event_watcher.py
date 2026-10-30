@@ -371,7 +371,7 @@ def _bootstrap_init_containers() -> list[dict]:
                 # psycopg for the wrapper's DB writes; awslabs.eks-mcp-server
                 # for kiro-cli's MCP tool surface (replaces raw kubectl).
                 "pip install --no-cache-dir --target=/pydeps "
-                "  psycopg[binary]==3.2.3 "
+                "  psycopg[binary]==3.3.6 "
                 "  awslabs.eks-mcp-server",
             ],
             "volumeMounts": [{"name": "pydeps", "mountPath": "/pydeps"}],
