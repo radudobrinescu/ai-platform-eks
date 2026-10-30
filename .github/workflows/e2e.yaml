@@ -156,7 +156,9 @@ jobs:
           else
             status_sha="$base_sha"
           fi
-          env_name="e2e-${MODE:0:1}${PROFILE:0:1}-${GITHUB_RUN_NUMBER}"
+          # Same format as harness/e2e.py env_name(); 4 digits keep EKS node group
+          # name prefixes within 37 characters.
+          env_name="e2e${MODE:0:1}${PROFILE:0:1}$((GITHUB_RUN_NUMBER % 10000))"
           {
             echo "BASE_SHA=$base_sha"
             echo "STATUS_SHA=$status_sha"
@@ -231,7 +233,7 @@ jobs:
           if [ "$MODE" = upgrade ]; then refs=("$BASE_SHA" "$STATUS_SHA"); else refs=("$STATUS_SHA"); fi
           set +e
           python3 harness/e2e.py "$MODE" "${refs[@]}" --profile "$PROFILE" \
-            --run-number "$GITHUB_RUN_NUMBER" --region "$E2E_REGION" \
+            --run-number "$((GITHUB_RUN_NUMBER % 10000))" --region "$E2E_REGION" \
             --operator-cidr "$OPERATOR_CIDR" --subject-dir subject --report-dir reports "${args[@]}"
           rc=$?
           set -e

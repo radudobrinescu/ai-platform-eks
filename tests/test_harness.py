@@ -108,8 +108,8 @@ class TestRedaction:
 
 class TestNaming:
     @pytest.mark.parametrize("mode,profile,want", [
-        ("fresh", "default", "e2e-fd-17"), ("fresh", "managed", "e2e-fm-17"),
-        ("upgrade", "default", "e2e-ud-17"), ("upgrade", "managed", "e2e-um-17"),
+        ("fresh", "default", "e2efd17"), ("fresh", "managed", "e2efm17"),
+        ("upgrade", "default", "e2eud17"), ("upgrade", "managed", "e2eum17"),
     ])
     def test_env_names(self, mode, profile, want):
         assert e2e.env_name(mode, profile, "17") == want
@@ -124,8 +124,22 @@ class TestNaming:
             prefix = e2e.resources_prefix(fh.read())
         assert prefix == "ai-platform"
         cluster = e2e.cluster_name(prefix, e2e.env_name("upgrade", "managed", "9999"))
-        assert cluster == "ai-platform-e2e-um-9999"
-        assert e2e.model_cache_bucket_len(cluster) == 48 <= 63
+        assert cluster == "ai-platform-e2eum9999"
+        assert e2e.model_cache_bucket_len(cluster) <= 63
+
+    def test_longest_node_group_prefix_fits_eks(self, subject_root):
+        """EKS: node_group_name_prefix ("<cluster>-criticaladdons-") <= 37 chars."""
+        with open(os.path.join(subject_root, "terraform/30.eks/30.cluster/main.tf"), encoding="utf-8") as fh:
+            assert '"${local.cluster_name}-criticaladdons" = {' in fh.read()
+        with open(os.path.join(subject_root, e2e.EXAMPLE_TFVARS), encoding="utf-8") as fh:
+            prefix = e2e.resources_prefix(fh.read())
+        longest = e2e.env_name("upgrade", "managed", "9999")
+        assert len(longest) <= e2e.MAX_ENV_LEN
+        assert len(f"{e2e.cluster_name(prefix, longest)}-criticaladdons-") <= 37
+
+    def test_workflow_env_name_matches_harness(self):
+        with open(os.path.join(ROOT, ".github/workflows/e2e.yaml"), encoding="utf-8") as fh:
+            assert 'env_name="e2e${MODE:0:1}${PROFILE:0:1}$((GITHUB_RUN_NUMBER % 10000))"' in fh.read()
 
     def test_bucket_formula_matches_subject(self, subject_root):
         with open(os.path.join(subject_root, "terraform/30.eks/30.cluster/locals.tf"), encoding="utf-8") as fh:

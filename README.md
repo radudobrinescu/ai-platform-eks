@@ -42,8 +42,9 @@ services' HTTP APIs.
 4. Teardown: `./platformctl down` (the env name is typed on stdin, as on
    `main`), the env-scoped orphan sweep, branch deletion. Skipped with `keep`.
 
-Env names are `e2e-<m><p>-<run number>` (`m` = f/u, `p` = d/m), cluster
-`ai-platform-e2e-ud-17`. Reports (`reports/<env>.md|json`) and the streamed
+Env names are `e2e<m><p><run number>` (`m` = f/u, `p` = d/m, run number mod
+10000), cluster `ai-platform-e2eud17`: EKS caps the system node group's name
+prefix at 37 characters. Reports (`reports/<env>.md|json`) and the streamed
 command output redact account ids, ARNs and AWS hostnames.
 
 ## One-time setup (Unit 4, by an admin)

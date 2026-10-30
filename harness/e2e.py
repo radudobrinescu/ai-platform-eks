@@ -57,13 +57,20 @@ GIT_USER = ("ai-platform-e2e", "ai-platform-e2e@users.noreply.github.com")
 # Naming (design section 3.2)
 # --------------------------------------------------------------------------- #
 
+# The product names its system node group "<cluster>-criticaladdons" and EKS caps
+# node_group_name_prefix ("<that>-") at 37 characters. With the default
+# resources_prefix "ai-platform", the env name may be at most 9 characters:
+# "e2e-fd-100" (run 100) broke every job. No hyphens, 4-digit run numbers.
+MAX_ENV_LEN = 9
+
+
 def env_name(mode: str, profile: str, run_number: str) -> str:
-    """e2e-<m><p>-<n>: m = f fresh / u upgrade, p = d default / m managed."""
+    """e2e<m><p><n>: m = f fresh / u upgrade, p = d default / m managed, n = 1-4 digits."""
     if mode not in ("fresh", "upgrade") or profile not in tfvars.PROFILES:
         raise ValueError(f"bad mode/profile: {mode}/{profile}")
     if not re.fullmatch(r"\d{1,4}", str(run_number)):
         raise ValueError(f"run number must be 1-4 digits, got {run_number!r}")
-    return f"e2e-{mode[0]}{profile[0]}-{run_number}"
+    return f"e2e{mode[0]}{profile[0]}{run_number}"
 
 
 def resources_prefix(tfvars_text: str) -> str:
