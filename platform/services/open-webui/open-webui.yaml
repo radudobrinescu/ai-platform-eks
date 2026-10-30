@@ -265,7 +265,7 @@ spec:
       serviceAccountName: litellm-openwebui-key
       containers:
         - name: mint-key
-          image: alpine/k8s:1.35.6
+          image: alpine/k8s:1.37.1
           env:
             - name: MASTER_KEY
               valueFrom:
