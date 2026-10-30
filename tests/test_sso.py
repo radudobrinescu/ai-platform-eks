@@ -80,3 +80,44 @@ def test_open_webui_login_returns_the_user_id():
     """Survival compares Open WebUI user ids before and after the upgrade."""
     with open(os.path.join(ROOT, "harness", "sso.py"), encoding="utf-8") as fh:
         assert '"id": u.get("id")' in fh.read()
+
+
+class _FakeEnv:
+    def __init__(self):
+        self.opened = 0
+
+    def forwards(self):
+        self.opened += 1
+        return {}, lambda: None
+
+    def passwords(self):
+        return {e: "pw" for e in sso.SEED_GROUPS}
+
+
+def test_per_user_retries_a_dropped_connection_once_with_fresh_forwards(monkeypatch):
+    import http.client
+    env, calls = _FakeEnv(), {}
+
+    def flow(_b, email, _pw):
+        calls[email] = calls.get(email, 0) + 1
+        if email == "user@example.com" and calls[email] == 1:
+            raise http.client.RemoteDisconnected("Remote end closed connection without response")
+        return {"email": email}
+
+    monkeypatch.setattr(sso.time, "sleep", lambda _s: None)
+    ok, detail = sso._per_user(env, flow, lambda e, g, r: (r["email"] == e, "ok"))
+    assert ok, detail
+    assert calls["user@example.com"] == 2 and calls["admin@example.com"] == 1
+    assert env.opened == len(sso.SEED_GROUPS) + 1
+    assert "after one retry" in detail
+
+
+def test_per_user_never_retries_a_wrong_answer(monkeypatch):
+    env, calls = _FakeEnv(), {}
+
+    def flow(_b, email, _pw):
+        calls[email] = calls.get(email, 0) + 1
+        return {"email": email}
+
+    ok, _ = sso._per_user(env, flow, lambda e, g, r: (e != "user@example.com", "role mismatch"))
+    assert not ok and calls["user@example.com"] == 1

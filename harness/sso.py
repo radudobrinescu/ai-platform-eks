@@ -343,21 +343,38 @@ def chk_seed_users(c, s: SsoEnv):
     return not problems, "; ".join(problems or ok)
 
 
+# Transport-level failures (a port-forward or pod going away mid-flow), as
+# opposed to an answer from the UI. Only these are retried, once, with fresh
+# port-forwards; a wrong role or a rejected login is never retried.
+_TRANSPORT_ERRORS = (ConnectionError, http.client.RemoteDisconnected, http.client.IncompleteRead,
+                     urllib.error.URLError, TimeoutError, OSError)
+
+
 def _per_user(s: SsoEnv, flow, judge):
-    mapping, stop = s.forwards()
-    try:
-        lines, failed = [], False
-        for email, group, pw in _users(s):
+    lines, failed = [], False
+    for email, group, pw in _users(s):
+        for attempt in (1, 2):
+            mapping, stop = s.forwards()
             try:
                 res = flow(Browser(mapping), email, pw)
                 good, msg = judge(email, group, res)
+                break
+            except urllib.error.HTTPError as e:  # an answer from the UI: not retried
+                good, msg = False, f"HTTPError: {e}"
+                break
+            except _TRANSPORT_ERRORS as e:
+                good, msg = False, f"{type(e).__name__}: {e}"
+                if attempt == 2:
+                    break
+                time.sleep(10)
             except Exception as e:  # noqa: BLE001 — one user's failure must not hide the others'
                 good, msg = False, f"{type(e).__name__}: {e}"
-            failed |= not good
-            lines.append(f"{email.split('@')[0]}: {'✓' if good else '✗'} {msg}")
-        return not failed, "; ".join(lines)
-    finally:
-        stop()
+                break
+            finally:
+                stop()
+        failed |= not good
+        lines.append(f"{email.split('@')[0]}: {'✓' if good else '✗'} {msg}" + (" (after one retry)" if good and attempt == 2 else ""))
+    return not failed, "; ".join(lines)
 
 
 def chk_open_webui_logins(c, s: SsoEnv):

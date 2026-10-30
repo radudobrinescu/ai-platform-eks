@@ -293,3 +293,26 @@ class TestLiteLLMReplicaAgreement:
         with open(os.path.join(ROOT, "harness", "checks.py"), encoding="utf-8") as fh:
             text = fh.read()
         assert "lambda: alias not in models(pf" not in text and "alias if alias in models(pf" not in text
+
+
+class TestLiteLLMSettled:
+    def _with(self, monkeypatch, dep, pods):
+        def fake(*args):
+            return dep if args[1] == "deployment" else {"items": pods}
+        monkeypatch.setattr(checks, "kubectl_json", fake)
+
+    def _dep(self, **st):
+        base = {"observedGeneration": 3, "updatedReplicas": 2, "readyReplicas": 2, "availableReplicas": 2, "replicas": 2}
+        return {"metadata": {"generation": 3}, "spec": {"replicas": 2}, "status": {**base, **st}}
+
+    def test_settled(self, monkeypatch):
+        self._with(monkeypatch, self._dep(), [{"metadata": {}}, {"metadata": {}}])
+        assert checks.litellm_settled()
+
+    def test_rolling_or_terminating_is_not_settled(self, monkeypatch):
+        self._with(monkeypatch, self._dep(updatedReplicas=1), [])
+        assert not checks.litellm_settled()
+        self._with(monkeypatch, self._dep(replicas=3), [])
+        assert not checks.litellm_settled()
+        self._with(monkeypatch, self._dep(), [{"metadata": {"deletionTimestamp": "x"}}])
+        assert not checks.litellm_settled()

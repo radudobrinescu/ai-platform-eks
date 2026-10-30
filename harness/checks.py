@@ -203,9 +203,28 @@ def wait_alias(c: Ctx, alias: str, timeout: int) -> str:
     return alias
 
 
+def litellm_settled() -> bool:
+    """The litellm Deployment has finished any rollout: every replica updated,
+    ready and available, and no old pod still terminating."""
+    d = kubectl_json("get", "deployment", "litellm", "-n", NS_PLATFORM)
+    spec, st, meta = d.get("spec") or {}, d.get("status") or {}, d.get("metadata") or {}
+    want = spec.get("replicas", 1)
+    if st.get("observedGeneration", 0) < meta.get("generation", 0):
+        return False
+    if not (st.get("updatedReplicas") == st.get("readyReplicas") == st.get("availableReplicas") == want):
+        return False
+    if st.get("replicas", want) != want:
+        return False
+    pods = kubectl_json("get", "pods", "-n", NS_PLATFORM, "-l", "app=litellm").get("items", [])
+    return not any((p.get("metadata") or {}).get("deletionTimestamp") for p in pods)
+
+
 def wait_alias_gone(c: Ctx, alias: str, timeout: int) -> None:
     key = c.litellm_key()
     wait_for(f"{alias} gone from /v1/models on every LiteLLM replica", lambda: _all_replicas(key, alias, False), timeout, 10)
+    # Removing a namespace's last model rolls LiteLLM (litellm-sync works around
+    # a LiteLLM eviction bug). Later checks must not land on a terminating pod.
+    wait_for("litellm rollout settled", litellm_settled, timeout, 10)
 
 
 def chat_via_service(key: str, model: str, attempts: int = 3) -> tuple[int, str]:
