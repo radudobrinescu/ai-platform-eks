@@ -229,7 +229,7 @@ _force_delete_stranded_pods() {
     | while read -r ns name node; do
         if [ -z "$node" ] || ! printf '%s\n' "$dead" | grep -qx "$node"; then continue; fi
         kubectl --context "$env" --request-timeout=20s delete pod "$name" -n "$ns" --grace-period=0 --force >/dev/null 2>&1 \
-          && echo "  [watchdog] force-deleted pod ${ns}/${name} stranded on unreachable node ${node}"
+          && echo "  [watchdog] fallback: force-deleted pod ${ns}/${name} stranded on unreachable node ${node}"
       done || true
   return 0
 }
@@ -334,7 +334,44 @@ _terminate_karpenter_orphans() {
   [ -n "$ids" ] && [ "$ids" != "None" ] || return 0
   # shellcheck disable=SC2086
   aws ec2 terminate-instances --region "$region" --instance-ids $ids >/dev/null 2>&1 || true
-  echo "  [watchdog] cluster gone; terminated orphaned Karpenter instance(s): ${ids}"
+  echo "  [watchdog] fallback: cluster gone; terminated orphaned Karpenter instance(s): ${ids}"
+}
+
+# Let Karpenter remove its own nodes BEFORE Terraform runs. Terraform destroys
+# the NodePools and the Karpenter controller in the same apply, so the
+# controller is gone before it finishes terminating: the instances keep running
+# (they pin the subnets for Terraform's 20-minute timeout) and their Node
+# objects keep the karpenter.sh/termination finalizer (their pods then hold
+# namespaces in Terminating). Deleting the NodePools first, while Karpenter
+# still runs, makes it drain and terminate every node it launched. Bounded by
+# PLATFORMCTL_KARPENTER_DRAIN_TIMEOUT (default 600 s); on timeout the teardown
+# watchdog's fallbacks still apply. Self-managed Karpenter only: under EKS Auto
+# Mode, AWS runs the controller and Terraform never removes it.
+_drain_karpenter_nodes() {
+  local env="$1" timeout="${PLATFORMCTL_KARPENTER_DRAIN_TIMEOUT:-600}" interval="${PLATFORMCTL_KARPENTER_DRAIN_INTERVAL:-10}"
+  local waited=0 out left
+  kubectl --context "$env" --request-timeout=20s get deployment karpenter -n kube-system >/dev/null 2>&1 || return 0
+  out="$(kubectl --context "$env" --request-timeout=20s get nodepools.karpenter.sh -o name 2>/dev/null)" || return 0
+  [ -n "$out" ] || return 0
+  log "Deleting Karpenter NodePools so Karpenter drains and terminates its own nodes while it still runs…"
+  kubectl --context "$env" --request-timeout=20s delete nodepools.karpenter.sh --all --wait=false >/dev/null 2>&1 || true
+  while :; do
+    if out="$(kubectl --context "$env" --request-timeout=20s get nodeclaims.karpenter.sh -o name 2>/dev/null)"; then
+      left="$(printf '%s\n' "$out" | grep -c . || true)"
+      if [ "$left" -eq 0 ]; then
+        ok "Karpenter terminated all of its nodes (${waited}s)."
+        return 0
+      fi
+    else
+      left="unknown"
+    fi
+    if [ "$waited" -ge "$timeout" ]; then
+      warn "Karpenter still has ${left} NodeClaim(s) after ${timeout}s; continuing. The teardown watchdog terminates leftovers once the cluster is gone (fallback)."
+      return 0
+    fi
+    sleep "$interval"
+    waited=$((waited + interval))
+  done
 }
 
 # Before Terraform runs, delete the in-cluster objects whose controllers create
@@ -372,6 +409,7 @@ _predown_drain() {
   # one-shot pass; the watchdog repeats it during destroy to beat re-adds.
   log "Clearing leftover controller finalizers so namespaces terminate cleanly during destroy…"
   _strip_teardown_finalizers "$env"
+  _drain_karpenter_nodes "$env"
   ok "In-cluster drain complete — controller AWS resources released and finalizers cleared."
 }
 
