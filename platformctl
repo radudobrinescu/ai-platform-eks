@@ -119,9 +119,22 @@ edge_urls_live() {
 
 # ---- up / down ------------------------------------------------------------- #
 
+# EKS caps node_group_name_prefix at 37 characters, and Terraform names the
+# system node group "<cluster>-criticaladdons" (prefix "<that>-"). A longer env
+# name fails only after the VPC and the cluster are already created, so refuse
+# it up front.
+check_env_name_length() {
+  local env="$1" prefix cluster max
+  cluster="$(cluster_of "$env")"
+  prefix="${cluster}-criticaladdons-"
+  [ "${#prefix}" -le 37 ] && return 0
+  max=$(( 37 - ${#prefix} + ${#env} ))
+  die "env name '${env}' is too long: cluster '${cluster}' makes the node group prefix '${prefix}' ${#prefix} characters (EKS allows 37). Use at most ${max} characters for the env name."
+}
+
 cmd_up() {
   local env; env=$(need_env "${1:-}" "up")
-  need terraform; need aws; need make; require_tfvars "$env"; check_tfvars_filled "$env"; pin_region "$env"
+  need terraform; need aws; need make; require_tfvars "$env"; check_tfvars_filled "$env"; check_env_name_length "$env"; pin_region "$env"
   log "Provisioning '${env}' — EKS + capabilities + Karpenter (takes a while)"
   # Explicit checks: when cmd_up is invoked in a `||` context (platformctl e2e)
   # bash suppresses errexit inside the function, so a failed make would
@@ -337,6 +350,28 @@ _terminate_karpenter_orphans() {
   echo "  [watchdog] fallback: cluster gone; terminated orphaned Karpenter instance(s): ${ids}"
 }
 
+# Wait (bounded) until the Argo CD Applications deleted above are gone. Their
+# deletion cascades to the workloads they own, so the pods that would hold a
+# Karpenter drain (PodDisruptionBudgets, do-not-disrupt) are already removed
+# when the NodePools are deleted. Before this wait, every E2E teardown spent
+# the full drain timeout on such pods. PLATFORMCTL_APPS_DELETE_TIMEOUT
+# (default 300 s); on timeout the drain proceeds as before.
+_wait_argocd_apps_gone() {
+  local env="$1" timeout="${PLATFORMCTL_APPS_DELETE_TIMEOUT:-300}" interval="${PLATFORMCTL_KARPENTER_DRAIN_INTERVAL:-10}" waited=0 out
+  while :; do
+    if out="$(kubectl --context "$env" --request-timeout=20s get applications.argoproj.io -n argocd -o name 2>/dev/null)" && [ -z "$out" ]; then
+      ok "Argo CD applications and their workloads are deleted (${waited}s)."
+      return 0
+    fi
+    if [ "$waited" -ge "$timeout" ]; then
+      warn "Argo CD applications still deleting after ${timeout}s; continuing with the node drain."
+      return 0
+    fi
+    sleep "$interval"
+    waited=$((waited + interval))
+  done
+}
+
 # Let Karpenter remove its own nodes BEFORE Terraform runs. Terraform destroys
 # the NodePools and the Karpenter controller in the same apply, so the
 # controller is gone before it finishes terminating: the instances keep running
@@ -438,6 +473,7 @@ _predown_drain() {
   # one-shot pass; the watchdog repeats it during destroy to beat re-adds.
   log "Clearing leftover controller finalizers so namespaces terminate cleanly during destroy…"
   _strip_teardown_finalizers "$env"
+  _wait_argocd_apps_gone "$env"
   _drain_karpenter_nodes "$env"
   ok "In-cluster drain complete — controller AWS resources released and finalizers cleared."
 }
