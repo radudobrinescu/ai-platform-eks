@@ -23,7 +23,7 @@ jobs:
       - uses: actions/checkout@v4
       - uses: hashicorp/setup-terraform@v3
         with:
-          terraform_version: "1.9.8"
+          terraform_version: "1.17.0"
       - name: terraform fmt (check)
         run: terraform fmt -check -recursive terraform/
       - name: terraform validate (per module)
@@ -47,14 +47,14 @@ jobs:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
         with:
-          python-version: "3.12"
+          python-version: "3.15"
       - name: byte-compile every tracked module (catches syntax/indentation)
         run: |
           set -euo pipefail
           git ls-files '*.py' | grep -v '/.terraform/' | xargs -r python3 -m py_compile
       - name: ruff (non-blocking style report)
         run: |
-          pip install ruff==0.6.9
+          pip install ruff==0.17.2
           # Report only — style drift shouldn't block a platform PR, but surface it.
           ruff check --output-format=github ops/ platform/ || true
 
@@ -65,13 +65,13 @@ jobs:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
         with:
-          python-version: "3.12"
+          python-version: "3.15"
       - name: install test deps
         # boto3: sweep_env and recommend_instance.cli import it at module load;
         # pyyaml: used by test_render. backend.py / addon_freshness.py guard or
         # lazy-load their heavy deps (psycopg, jwt, boto3), so the suite imports
         # cleanly with just these two. No cloud credentials — pure static tests.
-        run: pip install --quiet pytest==8.3.3 pyyaml==6.0.2 boto3
+        run: pip install --quiet pytest==8.4.2 pyyaml==6.0.3 boto3
       - name: pytest
         # Blocks merge on any failing unit test — including the EKS managed-addon
         # freshness guard (tests/test_addon_freshness.py), which fails if an addon
@@ -107,9 +107,9 @@ jobs:
           curl -fsSL "https://github.com/kubernetes-sigs/kustomize/releases/download/kustomize%2Fv${KUSTOMIZE_VERSION}/kustomize_v${KUSTOMIZE_VERSION}_linux_amd64.tar.gz" \
             | tar xz kustomize && sudo mv kustomize /usr/local/bin/
           # kubeconform (schema validation; skips CRD kinds it doesn't know)
-          curl -fsSL https://github.com/yannh/kubeconform/releases/download/v0.6.7/kubeconform-linux-amd64.tar.gz \
+          curl -fsSL https://github.com/yannh/kubeconform/releases/download/v0.8.0/kubeconform-linux-amd64.tar.gz \
             | tar xz kubeconform && sudo mv kubeconform /usr/local/bin/
-          pip install yamllint==1.35.1
+          pip install yamllint==1.38.0
       - name: yamllint (relaxed — long lines/indent allowed, only real errors fail)
         run: |
           yamllint -d "{extends: relaxed, rules: {line-length: disable, comments: disable, document-start: disable, trailing-spaces: disable, empty-lines: disable}}" \
