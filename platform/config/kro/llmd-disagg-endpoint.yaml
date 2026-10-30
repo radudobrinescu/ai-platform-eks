@@ -59,14 +59,14 @@ spec:
       minVramPerGpuGiB:     "integer | default=0"
       workerMemory:         "string  | default=16Gi"
       workerCpu:            "string  | default=8"
-      vllmImage:            "string  | default=vllm/vllm-openai:v0.24.0"
+      vllmImage:            "string  | default=vllm/vllm-openai:v0.32.0"
       # Optional tool/function calling (see VLLMEndpoint), applied to BOTH the
       # prefill and decode vLLM pools. `platformctl new-model` auto-fills the
       # parser from the model architecture; empty = chat-only. extraArgs appends
       # any other raw vLLM flags (to both pools).
       toolCallParser:       "string"
       extraArgs:            "[]string"
-      routerChartVersion:   "string  | default=v0.9.0"
+      routerChartVersion:   "string  | default=v0.11.0"
       routingProfile:       'string | default=prefix enum="balanced,prefix,throughput,latency"'
       # True prefill/decode disaggregation (via the decode routing-sidecar + EPP
       # disagg-profile-handler). pdDisaggregation selects the PD decider:

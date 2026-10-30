@@ -83,7 +83,7 @@ resource "aws_iam_role_policy_attachment" "karpenter_node" {
 ################################################################################
 module "karpenter" {
   source  = "terraform-aws-modules/eks/aws//modules/karpenter"
-  version = "= 21.1.5"
+  version = "21.29.0"
 
   create = local.capabilities.autoscaling
 
@@ -91,33 +91,18 @@ module "karpenter" {
 
   create_pod_identity_association = true
 
-  # Additional controller permissions required by newer Karpenter versions that
-  # the pinned module (v21.1.5) does not yet grant:
-  #   - ec2:DescribeInstanceStatus  → required since Karpenter 1.12 for the
-  #     interruption controller's EC2 instance-status health checks.
-  #   - ec2:DescribePlacementGroups → required since Karpenter 1.11 for
-  #     placement-group support (harmless when unused; future-proofs the role).
-  #   - iam:ListInstanceProfiles    → required since Karpenter 1.7 for the
-  #     instance-profile controller/garbage-collection (does not support
-  #     resource-level scoping, so it must target "*").
-  #   - ec2:DescribeCapacityReservations → required for
-  #     capacityReservationSelectorTerms (ODCR / Capacity Block discovery for
-  #     gpu_capacity_reservation_ids; ReservedCapacity gate is on by default
-  #     since Karpenter 1.6). Harmless when no reservations are configured.
-  # All are read-only; consistent with the module's AllowRegionalReadActions.
-  iam_policy_statements = [
-    {
-      sid       = "AllowInstanceStatusAndPlacementGroupReads"
-      effect    = "Allow"
-      resources = ["*"]
-      actions = [
-        "ec2:DescribeInstanceStatus",
-        "ec2:DescribePlacementGroups",
-        "ec2:DescribeCapacityReservations",
-        "iam:ListInstanceProfiles",
-      ]
-    }
-  ]
+  # Inline controller policy. From module v21.29 the controller policy renders
+  # to ~6.2K characters, over the 6,144 limit for a managed IAM policy
+  # (CreatePolicy: "LimitExceeded: Cannot exceed quota for PolicySize: 6144",
+  # found by the E2E gate). An inline role policy allows 10,240; this is the
+  # module's documented remedy. On a LIVE cluster the apply swaps the managed
+  # policy for an inline one in the same run (see COMPATIBILITY.md).
+  enable_inline_policy = true
+
+  # The four extra read-only actions earlier module versions lacked
+  # (ec2:DescribeInstanceStatus, ec2:DescribePlacementGroups,
+  # ec2:DescribeCapacityReservations, iam:ListInstanceProfiles) are granted by
+  # the module itself since v21.29, so no iam_policy_statements are needed.
 
   # Used to attach additional IAM policies to the Karpenter node IAM role.
   # ESC: the node role is created outside this module (see aws_iam_role.karpenter_node)
@@ -161,7 +146,7 @@ resource "helm_release" "karpenter" {
   # NOTE (DRA): Dynamic Resource Allocation is enabled by default in v1.14.
   # `IGNORE_DRA_REQUESTS` is the escape hatch to opt back out. It is harmless
   # for this cluster (no DRA-based scheduling in use), so left at the default.
-  version = "1.14.0"
+  version = "1.15.1"
   wait    = false
 
   values = [

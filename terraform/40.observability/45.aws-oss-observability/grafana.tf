@@ -14,7 +14,7 @@ data "aws_ssoadmin_instances" "current" {
 module "managed_grafana" {
   count   = var.observability_configuration.aws_oss_tooling ? 1 : 0
   source  = "terraform-aws-modules/managed-service-grafana/aws"
-  version = "2.1.1"
+  version = "2.3.1"
 
   name                      = local.grafana_workspace_name
   associate_license         = false

@@ -25,7 +25,7 @@ resource "helm_release" "argocd_selfmanaged" {
   chart      = "argo-cd"
   # Pinned: without a version every new install takes whatever chart is newest
   # that day, so two installs of the same commit could run different Argo CD.
-  version          = "10.10.5" # Argo CD v3.5.5
+  version          = "10.11.6" # Argo CD v3.5.5
   namespace        = "argocd"
   create_namespace = true
 
