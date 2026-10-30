@@ -199,10 +199,16 @@ resource "aws_cognito_user" "seed" {
   username     = each.key
   password     = random_password.sso_seed_users[each.key].result
 
+  # Custom attributes WITHOUT the "custom:" prefix: the provider adds it when
+  # writing and strips it when reading. Written as "custom:role", state holds
+  # "role", so every later apply planned "+custom:role, -role" and the delete
+  # removed the attribute in Cognito: an upgrade left every seed user without a
+  # role (found by the upgrade E2E). With "role" the plan is stable, including
+  # for users created the old way (verified on providers 6.28 and 6.70).
   attributes = {
     email          = each.key
     email_verified = "true"
-    "custom:role"  = local.sso_litellm_roles[each.value]
+    role           = local.sso_litellm_roles[each.value]
   }
 }
 
