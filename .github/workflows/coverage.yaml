@@ -35,7 +35,7 @@ jobs:
       - name: Coverage test against main
         env:
           REQUIRE_SUBJECT: "1"
-        run: python3 -m pytest -q tests/test_renovate_coverage.py 2>&1 | tee coverage.log
+        run: python3 -m pytest -q tests/test_renovate_coverage.py tests/test_workflows.py::test_e2e_terraform_matches_the_subject_ci 2>&1 | tee coverage.log
       - name: Open or update an issue
         if: failure()
         env:
