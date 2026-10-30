@@ -160,9 +160,13 @@ spec:
             initialDelaySeconds: 30
             periodSeconds: 15
           resources:
+            # Request sized to observed use on LiteLLM v1.83.14: 1.0-1.35Gi per
+            # replica at idle after boot + prisma migrate. With a 1Gi request the
+            # kubelet evicted a replica from a 4GiB node under memory pressure
+            # (E2E gate, k8s 1.37). The 2Gi limit is unchanged.
             requests:
               cpu: 500m
-              memory: 1Gi
+              memory: 1536Mi
             limits:
               cpu: "1"
               memory: 2Gi
