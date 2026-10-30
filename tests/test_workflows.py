@@ -57,8 +57,22 @@ class TestE2EWorkflow:
         wf, _ = _load("e2e.yaml")
         on = _on(wf)
         assert list(on) == ["workflow_dispatch"]
-        assert set(on["workflow_dispatch"]["inputs"]) == {"mode", "subject", "base", "profiles", "keep", "with_llmd"}
-        assert on["workflow_dispatch"]["inputs"]["mode"]["options"] == ["fresh", "upgrade"]
+        assert set(on["workflow_dispatch"]["inputs"]) == {"modes", "subject", "base", "profiles", "keep", "with_llmd"}
+        assert on["workflow_dispatch"]["inputs"]["modes"]["options"] == ["fresh", "upgrade", "fresh,upgrade"]
+
+    def test_run_name_says_what_is_tested(self):
+        wf, _ = _load("e2e.yaml")
+        rn = wf["run-name"]
+        for needle in ("inputs.modes", "inputs.subject", "inputs.base", "inputs.profiles", "inputs.keep"):
+            assert needle in rn, needle
+
+    def test_one_run_one_approval_for_every_mode_and_profile(self):
+        wf, _ = _load("e2e.yaml")
+        run = wf["jobs"]["plan"]["steps"][0]["run"]
+        assert '"mode\\":\\"$m\\",\\"profile\\":\\"$p\\"' in run and "matrix=" in run
+        job = wf["jobs"]["e2e"]
+        assert job["name"] == "${{ matrix.mode }} / ${{ matrix.profile }}"
+        assert job["env"]["MODE"] == "${{ matrix.mode }}"
 
     def test_job_is_gated_and_permissions_scoped(self):
         wf, _ = _load("e2e.yaml")
@@ -67,7 +81,7 @@ class TestE2EWorkflow:
         assert job["permissions"] == {"contents": "read", "id-token": "write", "statuses": "write"}
         assert job["timeout-minutes"] == 345
         assert job["needs"] == "plan" and "needs.plan.outputs.configured == 'true'" in job["if"]
-        assert "fromJSON(needs.plan.outputs.profiles)" in job["strategy"]["matrix"]["profile"]
+        assert job["strategy"]["matrix"] == "${{ fromJSON(needs.plan.outputs.matrix) }}"
         assert job["strategy"]["fail-fast"] is False
 
     def test_skip_guard_needs_no_environment_and_no_aws(self):
@@ -102,7 +116,7 @@ class TestE2EWorkflow:
     def test_commit_statuses_pending_then_result_on_subject_sha(self):
         wf, _ = _load("e2e.yaml")
         job = wf["jobs"]["e2e"]
-        assert job["env"]["CONTEXT"] == "e2e/${{ inputs.mode }}-${{ matrix.profile }}"
+        assert job["env"]["CONTEXT"] == "e2e/${{ matrix.mode }}-${{ matrix.profile }}"
         pending, result = _step(job, "Commit status pending"), _step(job, "Commit status result")
         for s in (pending, result):
             assert 'gh api -X POST "repos/${GITHUB_REPOSITORY}/statuses/${STATUS_SHA}"' in s["run"]

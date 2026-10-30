@@ -72,11 +72,14 @@ without calling AWS.
 
 ## Dispatch a run and read the result
 
-Actions -> e2e -> Run workflow: `mode` (fresh | upgrade), `subject` (the ref
-under test; in upgrade mode the candidate), `base` (upgrade mode, default
-`main`), `profiles` (default `default,managed`), `keep`, `with_llmd`. A reviewer
-approves the `e2e` environment, then one job per profile runs in parallel
-(each env uses 3 Elastic IPs; the account quota is 15).
+Actions -> e2e -> Run workflow: `modes` (fresh | upgrade | fresh,upgrade),
+`subject` (the ref under test; in upgrade mode the candidate), `base` (upgrade
+mode, default `main`), `profiles` (default `default,managed`), `keep`,
+`with_llmd`. The run is named after these, e.g. `e2e fresh,upgrade ·
+release/v2026.11.0 (from main) · default,managed`, so the approval screen says
+what it tests. One approval of the `e2e` environment starts every
+(mode, profile) job of the run in parallel (each env uses 3 Elastic IPs; the
+account quota is 15).
 
 Each job posts commit status `e2e/<mode>-<profile>` on the subject SHA (upgrade:
 the candidate SHA): pending at start, success or failure at the end, linking to

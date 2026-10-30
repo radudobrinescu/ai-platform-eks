@@ -145,8 +145,9 @@ profiles) pending (Unit 1b). Pins: see the left column above, plus kro chart
    "not run"). The manifest must exist before E2E: the candidate's
    `./platformctl upgrade` refuses a target without one. Add
    `acknowledged_replacements` by hand if the upgrade plan guard needs them.
-5. Run E2E on the release head: `fresh` and `upgrade` (base = previous release
-   tag, or `main` for the first), both profiles: four commit statuses
+5. Run E2E on the release head: one dispatch with `modes: fresh,upgrade` (base =
+   previous release tag, or `main` for the first), both profiles, one approval:
+   four commit statuses
    `e2e/{fresh,upgrade}-{default,managed}`, all required (BR1). Any push to the
    release branch needs a rerun (BR2), with one exception (step 6).
 6. Record the results (decision A, the only exception to BR2):

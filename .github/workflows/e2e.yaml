@@ -1,6 +1,7 @@
 # E2E: provision a product ref on a real cluster, prove it works, tear it down.
 #
-# Dispatch only (Actions -> e2e -> Run workflow). Two checkouts: this branch at
+# Dispatch only (Actions -> e2e -> Run workflow). modes fresh,upgrade runs every
+# (mode, profile) job in one run, so one approval covers a whole release. Two checkouts: this branch at
 # the workspace root (the harness) and the product ref under test in subject/.
 # The harness drives the subject only through its own ./platformctl, on a
 # throwaway GitOps branch e2e/<env> that Argo CD tracks and that is deleted at
@@ -31,14 +32,19 @@
 #                                 Identity Center for profile `managed`
 #   environment e2e               with a required reviewer
 name: e2e
+# Shown in the run list and on the approval screen, so each pending run says
+# what it tests, e.g. "e2e fresh,upgrade · release/v2026.11.0 (from main) · default,managed".
+run-name: >-
+  e2e ${{ inputs.modes }} · ${{ inputs.subject }}${{ contains(inputs.modes, 'upgrade') && format(' (from {0})', inputs.base) || '' }}
+  · ${{ inputs.profiles }}${{ inputs.keep && ' · keep' || '' }}
 
 on:
   workflow_dispatch:
     inputs:
-      mode:
-        description: "fresh (provision subject) or upgrade (provision base, upgrade to subject)"
+      modes:
+        description: "fresh: provision subject. upgrade: provision base, upgrade to subject. A release needs fresh,upgrade (one approval for all jobs)."
         type: choice
-        options: [fresh, upgrade]
+        options: ["fresh", "upgrade", "fresh,upgrade"]
         default: fresh
       subject:
         description: "Ref under test: branch, tag or SHA (upgrade mode: the candidate)"
@@ -66,7 +72,7 @@ permissions:
   contents: read
 
 concurrency:
-  group: e2e-${{ inputs.mode }}-${{ inputs.subject }}-${{ inputs.base }}
+  group: e2e-${{ inputs.modes }}-${{ inputs.subject }}-${{ inputs.base }}
   cancel-in-progress: false
 
 jobs:
@@ -75,7 +81,7 @@ jobs:
     runs-on: ubuntu-latest
     outputs:
       configured: ${{ steps.cfg.outputs.configured }}
-      profiles: ${{ steps.cfg.outputs.profiles }}
+      matrix: ${{ steps.cfg.outputs.matrix }}
     steps:
       - name: Check configuration (skip cleanly if unset) and validate inputs
         id: cfg
@@ -83,6 +89,7 @@ jobs:
           ROLE: ${{ vars.E2E_ROLE_ARN }}
           HAS_PUSH_TOKEN: ${{ secrets.E2E_PUSH_TOKEN != '' }}
           PROFILES: ${{ inputs.profiles }}
+          MODES: ${{ inputs.modes }}
           SUBJECT_REF: ${{ inputs.subject }}
           BASE_REF: ${{ inputs.base }}
         run: |
@@ -90,15 +97,23 @@ jobs:
           ref_rx='^[A-Za-z0-9._/-]+$'
           [[ "$SUBJECT_REF" =~ $ref_rx ]] || { echo "::error::invalid subject ref"; exit 1; }
           [[ "$BASE_REF" =~ $ref_rx ]] || { echo "::error::invalid base ref"; exit 1; }
-          json="["
+          profiles=()
           IFS=',' read -ra items <<< "$PROFILES"
           for p in "${items[@]}"; do
             p="${p//[[:space:]]/}"
-            case "$p" in default|managed) json+="\"$p\"," ;; "") ;; *) echo "::error::unknown profile '$p'"; exit 1 ;; esac
+            case "$p" in default|managed) profiles+=("$p") ;; "") ;; *) echo "::error::unknown profile '$p'"; exit 1 ;; esac
           done
-          json="${json%,}]"
-          [ "$json" != "[]" ] || { echo "::error::no profile selected"; exit 1; }
-          echo "profiles=$json" >> "$GITHUB_OUTPUT"
+          [ "${#profiles[@]}" -gt 0 ] || { echo "::error::no profile selected"; exit 1; }
+          modes=()
+          IFS=',' read -ra items <<< "$MODES"
+          for m in "${items[@]}"; do
+            case "$m" in fresh|upgrade) modes+=("$m") ;; *) echo "::error::unknown mode '$m'"; exit 1 ;; esac
+          done
+          # One job per (mode, profile); all share this run, so one approval covers them.
+          json='{"include":['
+          for m in "${modes[@]}"; do for p in "${profiles[@]}"; do json+="{\"mode\":\"$m\",\"profile\":\"$p\"},"; done; done
+          json="${json%,}]}"
+          echo "matrix=$json" >> "$GITHUB_OUTPUT"
           if [ -z "$ROLE" ] || [ "$HAS_PUSH_TOKEN" != "true" ]; then
             echo "::notice::e2e not configured: set variable E2E_ROLE_ARN and secret E2E_PUSH_TOKEN to enable. Skipping (no AWS call)."
             echo "configured=false" >> "$GITHUB_OUTPUT"
@@ -107,7 +122,7 @@ jobs:
           fi
 
   e2e:
-    name: ${{ inputs.mode }} / ${{ matrix.profile }} (human-approved)
+    name: ${{ matrix.mode }} / ${{ matrix.profile }}
     needs: plan
     if: needs.plan.outputs.configured == 'true'
     runs-on: ubuntu-latest
@@ -119,17 +134,16 @@ jobs:
       statuses: write
     strategy:
       fail-fast: false
-      matrix:
-        profile: ${{ fromJSON(needs.plan.outputs.profiles) }}
+      matrix: ${{ fromJSON(needs.plan.outputs.matrix) }}
     env:
-      MODE: ${{ inputs.mode }}
+      MODE: ${{ matrix.mode }}
       PROFILE: ${{ matrix.profile }}
       SUBJECT_REF: ${{ inputs.subject }}
       BASE_REF: ${{ inputs.base }}
       KEEP: ${{ inputs.keep }}
       WITH_LLMD: ${{ inputs.with_llmd }}
       E2E_REGION: ${{ vars.E2E_REGION || 'eu-central-1' }}
-      CONTEXT: e2e/${{ inputs.mode }}-${{ matrix.profile }}
+      CONTEXT: e2e/${{ matrix.mode }}-${{ matrix.profile }}
       RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
       GH_TOKEN: ${{ github.token }}
     steps:
@@ -139,7 +153,7 @@ jobs:
       - name: Check out the product ref under test into subject/
         uses: actions/checkout@v7
         with:
-          ref: ${{ inputs.mode == 'upgrade' && inputs.base || inputs.subject }}
+          ref: ${{ matrix.mode == 'upgrade' && inputs.base || inputs.subject }}
           path: subject
           fetch-depth: 0
           # Pushes the throwaway e2e/* branch (and the commits ./platformctl makes on it).
@@ -273,7 +287,7 @@ jobs:
       - uses: actions/upload-artifact@v7
         if: always()
         with:
-          name: e2e-report-${{ inputs.mode }}-${{ matrix.profile }}
+          name: e2e-report-${{ matrix.mode }}-${{ matrix.profile }}
           path: reports/
           if-no-files-found: ignore
 
