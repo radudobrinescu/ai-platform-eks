@@ -236,3 +236,14 @@ class TestOidcModule:
         for path in glob.glob(os.path.join(OIDC, "*.tf")):
             with open(path, encoding="utf-8") as fh:
                 assert not re.search(r"\b\d{12}\b", fh.read()), path
+
+
+def test_e2e_terraform_matches_the_subject_ci(subject_root):
+    """The harness's Terraform is not Renovate-managed (lifecycle is not a base
+    branch); keep it equal to what main's CI pins so E2E applies with the same
+    Terraform the product is validated with."""
+    _, e2e_text = _load("e2e.yaml")
+    with open(os.path.join(subject_root, ".github/workflows/ci.yaml"), encoding="utf-8") as fh:
+        ci = fh.read()
+    want = re.search(r'terraform_version: "([^"]+)"', ci).group(1)
+    assert f'terraform_version: "{want}"' in e2e_text, f"e2e.yaml should pin Terraform {want} like main's ci.yaml"

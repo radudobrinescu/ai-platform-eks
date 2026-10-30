@@ -191,7 +191,7 @@ jobs:
           python-version: "3.12"
       - uses: hashicorp/setup-terraform@v4
         with:
-          terraform_version: "1.9.8"
+          terraform_version: "1.17.0"
           terraform_wrapper: false
       - uses: azure/setup-kubectl@v5
       - uses: azure/setup-helm@v5
