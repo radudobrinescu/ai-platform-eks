@@ -343,7 +343,7 @@ def build_remediator_job(investigation_id: str) -> dict:
                             "command": ["/bin/sh", "-c"],
                             "args": [
                                 "set -eu; pip install --no-cache-dir --target=/pydeps "
-                                "psycopg[binary]==3.2.3 awslabs.eks-mcp-server",
+                                "psycopg[binary]==3.3.6 awslabs.eks-mcp-server",
                             ],
                             "volumeMounts": [{"name": "pydeps", "mountPath": "/pydeps"}],
                             "securityContext": {"runAsNonRoot": True, "runAsUser": 65532,
