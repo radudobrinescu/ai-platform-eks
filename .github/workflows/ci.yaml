@@ -20,8 +20,8 @@ jobs:
     name: terraform fmt + validate
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: hashicorp/setup-terraform@v3
+      - uses: actions/checkout@v7
+      - uses: hashicorp/setup-terraform@v4
         with:
           terraform_version: "1.17.0"
       - name: terraform fmt (check)
@@ -44,8 +44,8 @@ jobs:
     name: python compile + lint
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
         with:
           python-version: "3.15"
       - name: byte-compile every tracked module (catches syntax/indentation)
@@ -62,8 +62,8 @@ jobs:
     name: pytest (unit tests + guards)
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
         with:
           python-version: "3.15"
       - name: install test deps
@@ -71,7 +71,7 @@ jobs:
         # pyyaml: used by test_render. backend.py / addon_freshness.py guard or
         # lazy-load their heavy deps (psycopg, jwt, boto3), so the suite imports
         # cleanly with just these two. No cloud credentials — pure static tests.
-        run: pip install --quiet pytest==8.4.2 pyyaml==6.0.3 boto3
+        run: pip install --quiet pytest==9.1.1 pyyaml==6.0.3 boto3
       - name: pytest
         # Blocks merge on any failing unit test — including the EKS managed-addon
         # freshness guard (tests/test_addon_freshness.py), which fails if an addon
@@ -82,7 +82,7 @@ jobs:
     name: shellcheck
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - name: shellcheck all tracked shell scripts + platformctl
         run: |
           set -euo pipefail
@@ -96,7 +96,7 @@ jobs:
     name: kustomize build + yaml + kubeconform
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - name: install tools
         run: |
           set -euo pipefail
