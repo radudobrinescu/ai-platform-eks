@@ -252,7 +252,7 @@ resource "null_resource" "update_kubeconfig" {
 module "ebs_csi_driver_irsa" {
   count   = local.capabilities.blockstorage ? 1 : 0
   source  = "terraform-aws-modules/iam/aws//modules/iam-role-for-service-accounts-eks"
-  version = "~> 5.43"
+  version = "~> 6.0"
 
   role_name = "${local.cluster_name}-ebs-csi"
 
