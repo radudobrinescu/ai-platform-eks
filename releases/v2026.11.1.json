@@ -1,0 +1,13 @@
+{
+  "version": "v2026.11.1",
+  "previous": "v2026.11.0",
+  "kubernetes": {
+    "supported": [
+      "1.36"
+    ],
+    "recommended": "1.36"
+  },
+  "required_tfvars": [],
+  "manual_steps": [],
+  "acknowledged_replacements": []
+}

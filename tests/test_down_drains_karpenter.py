@@ -99,3 +99,40 @@ def test_gpu_pools_exclude_families_the_node_image_cannot_drive():
             text = fh.read()
         notin = re.search(r'instance-family\n\s+operator: NotIn\n\s+values: \[([^\]]*)\]', text).group(1)
         assert '"g7"' in notin and '"g7e"' in notin, f
+
+
+def _run_fn(tmp_path, fn, call, kubectl_body, **env):
+    k = tmp_path / "kubectl"
+    k.write_text(kubectl_body)
+    k.chmod(0o755)
+    calls = tmp_path / "calls"
+    calls.write_text("")
+    script = ("set -euo pipefail\nlog(){ echo \"LOG $*\"; }\nok(){ echo \"OK $*\"; }\nwarn(){ echo \"WARN $*\"; }\n"
+              + _functions(fn) + call + "\necho done\n")
+    e = {**os.environ, "PATH": f"{tmp_path}:{os.environ['PATH']}", "CALLS": str(calls),
+         "PLATFORMCTL_KARPENTER_DRAIN_INTERVAL": "0", **env}
+    return subprocess.run(["bash", "-c", script], capture_output=True, text=True, env=e, timeout=30), calls.read_text()
+
+
+APPS_FAKE = r"""#!/bin/bash
+echo "kubectl $*" >> "$CALLS"
+n=$(grep -c "get applications" "$CALLS")
+if [ "$n" -le "${APPS_AFTER:-0}" ]; then echo application.argoproj.io/litellm; fi
+"""
+
+
+def test_waits_for_argocd_apps_to_be_deleted(tmp_path):
+    r, calls = _run_fn(tmp_path, "_wait_argocd_apps_gone", "_wait_argocd_apps_gone e2e", APPS_FAKE, APPS_AFTER="2")
+    assert r.returncode == 0 and "done" in r.stdout, r.stderr
+    assert calls.count("get applications") == 3 and "OK Argo CD applications" in r.stdout
+
+
+def test_apps_wait_times_out_and_continues(tmp_path):
+    r, _ = _run_fn(tmp_path, "_wait_argocd_apps_gone", "_wait_argocd_apps_gone e2e", APPS_FAKE,
+                   APPS_AFTER="999", PLATFORMCTL_APPS_DELETE_TIMEOUT="0")
+    assert r.returncode == 0 and "WARN Argo CD applications still deleting" in r.stdout
+
+
+def test_apps_wait_runs_before_the_node_drain():
+    body = _functions("_predown_drain")
+    assert body.index('_wait_argocd_apps_gone "$env"') < body.index('_drain_karpenter_nodes "$env"')
