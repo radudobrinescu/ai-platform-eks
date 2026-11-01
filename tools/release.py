@@ -435,7 +435,7 @@ def main(argv: list[str] | None = None) -> int:
     sub = ap.add_subparsers(dest="cmd", required=True)
     c = sub.add_parser("cut")
     c.add_argument("version")
-    c.add_argument("branches", nargs="+")
+    c.add_argument("branches", nargs="*", help="group branches to merge; none for a product-only release")
     c.add_argument("--no-push", action="store_true")
     n = sub.add_parser("notes")
     n.add_argument("version")

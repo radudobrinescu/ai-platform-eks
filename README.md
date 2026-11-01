@@ -11,10 +11,11 @@ here.
 | `COMPATIBILITY.md` | anchors, domains, coupling notes, validated sets, release procedure |
 | `harness/` | E2E harness: `e2e.py` (entry), `checks.py` (21 smoke checks), `sso.py`, `survival.py`, `tfvars.py`, `versions.py`, `subject.py`, `common.py` |
 | `tools/release.py` | cut a release branch; write release notes, manifest, validated-versions row |
+| `tools/release_candidate.py` | decide whether and what to release this week (used by `release-candidate.yaml`) |
 | `tools/shellcheck_workflows.py` | shellcheck every workflow `run:` step |
 | `terraform/github-oidc/` | GitHub OIDC provider + E2E provisioning role (local state, applied once) |
 | `tests/` | unit tests: harness, tools, workflows, Renovate coverage of `main` |
-| `.github/workflows/` | `ci.yaml` (static checks), `e2e.yaml` (dispatch-only E2E), `coverage.yaml` (weekly coverage guard), `main-schedules.yaml` (runs `main`'s scheduled workflows, since `schedule` fires only on the default branch) |
+| `.github/workflows/` | `ci.yaml` (static checks), `e2e.yaml` (dispatch-only E2E), `coverage.yaml` (weekly coverage guard), `release-candidate.yaml` (every second Monday: cut, notes, PR, dispatch E2E), `main-schedules.yaml` (runs `main`'s scheduled workflows, since `schedule` fires only on the default branch) |
 
 ## How a run works
 
@@ -59,7 +60,12 @@ command output redact account ids, ARNs and AWS hostnames.
    - variable `E2E_ROLE_ARN` = the `role_arn` output
    - secret `E2E_PUSH_TOKEN`: fine-grained PAT on this repo with Contents and
      Workflows write (release candidates change `.github/workflows/*`, which
-     `GITHUB_TOKEN` cannot push)
+     `GITHUB_TOKEN` cannot push), and Pull requests write so the scheduled
+     release PR is opened as that user and main's CI runs on it
+   - variable `RELEASE_ANCHOR` (optional, default `2026-11-09`): a Monday;
+     releases are cut every second Monday from it
+   - labels `include-in-release` (puts a Renovate major PR in the next
+     release) and `hold` (keeps any Renovate PR out)
    - variable `E2E_REGION` (optional, default `eu-central-1`)
    - variables `E2E_IDC_INSTANCE_ARN`, `E2E_IDC_REGION`, `E2E_IDC_GROUP_ID`
      (Identity Center instance and the group mapped to Argo CD ADMIN, profile `managed`)
@@ -107,7 +113,10 @@ python3 harness/e2e.py upgrade main release/v2026.11.0 --profile managed --dry-r
 
 ## Cut a release
 
-See COMPATIBILITY.md "Releases". In short:
+`release-candidate.yaml` runs cut, notes, release PR and E2E dispatch every second Monday at 07:00
+UTC (`gh workflow run release-candidate.yaml -f force=true` for an off-week
+release). You approve the E2E run, then record, merge, tag and canary by hand.
+See COMPATIBILITY.md "Releases". By hand:
 
 ```bash
 python3 tools/release.py --repo subject cut v2026.11.0 renovate/infra renovate/gateway

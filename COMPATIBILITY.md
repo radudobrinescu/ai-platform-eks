@@ -162,3 +162,28 @@ profiles) pending (Unit 1b). Pins: see the left column above, plus kro chart
    four statuses on the new head with the run links and "tested on <sha>".
    The tested SHA is also in the commit message. Any other change: rerun E2E.
 7. Merge the release PR, tag the merge commit `vYYYY.MM.N`.
+8. Canary: in the long-lived dev environment's checkout (branch `env/dev`),
+   `git merge vYYYY.MM.N`, `./platformctl upgrade dev --plan-only`, then
+   `--yes`, then `make -C terraform plan-all ENVIRONMENT=dev` (expect no changes).
+
+### Scheduled release candidate
+
+`.github/workflows/release-candidate.yaml` runs every Monday at 07:00 UTC, after
+Renovate's window, and acts only in release weeks (every second Monday from
+`vars.RELEASE_ANCHOR`, default 2026-11-09; `force` ignores the calendar).
+`tools/release_candidate.py plan` decides:
+
+- groups: open Renovate PRs on `renovate/<group>`; `renovate/major-*` only with
+  the label `include-in-release`; any PR labelled `hold` is left out;
+- a branch that does not contain the newest release tag is left out as stale
+  (warning in the run), as is a branch with no change against `main`;
+- no release when nothing is left and `main` has no commits since the tag;
+- version: `vYYYY.MM.N` for today's month (or the newest tag's, if later), N
+  counting up within the month.
+
+It then does steps 3 to 5 (cut without coupled fixes, notes, push, release PR,
+one E2E dispatch that waits for the `e2e` approval). A merge conflict or any
+other failure opens or comments on the issue "Release candidate needs
+attention"; resolve conflicts by hand on `release/<version>` (or delete the
+branch and rerun with `force`). So does a release week with no release because
+every group branch is stale. Steps 6 to 8 stay manual.

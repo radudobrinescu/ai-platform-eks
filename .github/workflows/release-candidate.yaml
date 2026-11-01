@@ -1,0 +1,161 @@
+# Release candidate: every second Monday, cut the next release and start its E2E.
+#
+# Runs after Renovate's Monday window. In a release week (every second Monday
+# from vars.RELEASE_ANCHOR, default 2026-11-09) it plans with
+# tools/release_candidate.py, then:
+#   1. cuts release/<version> from main with the fresh Renovate group branches
+#      (majors only with the PR label include-in-release; label hold excludes),
+#   2. writes the notes and manifest (tools/release.py notes),
+#   3. pushes and opens the release PR into main,
+#   4. dispatches e2e (fresh,upgrade from the previous tag, both profiles),
+#      which waits for the e2e environment's required reviewer.
+# Recording the results, merging, tagging and the canary stay manual.
+# A merge conflict or any failure, or a release week skipped because every
+# group branch is stale, opens (or comments on) an issue.
+#
+# Needs: secret E2E_PUSH_TOKEN (fine-grained PAT, Contents + Workflows write;
+# with Pull requests write the release PR is opened as that user, so main's CI
+# runs on it; without it the PR is opened by github-actions and CI starts on
+# the next push to the branch).
+name: release-candidate
+run-name: release candidate${{ inputs.force && ' (forced)' || '' }}
+
+on:
+  schedule:
+    - cron: "0 7 * * 1"
+  workflow_dispatch:
+    inputs:
+      force:
+        description: "Ignore the two-week calendar"
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release-candidate
+  cancel-in-progress: false
+
+jobs:
+  candidate:
+    name: plan, cut, notes, PR, dispatch E2E
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      contents: read
+      pull-requests: write
+      issues: write
+      actions: write
+    env:
+      GH_TOKEN: ${{ github.token }}
+      REPO: ${{ github.repository }}
+      FORCE: ${{ inputs.force }}
+      ANCHOR: ${{ vars.RELEASE_ANCHOR || '2026-11-09' }}
+      HAS_PUSH_TOKEN: ${{ secrets.E2E_PUSH_TOKEN != '' }}
+    steps:
+      - name: Check configuration
+        run: |
+          [ "$HAS_PUSH_TOKEN" = true ] || { echo "::error::secret E2E_PUSH_TOKEN is not set"; exit 1; }
+
+      - uses: actions/checkout@v7
+
+      - name: Check out main into subject/
+        uses: actions/checkout@v7
+        with:
+          ref: main
+          path: subject
+          fetch-depth: 0
+          fetch-tags: true
+          token: ${{ secrets.E2E_PUSH_TOKEN }}
+
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.12"
+
+      - name: Plan
+        id: plan
+        run: |
+          set -euo pipefail
+          git -C subject fetch --quiet origin '+refs/heads/renovate/*:refs/remotes/origin/renovate/*'
+          gh pr list --repo "$REPO" --state open --limit 100 --json headRefName,labels > prs.json
+          args=(--repo subject --prs prs.json --today "$(date -u +%F)" --anchor "$ANCHOR")
+          if [ "$FORCE" = true ]; then args+=(--force); fi
+          python3 tools/release_candidate.py plan "${args[@]}" > plan.json
+          cat plan.json
+          stale="$(jq -r '.stale | join(", ")' plan.json)"
+          if [ -n "$stale" ]; then
+            echo "::warning::left out, not rebased onto the last release yet: $stale"
+          fi
+          echo "::notice::$(jq -r 'if .release then "release \(.version) from \(.base)" else .reason end' plan.json)"
+          {
+            echo "release=$(jq -r .release plan.json)"
+            echo "version=$(jq -r '.version // ""' plan.json)"
+            echo "base=$(jq -r '.base // ""' plan.json)"
+            echo "stale=$stale"
+          } >> "$GITHUB_OUTPUT"
+          {
+            echo "## Release candidate plan"
+            echo
+            echo '```json'
+            cat plan.json
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Cut, notes, push
+        if: steps.plan.outputs.release == 'true'
+        env:
+          VERSION: ${{ steps.plan.outputs.version }}
+          BASE: ${{ steps.plan.outputs.base }}
+        run: |
+          set -euo pipefail
+          git -C subject config user.name "github-actions[bot]"
+          git -C subject config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          mapfile -t branches < <(jq -r '.branches[]' plan.json)
+          python3 tools/release.py --repo subject cut "$VERSION" "${branches[@]}" --no-push
+          python3 tools/release.py --repo subject notes "$VERSION" --base "$BASE"
+          git -C subject push --quiet -u origin "release/$VERSION:refs/heads/release/$VERSION"
+
+      - name: Open the release PR
+        if: steps.plan.outputs.release == 'true'
+        env:
+          VERSION: ${{ steps.plan.outputs.version }}
+          PUSH_TOKEN: ${{ secrets.E2E_PUSH_TOKEN }}
+        run: |
+          set -euo pipefail
+          python3 tools/release_candidate.py pr-body --plan plan.json --notes "subject/docs/releases/$VERSION.md" > body.md
+          # As the token's user, so main's CI runs on the PR; else as github-actions.
+          if ! GH_TOKEN="$PUSH_TOKEN" gh pr create --repo "$REPO" --base main --head "release/$VERSION" \
+              --title "release: $VERSION" --body-file body.md; then
+            echo "::warning::E2E_PUSH_TOKEN cannot open PRs (needs Pull requests write); opening as github-actions. main's CI starts on the next push to the branch."
+            gh pr create --repo "$REPO" --base main --head "release/$VERSION" --title "release: $VERSION" --body-file body.md
+          fi
+
+      - name: Dispatch E2E (fresh + upgrade, both profiles; waits for approval)
+        if: steps.plan.outputs.release == 'true'
+        env:
+          VERSION: ${{ steps.plan.outputs.version }}
+          BASE: ${{ steps.plan.outputs.base }}
+        run: |
+          set -euo pipefail
+          gh workflow run e2e.yaml --repo "$REPO" --ref lifecycle -f modes=fresh,upgrade \
+            -f subject="release/$VERSION" -f base="$BASE" -f profiles=default,managed
+          echo "E2E dispatched for release/$VERSION (from $BASE); approve it in Actions." >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Open or update an issue on failure or a skipped release
+        if: failure() || (steps.plan.outputs.release == 'false' && steps.plan.outputs.stale != '')
+        env:
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+          FAILED: ${{ job.status == 'failure' }}
+          STALE: ${{ steps.plan.outputs.stale }}
+        run: |
+          set -euo pipefail
+          title="Release candidate needs attention"
+          if [ "$FAILED" = true ]; then
+            printf 'The scheduled release candidate failed: %s\n\nA merge conflict between group branches is resolved by hand on the release branch (see COMPATIBILITY.md, Releases).\n' "$RUN_URL" > body.md
+          else
+            printf 'No release this week: %s\n\nLeft out because Renovate has not rebased them onto the last release (an update in the group is still inside the release age): %s. Check the Dependency Dashboard; once they are rebased, rerun with force.\n' "$RUN_URL" "$STALE" > body.md
+          fi
+          num="$(gh issue list --repo "$REPO" --state open --search "in:title \"${title}\"" --json number --jq '.[0].number // empty')"
+          if [ -n "$num" ]; then gh issue comment "$num" --repo "$REPO" --body-file body.md
+          else gh issue create --repo "$REPO" --title "$title" --body-file body.md; fi
