@@ -158,6 +158,14 @@ class TestPolicy:
         assert any(r.get("matchDatasources") == ["docker"]
                    and r.get("minimumReleaseAgeBehaviour") == "timestamp-optional" for r in rules)
 
+    def test_group_branches_follow_main_inside_the_schedule(self):
+        """Group PRs are never merged; release branches merge them onto main, so
+        every release leaves them behind main. Renovate rebases them only inside
+        the schedule window, which is why releases are cut on Mondays."""
+        cfg = _renovate()
+        assert cfg["rebaseWhen"] == "behind-base-branch"
+        assert cfg["schedule"] == ["before 6am on monday"]
+
     def test_nothing_automerges(self):
         text = json.dumps(_renovate())
         assert '"automerge": true' not in text
