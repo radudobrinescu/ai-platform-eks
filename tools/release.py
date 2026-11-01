@@ -89,6 +89,30 @@ def git(repo: str, *args: str, check: bool = True) -> str:
 # cut
 # --------------------------------------------------------------------------- #
 
+def _latest_release_tag(repo: str, ref: str) -> str | None:
+    r = subprocess.run(["git", "-C", repo, "describe", "--tags", "--abbrev=0", "--match", "v[0-9]*.[0-9]*.[0-9]*", ref],
+                       capture_output=True, text=True)
+    return r.stdout.strip() if r.returncode == 0 and r.stdout.strip() else None
+
+
+def _stale_branches(repo: str, refs: list[str], main: str) -> str:
+    """Group branches must contain the newest release on main. Renovate does not
+    update a group branch while any update in it is still inside the release age
+    (internalChecksFilter strict), so it is not rebased either: after a release
+    it can still carry that release's changes, and merging it conflicts (or, with
+    edits that happen to agree, quietly re-applies old lines). Seen after
+    v2026.11.0: renovate/tooling would have taken pytest from 9.1.1 to 8.4.2."""
+    tag = _latest_release_tag(repo, main)
+    if not tag:
+        return ""
+    bad = [r for r in refs if subprocess.run(["git", "-C", repo, "merge-base", "--is-ancestor", tag, r]).returncode != 0]
+    if not bad:
+        return ""
+    return (f"{', '.join(bad)} do(es) not contain {tag}: Renovate has not rebased them yet (an update in the "
+            "group is still inside the 7-day release age). Leave them out of this release, or wait until "
+            "Renovate updates them (check the Dependency Dashboard).")
+
+
 def cut(repo: str, version: str, branches: list[str], push: bool = True, remote: str = "origin") -> str:
     validate_version(version)
     if git(repo, "status", "--porcelain", "--untracked-files=no").strip():
@@ -97,9 +121,12 @@ def cut(repo: str, version: str, branches: list[str], push: bool = True, remote:
     git(repo, "fetch", "--quiet", remote)
     if git(repo, "branch", "--list", name).strip() or git(repo, "branch", "-r", "--list", f"{remote}/{name}").strip():
         raise ReleaseError(f"{name} already exists")
+    refs = [b if b.startswith(f"{remote}/") else f"{remote}/{b}" for b in branches]
+    stale = _stale_branches(repo, refs, f"{remote}/main")
+    if stale:
+        raise ReleaseError(stale)
     git(repo, "switch", "--quiet", "-c", name, f"{remote}/main")
-    for b in branches:
-        ref = b if b.startswith(f"{remote}/") else f"{remote}/{b}"
+    for ref in refs:
         r = subprocess.run(["git", "-C", repo, "merge", "--no-ff", "--no-edit", ref], capture_output=True, text=True)
         if r.returncode != 0:
             git(repo, "merge", "--abort", check=False)

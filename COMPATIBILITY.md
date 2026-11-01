@@ -135,10 +135,11 @@ profiles) pending (Unit 1b). Pins: see the left column above, plus kro chart
 ## Releases (v2)
 
 1. Renovate opens grouped branches against `main` (Monday schedule, 7-day
-   minimum release age, security updates exempt). It rebases them onto `main`
-   (`rebaseWhen: behind-base-branch`) only inside the schedule window, so after
-   a release lands the branches stay stale until the next Monday run: cut a
-   release on a Monday after 06:00 UTC. Their PRs are never merged.
+   minimum release age, security updates exempt) and rebases them when `main`
+   moves. It does not touch a group branch while any update in it is still
+   inside the release age (`internalChecksFilter: strict`), so after a release
+   a group branch can stay behind it. `release.py cut` refuses a branch that
+   does not contain the newest release tag. Their PRs are never merged.
 2. Majors and anchors appear on the Dependency Dashboard first; read the
    coupling notes above before ticking one.
 3. Cut a release: `python3 tools/release.py --repo <product checkout> cut vYYYY.MM.N renovate/infra renovate/inference ...`;

@@ -171,6 +171,35 @@ class TestCut:
         with pytest.raises(release.ReleaseError, match="already exists"):
             release.cut(str(clone), "v2026.11.0", ["update/infra"], push=False)
 
+    def test_cut_refuses_a_group_branch_that_predates_the_last_release(self, tmp_path):
+        origin = tmp_path / "origin"
+        origin.mkdir()
+        git(origin, "init", "-q", "-b", "main")
+        write(origin, "a.txt", "a\n")
+        git(origin, "add", "-A")
+        git(origin, "commit", "-qm", "a")
+        git(origin, "switch", "-q", "-c", "update/stale")
+        write(origin, "b.txt", "b\n")
+        git(origin, "add", "-A")
+        git(origin, "commit", "-qm", "b")
+        git(origin, "switch", "-q", "-c", "update/fresh", "main")
+        git(origin, "switch", "-q", "main")
+        write(origin, "a.txt", "released\n")
+        git(origin, "commit", "-qam", "release")
+        git(origin, "tag", "v2026.11.1")
+        git(origin, "switch", "-q", "update/fresh")
+        git(origin, "merge", "-q", "--no-edit", "main")
+        write(origin, "c.txt", "c\n")
+        git(origin, "add", "-A")
+        git(origin, "commit", "-qm", "c")
+        git(origin, "switch", "-q", "main")
+        clone = tmp_path / "clone"
+        subprocess.run(["git", "clone", "-q", str(origin), str(clone)], check=True, env=GIT_ENV)
+        with pytest.raises(release.ReleaseError, match="update/stale.*do\\(es\\) not contain v2026.11.1"):
+            release.cut(str(clone), "v2026.11.2", ["update/stale", "update/fresh"], push=False)
+        assert git(clone, "rev-parse", "--abbrev-ref", "HEAD").strip() == "main"
+        assert release.cut(str(clone), "v2026.11.2", ["update/fresh"], push=False) == "release/v2026.11.2"
+
     def test_cut_refuses_bad_version(self, tmp_path):
         with pytest.raises(release.ReleaseError):
             release.cut(str(tmp_path), "2026.11", [], push=False)
