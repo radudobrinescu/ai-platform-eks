@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 """Decide whether, and what, to release this week (scheduled release candidate).
 
-Run by .github/workflows/release-candidate.yaml every Monday after Renovate's
-window. Only the planning is here (pure, testable); cutting, notes, PR and
+Run by .github/workflows/release-candidate.yaml on Mondays and Tuesdays after
+Renovate's window. Only the planning is here (pure, testable); cutting, notes, PR and
 E2E dispatch reuse tools/release.py and gh.
 
 Rules
@@ -17,6 +17,11 @@ Rules
     left out and listed, never merged.
   * A group branch with no change against main is left out.
   * No release when nothing is left and main has no commits since the tag.
+  * One release per release week, so the catch-up runs (GitHub delays and
+    drops scheduled runs) are safe: nothing happens while a release/<v> newer
+    than the newest tag exists (cut, not yet tagged; also when forced), or
+    when the newest tag was created this week (Monday 00:00 UTC onwards;
+    --force ignores this one).
   * Version: vYYYY.MM.N, the year.month of today or of the newest tag,
     whichever is later; N counts up within that month.
 """
@@ -28,7 +33,7 @@ import json
 import re
 import subprocess
 import sys
-from datetime import date
+from datetime import date, datetime, timedelta, timezone
 
 TAG_RX = re.compile(r"^v(\d{4})\.(\d{2})\.(\d+)$")
 INCLUDE_LABEL = "include-in-release"
@@ -49,6 +54,22 @@ def newest_tag(repo: str, ref: str) -> str | None:
     tags = git(repo, "tag", "--merged", ref, "--list", "v*").stdout.split()
     parsed = [(tuple(int(x) for x in TAG_RX.match(t).groups()), t) for t in tags if TAG_RX.match(t)]
     return max(parsed)[1] if parsed else None
+
+
+def _key(tag: str) -> tuple[int, ...]:
+    return tuple(int(x) for x in TAG_RX.match(tag).groups())
+
+
+def release_in_flight(repo: str, tag: str, remote: str = "origin") -> str | None:
+    """A remote release/<v> branch newer than the newest tag (cut but not released yet)."""
+    refs = git(repo, "for-each-ref", "--format=%(refname:lstrip=3)", f"refs/remotes/{remote}/release/").stdout.split()
+    newer = [r for r in refs if r.startswith("release/") and TAG_RX.match(r[8:]) and _key(r[8:]) > _key(tag)]
+    return max(newer, key=lambda r: _key(r[8:])) if newer else None
+
+
+def tag_date(repo: str, tag: str) -> date:
+    ts = git(repo, "for-each-ref", "--format=%(creatordate:unix)", f"refs/tags/{tag}").stdout.strip()
+    return datetime.fromtimestamp(int(ts), tz=timezone.utc).date()
 
 
 def next_version(latest: str | None, today: date) -> str:
@@ -77,6 +98,14 @@ def plan(repo: str, prs: list[dict], today: date, anchor: date, *, force: bool =
         out["reason"] = "no release tag on main; cut the first release by hand"
         return out
     out["base"] = tag
+    inflight = release_in_flight(repo, tag, remote)
+    if inflight:
+        out["reason"] = f"{inflight} is already cut and not tagged yet; finish it (or delete the branch) first"
+        return out
+    week_start = today - timedelta(days=today.weekday())
+    if not force and tag_date(repo, tag) >= week_start:
+        out["reason"] = f"{tag} was already released this week"
+        return out
     for pr in sorted(prs, key=lambda p: p.get("headRefName", "")):
         head = pr.get("headRefName", "")
         if not head.startswith("renovate/"):

@@ -2,19 +2,20 @@
 #
 # GitHub runs `schedule` triggers only from the default branch. Here that is
 # `lifecycle`, so the cron in a workflow that lives on `main` never fires. This
-# workflow fires on the same cron and dispatches each listed workflow at
+# workflow fires weekly and dispatches each listed workflow at
 # `ref: main`, so `main`'s own copy runs with `main`'s code (and an OIDC subject of
 # refs/heads/main). A dispatch made with GITHUB_TOKEN does start a run; other
 # GITHUB_TOKEN events do not.
 #
 # Keep WORKFLOWS in step with the scheduled workflows on `main`;
 # tests/test_workflows.py fails when one is missing or lacks workflow_dispatch.
-# The cron matches main's addon-freshness.yaml (Mondays 08:00 UTC).
+# Mondays 08:37 UTC: main's addon-freshness.yaml says 08:00, but GitHub drops
+# scheduled runs at the start of an hour under load (2026-11-02 was dropped).
 name: main-schedules
 
 on:
   schedule:
-    - cron: "0 8 * * 1"
+    - cron: "37 8 * * 1"
   workflow_dispatch:
 
 permissions:

@@ -113,9 +113,9 @@ python3 harness/e2e.py upgrade main release/v2026.11.0 --profile managed --dry-r
 
 ## Cut a release
 
-`release-candidate.yaml` runs cut, notes, release PR and E2E dispatch every second Monday at 07:00
-UTC (`gh workflow run release-candidate.yaml -f force=true` for an off-week
-release). You approve the E2E run, then record, merge, tag and canary by hand.
+`release-candidate.yaml` runs cut, notes, release PR and E2E dispatch every second Monday
+(first try 07:41 UTC, catch-up runs until Tuesday; `gh workflow run release-candidate.yaml -f force=true`
+for an off-week release, `-f dry_run=true` to see the plan without changing anything). You approve the E2E run, then record, merge, tag and canary by hand.
 See COMPATIBILITY.md "Releases". By hand:
 
 ```bash

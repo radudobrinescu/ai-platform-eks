@@ -168,9 +168,12 @@ profiles) pending (Unit 1b). Pins: see the left column above, plus kro chart
 
 ### Scheduled release candidate
 
-`.github/workflows/release-candidate.yaml` runs every Monday at 07:00 UTC, after
-Renovate's window, and acts only in release weeks (every second Monday from
-`vars.RELEASE_ANCHOR`, default 2026-11-09; `force` ignores the calendar).
+`.github/workflows/release-candidate.yaml` runs on Mondays and Tuesdays at 07:41
+and 13:41 UTC, after Renovate's window, and acts only in release weeks (every
+second Monday from `vars.RELEASE_ANCHOR`, default 2026-11-09; `force` ignores
+the calendar; `dry_run` only plans). GitHub delays scheduled runs by hours and
+drops some, mostly at the start of an hour (on 2026-11-02 the 07:00 and 08:00
+runs never fired), hence the odd minute and the catch-up runs.
 `tools/release_candidate.py plan` decides:
 
 - groups: open Renovate PRs on `renovate/<group>`; `renovate/major-*` only with
@@ -178,6 +181,9 @@ Renovate's window, and acts only in release weeks (every second Monday from
 - a branch that does not contain the newest release tag is left out as stale
   (warning in the run), as is a branch with no change against `main`;
 - no release when nothing is left and `main` has no commits since the tag;
+- one release per week: nothing happens while a `release/<v>` newer than the
+  newest tag exists (even with `force`), or when the newest tag was created
+  this week (Monday 00:00 UTC on; `force` overrides);
 - version: `vYYYY.MM.N` for today's month (or the newest tag's, if later), N
   counting up within the month.
 

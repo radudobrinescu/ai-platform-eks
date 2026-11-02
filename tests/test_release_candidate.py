@@ -11,7 +11,9 @@ import release_candidate as rc
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 GIT_ENV = {**os.environ, "GIT_AUTHOR_NAME": "t", "GIT_AUTHOR_EMAIL": "t@example.com",
-           "GIT_COMMITTER_NAME": "t", "GIT_COMMITTER_EMAIL": "t@example.com"}
+           "GIT_COMMITTER_NAME": "t", "GIT_COMMITTER_EMAIL": "t@example.com",
+           # Fixed dates: tag_date() reads them, so the tests must not depend on the wall clock.
+           "GIT_AUTHOR_DATE": "2026-11-01T23:30:00+02:00", "GIT_COMMITTER_DATE": "2026-11-01T23:30:00+02:00"}
 ANCHOR = date(2026, 11, 9)
 
 
@@ -110,6 +112,34 @@ def test_product_commits_alone_make_a_release(repo):
     assert p["release"] and p["branches"] == [] and any("fix: something" in c for c in p["product_commits"])
 
 
+def test_catch_up_run_after_a_cut_does_nothing(repo):
+    clone, origin = repo
+    g(origin, "branch", "release/v2026.11.2", "renovate/gateway")
+    g(origin, "branch", "release/v2026.11.0", "main")  # older, merged: ignored
+    g(clone, "fetch", "-q", "origin", "+refs/heads/release/*:refs/remotes/origin/release/*")
+    for force in (False, True):
+        p = rc.plan(str(clone), PRS, date(2026, 11, 10), ANCHOR, force=force)
+        assert not p["release"] and "release/v2026.11.2 is already cut" in p["reason"]
+        assert p["stale"] == []  # no "needs attention" issue from a catch-up run
+
+
+def test_catch_up_run_after_this_weeks_tag_does_nothing(repo, monkeypatch):
+    clone, origin = repo
+    commit(origin, "fix.txt", "f\n", "fix: after the release")
+    g(clone, "fetch", "-q", "origin")
+    monkeypatch.setattr(rc, "tag_date", lambda _r, _t: date(2026, 11, 9))
+    p = rc.plan(str(clone), PRS, date(2026, 11, 10), ANCHOR)
+    assert not p["release"] and "already released this week" in p["reason"] and p["stale"] == []
+    assert rc.plan(str(clone), PRS, date(2026, 11, 10), ANCHOR, force=True)["release"]
+    monkeypatch.setattr(rc, "tag_date", lambda _r, _t: date(2026, 11, 6))  # last week: normal run
+    assert rc.plan(str(clone), PRS, date(2026, 11, 9), ANCHOR)["release"]
+
+
+def test_tag_date_is_utc(repo):
+    clone, _ = repo
+    assert rc.tag_date(str(clone), "v2026.11.1") == date(2026, 11, 1)  # 23:30+02:00 is 21:30 UTC
+
+
 def test_pr_body_lists_what_was_left_out(repo):
     clone, _ = repo
     p = rc.plan(str(clone), PRS, date(2026, 11, 9), ANCHOR)
@@ -126,8 +156,19 @@ class TestWorkflow:
     def test_schedule_after_renovate_and_manual_force(self):
         wf, _ = self._wf()
         on = wf[True] if True in wf else wf["on"]
-        assert on["schedule"] == [{"cron": "0 7 * * 1"}]
+        # Off the hour (GitHub drops scheduled runs at the start of an hour under load), with
+        # catch-up runs; the planner makes the extra runs no-ops once a release is cut.
+        assert on["schedule"] == [{"cron": "41 7,13 * * 1,2"}]
+        for c in on["schedule"]:
+            assert c["cron"].split()[0] not in ("0", "*")
         assert on["workflow_dispatch"]["inputs"]["force"]["type"] == "boolean"
+        assert on["workflow_dispatch"]["inputs"]["dry_run"]["type"] == "boolean"
+
+    def test_dry_run_changes_nothing(self):
+        wf, _ = self._wf()
+        for s in wf["jobs"]["candidate"]["steps"]:
+            if s.get("name", "").startswith(("Cut", "Open", "Dispatch")):
+                assert "steps.plan.outputs.dry_run != 'true'" in s["if"] or "(!inputs.dry_run)" in s["if"], s["name"]
 
     def test_permissions_and_no_inputs_in_run_scripts(self):
         wf, _ = self._wf()
