@@ -374,7 +374,7 @@
       "enabled": false
     },
     {
-      "description": "EKS Kubernetes anchor: its own branch and PR, created only after a dashboard tick. endoflife.date lists versions as 1.37-eks-N; keep the minor only. A release may add at most one minor above the previous release (release.py enforces it), so tick one step at a time. Raise the alpine/k8s and kubernetes-client allowedVersions ceilings in the same release (tests/test_renovate_coverage.py pairs them).",
+      "description": "EKS Kubernetes anchor: its own branch and PR, created only after a dashboard tick. endoflife.date lists versions as 1.37-eks-N; keep the minor only. A release may add at most one minor above the previous release (release.py enforces it), so each newer minor is listed separately (separateMultipleMinor) and you tick one step at a time. Raise the alpine/k8s and kubernetes-client allowedVersions ceilings in the same release (tests/test_renovate_coverage.py pairs them).",
       "matchDatasources": [
         "endoflife-date"
       ],
@@ -386,7 +386,8 @@
       "groupSlug": "eks-kubernetes",
       "dependencyDashboardApproval": true,
       "recreateWhen": "always",
-      "automerge": false
+      "automerge": false,
+      "separateMultipleMinor": true
     }
   ]
 }

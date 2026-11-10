@@ -176,6 +176,7 @@ class TestPolicy:
         assert r["matchDatasources"] == ["endoflife-date"]
         assert r["dependencyDashboardApproval"] is True and r["recreateWhen"] == "always"
         assert r["groupName"] == "eks-kubernetes" and r["automerge"] is False
+        assert r["separateMultipleMinor"] is True  # 1.37 and 1.38 as two ticks, never a two-minor jump
         rx = r["extractVersion"].replace("(?<", "(?P<")  # Renovate uses JS named groups
         assert re.match(rx, "1.37-eks-4").group("version") == "1.37"
         managers = [m for m in cfg["customManagers"] if m.get("depNameTemplate") == "amazon-eks"]
