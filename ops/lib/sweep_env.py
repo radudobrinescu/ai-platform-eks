@@ -105,7 +105,24 @@ class Sweeper:
         except ClientError as e:
             self._err("delete NAT", e)
 
-        # 3. Non-default security groups (controller-created; pin the VPC).
+        # 3. Leftover available ENIs, BEFORE the security groups: an available
+        #    ENI still references its SGs, so the SG delete fails while it exists.
+        #    Seen in E2E: the VPC CNI could not delete a node's secondary ENI
+        #    during the drain ("currently in use"), the ENI kept the EKS cluster
+        #    SG, and the SG (deleted first) then held the VPC delete for 20 min.
+        try:
+            for e in self.ec2.describe_network_interfaces(Filters=[
+                    {"Name": "vpc-id", "Values": [vpc]},
+                    {"Name": "status", "Values": ["available"]}]).get("NetworkInterfaces", []):
+                try:
+                    self.ec2.delete_network_interface(NetworkInterfaceId=e["NetworkInterfaceId"])
+                    self.log(f"deleted ENI {e['NetworkInterfaceId']}")
+                except ClientError as ex:
+                    self._err(f"delete ENI {e['NetworkInterfaceId']}", ex)
+        except ClientError as e:
+            self._err("ENIs", e)
+
+        # 4. Non-default security groups (controller-created; pin the VPC).
         #    Strip all rules first so inter-SG references don't block deletion.
         try:
             sgs = [s for s in self.ec2.describe_security_groups(
@@ -130,19 +147,6 @@ class Sweeper:
                     self._err(f"delete SG {s['GroupId']}", e)
         except ClientError as e:
             self._err("security groups", e)
-
-        # 4. Leftover available ENIs
-        try:
-            for e in self.ec2.describe_network_interfaces(Filters=[
-                    {"Name": "vpc-id", "Values": [vpc]},
-                    {"Name": "status", "Values": ["available"]}]).get("NetworkInterfaces", []):
-                try:
-                    self.ec2.delete_network_interface(NetworkInterfaceId=e["NetworkInterfaceId"])
-                    self.log(f"deleted ENI {e['NetworkInterfaceId']}")
-                except ClientError as ex:
-                    self._err(f"delete ENI {e['NetworkInterfaceId']}", ex)
-        except ClientError as e:
-            self._err("ENIs", e)
 
     # ---- cluster-scoped orphans (money + hygiene) --------------------------
     def clear_load_balancers(self, vpc):
