@@ -79,7 +79,7 @@ spec:
           serviceAccountName: team-offboarding
           containers:
             - name: offboard
-              image: alpine/k8s:1.37.1
+              image: alpine/k8s:1.37.2
               command: ["bash", "-c"]
               args:
                 - |

@@ -23,7 +23,7 @@ jobs:
       - uses: actions/checkout@v7
       - uses: hashicorp/setup-terraform@v4
         with:
-          terraform_version: "1.17.0"
+          terraform_version: "1.17.1"
       - name: terraform fmt (check)
         run: terraform fmt -check -recursive terraform/
       - name: terraform validate (per module)
@@ -54,7 +54,7 @@ jobs:
           git ls-files '*.py' | grep -v '/.terraform/' | xargs -r python3 -m py_compile
       - name: ruff (non-blocking style report)
         run: |
-          pip install ruff==0.17.2
+          pip install ruff==0.17.3
           # Report only — style drift shouldn't block a platform PR, but surface it.
           ruff check --output-format=github ops/ platform/ || true
 
@@ -71,7 +71,7 @@ jobs:
         # pyyaml: used by test_render. backend.py / addon_freshness.py guard or
         # lazy-load their heavy deps (psycopg, jwt, boto3), so the suite imports
         # cleanly with just these two. No cloud credentials — pure static tests.
-        run: pip install --quiet pytest==9.1.1 pyyaml==6.0.3 boto3
+        run: pip install --quiet pytest==9.2.0 pyyaml==6.0.3 boto3
       - name: pytest
         # Blocks merge on any failing unit test — including the EKS managed-addon
         # freshness guard (tests/test_addon_freshness.py), which fails if an addon
