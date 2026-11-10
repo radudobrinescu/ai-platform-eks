@@ -97,4 +97,4 @@ data:
   # Image pinning. Bumping these forces all components to redeploy.
   KIRO_CLI_VERSION: "latest"          # kiro.dev installer fetches latest by default
   KUBECTL_VERSION: "v1.32.5"          # match cluster minor version
-  PYTHON_IMAGE: "python:3.12-slim"
+  PYTHON_IMAGE: "python:3.15-slim"
