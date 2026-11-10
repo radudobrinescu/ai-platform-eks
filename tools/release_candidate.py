@@ -22,6 +22,10 @@ Rules
     than the newest tag exists (cut, not yet tagged; also when forced), or
     when the newest tag was created this week (Monday 00:00 UTC onwards;
     --force ignores this one).
+  * Resume: a release/<v> that was cut but never got a PR (any state; e.g.
+    the token could not open it) is finished, not skipped: open its PR and
+    dispatch E2E, no new cut. Close the PR and delete the branch to abandon a
+    release.
   * Version: vYYYY.MM.N, the year.month of today or of the newest tag,
     whichever is later; N counts up within that month.
 """
@@ -72,6 +76,23 @@ def tag_date(repo: str, tag: str) -> date:
     return datetime.fromtimestamp(int(ts), tz=timezone.utc).date()
 
 
+def merged_groups(repo: str, branch: str, remote: str = "origin") -> list[str]:
+    """Renovate groups merged into an already-cut release branch (from its merge commits)."""
+    log = git(repo, "log", "--merges", "--format=%s", f"{remote}/main..{remote}/{branch}").stdout
+    rx = re.compile(rf"Merge (?:remote-tracking )?branch '(?:{re.escape(remote)}/)?(renovate/[^']+)'")
+    return sorted({m.group(1) for m in map(rx.search, log.splitlines()) if m})
+
+
+def manifest_previous(repo: str, branch: str, version: str, remote: str = "origin") -> str | None:
+    r = git(repo, "show", f"{remote}/{branch}:releases/{version}.json", check=False)
+    if r.returncode != 0:
+        return None
+    try:
+        return json.loads(r.stdout).get("previous")
+    except ValueError:
+        return None
+
+
 def next_version(latest: str | None, today: date) -> str:
     ym = (today.year, today.month)
     if latest:
@@ -86,10 +107,12 @@ def _labels(pr: dict) -> set[str]:
 
 
 def plan(repo: str, prs: list[dict], today: date, anchor: date, *, force: bool = False,
-         remote: str = "origin") -> dict:
+         remote: str = "origin", release_prs: list[dict] | None = None) -> dict:
+    """release_prs: PRs in any state (headRefName); enables resuming a cut release with no PR."""
     main = f"{remote}/main"
     out: dict = {"release": False, "version": None, "base": None, "branches": [],
-                 "stale": [], "held": [], "unchanged": [], "product_commits": [], "reason": ""}
+                 "stale": [], "held": [], "unchanged": [], "product_commits": [], "reason": "",
+                 "resume": False}
     if not force and not release_week(today, anchor):
         out["reason"] = f"not a release week (every second Monday from {anchor.isoformat()})"
         return out
@@ -100,7 +123,15 @@ def plan(repo: str, prs: list[dict], today: date, anchor: date, *, force: bool =
     out["base"] = tag
     inflight = release_in_flight(repo, tag, remote)
     if inflight:
-        out["reason"] = f"{inflight} is already cut and not tagged yet; finish it (or delete the branch) first"
+        has_pr = release_prs is None or any(p.get("headRefName") == inflight for p in release_prs)
+        if has_pr:
+            out["reason"] = f"{inflight} is already cut and not tagged yet; finish it (or delete the branch) first"
+            return out
+        version = inflight[len("release/"):]
+        out.update(release=True, resume=True, version=version,
+                   base=manifest_previous(repo, inflight, version, remote) or tag,
+                   branches=merged_groups(repo, inflight, remote),
+                   reason=f"{inflight} was cut but has no PR: open it and dispatch E2E")
         return out
     week_start = today - timedelta(days=today.weekday())
     if not force and tag_date(repo, tag) >= week_start:
@@ -159,6 +190,7 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--today", default=date.today().isoformat())
     p.add_argument("--anchor", default="2026-11-09")
     p.add_argument("--force", action="store_true")
+    p.add_argument("--release-prs", help="JSON from gh pr list --state all --json headRefName")
     b = sub.add_parser("pr-body")
     b.add_argument("--plan", required=True)
     b.add_argument("--notes", required=True)
@@ -166,8 +198,12 @@ def main(argv: list[str] | None = None) -> int:
     if a.cmd == "plan":
         with open(a.prs, encoding="utf-8") as fh:
             prs = json.load(fh)
+        rprs = None
+        if a.release_prs:
+            with open(a.release_prs, encoding="utf-8") as fh:
+                rprs = json.load(fh)
         print(json.dumps(plan(a.repo, prs, date.fromisoformat(a.today), date.fromisoformat(a.anchor),
-                              force=a.force), indent=2))
+                              force=a.force, release_prs=rprs), indent=2))
         return 0
     with open(a.plan, encoding="utf-8") as fh:
         pl = json.load(fh)

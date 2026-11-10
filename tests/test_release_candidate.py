@@ -123,6 +123,33 @@ def test_catch_up_run_after_a_cut_does_nothing(repo):
         assert p["stale"] == []  # no "needs attention" issue from a catch-up run
 
 
+def _cut(clone, origin):
+    """release/v2026.11.2 = main + a --no-ff merge of renovate/gateway + its manifest."""
+    g(origin, "switch", "-q", "-c", "release/v2026.11.2", "main")
+    g(origin, "merge", "-q", "--no-ff", "--no-edit", "renovate/gateway")
+    commit(origin, "releases/v2026.11.2.json", '{"previous": "v2026.11.1"}\n', "notes")
+    g(origin, "switch", "-q", "main")
+    g(clone, "fetch", "-q", "origin", "+refs/heads/release/*:refs/remotes/origin/release/*")
+
+
+def test_cut_release_without_a_pr_is_resumed(repo):
+    clone, origin = repo
+    _cut(clone, origin)
+    others = [{"headRefName": "release/v2026.11.1"}, {"headRefName": "renovate/gateway"}]
+    p = rc.plan(str(clone), PRS, date(2026, 11, 10), ANCHOR, release_prs=others)
+    assert p["release"] and p["resume"] and p["version"] == "v2026.11.2" and p["base"] == "v2026.11.1"
+    assert p["branches"] == ["renovate/gateway"] and p["stale"] == []
+    assert "Groups: `renovate/gateway`" in rc.pr_body(p, "# notes\n")
+
+
+def test_cut_release_with_a_pr_is_left_alone(repo):
+    clone, origin = repo
+    _cut(clone, origin)
+    for prs in (None, [{"headRefName": "release/v2026.11.2"}]):  # None: PR state unknown
+        p = rc.plan(str(clone), PRS, date(2026, 11, 10), ANCHOR, release_prs=prs)
+        assert not p["release"] and not p["resume"] and "already cut" in p["reason"]
+
+
 def test_catch_up_run_after_this_weeks_tag_does_nothing(repo, monkeypatch):
     clone, origin = repo
     commit(origin, "fix.txt", "f\n", "fix: after the release")
@@ -163,6 +190,14 @@ class TestWorkflow:
             assert c["cron"].split()[0] not in ("0", "*")
         assert on["workflow_dispatch"]["inputs"]["force"]["type"] == "boolean"
         assert on["workflow_dispatch"]["inputs"]["dry_run"]["type"] == "boolean"
+
+    def test_resume_skips_the_cut_and_has_no_github_actions_fallback(self):
+        wf, text = self._wf()
+        steps = {s.get("name", ""): s for s in wf["jobs"]["candidate"]["steps"]}
+        assert "steps.plan.outputs.resume != 'true'" in steps["Cut, notes, push"]["if"]
+        pr = steps["Open the release PR"]["run"]
+        assert pr.count("gh pr create") == 1 and 'GH_TOKEN="$PUSH_TOKEN" gh pr create' in pr
+        assert "--release-prs all-prs.json" in text and "--state all" in text
 
     def test_dry_run_changes_nothing(self):
         wf, _ = self._wf()

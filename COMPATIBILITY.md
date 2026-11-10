@@ -184,6 +184,9 @@ runs never fired), hence the odd minute and the catch-up runs.
 - one release per week: nothing happens while a `release/<v>` newer than the
   newest tag exists (even with `force`), or when the newest tag was created
   this week (Monday 00:00 UTC on; `force` overrides);
+- resume: a `release/<v>` that was cut but never got a PR (for example the
+  token could not open one) is finished on the next run: PR and E2E, no new
+  cut. To abandon a release, close its PR and delete the branch;
 - version: `vYYYY.MM.N` for today's month (or the newest tag's, if later), N
   counting up within the month.
 

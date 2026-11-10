@@ -17,10 +17,9 @@
 # A merge conflict or any failure, or a release week skipped because every
 # group branch is stale, opens (or comments on) an issue.
 #
-# Needs: secret E2E_PUSH_TOKEN (fine-grained PAT, Contents + Workflows write;
-# with Pull requests write the release PR is opened as that user, so main's CI
-# runs on it; without it the PR is opened by github-actions and CI starts on
-# the next push to the branch).
+# Needs: secret E2E_PUSH_TOKEN (fine-grained PAT with Contents, Workflows and
+# Pull requests write; the release PR is opened as that user, so main's CI runs
+# on it). A release branch that was cut but never got a PR is resumed.
 name: release-candidate
 run-name: release candidate${{ inputs.force && ' (forced)' || '' }}${{ inputs.dry_run && ' (dry run)' || '' }}
 
@@ -89,7 +88,8 @@ jobs:
           git -C subject fetch --quiet origin '+refs/heads/renovate/*:refs/remotes/origin/renovate/*' \
             '+refs/heads/release/*:refs/remotes/origin/release/*'
           gh pr list --repo "$REPO" --state open --limit 100 --json headRefName,labels > prs.json
-          args=(--repo subject --prs prs.json --today "$(date -u +%F)" --anchor "$ANCHOR")
+          gh pr list --repo "$REPO" --state all --limit 200 --json headRefName > all-prs.json
+          args=(--repo subject --prs prs.json --release-prs all-prs.json --today "$(date -u +%F)" --anchor "$ANCHOR")
           if [ "$FORCE" = true ]; then args+=(--force); fi
           python3 tools/release_candidate.py plan "${args[@]}" > plan.json
           cat plan.json
@@ -100,6 +100,7 @@ jobs:
           echo "::notice::$(jq -r 'if .release then "release \(.version) from \(.base)" else .reason end' plan.json)"
           {
             echo "release=$(jq -r .release plan.json)"
+            echo "resume=$(jq -r .resume plan.json)"
             echo "version=$(jq -r '.version // ""' plan.json)"
             echo "base=$(jq -r '.base // ""' plan.json)"
             echo "stale=$stale"
@@ -114,7 +115,7 @@ jobs:
           } >> "$GITHUB_STEP_SUMMARY"
 
       - name: Cut, notes, push
-        if: steps.plan.outputs.release == 'true' && steps.plan.outputs.dry_run != 'true'
+        if: steps.plan.outputs.release == 'true' && steps.plan.outputs.resume != 'true' && steps.plan.outputs.dry_run != 'true'
         env:
           VERSION: ${{ steps.plan.outputs.version }}
           BASE: ${{ steps.plan.outputs.base }}
@@ -134,13 +135,14 @@ jobs:
           PUSH_TOKEN: ${{ secrets.E2E_PUSH_TOKEN }}
         run: |
           set -euo pipefail
-          python3 tools/release_candidate.py pr-body --plan plan.json --notes "subject/docs/releases/$VERSION.md" > body.md
-          # As the token's user, so main's CI runs on the PR; else as github-actions.
-          if ! GH_TOKEN="$PUSH_TOKEN" gh pr create --repo "$REPO" --base main --head "release/$VERSION" \
-              --title "release: $VERSION" --body-file body.md; then
-            echo "::warning::E2E_PUSH_TOKEN cannot open PRs (needs Pull requests write); opening as github-actions. main's CI starts on the next push to the branch."
-            gh pr create --repo "$REPO" --base main --head "release/$VERSION" --title "release: $VERSION" --body-file body.md
-          fi
+          git -C subject fetch --quiet origin "release/$VERSION"
+          git -C subject show "FETCH_HEAD:docs/releases/$VERSION.md" > notes.md
+          python3 tools/release_candidate.py pr-body --plan plan.json --notes notes.md > body.md
+          # As the token's user, so main's required CI runs on the PR. GITHUB_TOKEN cannot
+          # (repo setting: Actions may not create PRs), so there is no fallback; if this
+          # fails, the next run resumes from here.
+          GH_TOKEN="$PUSH_TOKEN" gh pr create --repo "$REPO" --base main --head "release/$VERSION" \
+            --title "release: $VERSION" --body-file body.md
 
       - name: Dispatch E2E (fresh + upgrade, both profiles; waits for approval)
         if: steps.plan.outputs.release == 'true' && steps.plan.outputs.dry_run != 'true'
@@ -163,7 +165,7 @@ jobs:
           set -euo pipefail
           title="Release candidate needs attention"
           if [ "$FAILED" = true ]; then
-            printf 'The scheduled release candidate failed: %s\n\nA merge conflict between group branches is resolved by hand on the release branch (see COMPATIBILITY.md, Releases).\n' "$RUN_URL" > body.md
+            printf 'The scheduled release candidate failed: %s\n\nSee the failed step. A merge conflict between group branches is resolved by hand on the release branch (COMPATIBILITY.md, Releases). If the branch was cut but the PR could not be opened, fix the cause and rerun the workflow: it resumes (opens the PR, dispatches E2E).\n' "$RUN_URL" > body.md
           else
             printf 'No release this week: %s\n\nLeft out because Renovate has not rebased them onto the last release (an update in the group is still inside the release age): %s. Check the Dependency Dashboard; once they are rebased, rerun with force.\n' "$RUN_URL" "$STALE" > body.md
           fi
