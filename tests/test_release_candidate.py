@@ -75,21 +75,23 @@ def test_next_version():
     assert rc.next_version(None, date(2026, 12, 7)) == "v2026.12.0"
 
 
-def test_plan_selects_fresh_changed_non_major_groups(repo):
+def test_plan_selects_fresh_changed_unheld_groups(repo):
     clone, _ = repo
     p = rc.plan(str(clone), PRS, date(2026, 11, 9), ANCHOR)
     assert p["release"] and p["version"] == "v2026.11.2" and p["base"] == "v2026.11.1"
-    assert p["branches"] == ["renovate/gateway"]
+    # An open major PR exists only after a dashboard tick, so it is approved: it goes in.
+    assert p["branches"] == ["renovate/gateway", "renovate/major-gateway"]
     assert p["stale"] == ["renovate/stale"]
-    assert set(p["held"]) == {"renovate/major-gateway", "renovate/held"}
+    assert p["held"] == ["renovate/held"]
     assert p["unchanged"] == ["renovate/same"]
 
 
-def test_majors_need_the_include_label(repo):
+def test_hold_label_keeps_any_group_out(repo):
     clone, _ = repo
     prs = [dict(pr) for pr in PRS]
-    prs[1]["labels"] = [{"name": "include-in-release"}]
-    assert "renovate/major-gateway" in rc.plan(str(clone), prs, date(2026, 11, 9), ANCHOR)["branches"]
+    prs[0] = {**prs[0], "labels": [{"name": "hold"}]}
+    p = rc.plan(str(clone), prs, date(2026, 11, 9), ANCHOR)
+    assert "renovate/gateway" not in p["branches"] and "renovate/gateway" in p["held"]
 
 
 def test_off_week_does_nothing_unless_forced(repo):
@@ -171,7 +173,7 @@ def test_pr_body_lists_what_was_left_out(repo):
     clone, _ = repo
     p = rc.plan(str(clone), PRS, date(2026, 11, 9), ANCHOR)
     body = rc.pr_body(p, "# Release v2026.11.2\n")
-    assert "`renovate/stale`" in body and "`renovate/major-gateway`" in body and "# Release v2026.11.2" in body
+    assert "`renovate/stale`" in body and "`renovate/held`" in body and "# Release v2026.11.2" in body
 
 
 class TestWorkflow:

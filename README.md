@@ -64,8 +64,7 @@ command output redact account ids, ARNs and AWS hostnames.
      release PR is opened as that user and main's CI runs on it
    - variable `RELEASE_ANCHOR` (optional, default `2026-11-09`): a Monday;
      releases are cut every second Monday from it
-   - labels `include-in-release` (puts a Renovate major PR in the next
-     release) and `hold` (keeps any Renovate PR out)
+   - label `hold` (keeps a Renovate PR out of the next release)
    - variable `E2E_REGION` (optional, default `eu-central-1`)
    - variables `E2E_IDC_INSTANCE_ARN`, `E2E_IDC_REGION`, `E2E_IDC_GROUP_ID`
      (Identity Center instance and the group mapped to Argo CD ADMIN, profile `managed`)
@@ -115,14 +114,25 @@ python3 harness/e2e.py upgrade main release/v2026.11.0 --profile managed --dry-r
 
 `release-candidate.yaml` runs cut, notes, release PR and E2E dispatch every second Monday
 (first try 07:41 UTC, catch-up runs until Tuesday; `gh workflow run release-candidate.yaml -f force=true`
-for an off-week release, `-f dry_run=true` to see the plan without changing anything). You approve the E2E run, then record, merge, tag and canary by hand.
-See COMPATIBILITY.md "Releases". By hand:
+for an off-week release, `-f dry_run=true` to see the plan without changing anything). You approve the E2E run; when
+all four `e2e/*` statuses are green, one command finishes the release and prints the canary steps:
+
+```bash
+git -C subject switch release/v2026.11.3 && git -C subject pull
+python3 tools/release.py --repo subject finish v2026.11.3 --github OWNER/REPO [--dry-run]
+```
+
+`finish` = `record` (below) + wait for the PR's required checks + merge + tag the
+merge commit + delete the release branch. It refuses without four green statuses
+on the PR head, when the local head differs from the PR head, or when the tag
+exists. See COMPATIBILITY.md "Releases". The same steps by hand:
 
 ```bash
 python3 tools/release.py --repo subject cut v2026.11.0 renovate/infra renovate/gateway
 python3 tools/release.py --repo subject notes v2026.11.0 --base main      # first release
 # E2E: fresh + upgrade (base = previous tag, or main), both profiles
 python3 tools/release.py --repo subject record v2026.11.0 --github OWNER/REPO     # after all 4 runs pass
+# then: merge the PR, tag the merge commit, delete the branch (what `finish` does)
 ```
 
 `notes` writes `docs/releases/<v>.md`, `releases/<v>.json` (the manifest

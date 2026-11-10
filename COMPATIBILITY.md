@@ -127,21 +127,24 @@ profiles) pending (Unit 1b). Pins: see the left column above, plus kro chart
 - **vLLM**: one source of truth in `locals.tf`; the RGD schema defaults must match (same dep, one branch). The GPU driver must satisfy the image's CUDA runtime; bump the llm-d router with it.
 - **`kubernetes` Python client / `alpine/k8s`**: ±1 minor of the API server; `allowedVersions` in `renovate.json` enforces the ceiling and must be raised with the Kubernetes anchor.
 - **LiteLLM**: follow `-stable` tags only; litellm-sync and the dashboard use its admin API (`/model/*`, `/team/*`, `/key/*`), so read the changelog on minors.
-- **Release age and container images**: ghcr.io, quay.io, public.ecr.aws and most Docker Hub tags carry no release timestamp. Renovate's default `minimumReleaseAgeBehaviour` (`timestamp-required`) holds such updates as pending forever, so `docker` datasource updates use `timestamp-optional` (no 7-day wait where there is no timestamp; the E2E gate still applies).
+- **No minimum release age**: the E2E gate judges every version on real clusters, so Renovate proposes the newest version as soon as it sees it. A 7-day age was tried first and dropped: it froze whole group branches while one update was "pending" (so they were not rebased after a release), and Docker Hub re-pushes of official images (postgres, python) restarted the clock every few days. Security updates were already exempt.
 - **Postgres**: a major bump is a dump/restore of the shared LiteLLM DB; never a plain tag change.
 - **Langfuse chart v1 -> v2**: v2 needs `redis.auth.usersExistingSecret` alongside `existingSecret`; `helm template` fails otherwise (blocked in v1).
 - **Argo CD (self-managed path)**: pin it; an unpinned GitOps engine can break the mechanism used to recover from any other break.
 
 ## Releases (v2)
 
-1. Renovate opens grouped branches against `main` (Monday schedule, 7-day
-   minimum release age, security updates exempt) and rebases them when `main`
-   moves. It does not touch a group branch while any update in it is still
-   inside the release age (`internalChecksFilter: strict`), so after a release
-   a group branch can stay behind it. `release.py cut` refuses a branch that
-   does not contain the newest release tag. Their PRs are never merged.
-2. Majors and anchors appear on the Dependency Dashboard first; read the
-   coupling notes above before ticking one.
+1. Renovate opens grouped branches against `main` (Monday window) and rebases
+   them whenever `main` moves. `release.py cut` still refuses a branch that
+   does not contain the newest release tag (Renovate did not run, or someone
+   pushed to the branch). Their PRs are never merged, and never closed: the
+   release branch takes them in.
+2. Majors and anchors (vLLM, Karpenter, Argo CD, kro) exist as PRs only after a
+   tick on the Dependency Dashboard; read the coupling notes above before
+   ticking one. An open major PR therefore means "approved for the next
+   release". To take that back, close the PR: Renovate offers it again on the
+   dashboard (`recreateWhen: always`). The label `hold` keeps any PR out of the
+   next release without closing it.
 3. Cut a release: `python3 tools/release.py --repo <product checkout> cut vYYYY.MM.N renovate/infra renovate/inference ...`;
    cherry-pick coupled fixes by hand onto `release/<version>`.
 4. `python3 tools/release.py --repo <checkout> notes vYYYY.MM.N --base <previous tag or main>`
@@ -161,7 +164,11 @@ profiles) pending (Unit 1b). Pins: see the left column above, plus kro chart
    commit, verifies that commit changes nothing else, pushes it, and posts the
    four statuses on the new head with the run links and "tested on <sha>".
    The tested SHA is also in the commit message. Any other change: rerun E2E.
-7. Merge the release PR, tag the merge commit `vYYYY.MM.N`.
+7. Merge the release PR, tag the merge commit `vYYYY.MM.N`, delete the branch.
+   Steps 6 and 7 are one command: `python3 tools/release.py --repo <checkout>
+   finish vYYYY.MM.N --github OWNER/REPO` (run on the release branch at the
+   tested head; `--dry-run` lists the steps). It waits for the PR's required
+   checks on the recorded head before merging.
 8. Canary: in the long-lived dev environment's checkout (branch `env/dev`),
    `git merge vYYYY.MM.N`, `./platformctl upgrade dev --plan-only`, then
    `--yes`, then `make -C terraform plan-all ENVIRONMENT=dev` (expect no changes).
@@ -176,10 +183,12 @@ drops some, mostly at the start of an hour (on 2026-11-02 the 07:00 and 08:00
 runs never fired), hence the odd minute and the catch-up runs.
 `tools/release_candidate.py plan` decides:
 
-- groups: open Renovate PRs on `renovate/<group>`; `renovate/major-*` only with
-  the label `include-in-release`; any PR labelled `hold` is left out;
+- groups: every open Renovate PR on `renovate/<group>` (majors and anchors
+  exist as PRs only after a dashboard tick, which is the approval); any PR
+  labelled `hold` is left out;
 - a branch that does not contain the newest release tag is left out as stale
-  (warning in the run), as is a branch with no change against `main`;
+  (warning in the run; it means Renovate has not rebased it), as is a branch
+  with no change against `main`;
 - no release when nothing is left and `main` has no commits since the tag;
 - one release per week: nothing happens while a `release/<v>` newer than the
   newest tag exists (even with `force`), or when the newest tag was created

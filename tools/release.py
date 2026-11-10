@@ -4,6 +4,7 @@
   release.py cut    <vYYYY.MM.N> <branch>...    [--repo DIR] [--no-push]
   release.py notes  <vYYYY.MM.N> --base <ref>   [--repo DIR] [options] [--no-commit]
   release.py record <vYYYY.MM.N> --github OWNER/REPO [--repo DIR] [--no-push]
+  release.py finish <vYYYY.MM.N> --github OWNER/REPO [--repo DIR] [--dry-run]
 
 `cut` creates release/<version> from origin/main, merges the listed branches
 (update branches, fixes) with --no-ff, and pushes it. Coupled fixes that need
@@ -27,6 +28,11 @@ It writes the results into that release's row of docs/validated-versions.md as
 ONE follow-up commit, verifies the commit changes nothing but that row's E2E
 cell, pushes it, and posts the four statuses on the new head, each saying which
 commit was actually tested. Any other change after E2E needs a rerun.
+
+`finish` is the one command after the four E2E runs are green: record (above),
+wait for the release PR's required checks on the recorded head, merge it, tag the
+merge commit vYYYY.MM.N, push the tag, delete the release branch, and print the
+canary commands. --dry-run shows each step without changing anything.
 
 Kubernetes rule (enforced here): a release supports every Kubernetes version
 of the previous release plus at most one newer minor, which must be exactly one
@@ -96,21 +102,19 @@ def _latest_release_tag(repo: str, ref: str) -> str | None:
 
 
 def _stale_branches(repo: str, refs: list[str], main: str) -> str:
-    """Group branches must contain the newest release on main. Renovate does not
-    update a group branch while any update in it is still inside the release age
-    (internalChecksFilter strict), so it is not rebased either: after a release
-    it can still carry that release's changes, and merging it conflicts (or, with
-    edits that happen to agree, quietly re-applies old lines). Seen after
-    v2026.11.0: renovate/tooling would have taken pytest from 9.1.1 to 8.4.2."""
+    """Group branches that do not contain the newest release tag on main. Renovate
+    rebases a group branch whenever main moves (rebaseWhen: behind-base-branch),
+    but only in its Monday window; a branch still behind the last release would
+    merge stale pins, so cut refuses it. Empty string when all are fresh."""
     tag = _latest_release_tag(repo, main)
     if not tag:
         return ""
-    bad = [r for r in refs if subprocess.run(["git", "-C", repo, "merge-base", "--is-ancestor", tag, r]).returncode != 0]
+    bad = [r for r in refs if subprocess.run(["git", "-C", repo, "merge-base", "--is-ancestor", tag, r],
+                                             capture_output=True).returncode != 0]
     if not bad:
         return ""
-    return (f"{', '.join(bad)} do(es) not contain {tag}: Renovate has not rebased them yet (an update in the "
-            "group is still inside the 7-day release age). Leave them out of this release, or wait until "
-            "Renovate updates them (check the Dependency Dashboard).")
+    return (f"{', '.join(bad)} do(es) not contain {tag}: Renovate has not rebased them onto the last release. "
+            "Leave them out of this release, or tick 'rebase' for them on the Dependency Dashboard and retry.")
 
 
 def cut(repo: str, version: str, branches: list[str], push: bool = True, remote: str = "origin") -> str:
@@ -429,6 +433,86 @@ def record(repo: str, version: str, details: dict, *, push: bool = False, repo_s
     return head
 
 
+# --------------------------------------------------------------------------- #
+# finish (record + merge + tag), the one command after E2E
+# --------------------------------------------------------------------------- #
+def gh(*args: str) -> str:
+    """Run gh and return stdout; tests replace this."""
+    return subprocess.run(["gh", *args], capture_output=True, text=True, check=True).stdout
+
+
+def release_pr(repo_slug: str, version: str) -> dict:
+    out = gh("pr", "list", "--repo", repo_slug, "--state", "open", "--head", f"release/{version}",
+             "--json", "number,headRefOid,mergeStateStatus,baseRefName")
+    prs = json.loads(out or "[]")
+    if len(prs) != 1:
+        raise ReleaseError(f"expected one open PR from release/{version}, found {len(prs)}")
+    if prs[0]["baseRefName"] != "main":
+        raise ReleaseError(f"PR #{prs[0]['number']} targets {prs[0]['baseRefName']}, not main")
+    return prs[0]
+
+
+def wait_mergeable(repo_slug: str, number: int, head: str, timeout: int = 900, poll: int = 20) -> None:
+    """Wait until GitHub reports the PR CLEAN (required checks green on `head`)."""
+    import time
+    deadline = time.monotonic() + timeout
+    while True:
+        pr = json.loads(gh("pr", "view", str(number), "--repo", repo_slug, "--json", "mergeStateStatus,headRefOid"))
+        if pr["headRefOid"] != head:
+            raise ReleaseError(f"PR #{number} head moved to {pr['headRefOid'][:12]} while waiting; rerun E2E")
+        state = pr["mergeStateStatus"]
+        if state == "CLEAN":
+            return
+        if state in ("DIRTY", "BEHIND"):
+            raise ReleaseError(f"PR #{number} is {state}: bring main into the release branch and rerun E2E")
+        if time.monotonic() > deadline:
+            raise ReleaseError(f"PR #{number} is still {state} after {timeout}s; check its required checks")
+        time.sleep(poll)
+
+
+def finish(repo: str, version: str, repo_slug: str, *, dry_run: bool = False, remote: str = "origin",
+           poll: int = 20) -> dict:
+    validate_version(version)
+    branch = f"release/{version}"
+    if git(repo, "rev-parse", "--abbrev-ref", "HEAD").strip() != branch:
+        raise ReleaseError(f"check out {branch} first (its head must be the tested commit)")
+    pr = release_pr(repo_slug, version)
+    tested = git(repo, "rev-parse", "HEAD").strip()
+    if pr["headRefOid"] != tested:
+        raise ReleaseError(f"PR #{pr['number']} head {pr['headRefOid'][:12]} differs from local HEAD {tested[:12]}; "
+                           "git pull first")
+    if git(repo, "tag", "--list", version).strip():
+        raise ReleaseError(f"tag {version} already exists")
+    details = status_details_from_github(repo_slug, tested)
+    require_all_green(details)
+    steps = [f"record: one docs-only commit on {tested[:12]} with the four green E2E results, pushed, statuses carried",
+             f"wait: PR #{pr['number']} required checks on the recorded head",
+             f"merge: PR #{pr['number']} into main (merge commit)",
+             f"tag: {version} on the merge commit, pushed to {remote}",
+             f"delete: {remote}/{branch}"]
+    if dry_run:
+        return {"dry_run": True, "pr": pr["number"], "tested": tested, "steps": steps}
+    head = record(repo, version, details, push=True, repo_slug=repo_slug)
+    wait_mergeable(repo_slug, pr["number"], head, poll=poll)
+    gh("pr", "merge", str(pr["number"]), "--repo", repo_slug, "--merge", "--delete-branch=false")
+    git(repo, "fetch", "--quiet", remote, "main")
+    merge = git(repo, "rev-parse", f"{remote}/main").strip()
+    if not subprocess.run(["git", "-C", repo, "merge-base", "--is-ancestor", head, merge], capture_output=True).returncode == 0:
+        raise ReleaseError(f"{remote}/main ({merge[:12]}) does not contain the recorded head; not tagging")
+    git(repo, "tag", "-a", version, "-m", f"Release {version}", merge)
+    git(repo, "push", "--quiet", remote, version)
+    git(repo, "push", "--quiet", remote, "--delete", branch, check=False)
+    return {"dry_run": False, "pr": pr["number"], "tested": tested, "recorded": head, "merge": merge, "tag": version}
+
+
+def canary_hint(version: str) -> str:
+    return ("Canary (in the long-lived environment's checkout, branch env/<env>):\n"
+            f"  git fetch origin --tags && git merge {version}\n"
+            "  ./platformctl upgrade <env> --plan-only   # review, then:\n"
+            "  ./platformctl upgrade <env> --yes\n"
+            "  make -C terraform plan-all ENVIRONMENT=<env>   # expect no changes")
+
+
 def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser(description="Cut a release branch or generate its notes.")
     ap.add_argument("--repo", default=os.path.join(os.getcwd(), "subject"), help="product repo checkout")
@@ -453,8 +537,22 @@ def main(argv: list[str] | None = None) -> int:
     r.add_argument("version")
     r.add_argument("--github", required=True, metavar="OWNER/REPO", help="repo holding the E2E statuses")
     r.add_argument("--no-push", action="store_true", help="commit and verify only; do not push or post statuses")
+    f = sub.add_parser("finish", help="after 4 green E2E runs: record, merge the release PR, tag, delete the branch")
+    f.add_argument("version")
+    f.add_argument("--github", required=True, metavar="OWNER/REPO")
+    f.add_argument("--dry-run", action="store_true", help="show the steps; change nothing")
     a = ap.parse_args(argv)
     try:
+        if a.cmd == "finish":
+            res = finish(a.repo, a.version, a.github, dry_run=a.dry_run)
+            if res["dry_run"]:
+                print(f"finish {a.version} would (PR #{res['pr']}, tested {res['tested'][:12]}):")
+                print("\n".join(f"  - {st}" for st in res["steps"]))
+            else:
+                print(f"finished {a.version}: recorded {res['recorded'][:12]}, merged PR #{res['pr']} -> "
+                      f"{res['merge'][:12]}, tagged and pushed {res['tag']}, release branch deleted")
+            print(canary_hint(a.version))
+            return 0
         if a.cmd == "cut":
             print(cut(a.repo, a.version, a.branches, push=not a.no_push))
             return 0

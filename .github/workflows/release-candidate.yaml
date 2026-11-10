@@ -8,7 +8,7 @@
 # from vars.RELEASE_ANCHOR, default 2026-11-09) it plans with
 # tools/release_candidate.py, then:
 #   1. cuts release/<version> from main with the fresh Renovate group branches
-#      (majors only with the PR label include-in-release; label hold excludes),
+#      (every open Renovate PR; majors exist only after a dashboard tick; label hold excludes),
 #   2. writes the notes and manifest (tools/release.py notes),
 #   3. pushes and opens the release PR into main,
 #   4. dispatches e2e (fresh,upgrade from the previous tag, both profiles),
@@ -167,7 +167,7 @@ jobs:
           if [ "$FAILED" = true ]; then
             printf 'The scheduled release candidate failed: %s\n\nSee the failed step. A merge conflict between group branches is resolved by hand on the release branch (COMPATIBILITY.md, Releases). If the branch was cut but the PR could not be opened, fix the cause and rerun the workflow: it resumes (opens the PR, dispatches E2E).\n' "$RUN_URL" > body.md
           else
-            printf 'No release this week: %s\n\nLeft out because Renovate has not rebased them onto the last release (an update in the group is still inside the release age): %s. Check the Dependency Dashboard; once they are rebased, rerun with force.\n' "$RUN_URL" "$STALE" > body.md
+            printf 'No release this week: %s\n\nLeft out because they do not contain the last release (Renovate has not rebased them): %s. Tick "rebase" for them on the Dependency Dashboard, then rerun with force.\n' "$RUN_URL" "$STALE" > body.md
           fi
           num="$(gh issue list --repo "$REPO" --state open --search "in:title \"${title}\"" --json number --jq '.[0].number // empty')"
           if [ -n "$num" ]; then gh issue comment "$num" --repo "$REPO" --body-file body.md

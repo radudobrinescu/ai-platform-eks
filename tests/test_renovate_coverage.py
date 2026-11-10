@@ -142,21 +142,27 @@ class TestPolicy:
         groups = {r.get("groupName") for r in _renovate()["packageRules"] if r.get("groupName")}
         assert groups == {"infra", "inference", "gateway", "gitops", "tooling"}, groups
 
-    def test_targets_main_with_release_age_and_security_exemption(self):
+    def test_targets_main_without_a_release_age(self):
+        """No minimumReleaseAge: the E2E gate judges every version on real clusters,
+        and a release age only produced stale group branches (branches frozen while
+        an update was 'pending') and Docker Hub re-push delays (postgres, python)."""
         cfg = _renovate()
         assert cfg["baseBranchPatterns"] == ["main"]
         assert cfg["forkProcessing"] == "enabled"
-        assert cfg["minimumReleaseAge"] == "7 days"
-        va = cfg["vulnerabilityAlerts"]
-        assert va["minimumReleaseAge"] is None and "security" in va["labels"]
+        assert "minimumReleaseAge" not in cfg
+        assert not any("minimumReleaseAge" in r or "minimumReleaseAgeBehaviour" in r for r in cfg["packageRules"])
+        assert "security" in cfg["vulnerabilityAlerts"]["labels"]
 
-    def test_images_without_release_timestamps_are_not_held_forever(self):
-        """Registries such as ghcr.io, quay.io and public.ecr.aws publish no release
-        timestamp; under the default timestamp-required behaviour their updates
-        never leave 'pending' (Karpenter was held this way, unnoticed)."""
+    def test_majors_and_anchors_need_one_thing_only_a_dashboard_tick(self):
+        """One decision mechanism: a major or anchor update exists as a PR only after
+        a tick on the Dependency Dashboard, so the release robot can treat every open
+        Renovate PR as approved. Closing such a PR must mean 'not now', not 'never'."""
         rules = _renovate()["packageRules"]
-        assert any(r.get("matchDatasources") == ["docker"]
-                   and r.get("minimumReleaseAgeBehaviour") == "timestamp-optional" for r in rules)
+        majors = [r for r in rules if r.get("matchUpdateTypes") == ["major"]]
+        anchors = [r for r in rules if "vllm/vllm-openai" in (r.get("matchDepNames") or []) and r.get("dependencyDashboardApproval")]
+        assert majors and anchors
+        for r in majors + anchors:
+            assert r["dependencyDashboardApproval"] is True and r["recreateWhen"] == "always", r["description"]
 
     def test_group_branches_are_rebased_when_main_moves(self):
         """Group PRs are never merged; release branches merge them onto main, so

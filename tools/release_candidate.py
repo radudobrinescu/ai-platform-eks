@@ -8,13 +8,13 @@ E2E dispatch reuse tools/release.py and gh.
 Rules
   * Release weeks: every second Monday counted from the anchor date
     (RELEASE_ANCHOR, a Monday). --force ignores the calendar.
-  * Groups: open Renovate PRs whose branch is renovate/<group>. Majors
-    (renovate/major-*) only with the label `include-in-release`; any PR with
-    the label `hold` is left out.
-  * A group branch must contain the newest release tag (Renovate leaves a
-    branch alone while an update in it is inside the release age, so after a
-    release it can still carry that release's changes). Stale branches are
-    left out and listed, never merged.
+  * Groups: every open Renovate PR (branch renovate/<group>) goes in, except
+    PRs labelled `hold`. Majors and anchors only exist as PRs once a human
+    ticked them on the Dependency Dashboard, so an open PR is the approval.
+  * A group branch must contain the newest release tag. Renovate rebases
+    every Monday (rebaseWhen: behind-base-branch, no release age), so a stale
+    branch means Renovate did not run or someone pushed to it. Stale branches
+    are left out and listed, never merged.
   * A group branch with no change against main is left out.
   * No release when nothing is left and main has no commits since the tag.
   * One release per release week, so the catch-up runs (GitHub delays and
@@ -40,7 +40,6 @@ import sys
 from datetime import date, datetime, timedelta, timezone
 
 TAG_RX = re.compile(r"^v(\d{4})\.(\d{2})\.(\d+)$")
-INCLUDE_LABEL = "include-in-release"
 HOLD_LABEL = "hold"
 
 
@@ -142,7 +141,7 @@ def plan(repo: str, prs: list[dict], today: date, anchor: date, *, force: bool =
         if not head.startswith("renovate/"):
             continue
         labels = _labels(pr)
-        if HOLD_LABEL in labels or (head.startswith("renovate/major-") and INCLUDE_LABEL not in labels):
+        if HOLD_LABEL in labels:
             out["held"].append(head)
             continue
         ref = f"{remote}/{head}"
@@ -170,8 +169,8 @@ def pr_body(p: dict, notes_md: str) -> str:
     if p["product_commits"]:
         lines += ["", f"Product changes on `main` since `{p['base']}`:", ""]
         lines += [f"- {c}" for c in p["product_commits"]]
-    for key, why in (("stale", "left out: does not contain the last release yet (Renovate has not rebased it)"),
-                     ("held", f"left out: major without `{INCLUDE_LABEL}`, or labelled `{HOLD_LABEL}`"),
+    for key, why in (("stale", "left out: does not contain the last release (Renovate has not rebased it; check the dashboard)"),
+                     ("held", f"left out: labelled `{HOLD_LABEL}`"),
                      ("unchanged", "left out: no change against main")):
         if p[key]:
             lines += ["", f"{why}: " + ", ".join(f"`{b}`" for b in p[key])]

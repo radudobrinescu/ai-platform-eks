@@ -43,10 +43,8 @@
   "rebaseWhen": "behind-base-branch",
   "pinDigests": false,
   "automerge": false,
-  "minimumReleaseAge": "7 days",
   "vulnerabilityAlerts": {
     "enabled": true,
-    "minimumReleaseAge": null,
     "labels": [
       "dependencies",
       "security"
@@ -216,13 +214,6 @@
   ],
   "packageRules": [
     {
-      "description": "Container registries (ghcr.io, quay.io, public.ecr.aws, most Docker Hub tags) publish no release timestamp. With the default minimumReleaseAgeBehaviour=timestamp-required those updates stay pending forever and never reach a branch (Karpenter, Open WebUI, oauth2-proxy, llm-d router were silently held). Treat a missing timestamp as stable; the E2E gate still judges every release.",
-      "matchDatasources": [
-        "docker"
-      ],
-      "minimumReleaseAgeBehaviour": "timestamp-optional"
-    },
-    {
       "description": "Default: every Terraform provider/module is infra (control-plane adjacent). Later rules override for specific deps.",
       "matchManagers": [
         "terraform"
@@ -337,11 +328,12 @@
       "allowedVersions": "/-stable/"
     },
     {
-      "description": "Majors anywhere: a human ticks the checkbox on the Dependency Dashboard before the PR is opened.",
+      "description": "Majors anywhere: nothing is proposed until a human ticks the checkbox on the Dependency Dashboard, so an open major PR means 'approved for the next release'. Closing the PR takes the approval back; recreateWhen=always makes Renovate offer it again on the dashboard instead of treating the close as 'never'.",
       "matchUpdateTypes": [
         "major"
       ],
-      "dependencyDashboardApproval": true
+      "dependencyDashboardApproval": true,
+      "recreateWhen": "always"
     },
     {
       "description": "Anchors: any change (even a patch) is reviewed deliberately, so never automerge and always surface on the dashboard.",
@@ -352,7 +344,8 @@
         "kro"
       ],
       "automerge": false,
-      "dependencyDashboardApproval": true
+      "dependencyDashboardApproval": true,
+      "recreateWhen": "always"
     },
     {
       "description": "The github-actions manager also reads setup-terraform's terraform_version (depName 'terraform'). The regex manager above owns that pin (depName hashicorp/terraform, same as the terraform manager), so disable the built-in copy to avoid two PRs for one line.",
