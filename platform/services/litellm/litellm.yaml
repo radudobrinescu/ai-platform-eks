@@ -366,7 +366,7 @@ spec:
     spec:
       containers:
         - name: postgres
-          image: postgres:16.14-alpine
+          image: postgres:16.15-alpine
           ports:
             - containerPort: 5432
           env:
@@ -539,7 +539,7 @@ spec:
           # pg_dumpall (superuser client) writes a gzip to the shared emptyDir…
           initContainers:
             - name: dump
-              image: postgres:16.14-alpine
+              image: postgres:16.15-alpine
               command: ["sh", "-c"]
               args:
                 - |
@@ -562,7 +562,7 @@ spec:
           # …then the aws-cli container uploads it to S3 and the emptyDir is discarded.
           containers:
             - name: upload
-              image: amazon/aws-cli:2.39.3
+              image: amazon/aws-cli:2.39.7
               command: ["sh", "-c"]
               args:
                 - |
