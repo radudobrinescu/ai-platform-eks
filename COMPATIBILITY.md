@@ -13,14 +13,35 @@ below).
 ## Anchors
 
 Nearly every coupling collapses onto two anchors; everything else derives from
-them. **Anchor bumps are deliberate**: the Kubernetes version is never proposed
-by Renovate (it follows the EKS support calendar and the release manifest's
-`kubernetes.supported`); the vLLM image needs a dashboard tick.
+them. **Anchor bumps are deliberate**: both need a tick on the Dependency
+Dashboard before Renovate opens a PR. The Kubernetes version is read from
+endoflife.date (`amazon-eks`) and lands on its own branch
+(`renovate/eks-kubernetes`); take it one minor per release, in a release with
+nothing else major, after the components it gates already support the new
+minor (see "Kubernetes upgrade" below).
 
 | Anchor | Where it is set on `main` | What it gates |
 |---|---|---|
 | **EKS Kubernetes version** | `cluster_config.kubernetes_version` in each env's tfvars (default in `example.tfvars`) | Karpenter (chart, CRD, k8s window), AWS LB Controller, KEDA, metrics-server, EKS managed addons, the `kubernetes` Python client (±1 minor), `alpine/k8s` kubectl (±1 minor) |
 | **vLLM serving image** | `vllm_image_tag` in `terraform/30.eks/30.cluster/locals.tf` (single source -> `platform-config` ConfigMap -> kro `externalRef`), mirrored as the schema default in `platform/config/kro/*.yaml` | NVIDIA GPU Operator (driver/CUDA >= vLLM's CUDA runtime), GIE CRDs + llm-d router (routing protocol), which HF architectures/quantizations load |
+
+### Kubernetes upgrade (1.36 -> 1.37, as an example)
+
+1. Check the gated components on `main` against the target minor: Karpenter,
+   AWS LB Controller, KEDA, the EKS Terraform module, `alpine/k8s`, the
+   `kubernetes` Python client. The validated 1.37 set below is the reference.
+2. Tick `amazon-eks` on the dashboard. Renovate changes `kubernetes_version`
+   in `example.tfvars` and `example-esc.tfvars` (the default for new clusters).
+3. On the `lifecycle` branch, raise the `alpine/k8s` and `kubernetes`
+   `allowedVersions` ceilings to the new minor + 1
+   (`tests/test_renovate_coverage.py` fails until they match `main`).
+4. The next release includes the PR. `release.py notes` writes the manifest as
+   supported = previous + new minor, recommended = new minor. E2E: fresh jobs
+   build on the new minor; upgrade jobs upgrade on the old minor, then raise
+   `kubernetes_version` and `platformctl up` (the `k8s-bump/` checks).
+5. Existing environments do not move. After upgrading to the release, their
+   owners raise `kubernetes_version` in their tfvars and run `platformctl up`
+   (UPGRADING.md, "Kubernetes versions"). The dev canary does the same.
 
 ## Upgrade domains (one Renovate branch each)
 

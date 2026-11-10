@@ -52,6 +52,8 @@ CUSTOM_INVENTORY = [
     (".github/workflows/ci.yaml", "yamllint"),
     (".github/workflows/ci.yaml", "yannh/kubeconform"),
     (".github/workflows/ci.yaml", "kubernetes-sigs/kustomize"),
+    ("terraform/00.global/vars/example.tfvars", "amazon-eks"),
+    ("terraform/00.global/vars/example-esc.tfvars", "amazon-eks"),
 ]
 
 # Pins read by Renovate's built-in managers (terraform helm_release / modules,
@@ -138,9 +140,9 @@ def extracted_by_file(cfg, root):
 
 
 class TestPolicy:
-    def test_five_domains(self):
+    def test_domains(self):
         groups = {r.get("groupName") for r in _renovate()["packageRules"] if r.get("groupName")}
-        assert groups == {"infra", "inference", "gateway", "gitops", "tooling"}, groups
+        assert groups == {"infra", "inference", "gateway", "gitops", "tooling", "eks-kubernetes"}, groups
 
     def test_targets_main_without_a_release_age(self):
         """No minimumReleaseAge: the E2E gate judges every version on real clusters,
@@ -163,6 +165,33 @@ class TestPolicy:
         assert majors and anchors
         for r in majors + anchors:
             assert r["dependencyDashboardApproval"] is True and r["recreateWhen"] == "always", r["description"]
+
+    def test_eks_kubernetes_anchor_is_watched_but_never_proposed_unasked(self):
+        """The EKS version follows endoflife.date, so a new minor shows up on the
+        dashboard, but a PR exists only after a tick, on its own branch."""
+        cfg = _renovate()
+        rules = [r for r in cfg["packageRules"] if r.get("matchDepNames") == ["amazon-eks"]]
+        assert len(rules) == 1
+        r = rules[0]
+        assert r["matchDatasources"] == ["endoflife-date"]
+        assert r["dependencyDashboardApproval"] is True and r["recreateWhen"] == "always"
+        assert r["groupName"] == "eks-kubernetes" and r["automerge"] is False
+        rx = r["extractVersion"].replace("(?<", "(?P<")  # Renovate uses JS named groups
+        assert re.match(rx, "1.37-eks-4").group("version") == "1.37"
+        managers = [m for m in cfg["customManagers"] if m.get("depNameTemplate") == "amazon-eks"]
+        assert len(managers) == 1 and managers[0]["datasourceTemplate"] == "endoflife-date"
+
+    def test_kubectl_skew_ceilings_match_the_kubernetes_default_on_main(self, subject_root):
+        """alpine/k8s (kubectl) and the kubernetes Python client must stay within one
+        minor of the API server. Their allowedVersions ceilings are set by hand, so
+        this fails when the EKS default moves and the ceilings were not raised."""
+        text = _read(subject_root, "terraform/00.global/vars/example.tfvars")
+        minor = int(re.search(r'kubernetes_version\s*=\s*"1\.(\d+)"', text).group(1))
+        rules = {tuple(r["matchDepNames"]): r["allowedVersions"] for r in _renovate()["packageRules"]
+                 if r.get("allowedVersions") and r.get("matchDepNames") in (["alpine/k8s"], ["kubernetes"])}
+        assert rules[("alpine/k8s",)] == f"<1.{minor + 2}", "raise the alpine/k8s ceiling with the EKS anchor"
+        # kubernetes-client major N tracks Kubernetes 1.N; ceiling = N+1 (one minor above) exclusive -> < minor+2
+        assert rules[("kubernetes",)] == f"<{minor + 2}", "raise the kubernetes-client ceiling with the EKS anchor"
 
     def test_group_branches_are_rebased_when_main_moves(self):
         """Group PRs are never merged; release branches merge them onto main, so

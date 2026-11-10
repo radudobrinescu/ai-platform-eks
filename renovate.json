@@ -210,6 +210,19 @@
       "depNameTemplate": "kubernetes-sigs/kustomize",
       "datasourceTemplate": "github-releases",
       "extractVersionTemplate": "^kustomize/v(?<version>.+)$"
+    },
+    {
+      "customType": "regex",
+      "description": "EKS Kubernetes version (anchor): cluster_config.kubernetes_version in the example tfvars, the default for new clusters. Source: endoflife.date (amazon-eks). Proposed only after a Dependency Dashboard tick; one minor at a time (see packageRules).",
+      "managerFilePatterns": [
+        "/^terraform/00\\.global/vars/example(-esc)?\\.tfvars$/"
+      ],
+      "matchStrings": [
+        "kubernetes_version\\s*=\\s*\"(?<currentValue>\\d+\\.\\d+)\""
+      ],
+      "depNameTemplate": "amazon-eks",
+      "datasourceTemplate": "endoflife-date",
+      "versioningTemplate": "loose"
     }
   ],
   "packageRules": [
@@ -234,17 +247,17 @@
       "groupSlug": "infra"
     },
     {
-      "description": "k8s Python client must stay within +/-1 minor of the API server (kubernetes-client policy). Current anchor k8s 1.36 -> client 31..33 OK; raise the ceiling when bumping kubernetes_version.",
+      "description": "k8s Python client must stay within +/-1 minor of the API server (kubernetes-client policy). Current anchor k8s 1.36 -> client 31..33 OK; raise the ceiling when bumping kubernetes_version. Ceiling = (EKS default minor + 2), exclusive; raise it with the EKS anchor.",
       "matchDatasources": [
         "pypi"
       ],
       "matchDepNames": [
         "kubernetes"
       ],
-      "allowedVersions": "<34"
+      "allowedVersions": "<38"
     },
     {
-      "description": "alpine/k8s bundles kubectl; keep within +/-1 minor of the API server (kubectl skew policy). Raise with the anchor.",
+      "description": "alpine/k8s bundles kubectl; keep within +/-1 minor of the API server (kubectl skew policy). Raise with the anchor. Ceiling = 1.(EKS default minor + 2), exclusive; raise it with the EKS anchor.",
       "matchDepNames": [
         "alpine/k8s"
       ],
@@ -359,6 +372,21 @@
         "terraform"
       ],
       "enabled": false
+    },
+    {
+      "description": "EKS Kubernetes anchor: its own branch and PR, created only after a dashboard tick. endoflife.date lists versions as 1.37-eks-N; keep the minor only. A release may add at most one minor above the previous release (release.py enforces it), so tick one step at a time. Raise the alpine/k8s and kubernetes-client allowedVersions ceilings in the same release (tests/test_renovate_coverage.py pairs them).",
+      "matchDatasources": [
+        "endoflife-date"
+      ],
+      "matchDepNames": [
+        "amazon-eks"
+      ],
+      "extractVersion": "^(?<version>\\d+\\.\\d+)-eks.+$",
+      "groupName": "eks-kubernetes",
+      "groupSlug": "eks-kubernetes",
+      "dependencyDashboardApproval": true,
+      "recreateWhen": "always",
+      "automerge": false
     }
   ]
 }
