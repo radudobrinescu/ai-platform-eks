@@ -366,7 +366,7 @@ spec:
     spec:
       containers:
         - name: postgres
-          image: postgres:16.14-alpine
+          image: postgres:18.4-alpine
           ports:
             - containerPort: 5432
           env:
@@ -539,7 +539,7 @@ spec:
           # pg_dumpall (superuser client) writes a gzip to the shared emptyDir…
           initContainers:
             - name: dump
-              image: postgres:16.14-alpine
+              image: postgres:18.4-alpine
               command: ["sh", "-c"]
               args:
                 - |

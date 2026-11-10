@@ -38,7 +38,7 @@ spec:
           # Idempotent DB provisioning. Runs on every pod restart but is
           # near-instant once the database + tables already exist.
           # Uses the same db_init.sh + ddl.sql from the scripts ConfigMap.
-          image: postgres:16.14-alpine
+          image: postgres:18.4-alpine
           command: ["/bin/sh", "/scripts/db_init.sh"]
           env:
             - name: DB_HOST
