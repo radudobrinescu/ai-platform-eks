@@ -59,7 +59,7 @@ spec:
       minVramPerGpuGiB:     "integer | default=0"
       workerMemory:         "string  | default=16Gi"
       workerCpu:            "string  | default=8"
-      vllmImage:            "string  | default=vllm/vllm-openai:v0.32.0"
+      vllmImage:            "string  | default=vllm/vllm-openai:v0.33.0"
       # Optional tool/function calling (see VLLMEndpoint), applied to BOTH the
       # prefill and decode vLLM pools. `platformctl new-model` auto-fills the
       # parser from the model architecture; empty = chat-only. extraArgs appends
