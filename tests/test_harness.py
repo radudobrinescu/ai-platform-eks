@@ -398,3 +398,77 @@ def test_e2e_runs_the_llmd_tier_and_keda_by_default():
     wf = yaml.safe_load(open(os.path.join(root, ".github/workflows/e2e.yaml"), encoding="utf-8"))
     on = wf[True] if True in wf else wf["on"]
     assert on["workflow_dispatch"]["inputs"]["with_llmd"]["default"] is True
+
+
+# --------------------------------------------------------------------------- #
+# Diagnostics on timeouts, and KEDA cleanup on every path                      #
+# --------------------------------------------------------------------------- #
+STUCK = {
+    "applications": {"items": [
+        {"metadata": {"name": "litellm"}, "status": {"sync": {"status": "Synced"}, "health": {"status": "Progressing"},
+         "resources": [{"kind": "Deployment", "name": "litellm", "health": {"status": "Progressing"}}]}},
+        {"metadata": {"name": "teams"}, "status": {"sync": {"status": "Synced"}, "health": {"status": "Healthy"}}}]},
+    "pods": {"items": [
+        {"metadata": {"namespace": "ai-platform", "name": "platform-db-0"},
+         "status": {"phase": "Pending", "conditions": [{"type": "PodScheduled", "status": "False", "message": "0/3 nodes are available"}]}},
+        {"metadata": {"namespace": "ai-platform", "name": "langfuse-web-1"},
+         "status": {"phase": "Pending", "conditions": [{"type": "Ready", "status": "False"}],
+                    "containerStatuses": [{"name": "web", "state": {"waiting": {"reason": "ImagePullBackOff",
+                                           "message": "toomanyrequests: You have reached your unauthenticated pull rate limit"}}}]}},
+        {"metadata": {"namespace": "ai-platform", "name": "ok-1"}, "status": {"phase": "Running", "conditions": [{"type": "Ready", "status": "True"}]}},
+        {"metadata": {"namespace": "team-x", "name": "ignored"}, "status": {"phase": "Pending"}}]},
+    "events": {"items": [{"involvedObject": {"namespace": "ai-platform", "name": "langfuse-web-1"}, "reason": "Failed",
+                          "message": "Failed to pull image", "lastTimestamp": "2026-11-11T15:00:00Z"}]},
+}
+
+
+def _fake_kubectl_json(*args):
+    return STUCK.get(args[1], {}) if args and args[0] == "get" else {}
+
+
+def test_diagnose_names_unhealthy_apps_stuck_pods_and_warnings(monkeypatch):
+    import checks
+    monkeypatch.setattr(checks, "kubectl_json", _fake_kubectl_json)
+    monkeypatch.setattr(checks, "log", lambda *_: None)
+    out = checks.diagnose()
+    assert "app litellm: Synced/Progressing [Deployment/litellm=Progressing]" in out and "teams" not in out
+    assert "pod ai-platform/platform-db-0 Pending: unscheduled: 0/3 nodes are available" in out
+    assert "web:ImagePullBackOff toomanyrequests" in out
+    assert "ok-1" not in out and "team-x" not in out
+    assert "event langfuse-web-1: Failed Failed to pull image" in out
+
+
+def test_a_timed_out_check_reports_what_is_stuck(monkeypatch):
+    import checks
+    monkeypatch.setattr(checks, "kubectl_json", _fake_kubectl_json)
+    monkeypatch.setattr(checks, "log", lambda *_: None)
+
+    def times_out(_c):
+        raise TimeoutError("timed out after 1800s waiting for Argo CD apps Synced+Healthy")
+    r = checks.run_check("gitops", "argocd-applications-converged", times_out, None)
+    assert not r.ok and "|| stuck: app litellm" in r.detail
+    r2 = checks.run_check("gitops", "x", lambda _c: (False, "HTTP 500"), None)
+    assert "stuck:" not in r2.detail  # only timeouts are diagnosed
+
+
+def test_keda_check_cleans_up_and_waits_even_when_scaling_fails(monkeypatch):
+    import checks
+    calls = {"undeploy": 0, "gets": 0}
+    monkeypatch.setattr(checks, "log", lambda *_: None)
+    monkeypatch.setattr(checks, "diagnose", lambda: "nothing")
+
+    def boom(*_a):
+        raise TimeoutError("timed out after 600s waiting for KEDA scales x-llmd to 2")
+    monkeypatch.setattr(checks, "_keda_scale", boom)
+    monkeypatch.setattr(checks, "undeploy_model", lambda c, n: calls.__setitem__("undeploy", calls["undeploy"] + 1))
+
+    def kj(*args):
+        calls["gets"] += 1
+        return {"metadata": {"name": args[-1]}} if calls["gets"] <= 3 else {}  # present once, then gone
+    monkeypatch.setattr(checks, "kubectl_json", kj)
+    monkeypatch.setattr(checks, "wait_for", lambda desc, fn, timeout, interval=15: fn() or fn())
+    c = checks.Ctx(subject=None, cluster="x", with_llmd=True)
+    c.llmd_model, c.llmd_created = "x", True
+    ok, detail = checks.chk_keda_autoscaling(c)
+    assert not ok and "timed out" in detail and "stuck: nothing" in detail and "endpoint removed" in detail
+    assert calls["undeploy"] == 1 and c.llmd_model is None and not c.llmd_created

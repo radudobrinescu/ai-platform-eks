@@ -538,46 +538,67 @@ class Load:
         self.stop_ev.set()
 
 
+def _keda_scale(c: Ctx, name: str, so_name: str) -> tuple[bool, str]:
+    def so_ready():
+        so = kubectl_json("get", "scaledobject", "-n", NS_INFERENCE, so_name)
+        conds = {cd.get("type"): cd.get("status") for cd in (so.get("status") or {}).get("conditions", [])}
+        return so if conds.get("Ready") == "True" else None
+    so = wait_for(f"ScaledObject {so_name} Ready", so_ready, 300, 15)
+    if (so.get("spec") or {}).get("maxReplicaCount") != KEDA_MAX_REPLICAS:
+        return False, f"ScaledObject maxReplicaCount is {so['spec'].get('maxReplicaCount')}, expected {KEDA_MAX_REPLICAS}"
+    hpa = (so.get("status") or {}).get("hpaName") or f"keda-hpa-{so_name}"
+    kubectl_json("get", "hpa", "-n", NS_INFERENCE, hpa)  # raises if KEDA did not create it
+    before = (llmd_deployment(name).get("spec") or {}).get("replicas")
+    t0 = time.time()
+    with Load(c.litellm_key(), name) as load:
+        def scaled():
+            d = llmd_deployment(name)
+            return d if ((d.get("spec") or {}).get("replicas") or 0) >= KEDA_MAX_REPLICAS else None
+        wait_for(f"KEDA scales {so_name} to {KEDA_MAX_REPLICAS}", scaled, SCALE_DECISION_TIMEOUT, 15)
+        t_scale = time.time() - t0
+        metric = ""
+        for m in (kubectl_json("get", "hpa", "-n", NS_INFERENCE, hpa).get("status") or {}).get("currentMetrics") or []:
+            cur = ((m.get("external") or {}).get("current") or {})
+            metric = metric or cur.get("averageValue") or cur.get("value") or ""
+
+        def all_ready():
+            d = llmd_deployment(name)
+            return d if ((d.get("status") or {}).get("readyReplicas") or 0) >= KEDA_MAX_REPLICAS else None
+        wait_for(f"{KEDA_MAX_REPLICAS} ready replicas of {so_name}", all_ready, c.timeouts["gpu"], 20)
+        t_ready = time.time() - t0
+    return True, (f"{so_name}: replicas {before} -> {KEDA_MAX_REPLICAS} after {t_scale:.0f}s of load "
+                  f"(queue metric per pod {metric or 'n/a'}); {KEDA_MAX_REPLICAS}/{KEDA_MAX_REPLICAS} Ready after "
+                  f"{t_ready:.0f}s (Karpenter added GPU capacity); {load.ok}/{load.sent} requests 200")
+
+
 def chk_keda_autoscaling(c: Ctx):
     name = c.llmd_model
     if not name:
         return False, "no llm-d endpoint was deployed (see llmdendpoint-routed-chat)"
     so_name = f"{name}-llmd"
     try:
-        def so_ready():
-            so = kubectl_json("get", "scaledobject", "-n", NS_INFERENCE, so_name)
-            conds = {cd.get("type"): cd.get("status") for cd in (so.get("status") or {}).get("conditions", [])}
-            return so if conds.get("Ready") == "True" else None
-        so = wait_for(f"ScaledObject {so_name} Ready", so_ready, 300, 15)
-        if (so.get("spec") or {}).get("maxReplicaCount") != KEDA_MAX_REPLICAS:
-            return False, f"ScaledObject maxReplicaCount is {so['spec'].get('maxReplicaCount')}, expected {KEDA_MAX_REPLICAS}"
-        hpa = (so.get("status") or {}).get("hpaName") or f"keda-hpa-{so_name}"
-        kubectl_json("get", "hpa", "-n", NS_INFERENCE, hpa)  # raises if KEDA did not create it
-        before = (llmd_deployment(name).get("spec") or {}).get("replicas")
-        t0 = time.time()
-        with Load(c.litellm_key(), name) as load:
-            def scaled():
-                d = llmd_deployment(name)
-                return d if ((d.get("spec") or {}).get("replicas") or 0) >= KEDA_MAX_REPLICAS else None
-            wait_for(f"KEDA scales {so_name} to {KEDA_MAX_REPLICAS}", scaled, SCALE_DECISION_TIMEOUT, 15)
-            t_scale = time.time() - t0
-            metric = ""
-            for m in (kubectl_json("get", "hpa", "-n", NS_INFERENCE, hpa).get("status") or {}).get("currentMetrics") or []:
-                cur = ((m.get("external") or {}).get("current") or {})
-                metric = metric or cur.get("averageValue") or cur.get("value") or ""
+        ok, detail = _keda_scale(c, name, so_name)
+    except (Exception, subprocess.SubprocessError) as e:  # noqa: BLE001 - still clean up below
+        ok, detail = False, f"{type(e).__name__}: {e}"
+        if "timed out" in detail:
+            detail += f" || stuck: {diagnose()}"
+    created, c.llmd_model, c.llmd_created = c.llmd_created, None, False
+    if not created:
+        return ok, detail
+    # The endpoint, its ScaledObject and its pods must be gone before the next step,
+    # pass or fail. Seen in E2E: teardown started while they still existed, the drain
+    # removed the node running KEDA, and finalizer.keda.sh then held the namespace.
+    undeploy_model(c, name)
 
-            def all_ready():
-                d = llmd_deployment(name)
-                return d if ((d.get("status") or {}).get("readyReplicas") or 0) >= KEDA_MAX_REPLICAS else None
-            wait_for(f"{KEDA_MAX_REPLICAS} ready replicas of {so_name}", all_ready, c.timeouts["gpu"], 20)
-            t_ready = time.time() - t0
-        return True, (f"{so_name}: replicas {before} -> {KEDA_MAX_REPLICAS} after {t_scale:.0f}s of load "
-                      f"(queue metric per pod {metric or 'n/a'}); {KEDA_MAX_REPLICAS}/{KEDA_MAX_REPLICAS} Ready after "
-                      f"{t_ready:.0f}s (Karpenter added GPU capacity); {load.ok}/{load.sent} requests 200")
-    finally:
-        if c.llmd_created:
-            undeploy_model(c, name)
-        c.llmd_model, c.llmd_created = None, False
+    def gone():
+        left = [k for k, n in (("llmdendpoint", name), ("scaledobject", so_name), ("deployment", so_name))
+                if kubectl_json("get", k, "-n", NS_INFERENCE, "--ignore-not-found", n)]
+        return not left or None
+    try:
+        wait_for(f"{name} llm-d endpoint removed", gone, 600, 15)
+    except TimeoutError as e:
+        return False, f"{detail}; cleanup failed: {e}"
+    return ok, detail + "; endpoint removed"
 
 
 # --- SSO / UI logins (gateway domain: the UIs and oauth2-proxy live there) --- #
@@ -644,6 +665,69 @@ CHECKS: list[tuple[str, str, object, object]] = [
 DOMAINS = sorted({d for d, *_ in CHECKS})
 
 
+DIAG_NAMESPACES = ("ai-platform", "inference", "argocd", "keda", "gpu-operator", "kro-system", "kube-system")
+
+
+def diagnose(limit: int = 1800) -> str:
+    """What is stuck right now: Argo CD apps that are not Synced+Healthy (with their
+    unhealthy resources), pods that are not Ready (with the waiting/termination
+    reason and the scheduling message), and the latest Warning events. Added
+    because a converge timeout left nothing to go on once the cluster was gone."""
+    parts = []
+    try:
+        for a in kubectl_json("get", "applications", "-n", NS_ARGOCD).get("items", []):
+            st = a.get("status") or {}
+            sync, health = (st.get("sync") or {}).get("status"), (st.get("health") or {}).get("status")
+            if sync == "Synced" and health == "Healthy":
+                continue
+            bad = [f"{r.get('kind')}/{r.get('name')}={(r.get('health') or {}).get('status')}"
+                   for r in st.get("resources") or [] if (r.get("health") or {}).get("status") not in (None, "Healthy")]
+            msg = ((st.get("operationState") or {}).get("message") or "")[:80]
+            parts.append(f"app {a['metadata']['name']}: {sync}/{health}" + (f" [{', '.join(bad[:4])}]" if bad else "")
+                         + (f" ({msg})" if msg and "successfully" not in msg else ""))
+    except Exception as e:  # noqa: BLE001 - diagnostics must never fail the check further
+        parts.append(f"apps unreadable: {e}")
+    try:
+        for p in kubectl_json("get", "pods", "-A").get("items", []):
+            meta, st = p.get("metadata") or {}, p.get("status") or {}
+            if meta.get("namespace") not in DIAG_NAMESPACES or st.get("phase") == "Succeeded":
+                continue
+            conds = {cd.get("type"): cd for cd in st.get("conditions") or []}
+            if (conds.get("Ready") or {}).get("status") == "True":
+                continue
+            why = []
+            for cs in (st.get("initContainerStatuses") or []) + (st.get("containerStatuses") or []):
+                w, t = (cs.get("state") or {}).get("waiting") or {}, (cs.get("lastState") or {}).get("terminated") or {}
+                if w.get("reason"):
+                    why.append(f"{cs['name']}:{w['reason']}" + (f" {w.get('message', '')[:90]}" if w.get("message") else ""))
+                elif t.get("reason"):
+                    why.append(f"{cs['name']}:last {t['reason']} exit {t.get('exitCode')}")
+            sched = conds.get("PodScheduled") or {}
+            if sched.get("status") == "False":
+                why.append(f"unscheduled: {sched.get('message', '')[:90]}")
+            parts.append(f"pod {meta['namespace']}/{meta['name']} {st.get('phase')}: {'; '.join(why) or 'not Ready'}")
+    except Exception as e:  # noqa: BLE001
+        parts.append(f"pods unreadable: {e}")
+    try:
+        evs = [e for e in kubectl_json("get", "events", "-A", "--field-selector", "type=Warning").get("items", [])
+               if (e.get("involvedObject") or {}).get("namespace") in DIAG_NAMESPACES]
+        evs.sort(key=lambda e: e.get("lastTimestamp") or e.get("eventTime") or "")
+        seen = set()
+        for e in reversed(evs):
+            key = (e.get("reason"), (e.get("involvedObject") or {}).get("name"))
+            if key in seen:
+                continue
+            seen.add(key)
+            parts.append(f"event {key[1]}: {key[0]} {(e.get('message') or '')[:110]}")
+            if len(seen) >= 8:
+                break
+    except Exception as e:  # noqa: BLE001
+        parts.append(f"events unreadable: {e}")
+    text = " | ".join(parts) or "nothing unhealthy found"
+    log(f"[diagnose] {text}")
+    return text if len(text) <= limit else text[:limit] + " ..."
+
+
 def run_check(domain: str, name: str, fn, c: Ctx, prefix: str = "") -> CheckResult:
     log(f"[{domain}] {prefix}{name} ...")
     t0 = time.time()
@@ -651,6 +735,8 @@ def run_check(domain: str, name: str, fn, c: Ctx, prefix: str = "") -> CheckResu
         ok, detail = fn(c)
     except (Exception, subprocess.SubprocessError) as e:  # noqa: BLE001 - a check fails, never aborts the suite
         ok, detail = False, f"{type(e).__name__}: {e}"
+    if not ok and "timed out" in str(detail):
+        detail = f"{detail} || stuck: {diagnose()}"
     r = CheckResult(domain, prefix + name, bool(ok), str(detail), time.time() - t0)
     log(f"[{domain}] {r.name}: {'PASS' if ok else 'FAIL'} ({r.seconds:.0f}s) {redact(r.detail)}")
     return r
