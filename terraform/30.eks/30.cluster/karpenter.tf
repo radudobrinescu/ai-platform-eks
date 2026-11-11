@@ -129,6 +129,49 @@ module "karpenter" {
 ################################################################################
 # Karpenter Helm chart deployment
 ################################################################################
+locals {
+  # One pin for the controller and its CRDs.
+  karpenter_chart_version = "1.15.1"
+}
+
+# Karpenter's CRDs, rendered from the same chart version and applied BEFORE the
+# chart. Helm installs a chart's crds/ only on the first install and never
+# updates them, so without this an upgraded cluster keeps the CRDs it was born
+# with (a v1.14-style CRD change would break the controller). Server-side apply
+# takes over the Helm-installed CRDs in place; apply_only means Terraform never
+# deletes a CRD (that would delete every NodePool/NodeClaim); they go with the
+# cluster on `down`.
+data "helm_template" "karpenter_crds" {
+  count = local.capabilities.autoscaling ? 1 : 0
+
+  name         = "karpenter"
+  namespace    = "kube-system"
+  repository   = "oci://public.ecr.aws/karpenter"
+  chart        = "karpenter"
+  version      = local.karpenter_chart_version
+  include_crds = true
+  set          = [{ name = "settings.clusterName", value = module.eks.cluster_name }]
+}
+
+resource "kubectl_manifest" "karpenter_crds" {
+  for_each = local.capabilities.autoscaling ? local.karpenter_crd_docs : {}
+
+  yaml_body         = each.value
+  server_side_apply = true
+  force_conflicts   = true
+  apply_only        = true
+
+  depends_on = [module.eks]
+}
+
+locals {
+  karpenter_crd_docs = local.capabilities.autoscaling ? {
+    for d in flatten([for f in data.helm_template.karpenter_crds[0].crds : split("\n---", f)]) :
+    yamldecode(d).metadata.name => d
+    if length(regexall("(?m)^kind:\\s*CustomResourceDefinition", d)) > 0
+  } : {}
+}
+
 resource "helm_release" "karpenter" {
   count = local.capabilities.autoscaling ? 1 : 0
 
@@ -136,17 +179,12 @@ resource "helm_release" "karpenter" {
   name       = "karpenter"
   repository = "oci://public.ecr.aws/karpenter"
   chart      = "karpenter"
-  # NOTE (CRDs): Helm does NOT upgrade CRDs bundled under the chart's `crds/`
-  # directory on `helm upgrade` — it only installs them on first `helm install`.
-  # Karpenter v1.14 moves the CapacityBuffer CRD to apiVersion v1beta1, so an
-  # in-place upgrade of a LIVE cluster requires the CRDs to be applied first
-  # (e.g. via the karpenter-crd chart / kubectl apply) BEFORE this release is
-  # upgraded. This only affects future/new clusters here, where the CRDs are
-  # installed fresh on the initial `helm install`, so no manual step is needed.
+  # CRDs: applied from the same chart version by kubectl_manifest.karpenter_crds
+  # above, before this release (Helm itself never upgrades a chart's crds/).
   # NOTE (DRA): Dynamic Resource Allocation is enabled by default in v1.14.
   # `IGNORE_DRA_REQUESTS` is the escape hatch to opt back out. It is harmless
   # for this cluster (no DRA-based scheduling in use), so left at the default.
-  version = "1.15.1"
+  version = local.karpenter_chart_version
   wait    = false
 
   values = [
@@ -177,7 +215,8 @@ resource "helm_release" "karpenter" {
   ]
 
   depends_on = [
-    module.karpenter
+    module.karpenter,
+    kubectl_manifest.karpenter_crds,
   ]
 }
 ################################################################################
