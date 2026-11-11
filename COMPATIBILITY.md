@@ -10,15 +10,30 @@ Ported from v1 (`feat/upgrade-lifecycle`, COMPATIBILITY.md). v1 ran Renovate
 against its own branch; v2 targets `main` and ships releases (see "Releases"
 below).
 
-## Anchors
+## Anchors, and what needs a tick
 
 Nearly every coupling collapses onto two anchors; everything else derives from
-them. **Anchor bumps are deliberate**: both need a tick on the Dependency
-Dashboard before Renovate opens a PR. The Kubernetes version is read from
-endoflife.date (`amazon-eks`) and lands on its own branch
-(`renovate/eks-kubernetes`); take it one minor per release, in a release with
-nothing else major, after the components it gates already support the new
-minor (see "Kubernetes upgrade" below).
+them. The rule for a Dependency Dashboard tick is narrower than "anchor": a
+tick is required only where the E2E gate cannot judge the change, because it
+affects what users run or cannot be undone:
+
+| Needs a tick | Why E2E is not enough | Branch |
+|---|---|---|
+| every **major** | breaking changes by definition; often code changes | `renovate/major-<group>` |
+| **EKS Kubernetes version** | one-way; replaces every node; gates the components below | `renovate/eks-kubernetes` |
+| every **vLLM** change | it runs every user's model; under 0.x a minor can drop architectures or flags users pass in `extraArgs`; E2E serves one small model | `renovate/vllm` |
+| **kro** and **llm-d router** minors | 0.x APIs users write manifests against (`VLLMEndpoint`, `LLMDEndpoint`) or route through | `renovate/kro-minor`, `renovate/llm-d-router-minor` |
+
+Everything else, including Karpenter, Argo CD, Prometheus, the GPU operator and
+kro/router patches, flows with its group: E2E exercises each of them on real
+clusters (Karpenter provisions GPU nodes and drains them; Argo CD converges on
+both profiles and upgrades in place; KEDA scales on Prometheus; DCGM metrics
+flow). Each ticked update has its own branch, so a pending tick never holds
+back the rest of its group, and closing its PR means "not now"
+(`recreateWhen: always`). The Kubernetes version is read from endoflife.date
+(`amazon-eks`); take it one minor per release, in a release with nothing else
+major, after the components it gates already support the new minor (see
+"Kubernetes upgrade" below).
 
 | Anchor | Where it is set on `main` | What it gates |
 |---|---|---|
@@ -160,12 +175,11 @@ profiles) pending (Unit 1b). Pins: see the left column above, plus kro chart
    does not contain the newest release tag (Renovate did not run, or someone
    pushed to the branch). Their PRs are never merged, and never closed: the
    release branch takes them in.
-2. Majors and anchors (vLLM, Karpenter, Argo CD, kro) exist as PRs only after a
-   tick on the Dependency Dashboard; read the coupling notes above before
-   ticking one. An open major PR therefore means "approved for the next
-   release". To take that back, close the PR: Renovate offers it again on the
-   dashboard (`recreateWhen: always`). The label `hold` keeps any PR out of the
-   next release without closing it.
+2. Updates that need a tick (see "Anchors, and what needs a tick") exist as
+   PRs only after a tick on the Dependency Dashboard; read the coupling notes
+   above first. An open PR therefore means "approved for the next release".
+   To take that back, close the PR: Renovate offers it again on the dashboard.
+   The label `hold` keeps any PR out of the next release without closing it.
 3. Cut a release: `python3 tools/release.py --repo <product checkout> cut vYYYY.MM.N renovate/infra renovate/inference ...`;
    cherry-pick coupled fixes by hand onto `release/<version>`.
 4. `python3 tools/release.py --repo <checkout> notes vYYYY.MM.N --base <previous tag or main>`

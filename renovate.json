@@ -370,16 +370,43 @@
       "recreateWhen": "always"
     },
     {
-      "description": "Anchors: any change (even a patch) is reviewed deliberately, so never automerge and always surface on the dashboard.",
+      "description": "Ticks are for changes E2E cannot judge: what users' own workloads run on, and one-way steps. vLLM runs every user's model; under 0.x each minor can drop architectures or change flags users set in extraArgs, and E2E serves one small model. Every vLLM update needs a dashboard tick and gets its own branch, so it never holds back the rest of the inference group.",
       "matchDepNames": [
-        "vllm/vllm-openai",
-        "karpenter",
-        "argo-cd",
+        "vllm/vllm-openai"
+      ],
+      "groupName": "vllm",
+      "groupSlug": "vllm",
+      "dependencyDashboardApproval": true,
+      "recreateWhen": "always",
+      "automerge": false
+    },
+    {
+      "description": "kro's ResourceGraphDefinitions (VLLMEndpoint, LLMDEndpoint) are the API users write model manifests against, and the llm-d router routes their llm-d traffic. Both are 0.x, where a minor may break that contract: minors need a tick and get their own branch; patches flow with their group.",
+      "matchDepNames": [
         "kro"
       ],
-      "automerge": false,
+      "matchUpdateTypes": [
+        "minor"
+      ],
+      "groupName": "kro minor",
+      "groupSlug": "kro-minor",
       "dependencyDashboardApproval": true,
-      "recreateWhen": "always"
+      "recreateWhen": "always",
+      "automerge": false
+    },
+    {
+      "description": "llm-d router: same rule as kro (0.x; a minor can change how users' llm-d traffic is routed). Minors need a tick and get their own branch; patches flow with the inference group.",
+      "matchDepNames": [
+        "llm-d-router-standalone"
+      ],
+      "matchUpdateTypes": [
+        "minor"
+      ],
+      "groupName": "llm-d router minor",
+      "groupSlug": "llm-d-router-minor",
+      "dependencyDashboardApproval": true,
+      "recreateWhen": "always",
+      "automerge": false
     },
     {
       "description": "The github-actions manager also reads setup-terraform's terraform_version (depName 'terraform'). The regex manager above owns that pin (depName hashicorp/terraform, same as the terraform manager), so disable the built-in copy to avoid two PRs for one line.",

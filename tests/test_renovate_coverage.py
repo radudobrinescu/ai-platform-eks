@@ -143,7 +143,8 @@ def extracted_by_file(cfg, root):
 class TestPolicy:
     def test_domains(self):
         groups = {r.get("groupName") for r in _renovate()["packageRules"] if r.get("groupName")}
-        assert groups == {"infra", "inference", "gateway", "gitops", "tooling", "eks-kubernetes"}, groups
+        assert groups == {"infra", "inference", "gateway", "gitops", "tooling", "eks-kubernetes",
+                          "vllm", "kro minor", "llm-d router minor"}, groups
 
     def test_targets_main_without_a_release_age(self):
         """No minimumReleaseAge: the E2E gate judges every version on real clusters,
@@ -156,16 +157,24 @@ class TestPolicy:
         assert not any("minimumReleaseAge" in r or "minimumReleaseAgeBehaviour" in r for r in cfg["packageRules"])
         assert "security" in cfg["vulnerabilityAlerts"]["labels"]
 
-    def test_majors_and_anchors_need_one_thing_only_a_dashboard_tick(self):
-        """One decision mechanism: a major or anchor update exists as a PR only after
-        a tick on the Dependency Dashboard, so the release robot can treat every open
-        Renovate PR as approved. Closing such a PR must mean 'not now', not 'never'."""
+    def test_ticks_only_where_e2e_cannot_judge(self):
+        """A dashboard tick is required for: every major; the EKS version (one-way);
+        every vLLM change (it runs users' models); kro and llm-d router minors
+        (0.x APIs users write against). Nothing else: E2E judges Karpenter, Argo CD,
+        Prometheus, the GPU operator and the rest. Each ticked update gets its own
+        branch, so it never holds back the group it would otherwise sit in, and
+        closing its PR means 'not now' (recreateWhen: always)."""
         rules = _renovate()["packageRules"]
-        majors = [r for r in rules if r.get("matchUpdateTypes") == ["major"]]
-        anchors = [r for r in rules if "vllm/vllm-openai" in (r.get("matchDepNames") or []) and r.get("dependencyDashboardApproval")]
-        assert majors and anchors
-        for r in majors + anchors:
-            assert r["dependencyDashboardApproval"] is True and r["recreateWhen"] == "always", r["description"]
+        gated = [r for r in rules if r.get("dependencyDashboardApproval")]
+        got = {(tuple(r.get("matchDepNames") or ()), tuple(r.get("matchUpdateTypes") or ())) for r in gated}
+        assert got == {((), ("major",)), (("vllm/vllm-openai",), ()), (("kro",), ("minor",)),
+                       (("llm-d-router-standalone",), ("minor",)), (("amazon-eks",), ())}, got
+        for r in gated:
+            assert r["recreateWhen"] == "always", r["description"][:60]
+            if r.get("matchDepNames"):
+                assert r.get("groupSlug"), f"{r['matchDepNames']}: a ticked update needs its own branch"
+        for dep in ("karpenter", "argo-cd", "prom/prometheus", "gpu-operator", "keda"):
+            assert not any(dep in (r.get("matchDepNames") or []) for r in gated), f"{dep} should flow without a tick"
 
     def test_eks_kubernetes_anchor_is_watched_but_never_proposed_unasked(self):
         """The EKS version follows endoflife.date, so a new minor shows up on the
@@ -211,13 +220,6 @@ class TestPolicy:
     def test_nothing_automerges(self):
         text = json.dumps(_renovate())
         assert '"automerge": true' not in text
-
-    def test_majors_and_anchors_need_dashboard_approval(self):
-        rules = _renovate()["packageRules"]
-        assert any(r.get("matchUpdateTypes") == ["major"] and r.get("dependencyDashboardApproval") for r in rules)
-        anchors = next(r for r in rules if "vllm/vllm-openai" in r.get("matchDepNames", [])
-                       and r.get("dependencyDashboardApproval"))
-        assert {"karpenter", "argo-cd", "kro"} <= set(anchors["matchDepNames"])
 
     def test_no_annotation_manager(self):
         for cm in _renovate()["customManagers"]:
