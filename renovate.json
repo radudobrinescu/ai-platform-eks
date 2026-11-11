@@ -147,12 +147,12 @@
     },
     {
       "customType": "regex",
-      "description": "AWS Load Balancer Controller chart: chart_version = \"<v>\" inside the aws_load_balancer_controller block of the blueprints addons module.",
+      "description": "AWS Load Balancer Controller chart: lbc_chart_version = \"<v>\" in terraform/30.eks/35.addons/main.tf (one pin for the chart and its CRDs). The older shape, chart_version = \"<v>\" inside the aws_load_balancer_controller block, is still matched for releases cut before that change.",
       "managerFilePatterns": [
         "/^terraform/30\\.eks/35\\.addons/main\\.tf$/"
       ],
       "matchStrings": [
-        "aws_load_balancer_controller\\s*=\\s*\\{[^}]*?\\bchart_version\\s*=\\s*\"(?<currentValue>[0-9][^\"\\s]*)\""
+        "(?:\\blbc_chart_version|aws_load_balancer_controller\\s*=\\s*\\{[^}]*?\\bchart_version)\\s*=\\s*\"(?<currentValue>[0-9][^\"\\s]*)\""
       ],
       "depNameTemplate": "aws-load-balancer-controller",
       "registryUrlTemplate": "https://aws.github.io/eks-charts",
@@ -223,9 +223,30 @@
       "depNameTemplate": "amazon-eks",
       "datasourceTemplate": "endoflife-date",
       "versioningTemplate": "loose"
+    },
+    {
+      "customType": "regex",
+      "description": "Karpenter chart: karpenter_chart_version = \"<v>\" in terraform/30.eks/30.cluster/karpenter.tf, one pin for the chart and its CRDs (the helm_release reads it from the local, which the built-in terraform manager cannot see).",
+      "managerFilePatterns": [
+        "/^terraform/30\\.eks/30\\.cluster/karpenter\\.tf$/"
+      ],
+      "matchStrings": [
+        "\\bkarpenter_chart_version\\s*=\\s*\"(?<currentValue>[0-9][^\"\\s]*)\""
+      ],
+      "depNameTemplate": "karpenter",
+      "packageNameTemplate": "public.ecr.aws/karpenter/karpenter",
+      "datasourceTemplate": "docker"
     }
   ],
   "packageRules": [
+    {
+      "description": "The built-in terraform manager also reports a helm_release whose version is a reference such as ${local.karpenter_chart_version}; the literal behind it is read by a regex manager. Skip the reference so it is never looked up or rewritten.",
+      "matchManagers": [
+        "terraform"
+      ],
+      "matchCurrentValue": "/^\\$\\{/",
+      "enabled": false
+    },
     {
       "description": "Default: every Terraform provider/module is infra (control-plane adjacent). Later rules override for specific deps.",
       "matchManagers": [

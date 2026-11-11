@@ -45,6 +45,7 @@ CUSTOM_INVENTORY = [
     ("platform/services/cluster-dashboard/scripts/event_watcher.py", "psycopg"),
     ("terraform/30.eks/30.cluster/locals.tf", "vllm/vllm-openai"),
     ("terraform/30.eks/35.addons/main.tf", "aws-load-balancer-controller"),
+    ("terraform/30.eks/30.cluster/karpenter.tf", "karpenter"),
     (".github/workflows/ci.yaml", "hashicorp/terraform"),
     (".github/workflows/ci.yaml", "ruff"),
     (".github/workflows/ci.yaml", "pytest"),
@@ -193,6 +194,14 @@ class TestPolicy:
         assert rules[("alpine/k8s",)] == f"<1.{minor + 2}", "raise the alpine/k8s ceiling with the EKS anchor"
         # kubernetes-client major N tracks Kubernetes 1.N; ceiling = N+1 (one minor above) exclusive -> < minor+2
         assert rules[("kubernetes",)] == f"<{minor + 2}", "raise the kubernetes-client ceiling with the EKS anchor"
+
+    def test_interpolated_terraform_versions_are_not_looked_up(self):
+        """karpenter.tf: version = local.karpenter_chart_version. The built-in
+        terraform manager reports that reference as a version; only the regex
+        manager on the literal may propose updates."""
+        rules = [r for r in _renovate()["packageRules"] if r.get("matchManagers") == ["terraform"]
+                 and r.get("enabled") is False]
+        assert any(re.match(r["matchCurrentValue"].strip("/"), "${local.karpenter_chart_version}") for r in rules)
 
     def test_group_branches_are_rebased_when_main_moves(self):
         """Group PRs are never merged; release branches merge them onto main, so
