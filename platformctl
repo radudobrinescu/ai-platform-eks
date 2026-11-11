@@ -223,6 +223,10 @@ _delete_cluster_albs() {
 #   - elbv2.k8s.aws/resources on Ingresses + TargetGroupBindings (AWS LB Controller)
 #   - litellm.ai-platform/deregister on the kro serving/team CRs and on
 #     BedrockModels (litellm-sync)
+#   - finalizer.keda.sh on ScaledObjects/ScaledJobs (KEDA). KEDA runs on
+#     Karpenter nodes, so once the drain removes them nothing can release a
+#     ScaledObject deleted later, and the llm-d model's namespace never
+#     finishes deleting (seen in E2E: cluster left ACTIVE, `down` exit 1).
 # Safe: every one of these objects is being destroyed anyway.
 # Pods already being deleted on a node whose kubelet is gone never finish:
 # nothing confirms the deletion, so their namespace stays Terminating and
@@ -249,7 +253,7 @@ _force_delete_stranded_pods() {
 
 _strip_teardown_finalizers() {
   local env="$1" kind r
-  for kind in ingress targetgroupbindings.elbv2.k8s.aws vllmendpoints.kro.run llmdendpoints.kro.run llmddisaggendpoints.kro.run aiteams.kro.run bedrockmodels.bedrock.ai-platform; do
+  for kind in ingress targetgroupbindings.elbv2.k8s.aws vllmendpoints.kro.run llmdendpoints.kro.run llmddisaggendpoints.kro.run aiteams.kro.run bedrockmodels.bedrock.ai-platform scaledobjects.keda.sh scaledjobs.keda.sh; do
     for r in $(kubectl --context "$env" get "$kind" -A \
         -o jsonpath='{range .items[*]}{.metadata.namespace}/{.metadata.name}{"\n"}{end}' 2>/dev/null); do
       [ -n "$r" ] || continue
