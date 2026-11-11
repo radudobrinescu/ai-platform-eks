@@ -47,8 +47,8 @@ minor (see "Kubernetes upgrade" below).
 
 | Domain | Anchor | Members | Acceptance test |
 |---|---|---|---|
-| `infra` | k8s version | Karpenter, LBC, KEDA, Terraform providers/modules, `kubernetes` pip, `alpine/k8s` | cluster + all addons healthy; Karpenter provisions a node; ALB provisioned |
-| `inference` | vLLM | vLLM, gpu-operator, GIE CRDs, llm-d router, s5cmd, prometheus | a small model serves a completion on a GPU via `VLLMEndpoint`; DCGM metrics flow; `LLMDEndpoint` routes |
+| `infra` | k8s version | Karpenter, LBC, KEDA, Terraform providers/modules, `kubernetes` pip, `alpine/k8s` | cluster + all addons healthy; Karpenter provisions a node; ALB provisioned; KEDA scales an llm-d pool (inference check) |
+| `inference` | vLLM | vLLM, gpu-operator, GIE CRDs, llm-d router, s5cmd, prometheus | a small model serves a completion on a GPU via `VLLMEndpoint`; DCGM metrics flow; `LLMDEndpoint` routes; under load KEDA scales the llm-d pool 1 -> 2 on vLLM queue depth and Karpenter brings the second GPU replica up |
 | `gateway` | LiteLLM | LiteLLM, litellm-sync libs, Postgres, Langfuse, Open WebUI, oauth2-proxy, python base image, aws-cli, curl | LiteLLM boots + migrates DB; litellm-sync registers/deregisters; a chat lands a Langfuse trace; a `BedrockModel` answers on `/v1`; every seed user signs in via Cognito SSO to each UI with the right role |
 | `gitops` | Argo CD / kro | argo-cd chart, kro chart (self-managed path) | ApplicationSets render; all apps Synced/Healthy; kro expands a `VLLMEndpoint` |
 | `tooling` | none | GitHub Actions, Terraform CLI, ruff, pytest, kubeconform, yamllint | `main`'s `ci.yaml` green |

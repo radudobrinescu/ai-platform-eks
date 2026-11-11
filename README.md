@@ -9,7 +9,7 @@ here.
 |---|---|
 | `renovate.json` | Renovate config (read from the default branch), targets `main` only |
 | `COMPATIBILITY.md` | anchors, domains, coupling notes, validated sets, release procedure |
-| `harness/` | E2E harness: `e2e.py` (entry), `checks.py` (21 smoke checks), `sso.py`, `survival.py`, `tfvars.py`, `versions.py`, `subject.py`, `common.py` |
+| `harness/` | E2E harness: `e2e.py` (entry), `checks.py` (22 smoke checks), `sso.py`, `survival.py`, `tfvars.py`, `versions.py`, `subject.py`, `common.py` |
 | `tools/release.py` | cut a release branch; write release notes, manifest, validated-versions row |
 | `tools/release_candidate.py` | decide whether and what to release this week (used by `release-candidate.yaml`) |
 | `tools/shellcheck_workflows.py` | shellcheck every workflow `run:` step |

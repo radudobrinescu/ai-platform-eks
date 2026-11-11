@@ -64,9 +64,9 @@ on:
         type: boolean
         default: false
       with_llmd:
-        description: "Also exercise the llm-d tier (second GPU node)"
+        description: "Exercise the llm-d tier and KEDA autoscaling (adds GPU nodes, ~20 min per job)"
         type: boolean
-        default: false
+        default: true
 
 permissions:
   contents: read

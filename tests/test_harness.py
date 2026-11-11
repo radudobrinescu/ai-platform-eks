@@ -36,9 +36,9 @@ class TestRegistry:
         assert want, "could not parse domains from COMPATIBILITY.md"
         assert want <= set(checks.DOMAINS), f"domains without a check: {want - set(checks.DOMAINS)}"
 
-    def test_twenty_one_unique_checks(self):
+    def test_twenty_two_unique_checks(self):
         names = [n for _, n, _, _ in checks.CHECKS]
-        assert len(names) == 21 and len(set(names)) == 21
+        assert len(names) == 22 and len(set(names)) == 22
         assert all(callable(fn) for _, _, fn, _ in checks.CHECKS)
 
     def test_gpu_check_runs_before_its_dependents(self):
@@ -330,3 +330,71 @@ class TestLiteLLMSettled:
         assert not checks.litellm_settled()
         self._with(monkeypatch, self._dep(), [{"metadata": {"deletionTimestamp": "x"}}])
         assert not checks.litellm_settled()
+
+
+# --------------------------------------------------------------------------- #
+# KEDA autoscaling check: the model-file edit and the wiring                  #
+# --------------------------------------------------------------------------- #
+GENERATED_LLMD = """apiVersion: kro.run/v1alpha1
+kind: LLMDEndpoint
+metadata:
+  name: qwen2-5-0-5b-instruct
+  namespace: inference
+spec:
+  model: "Qwen/Qwen2.5-0.5B-Instruct"
+  gpuCount: 1
+  maxModelLen: 2048
+  minReplicas: 1
+  maxReplicas: 3
+  targetQueueDepth: 20
+  routingProfile: balanced   # EPP KV/prefix/load-aware weights for this workload
+"""
+
+
+def test_tune_llmd_sets_the_keda_test_knobs_and_keeps_the_rest():
+    import yaml
+    import checks
+    out = checks.tune_llmd_for_autoscale(GENERATED_LLMD)
+    spec = yaml.safe_load(out)["spec"]
+    assert spec["minReplicas"] == 1
+    assert spec["maxReplicas"] == checks.KEDA_MAX_REPLICAS == 2
+    assert spec["targetQueueDepth"] == checks.KEDA_TARGET_QUEUE_DEPTH
+    assert spec["extraArgs"] == ["--max-num-seqs", str(checks.KEDA_MAX_NUM_SEQS)]
+    assert spec["routingProfile"] == "balanced" and spec["maxModelLen"] == 2048
+    # enough parallel streams to keep a queue above the target on one replica
+    assert checks.LOAD_STREAMS - checks.KEDA_MAX_NUM_SEQS > checks.KEDA_TARGET_QUEUE_DEPTH * checks.KEDA_MAX_REPLICAS
+
+
+def test_tune_llmd_adds_missing_keys_and_refuses_existing_extra_args():
+    import pytest
+    import yaml
+    import checks
+    bare = "\n".join(ln for ln in GENERATED_LLMD.splitlines() if "Replicas" not in ln and "QueueDepth" not in ln)
+    spec = yaml.safe_load(checks.tune_llmd_for_autoscale(bare))["spec"]
+    assert spec["maxReplicas"] == 2 and spec["targetQueueDepth"] == 2
+    with pytest.raises(ValueError):
+        checks.tune_llmd_for_autoscale(GENERATED_LLMD + '  extraArgs: ["--foo"]\n')
+
+
+def test_keda_check_runs_after_the_llmd_check_with_the_same_gate():
+    import checks
+    names = [n for _d, n, _f, _w in checks.CHECKS]
+    i, j = names.index("llmdendpoint-routed-chat"), names.index("keda-autoscales-llmd-on-queue-depth")
+    assert j == i + 1
+    assert checks.CHECKS[j][3] is checks.CHECKS[i][3] is checks._only_llmd
+
+
+def test_keda_check_reports_a_missing_llmd_endpoint_instead_of_crashing():
+    import checks
+    c = checks.Ctx(subject=None, cluster="x", with_llmd=True)
+    ok, detail = checks.chk_keda_autoscaling(c)
+    assert not ok and "no llm-d endpoint" in detail
+
+
+def test_e2e_runs_the_llmd_tier_and_keda_by_default():
+    import os
+    import yaml
+    root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    wf = yaml.safe_load(open(os.path.join(root, ".github/workflows/e2e.yaml"), encoding="utf-8"))
+    on = wf[True] if True in wf else wf["on"]
+    assert on["workflow_dispatch"]["inputs"]["with_llmd"]["default"] is True

@@ -13,7 +13,8 @@ Domains and checks (COMPATIBILITY.md "Upgrade domains"):
   gateway    LiteLLM ready; a BedrockModel enrolls, answers, lands a Langfuse
              trace, deregisters on undeploy; dashboard; 8 SSO checks
   inference  a VLLMEndpoint becomes Ready on a GPU node and answers; DCGM
-             metrics; (--with-llmd) an LLMDEndpoint routes a request
+             metrics; (--with-llmd) an LLMDEndpoint routes a request and KEDA scales it
+             1 -> 2 under load (Karpenter adds the GPU capacity)
 
 A check never aborts the suite: an exception is recorded as a failure.
 """
@@ -85,6 +86,9 @@ class Ctx:
     run_start: datetime = field(default_factory=lambda: datetime.now(timezone.utc))
     master_key: str | None = None
     gpu_node_seen: bool = False
+    # Set by the llm-d check, used and cleaned up by the KEDA check after it.
+    llmd_model: str | None = None
+    llmd_created: bool = False
     _sso: object = None
 
     @property
@@ -433,20 +437,147 @@ def chk_dashboard_health(c: Ctx):
     return ok, f"/data.json HTTP {code}" + ("" if ok else f": {body[:80]}")
 
 
+# KEDA autoscaling (see platform/config/kro/llmd-endpoint.yaml, ScaledObject):
+# the pool scales on sum(vllm:num_requests_waiting) / targetQueueDepth. A 0.5B
+# model on a GPU never queues under a light load, so the test edits the model
+# file the way a user would: maxReplicas 2, targetQueueDepth 2, and vLLM limited
+# to 2 concurrent sequences, so LOAD_STREAMS parallel requests keep ~10 waiting.
+KEDA_MAX_REPLICAS = 2
+KEDA_TARGET_QUEUE_DEPTH = 2
+KEDA_MAX_NUM_SEQS = 2
+LOAD_STREAMS = 12
+SCALE_DECISION_TIMEOUT = 600   # KEDA polls every 30 s, HPA scale-up window 30 s, metric over 1 m
+
+
+def tune_llmd_for_autoscale(text: str) -> str:
+    """Return the LLMDEndpoint YAML with the KEDA test settings, edited line by
+    line so the file still reads like the generated one."""
+    out, seen = [], set()
+    for line in text.splitlines():
+        m = re.match(r"^  (maxReplicas|targetQueueDepth):", line)
+        if m:
+            key = m.group(1)
+            seen.add(key)
+            val = KEDA_MAX_REPLICAS if key == "maxReplicas" else KEDA_TARGET_QUEUE_DEPTH
+            line = f"  {key}: {val}   # E2E: KEDA autoscaling check"
+        if re.match(r"^  extraArgs:", line):
+            raise ValueError("model file already sets extraArgs; refusing to overwrite them")
+        out.append(line)
+    for key, val in (("maxReplicas", KEDA_MAX_REPLICAS), ("targetQueueDepth", KEDA_TARGET_QUEUE_DEPTH)):
+        if key not in seen:
+            out.append(f"  {key}: {val}   # E2E: KEDA autoscaling check")
+    out.append(f'  extraArgs: ["--max-num-seqs", "{KEDA_MAX_NUM_SEQS}"]   # E2E: make a small load queue')
+    return "\n".join(out) + "\n"
+
+
+def push_model_edit(c: Ctx, rel: str, message: str) -> None:
+    """Commit one model file and push it to the env branch, then ask Argo CD to
+    sync the scale-models app at that commit (what `platformctl new-model` does)."""
+    c.subject.git("add", "--", rel)
+    c.subject.git("commit", "--quiet", "-m", message, "--", rel)
+    c.subject.git("push", "--quiet")
+    sha = c.subject.head()
+    op = {"operation": {"initiatedBy": {"username": "e2e"}, "sync": {"prune": True, "revision": sha}}}
+    sh(["kubectl", "patch", "application", "scale-models", "-n", NS_ARGOCD, "--type", "merge",
+        "-p", json.dumps(op)], check=False)
+
+
+def llmd_deployment(name: str) -> dict:
+    return kubectl_json("get", "deployment", "-n", NS_INFERENCE, f"{name}-llmd")
+
+
 def chk_llmd_roundtrip(c: Ctx):
     name = model_name_from_id(GPU_SMOKE_MODEL)
     if c.subject.find_model_file(name):
         return False, f"a model named {name} is already deployed; cannot add the llm-d copy under the same name"
-    created = deploy_model(c, name, GPU_SMOKE_MODEL, "--tier", "llm-d", "--users", "4", "--seq", "2048",
-                           under="workloads/scale-models")
+    c.llmd_created = deploy_model(c, name, GPU_SMOKE_MODEL, "--tier", "llm-d", "--users", "4", "--seq", "2048",
+                                  under="workloads/scale-models")
+    c.llmd_model = name
+    rel = c.subject.find_model_file(name, "workloads/scale-models")
+    with open(c.subject.path(rel), encoding="utf-8") as fh:
+        tuned = tune_llmd_for_autoscale(fh.read())
+    with open(c.subject.path(rel), "w", encoding="utf-8") as fh:
+        fh.write(tuned)
+    push_model_edit(c, rel, f"e2e: tune {name} for the KEDA autoscaling check")
+    wait_endpoint_ready(c, "llmdendpoint", name)
+    wait_alias(c, name, c.timeouts["bedrock"])
+    code, _body = chat_via_service(c.litellm_key(), name)
+    return code == 200, f"{name} routed via llm-d; chat HTTP {code}"
+
+
+class Load:
+    """LOAD_STREAMS threads, each sending long completions back to back through
+    its own port-forward to svc/litellm, until stop()."""
+
+    def __init__(self, key: str, model: str):
+        import threading
+        self.key, self.model, self.stop_ev = key, model, threading.Event()
+        self.sent = self.ok = 0
+        self.threads = [threading.Thread(target=self._run, daemon=True) for _ in range(LOAD_STREAMS)]
+
+    def _run(self):
+        body = {"model": self.model, "max_tokens": 512, "temperature": 0.8,
+                "messages": [{"role": "user", "content": "Write a long story about a lighthouse keeper."}]}
+        while not self.stop_ev.is_set():
+            try:
+                with PortForward(NS_PLATFORM, "svc/litellm", 4000) as pf:
+                    while not self.stop_ev.is_set():
+                        self.sent += 1
+                        code, _ = http("POST", f"{pf.base}/v1/chat/completions", body=body, timeout=300,
+                                       headers={"Authorization": f"Bearer {self.key}"})
+                        self.ok += code == 200
+            except Exception:  # noqa: BLE001 - port-forward dropped: reopen and keep loading
+                time.sleep(2)
+
+    def __enter__(self):
+        for t in self.threads:
+            t.start()
+        return self
+
+    def __exit__(self, *exc):
+        self.stop_ev.set()
+
+
+def chk_keda_autoscaling(c: Ctx):
+    name = c.llmd_model
+    if not name:
+        return False, "no llm-d endpoint was deployed (see llmdendpoint-routed-chat)"
+    so_name = f"{name}-llmd"
     try:
-        wait_endpoint_ready(c, "llmdendpoint", name)
-        wait_alias(c, name, c.timeouts["bedrock"])
-        code, _body = chat_via_service(c.litellm_key(), name)
-        return code == 200, f"{name} routed via llm-d; chat HTTP {code}"
+        def so_ready():
+            so = kubectl_json("get", "scaledobject", "-n", NS_INFERENCE, so_name)
+            conds = {cd.get("type"): cd.get("status") for cd in (so.get("status") or {}).get("conditions", [])}
+            return so if conds.get("Ready") == "True" else None
+        so = wait_for(f"ScaledObject {so_name} Ready", so_ready, 300, 15)
+        if (so.get("spec") or {}).get("maxReplicaCount") != KEDA_MAX_REPLICAS:
+            return False, f"ScaledObject maxReplicaCount is {so['spec'].get('maxReplicaCount')}, expected {KEDA_MAX_REPLICAS}"
+        hpa = (so.get("status") or {}).get("hpaName") or f"keda-hpa-{so_name}"
+        kubectl_json("get", "hpa", "-n", NS_INFERENCE, hpa)  # raises if KEDA did not create it
+        before = (llmd_deployment(name).get("spec") or {}).get("replicas")
+        t0 = time.time()
+        with Load(c.litellm_key(), name) as load:
+            def scaled():
+                d = llmd_deployment(name)
+                return d if ((d.get("spec") or {}).get("replicas") or 0) >= KEDA_MAX_REPLICAS else None
+            wait_for(f"KEDA scales {so_name} to {KEDA_MAX_REPLICAS}", scaled, SCALE_DECISION_TIMEOUT, 15)
+            t_scale = time.time() - t0
+            metric = ""
+            for m in (kubectl_json("get", "hpa", "-n", NS_INFERENCE, hpa).get("status") or {}).get("currentMetrics") or []:
+                cur = ((m.get("external") or {}).get("current") or {})
+                metric = metric or cur.get("averageValue") or cur.get("value") or ""
+
+            def all_ready():
+                d = llmd_deployment(name)
+                return d if ((d.get("status") or {}).get("readyReplicas") or 0) >= KEDA_MAX_REPLICAS else None
+            wait_for(f"{KEDA_MAX_REPLICAS} ready replicas of {so_name}", all_ready, c.timeouts["gpu"], 20)
+            t_ready = time.time() - t0
+        return True, (f"{so_name}: replicas {before} -> {KEDA_MAX_REPLICAS} after {t_scale:.0f}s of load "
+                      f"(queue metric per pod {metric or 'n/a'}); {KEDA_MAX_REPLICAS}/{KEDA_MAX_REPLICAS} Ready after "
+                      f"{t_ready:.0f}s (Karpenter added GPU capacity); {load.ok}/{load.sent} requests 200")
     finally:
-        if created:
+        if c.llmd_created:
             undeploy_model(c, name)
+        c.llmd_model, c.llmd_created = None, False
 
 
 # --- SSO / UI logins (gateway domain: the UIs and oauth2-proxy live there) --- #
@@ -507,6 +638,7 @@ CHECKS: list[tuple[str, str, object, object]] = [
     ("infra",     "karpenter-nodeclaim-ready",      chk_karpenter_nodeclaim, None),
     ("inference", "dcgm-gpu-metrics",               chk_dcgm_metrics,       None),
     ("inference", "llmdendpoint-routed-chat",       chk_llmd_roundtrip,     _only_llmd),
+    ("inference", "keda-autoscales-llmd-on-queue-depth", chk_keda_autoscaling, _only_llmd),
 ]
 
 DOMAINS = sorted({d for d, *_ in CHECKS})
