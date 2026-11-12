@@ -212,6 +212,15 @@ class TestPolicy:
                  and r.get("enabled") is False]
         assert any(re.match(r["matchCurrentValue"].strip("/"), "${local.karpenter_chart_version}") for r in rules)
 
+    def test_open_pr_limit_never_starves_the_groups(self):
+        """Ticked and held PRs stay open for weeks. With Renovate's limit of 5 open
+        PRs, five of them (kro, vLLM, router, two held majors) rate-limited all five
+        normal groups, which would have left the next release empty. Groups are
+        few (5 domains + one branch per ticked kind + majors), so 20 never binds."""
+        cfg = _renovate()
+        assert cfg["prConcurrentLimit"] >= 20 and cfg.get("prHourlyLimit", 0) == 0
+        assert cfg.get("branchConcurrentLimit") in (None, 0) or cfg["branchConcurrentLimit"] >= 20
+
     def test_group_branches_are_rebased_when_main_moves(self):
         """Group PRs are never merged; release branches merge them onto main, so
         every release leaves them behind main until Renovate rebases them."""

@@ -34,7 +34,7 @@
     "before 6am on monday"
   ],
   "timezone": "Europe/Bucharest",
-  "prConcurrentLimit": 5,
+  "prConcurrentLimit": 20,
   "prHourlyLimit": 0,
   "labels": [
     "dependencies"
