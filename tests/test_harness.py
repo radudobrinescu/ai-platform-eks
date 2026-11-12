@@ -472,3 +472,10 @@ def test_keda_check_cleans_up_and_waits_even_when_scaling_fails(monkeypatch):
     ok, detail = checks.chk_keda_autoscaling(c)
     assert not ok and "timed out" in detail and "stuck: nothing" in detail and "endpoint removed" in detail
     assert calls["undeploy"] == 1 and c.llmd_model is None and not c.llmd_created
+
+
+def test_llmd_checks_never_reuse_a_model_that_upgrade_mode_seeds():
+    import checks
+    import survival
+    seeded = {checks.model_name_from_id(survival.SEED_GPU_MODEL), checks.model_name_from_id(checks.GPU_SMOKE_MODEL)}
+    assert checks.model_name_from_id(checks.LLMD_SMOKE_MODEL) not in seeded

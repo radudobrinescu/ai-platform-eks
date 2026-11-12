@@ -49,6 +49,11 @@ from subject import Subject
 # model is cheap and widely enabled. Smoke enrollments use their own LiteLLM
 # aliases so they never collide with the models seeded in upgrade mode.
 GPU_SMOKE_MODEL = "Qwen/Qwen2.5-0.5B-Instruct"
+# The llm-d checks need their own model: upgrade mode seeds GPU_SMOKE_MODEL before
+# the upgrade and keeps it deployed (survival), so deploying it again on the llm-d
+# tier refused with "already deployed" in both upgrade jobs of v2026.11.4's E2E.
+# Same architecture family (Qwen2ForCausalLM), similar size, own chat template.
+LLMD_SMOKE_MODEL = "Qwen/Qwen2-0.5B-Instruct"
 BEDROCK_SMOKE_MODEL = "nova-lite"
 BEDROCK_SMOKE_ALIAS = "e2e-smoke-nova-lite"
 BEDROCK_ATTR_ALIAS = "e2e-attr-nova-lite"
@@ -487,10 +492,10 @@ def llmd_deployment(name: str) -> dict:
 
 
 def chk_llmd_roundtrip(c: Ctx):
-    name = model_name_from_id(GPU_SMOKE_MODEL)
+    name = model_name_from_id(LLMD_SMOKE_MODEL)
     if c.subject.find_model_file(name):
         return False, f"a model named {name} is already deployed; cannot add the llm-d copy under the same name"
-    c.llmd_created = deploy_model(c, name, GPU_SMOKE_MODEL, "--tier", "llm-d", "--users", "4", "--seq", "2048",
+    c.llmd_created = deploy_model(c, name, LLMD_SMOKE_MODEL, "--tier", "llm-d", "--users", "4", "--seq", "2048",
                                   under="workloads/scale-models")
     c.llmd_model = name
     rel = c.subject.find_model_file(name, "workloads/scale-models")
