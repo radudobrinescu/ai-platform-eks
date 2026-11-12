@@ -110,6 +110,28 @@ def cognito_state(c: checks.Ctx) -> dict:
     return {"pool_id": pool, "user_count": int(out)}
 
 
+def settled_trace_count(expected: int, timeout: int = 300) -> int | None:
+    """The Langfuse trace count once it is readable and at least `expected`.
+
+    Langfuse ingests traces asynchronously and its API can answer 5xx while it
+    catches up. A single read right after the seed chats returned nothing on
+    upgrade/managed of v2026.11.4 (traces None -> 8) and failed the survival
+    rule although no trace was lost. Retries for up to `timeout` seconds; if the
+    count never reaches `expected`, returns the last value read (None if none),
+    so a real loss or an unreachable Langfuse still fails the rule."""
+    last: dict = {"n": None}
+
+    def read():
+        n = checks.langfuse_trace_count()
+        if n is not None:
+            last["n"] = n
+        return n if n is not None and n >= expected else None
+    try:
+        return wait_for(f"Langfuse reports >= {expected} traces", read, timeout, 15)
+    except TimeoutError:
+        return last["n"]
+
+
 def snapshot(c: checks.Ctx, s: Seed) -> dict:
     """Read the seeded state. Never contains the key itself."""
     snap: dict = {}
@@ -128,7 +150,7 @@ def snapshot(c: checks.Ctx, s: Seed) -> dict:
         snap["spend_log_count"] = len(logs) if isinstance(logs, list) else None
         listed = checks.models(pf, master)
         snap["models"] = {m: {"listed": m in listed, "chat": checks.chat(pf, master, m)[0]} for m in s.models}
-    snap["langfuse_traces"] = checks.langfuse_trace_count()
+    snap["langfuse_traces"] = settled_trace_count(SEED_BEDROCK_CHATS + 1)
     snap["openwebui_user_ids"] = openwebui_ids(c)
     snap["cognito"] = cognito_state(c)
     return snap
@@ -172,8 +194,9 @@ def compare(before: dict, after: dict) -> list[tuple[str, bool, str]]:
     bad = [m for m in bm if not (am.get(m, {}).get("listed") and am.get(m, {}).get("chat") == 200)]
     out.append(("seeded-models-answer", bool(bm) and not bad,
                 f"{len(bm) - len(bad)}/{len(bm)} seeded models listed and answering" + (f"; failing: {bad}" if bad else "")))
-    out.append(("langfuse-traces-kept", _ge(after.get("langfuse_traces"), before.get("langfuse_traces")),
-                f"traces {before.get('langfuse_traces')} -> {after.get('langfuse_traces')}"))
+    bt_n, at_n = before.get("langfuse_traces"), after.get("langfuse_traces")
+    out.append(("langfuse-traces-kept", _ge(at_n, bt_n),
+                f"traces {bt_n} -> {at_n}" + ("; could not read the count before the upgrade" if bt_n is None else "")))
     bo, ao = before.get("openwebui_user_ids") or {}, after.get("openwebui_user_ids") or {}
     changed = [e for e, i in bo.items() if not i or ao.get(e) != i]
     out.append(("openwebui-users-kept", bool(bo) and not changed,

@@ -69,3 +69,33 @@ def test_missing_values_never_pass():
     assert not any(res.values()), res
     assert not any(ok for _, ok, _ in survival.compare({}, {}))
 
+
+
+def test_trace_count_waits_until_langfuse_catches_up(monkeypatch):
+    reads = iter([None, None, 2, 4, 9])
+    monkeypatch.setattr(survival.checks, "langfuse_trace_count", lambda: next(reads))
+    monkeypatch.setattr(survival, "wait_for", lambda desc, fn, timeout, interval=15: next(v for v in iter(fn, object()) if v))
+    assert survival.settled_trace_count(4) == 4
+
+
+def test_trace_count_returns_the_last_read_when_it_never_settles(monkeypatch):
+    import itertools
+    reads = itertools.chain([None, 2], itertools.repeat(3))
+    monkeypatch.setattr(survival.checks, "langfuse_trace_count", lambda: next(reads))
+
+    def wait(desc, fn, timeout, interval=15):
+        for _ in range(5):
+            if fn():
+                return fn()
+        raise TimeoutError(desc)
+    monkeypatch.setattr(survival, "wait_for", wait)
+    assert survival.settled_trace_count(4) == 3
+
+
+def test_unreadable_before_count_still_fails_and_says_why():
+    after = copy.deepcopy(BEFORE)
+    before = copy.deepcopy(BEFORE)
+    before["langfuse_traces"] = None
+    res = {n: (ok, d) for n, ok, d in survival.compare(before, after)}
+    ok, detail = res["langfuse-traces-kept"]
+    assert not ok and "could not read the count before the upgrade" in detail
