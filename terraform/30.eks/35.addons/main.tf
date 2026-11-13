@@ -16,6 +16,48 @@ data "aws_iam_policy_document" "lbc_v3_supplement" {
   }
 }
 
+locals {
+  # One pin for the AWS Load Balancer Controller chart and its CRDs. Since LBC
+  # v3.0.0 the chart version aligns with the app version.
+  lbc_chart_version = "3.6.2"
+}
+
+# The controller's CRDs, rendered from the same chart version and applied BEFORE
+# the chart. Helm installs a chart's crds/ only on the first install and never
+# updates them, so an upgraded cluster kept its old CRDs (3.4.3 -> 3.6.2 left
+# TargetGroupBinding without a new field and globalaccelerators.aga.k8s.aws
+# missing). Server-side apply takes over the Helm-installed CRDs in place;
+# apply_only means Terraform never deletes one (that would delete every
+# TargetGroupBinding behind the ALBs); they go with the cluster on `down`.
+data "helm_template" "lbc_crds" {
+  count = local.capabilities.loadbalancing ? 1 : 0
+
+  name         = "aws-load-balancer-controller"
+  namespace    = "kube-system"
+  repository   = "https://aws.github.io/eks-charts"
+  chart        = "aws-load-balancer-controller"
+  version      = local.lbc_chart_version
+  include_crds = true
+  set          = [{ name = "clusterName", value = data.terraform_remote_state.eks.outputs.cluster_name }]
+}
+
+locals {
+  lbc_crd_docs = local.capabilities.loadbalancing ? {
+    for d in flatten([for f in data.helm_template.lbc_crds[0].crds : split("\n---", f)]) :
+    yamldecode(d).metadata.name => d
+    if length(regexall("(?m)^kind:\\s*CustomResourceDefinition", d)) > 0
+  } : {}
+}
+
+resource "kubectl_manifest" "lbc_crds" {
+  for_each = local.lbc_crd_docs
+
+  yaml_body         = each.value
+  server_side_apply = true
+  force_conflicts   = true
+  apply_only        = true
+}
+
 module "eks_blueprints_addons" {
   source  = "aws-ia/eks-blueprints-addons/aws"
   version = "~> 1.24.0"
@@ -30,14 +72,10 @@ module "eks_blueprints_addons" {
   # common addons deployed with EKS Blueprints Addons
   enable_aws_load_balancer_controller = local.capabilities.loadbalancing
   aws_load_balancer_controller = {
-    # Pin the LB controller chart. Since LBC v3.0.0 the chart version aligns
-    # with the app version (v2.x used chart 1.x). The pinned blueprints module
-    # defaults to chart 1.7.1 (app v2.7.1), which is far behind upstream.
-    # NOTE for LIVE-cluster upgrades from v2.x: Helm does not upgrade CRDs —
-    # apply the latest CRDs first:
-    #   kubectl apply -k "github.com/aws/eks-charts/stable/aws-load-balancer-controller/crds?ref=master"
-    # Fresh installs (new forker clusters) get current CRDs automatically.
-    chart_version = "3.6.2"
+    # Pin the LB controller chart (local.lbc_chart_version, shared with its
+    # CRDs above). The pinned blueprints module defaults to chart 1.7.1 (app
+    # v2.7.1), which is far behind upstream.
+    chart_version = local.lbc_chart_version
     # LBC v3 needs ec2:DescribeRouteTables (subnet discovery), which the
     # pinned module's built-in policy predates. Merged in via the module's
     # source_policy_documents passthrough.
@@ -102,4 +140,7 @@ module "eks_blueprints_addons" {
     use_name_prefix = false
     create          = true
   }
+
+  # CRDs first: the new controller version may already use them.
+  depends_on = [kubectl_manifest.lbc_crds]
 }
