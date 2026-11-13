@@ -22,7 +22,7 @@ NAMED_PINS: list[tuple[str, str, str]] = [
     ("karpenter", "terraform/30.eks/30.cluster/karpenter.tf",
      r'(?:\bkarpenter_chart_version|chart\s*=\s*"karpenter"[^}]*?\bversion)\s*=\s*"([^"]+)"'),
     ("kro (self-managed)", "terraform/30.eks/30.cluster/capabilities-selfmanaged.tf",
-     r'chart\s*=\s*"kro"[^}]*?\bversion\s*=\s*"([^"]+)"'),
+     r'(?:\bkro_chart_version|chart\s*=\s*"kro"[^}]*?\bversion)\s*=\s*"([^"]+)"'),
     ("argo-cd (self-managed)", "terraform/30.eks/30.cluster/capabilities-selfmanaged.tf",
      r'chart\s*=\s*"argo-cd"[^}]*?\bversion\s*=\s*"([^"]+)"'),
     ("aws-load-balancer-controller", "terraform/30.eks/35.addons/main.tf",

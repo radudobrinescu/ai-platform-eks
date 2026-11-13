@@ -236,6 +236,19 @@
       "depNameTemplate": "karpenter",
       "packageNameTemplate": "public.ecr.aws/karpenter/karpenter",
       "datasourceTemplate": "docker"
+    },
+    {
+      "customType": "regex",
+      "description": "kro chart (self-managed): kro_chart_version = \"<v>\" in capabilities-selfmanaged.tf, one pin for the chart and its CRDs (main #58). The helm_release reads the local, which the built-in terraform manager cannot see.",
+      "managerFilePatterns": [
+        "/^terraform/30\\.eks/30\\.cluster/capabilities-selfmanaged\\.tf$/"
+      ],
+      "matchStrings": [
+        "\\bkro_chart_version\\s*=\\s*\"(?<currentValue>[0-9][^\"\\s]*)\""
+      ],
+      "depNameTemplate": "kro",
+      "packageNameTemplate": "registry.k8s.io/kro/charts/kro",
+      "datasourceTemplate": "docker"
     }
   ],
   "packageRules": [

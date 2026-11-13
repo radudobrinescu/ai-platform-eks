@@ -46,6 +46,7 @@ CUSTOM_INVENTORY = [
     ("terraform/30.eks/30.cluster/locals.tf", "vllm/vllm-openai"),
     ("terraform/30.eks/35.addons/main.tf", "aws-load-balancer-controller"),
     ("terraform/30.eks/30.cluster/karpenter.tf", "karpenter"),
+    ("terraform/30.eks/30.cluster/capabilities-selfmanaged.tf", "kro"),
     (".github/workflows/ci.yaml", "hashicorp/terraform"),
     (".github/workflows/ci.yaml", "ruff"),
     (".github/workflows/ci.yaml", "pytest"),
