@@ -48,3 +48,15 @@ provider "helm" {
     token                  = data.aws_eks_cluster_auth.this.token
   }
 }
+
+# Explicit, like kubernetes and helm above. Without this block the provider fell
+# back to the operator's kubeconfig current-context, so the Grafana operator and
+# scraper manifests could be applied to whichever cluster kubectl pointed at
+# (seen when a plan ran while the context was a deleted test cluster).
+provider "kubectl" {
+  host                   = local.eks_cluster_endpoint
+  cluster_ca_certificate = base64decode(data.aws_eks_cluster.this.certificate_authority[0].data)
+  token                  = data.aws_eks_cluster_auth.this.token
+  load_config_file       = false
+  apply_retry_count      = 5
+}
