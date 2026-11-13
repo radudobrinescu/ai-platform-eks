@@ -572,7 +572,7 @@ def publish(repo: str, version: str, repo_slug: str) -> bool:
                 for label in [g for _, g in CHANGE_GROUPS] + ["Other changes"]:
                     if ch.get(label):
                         lines += [f"{label}:", ""] + [f"- {t}" for t in ch[label]] + [""]
-                notes_md = notes_md.replace("## Component versions", "\n".join(lines) + "## Component versions", 1)
+                notes_md = notes_md.replace("## Component versions", "\n".join(lines) + "\n## Component versions", 1)
     with tempfile.NamedTemporaryFile("w", suffix=".md", delete=False, encoding="utf-8") as fh:
         fh.write(notes_md)
         path = fh.name
