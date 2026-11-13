@@ -5,6 +5,7 @@
   release.py notes  <vYYYY.MM.N> --base <ref>   [--repo DIR] [options] [--no-commit]
   release.py record <vYYYY.MM.N> --github OWNER/REPO [--repo DIR] [--no-push]
   release.py finish <vYYYY.MM.N> --github OWNER/REPO [--repo DIR] [--dry-run]
+  release.py publish <vYYYY.MM.N> --github OWNER/REPO [--repo DIR]
 
 `cut` creates release/<version> from origin/main, merges the listed branches
 (update branches, fixes) with --no-ff, and pushes it. Coupled fixes that need
@@ -29,10 +30,20 @@ ONE follow-up commit, verifies the commit changes nothing but that row's E2E
 cell, pushes it, and posts the four statuses on the new head, each saying which
 commit was actually tested. Any other change after E2E needs a rerun.
 
+`notes` also lists the platform changes since the base release: the pull
+requests merged into main in that range (release and update branches
+excluded), grouped by type from their conventional-commit titles. PR numbers
+are left out on purpose: the notes travel to the public repo, where numbers
+differ.
+
 `finish` is the one command after the four E2E runs are green: record (above),
 wait for the release PR's required checks on the recorded head, merge it, tag the
-merge commit vYYYY.MM.N, push the tag, delete the release branch, and print the
-canary commands. --dry-run shows each step without changing anything.
+merge commit vYYYY.MM.N, push the tag, create the GitHub Release from the
+release notes, delete the release branch, and print the canary commands.
+--dry-run shows each step without changing anything.
+
+`publish` creates the GitHub Release for an existing tag from the notes at that
+tag (idempotent; used for releases tagged before `finish` did it).
 
 Kubernetes rule (enforced here): a release supports every Kubernetes version
 of the previous release plus at most one newer minor, which must be exactly one
@@ -207,7 +218,38 @@ def build_manifest(version: str, previous: str, supported: list[str], recommende
     }
 
 
-def render_notes(manifest: dict, rows: list, majors: list[str], unchanged: int, date: str) -> str:
+MERGE_RX = re.compile(r"^Merge pull request #\d+ from [^/\s]+/(\S+)$")
+CHANGE_GROUPS = (("fix", "Fixes"), ("feat", "Improvements"))
+
+
+def platform_changes(repo: str, base: str, head: str = "HEAD") -> dict[str, list[str]]:
+    """Titles of the pull requests merged into main between `base` and `head`,
+    grouped as {"Fixes": [...], "Improvements": [...], "Other changes": [...]}.
+    Release and update branches are skipped; the type prefix is dropped."""
+    log = git(repo, "log", "--first-parent", "--merges", "--format=%s%x1f%b%x1e", f"{base}..{head}")
+    groups: dict[str, list[str]] = {}
+    for entry in log.split("\x1e"):
+        if "\x1f" not in entry:
+            continue
+        subject, body = (x.strip() for x in entry.split("\x1f", 1))
+        m = MERGE_RX.match(subject)
+        if not m or m.group(1).startswith(("release/", "renovate/")):
+            continue
+        title = (body.splitlines() or [""])[0].strip()
+        if not title:
+            continue
+        cm = re.match(r"^(\w+)(?:\([^)]*\))?!?:\s*(.+)$", title)
+        kind, text = (cm.group(1), cm.group(2)) if cm else ("", title)
+        label = dict(CHANGE_GROUPS).get(kind, "Other changes")
+        if FORBIDDEN_RX.search(text):
+            print(f"warning: change left out of the notes (not product-safe): {text}", file=sys.stderr)
+            continue
+        groups.setdefault(label, []).append(text[:1].upper() + text[1:])
+    return groups
+
+
+def render_notes(manifest: dict, rows: list, majors: list[str], unchanged: int, date: str,
+                 changes: dict[str, list[str]] | None = None) -> str:
     k = manifest["kubernetes"]
     out = [f"# Release {manifest['version']}", "",
            f"Released {date}. Upgrades from: `{manifest['previous']}`.", "",
@@ -236,6 +278,11 @@ def render_notes(manifest: dict, rows: list, majors: list[str], unchanged: int, 
         out += ["## Major version changes", "", "Read the upstream release notes for:", ""]
         out += [f"- {m}" for m in majors]
         out.append("")
+    if changes:
+        out += ["## Platform changes", ""]
+        for label in [g for _, g in CHANGE_GROUPS] + ["Other changes"]:
+            if changes.get(label):
+                out += [f"{label}:", ""] + [f"- {t}" for t in changes[label]] + [""]
     out += ["## Component versions", "", "| Component | Before | After |", "|---|---|---|"]
     out += [f"| {c} | `{o}` | `{n}` |" for c, o, n in rows]
     if not rows:
@@ -329,7 +376,7 @@ def notes(repo: str, version: str, base: str, *, supported: list[str] | None = N
                               required_tfvars or [], manual_steps or [], existing)
     rows, majors = version_table(old, new)
     unchanged = sum(1 for k in set(old) & set(new) if old[k] == new[k])
-    notes_md = render_notes(manifest, rows, majors, unchanged, date)
+    notes_md = render_notes(manifest, rows, majors, unchanged, date, platform_changes(repo, base))
     vv_path = os.path.join(repo, "docs", "validated-versions.md")
     vv_old = open(vv_path, encoding="utf-8").read() if os.path.exists(vv_path) else ""
     vv_new = upsert_row(vv_old, version, validated_row(version, date, new, manifest, statuses or {}))
@@ -489,6 +536,7 @@ def finish(repo: str, version: str, repo_slug: str, *, dry_run: bool = False, re
              f"wait: PR #{pr['number']} required checks on the recorded head",
              f"merge: PR #{pr['number']} into main (merge commit)",
              f"tag: {version} on the merge commit, pushed to {remote}",
+             f"publish: GitHub Release {version} from docs/releases/{version}.md",
              f"delete: {remote}/{branch}"]
     if dry_run:
         return {"dry_run": True, "pr": pr["number"], "tested": tested, "steps": steps}
@@ -501,8 +549,38 @@ def finish(repo: str, version: str, repo_slug: str, *, dry_run: bool = False, re
         raise ReleaseError(f"{remote}/main ({merge[:12]}) does not contain the recorded head; not tagging")
     git(repo, "tag", "-a", version, "-m", f"Release {version}", merge)
     git(repo, "push", "--quiet", remote, version)
+    publish(repo, version, repo_slug)
     git(repo, "push", "--quiet", remote, "--delete", branch, check=False)
     return {"dry_run": False, "pr": pr["number"], "tested": tested, "recorded": head, "merge": merge, "tag": version}
+
+
+def publish(repo: str, version: str, repo_slug: str) -> bool:
+    """Create the GitHub Release for an existing tag, with the release notes at that
+    tag as its body. Returns False when it already exists (idempotent)."""
+    validate_version(version)
+    exists = subprocess.run(["gh", "release", "view", version, "--repo", repo_slug], capture_output=True, text=True)
+    if exists.returncode == 0:
+        return False
+    notes_md = git(repo, "show", f"{version}:docs/releases/{version}.md")
+    if "## Platform changes" not in notes_md:
+        # Releases tagged before notes listed them: add the section to the page only.
+        prev = json.loads(git(repo, "show", f"{version}:releases/{version}.json")).get("previous", "")
+        if prev and prev != "baseline" and git(repo, "tag", "--list", prev).strip():
+            ch = platform_changes(repo, prev, version)
+            if ch:
+                lines = ["## Platform changes", ""]
+                for label in [g for _, g in CHANGE_GROUPS] + ["Other changes"]:
+                    if ch.get(label):
+                        lines += [f"{label}:", ""] + [f"- {t}" for t in ch[label]] + [""]
+                notes_md = notes_md.replace("## Component versions", "\n".join(lines) + "## Component versions", 1)
+    with tempfile.NamedTemporaryFile("w", suffix=".md", delete=False, encoding="utf-8") as fh:
+        fh.write(notes_md)
+        path = fh.name
+    try:
+        gh("release", "create", version, "--repo", repo_slug, "--verify-tag", "--title", version, "--notes-file", path)
+    finally:
+        os.unlink(path)
+    return True
 
 
 def canary_hint(version: str) -> str:
@@ -537,12 +615,19 @@ def main(argv: list[str] | None = None) -> int:
     r.add_argument("version")
     r.add_argument("--github", required=True, metavar="OWNER/REPO", help="repo holding the E2E statuses")
     r.add_argument("--no-push", action="store_true", help="commit and verify only; do not push or post statuses")
+    pb = sub.add_parser("publish", help="create the GitHub Release of an existing tag from its notes")
+    pb.add_argument("version")
+    pb.add_argument("--github", required=True, metavar="OWNER/REPO")
     f = sub.add_parser("finish", help="after 4 green E2E runs: record, merge the release PR, tag, delete the branch")
     f.add_argument("version")
     f.add_argument("--github", required=True, metavar="OWNER/REPO")
     f.add_argument("--dry-run", action="store_true", help="show the steps; change nothing")
     a = ap.parse_args(argv)
     try:
+        if a.cmd == "publish":
+            made = publish(a.repo, a.version, a.github)
+            print(f"{'created' if made else 'already exists:'} GitHub Release {a.version}")
+            return 0
         if a.cmd == "finish":
             res = finish(a.repo, a.version, a.github, dry_run=a.dry_run)
             if res["dry_run"]:
@@ -550,7 +635,8 @@ def main(argv: list[str] | None = None) -> int:
                 print("\n".join(f"  - {st}" for st in res["steps"]))
             else:
                 print(f"finished {a.version}: recorded {res['recorded'][:12]}, merged PR #{res['pr']} -> "
-                      f"{res['merge'][:12]}, tagged and pushed {res['tag']}, release branch deleted")
+                      f"{res['merge'][:12]}, tagged and pushed {res['tag']}, GitHub Release created, "
+                      "release branch deleted")
             print(canary_hint(a.version))
             return 0
         if a.cmd == "cut":

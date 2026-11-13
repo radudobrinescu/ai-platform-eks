@@ -123,7 +123,11 @@ python3 tools/release.py --repo subject finish v2026.11.3 --github OWNER/REPO [-
 ```
 
 `finish` = `record` (below) + wait for the PR's required checks + merge + tag the
-merge commit + delete the release branch. It refuses without four green statuses
+merge commit + create the GitHub Release from the notes + delete the release
+branch. `release.py publish <v> --github OWNER/REPO` creates the GitHub Release
+for an existing tag. The notes list the platform changes (PRs merged into main
+since the previous release, grouped as fixes, improvements and other changes;
+no PR numbers, because the notes travel to the public repo). It refuses without four green statuses
 on the PR head, when the local head differs from the PR head, or when the tag
 exists. See COMPATIBILITY.md "Releases". The same steps by hand:
 

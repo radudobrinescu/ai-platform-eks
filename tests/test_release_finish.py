@@ -26,6 +26,11 @@ def green(url="https://ci/run/1"):
     return {c: {"state": "success", "target_url": url, "description": f"{c} passed"} for c in release.E2E_CONTEXTS}
 
 
+class FakeFail(Exception):
+    def __init__(self, rc):
+        self.rc = rc
+
+
 class FakeGh:
     """Just enough of gh: pr list / pr view / pr merge / api statuses."""
 
@@ -33,6 +38,7 @@ class FakeGh:
         self.origin, self.pr, self.states, self.calls = origin, pr, list(states), []
         self.statuses = statuses if statuses is not None else green()
         self.merged = False
+        self.releases = {}
 
     def head(self):
         return git(self.origin, "rev-parse", f"release/{V}").strip()
@@ -55,6 +61,15 @@ class FakeGh:
             git(tmp, "merge", "--no-ff", "-m", f"Merge pull request #{self.pr}", f"origin/release/{V}")
             git(tmp, "push", "-q", "origin", "HEAD:main")
             self.merged = True
+            return ""
+        if a[:2] == ["release", "view"]:
+            if a[2] not in self.releases:
+                raise FakeFail(1)
+            return ""
+        if a[:2] == ["release", "create"]:
+            notes = open(a[a.index("--notes-file") + 1], encoding="utf-8").read()
+            assert "--verify-tag" in a
+            self.releases[a[2]] = notes
             return ""
         if a[:1] == ["api"] and "/statuses" in a[1] and "-X" not in a:
             return json.dumps([{"context": c, **d} for c, d in self.statuses.items()])
@@ -95,8 +110,10 @@ def _no_real_gh(real_run, fake):
     """record() posts carried statuses with subprocess.run(['gh', ...]); route that to the fake."""
     def run(cmd, *a, **k):
         if cmd and cmd[0] == "gh":
-            fake(*cmd[1:])
-            return subprocess.CompletedProcess(cmd, 0, "", "")
+            try:
+                return subprocess.CompletedProcess(cmd, 0, fake(*cmd[1:]), "")
+            except FakeFail as e:
+                return subprocess.CompletedProcess(cmd, e.rc, "", "not found")
         return real_run(cmd, *a, **k)
     return run
 
@@ -113,6 +130,7 @@ def test_finish_records_merges_tags_and_deletes_the_branch(repos):
     assert git(origin, "log", "-1", "--format=%s", res["recorded"]).startswith("docs(release): record E2E results")
     assert f"release/{V}" not in git(origin, "branch", "--list")                    # branch deleted
     assert any(c[:2] == ("pr", "merge") and "--merge" in c for c in fake.calls)
+    assert fake.releases[V].startswith(f"# Release {V}")                 # GitHub Release from the notes
 
 
 def test_finish_waits_for_clean_then_merges(repos):
@@ -127,9 +145,9 @@ def test_dry_run_changes_nothing(repos):
     work, origin, fake = repos
     before = git(origin, "for-each-ref")
     res = release.finish(str(work), V, SLUG, dry_run=True)
-    assert res["dry_run"] and res["pr"] == 7 and len(res["steps"]) == 5
+    assert res["dry_run"] and res["pr"] == 7 and len(res["steps"]) == 6
     assert git(origin, "for-each-ref") == before
-    assert not any(c[:2] == ("pr", "merge") for c in fake.calls)
+    assert not any(c[:2] == ("pr", "merge") for c in fake.calls) and not fake.releases
     assert "not run" in (work / "docs/validated-versions.md").read_text()
 
 
@@ -167,3 +185,38 @@ def test_dirty_pr_is_refused_not_merged(repos):
     with pytest.raises(release.ReleaseError, match="DIRTY"):
         release.finish(str(work), V, SLUG)
     assert not fake.merged
+
+
+def test_publish_creates_the_release_once_from_the_notes_at_the_tag(repos):
+    work, origin, fake = repos
+    release.finish(str(work), V, SLUG)
+    first = fake.releases[V]
+    assert release.publish(str(work), V, SLUG) is False and fake.releases[V] == first   # idempotent
+    del fake.releases[V]
+    assert release.publish(str(work), V, SLUG) is True and fake.releases[V] == first
+
+
+def test_publish_adds_platform_changes_to_pages_of_older_releases(repos, tmp_path):
+    """Releases tagged before notes listed changes get the section on the page only."""
+    work, origin, fake = repos
+    release.finish(str(work), V, SLUG)
+    nxt = "v2026.11.1"
+    git(work, "fetch", "-q", "origin")
+    git(work, "switch", "-q", "-c", "fix/x", "origin/main")
+    (work / "x.txt").write_text("x\n")
+    git(work, "add", "-A")
+    git(work, "commit", "-qm", "fix: something users notice")
+    git(work, "switch", "-q", "-c", "m2", "origin/main")
+    git(work, "merge", "-q", "--no-ff", "-m", "Merge pull request #3 from owner/fix/x", "-m", "fix: something users notice", "fix/x")
+    manifest = {"version": nxt, "previous": V, "kubernetes": {"supported": ["1.36"], "recommended": "1.36"},
+                "required_tfvars": [], "manual_steps": [], "acknowledged_replacements": []}
+    (work / "releases").mkdir(exist_ok=True)
+    (work / f"releases/{nxt}.json").write_text(json.dumps(manifest))
+    (work / f"docs/releases/{nxt}.md").write_text(f"# Release {nxt}\n\n## Component versions\n\n| a | b | c |\n")
+    git(work, "add", "-A")
+    git(work, "commit", "-qm", "old-style notes without changes")
+    git(work, "tag", nxt)
+    assert release.publish(str(work), nxt, SLUG) is True
+    page = fake.releases[nxt]
+    assert "## Platform changes" in page and "- Something users notice" in page
+    assert page.index("## Platform changes") < page.index("## Component versions") and "#3" not in page

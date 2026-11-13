@@ -278,3 +278,42 @@ class TestRecord:
         assert all(p["state"] == "success" for p in payloads)
         assert all("0123456789ab" in p["description"] and len(p["description"]) <= 140 for p in payloads)
         assert [p["target_url"] for p in payloads] == [GREEN[c]["target_url"] for c in release.E2E_CONTEXTS]
+
+
+class TestPlatformChanges:
+    def _merge(self, repo, branch, title, files):
+        git(repo, "switch", "-q", "-c", branch)
+        for rel in files:
+            write(repo, rel, branch + "\n")
+        git(repo, "add", "-A")
+        git(repo, "commit", "-qm", title)
+        git(repo, "switch", "-q", "main")
+        git(repo, "merge", "-q", "--no-ff", "-m", f"Merge pull request #9 from owner/{branch}", "-m", title, branch)
+
+    def test_lists_merged_prs_by_type_without_numbers_or_update_branches(self, tmp_path):
+        r = tmp_path / "p"
+        r.mkdir()
+        git(r, "init", "-q", "-b", "main")
+        tree(r, "v0.24.0", "1.14.0", "v1.81.9-stable", "1.36")
+        git(r, "add", "-A")
+        git(r, "commit", "-qm", "base")
+        git(r, "tag", "base")
+        self._merge(r, "fix/down-keda", "fix(down): clear KEDA finalizers", ["a.txt"])
+        self._merge(r, "feat/new-check", "feat: a new health check", ["b.txt"])
+        self._merge(r, "docs/readme", "docs: clarify the README", ["c.txt"])
+        self._merge(r, "renovate/gateway", "chore(deps): Update gateway", ["d.txt"])
+        self._merge(r, "release/v2026.11.0", "release: v2026.11.0", ["e.txt"])
+        self._merge(r, "fix/leaky", "fix: mention lifecycle internals", ["f.txt"])
+        ch = release.platform_changes(str(r), "base")
+        assert ch == {"Fixes": ["Clear KEDA finalizers"], "Improvements": ["A new health check"],
+                      "Other changes": ["Clarify the README"]}
+        md = release.render_notes(release.build_manifest("v2026.11.0", "baseline", ["1.36"], "1.36", [], [], None),
+                                  [], [], 3, "2026-11-12", ch)
+        assert "## Platform changes" in md and "- Clear KEDA finalizers" in md and "#9" not in md
+        assert md.index("Fixes:") < md.index("Improvements:") < md.index("Other changes:") < md.index("## Component versions")
+        release.assert_product_safe(md)
+
+    def test_no_section_without_changes(self):
+        md = release.render_notes(release.build_manifest("v2026.11.0", "baseline", ["1.36"], "1.36", [], [], None),
+                                  [], [], 3, "2026-11-12", {})
+        assert "## Platform changes" not in md
