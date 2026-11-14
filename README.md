@@ -9,7 +9,7 @@ here.
 |---|---|
 | `renovate.json` | Renovate config (read from the default branch), targets `main` only |
 | `COMPATIBILITY.md` | anchors, domains, coupling notes, validated sets, release procedure |
-| `harness/` | E2E harness: `e2e.py` (entry), `checks.py` (22 smoke checks), `sso.py`, `survival.py`, `tfvars.py`, `versions.py`, `subject.py`, `common.py` |
+| `harness/` | E2E harness: `e2e.py` (entry), `checks.py` (22 smoke checks; `e2e.py check` runs them alone against a running env), `sso.py`, `survival.py`, `tfvars.py`, `versions.py`, `subject.py`, `common.py` |
 | `tools/release.py` | cut a release branch; write release notes, manifest, validated-versions row |
 | `tools/release_candidate.py` | decide whether and what to release this week (used by `release-candidate.yaml`) |
 | `tools/shellcheck_workflows.py` | shellcheck every workflow `run:` step |
@@ -109,6 +109,25 @@ and the rendered tfvars.
 ```bash
 python3 harness/e2e.py upgrade main release/v2026.11.0 --profile managed --dry-run
 ```
+
+### Checks only, against an env that already runs
+
+To try a harness or check change in minutes instead of a full release run:
+no provision, upgrade or teardown. `--subject-dir` is the checkout the env was
+deployed from (it holds `<env>.tfvars`, is clean, and tracks the branch Argo CD
+follows). The model checks deploy and remove their test models with commits on
+that branch, so on dev those commits stay in `env/dev`'s history.
+
+```bash
+python3 harness/e2e.py check --env dev --subject-dir ../dev --only argocd-applications-converged,litellm-ready,cluster-dashboard-healthz
+python3 harness/e2e.py check --env dev --subject-dir ../dev --with-llmd   # all checks, llm-d and KEDA too
+```
+
+`--survival` also seeds a team, snapshots twice and compares (it leaves the
+team in place). The report is written to `reports/<env>-check.md`.
+
+GPU models for the GPU checks are started right after the GitOps checks, so
+their nodes come up while the other checks run.
 
 ## Cut a release
 

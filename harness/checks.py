@@ -91,9 +91,15 @@ class Ctx:
     run_start: datetime = field(default_factory=lambda: datetime.now(timezone.utc))
     master_key: str | None = None
     gpu_node_seen: bool = False
-    # Set by the llm-d check, used and cleaned up by the KEDA check after it.
+    # Set when the llm-d model is started (start_gpu_models or the llm-d check),
+    # used and cleaned up by the KEDA check.
     llmd_model: str | None = None
     llmd_created: bool = False
+    llmd_start_error: str | None = None
+    # Set by start_gpu_models: the vLLM smoke model was deployed up front.
+    gpu_started: bool = False
+    gpu_created: bool = False
+    gpu_start_error: str | None = None
     _sso: object = None
 
     @property
@@ -383,7 +389,13 @@ def chk_gpu_model_roundtrip(c: Ctx):
     """VLLMEndpoint for a tiny ungated model: Karpenter node -> vLLM Ready ->
     LiteLLM answers. In upgrade mode the seeded copy is reused and kept."""
     name = model_name_from_id(GPU_SMOKE_MODEL)
-    created = deploy_model(c, name, GPU_SMOKE_MODEL, "--tier", "vllm", "--users", "1", "--seq", "2048")
+    if c.gpu_start_error:
+        c.gpu_start_error, err = None, c.gpu_start_error
+        return False, f"starting {name} at the beginning of the suite failed: {err}"
+    if c.gpu_started:
+        created, c.gpu_started = c.gpu_created, False
+    else:
+        created = deploy_model(c, name, GPU_SMOKE_MODEL, "--tier", "vllm", "--users", "1", "--seq", "2048")
     try:
         wait_endpoint_ready(c, "vllmendpoint", name)
         claims = kubectl_json("get", "nodeclaims").get("items", [])
@@ -491,10 +503,12 @@ def llmd_deployment(name: str) -> dict:
     return kubectl_json("get", "deployment", "-n", NS_INFERENCE, f"{name}-llmd")
 
 
-def chk_llmd_roundtrip(c: Ctx):
+def start_llmd_model(c: Ctx) -> None:
+    """Deploy the llm-d smoke model and tune it for the KEDA check (sets
+    c.llmd_model / c.llmd_created). Raises if it cannot."""
     name = model_name_from_id(LLMD_SMOKE_MODEL)
     if c.subject.find_model_file(name):
-        return False, f"a model named {name} is already deployed; cannot add the llm-d copy under the same name"
+        raise RuntimeError(f"a model named {name} is already deployed; cannot add the llm-d copy under the same name")
     c.llmd_created = deploy_model(c, name, LLMD_SMOKE_MODEL, "--tier", "llm-d", "--users", "4", "--seq", "2048",
                                   under="workloads/scale-models")
     c.llmd_model = name
@@ -504,6 +518,36 @@ def chk_llmd_roundtrip(c: Ctx):
     with open(c.subject.path(rel), "w", encoding="utf-8") as fh:
         fh.write(tuned)
     push_model_edit(c, rel, f"e2e: tune {name} for the KEDA autoscaling check")
+
+
+def start_gpu_models(c: Ctx) -> None:
+    """Deploy both GPU smoke models before the first check, so their GPU nodes
+    launch (about 4-5 minutes each) while the gateway and SSO checks run instead
+    of one after the other later. Errors are kept on c and reported by the
+    check that needs the model; they never abort the suite."""
+    t0 = time.time()
+    try:
+        name = model_name_from_id(GPU_SMOKE_MODEL)
+        c.gpu_created = deploy_model(c, name, GPU_SMOKE_MODEL, "--tier", "vllm", "--users", "1", "--seq", "2048")
+        c.gpu_started = True
+    except (Exception, subprocess.SubprocessError) as e:  # noqa: BLE001 - reported by the GPU check
+        c.gpu_start_error = f"{type(e).__name__}: {e}"
+    if c.with_llmd and not c.llmd_model:
+        try:
+            start_llmd_model(c)
+        except (Exception, subprocess.SubprocessError) as e:  # noqa: BLE001 - reported by the llm-d check
+            c.llmd_start_error = f"{type(e).__name__}: {e}"
+    log(f"[inference] GPU smoke models started up front ({time.time() - t0:.0f}s); their nodes launch "
+        "while the other checks run")
+
+
+def chk_llmd_roundtrip(c: Ctx):
+    if c.llmd_start_error:
+        c.llmd_start_error, err = None, c.llmd_start_error
+        return False, f"starting the llm-d model at the beginning of the suite failed: {err}"
+    if not c.llmd_model:
+        start_llmd_model(c)
+    name = c.llmd_model
     wait_endpoint_ready(c, "llmdendpoint", name)
     wait_alias(c, name, c.timeouts["bedrock"])
     code, _body = chat_via_service(c.litellm_key(), name)
@@ -747,9 +791,19 @@ def run_check(domain: str, name: str, fn, c: Ctx, prefix: str = "") -> CheckResu
     return r
 
 
-def run_suite(c: Ctx, prefix: str = "") -> list[CheckResult]:
+def run_suite(c: Ctx, prefix: str = "", only: set[str] | None = None) -> list[CheckResult]:
+    """Run every check in order (or just the names in `only`, for `e2e.py check`)."""
     results = []
-    for domain, name, fn, when in CHECKS:
+    selected = [x for x in CHECKS if not only or x[1] in only]
+    gpu_checks = {"vllmendpoint-gpu-chat", "llmdendpoint-routed-chat"}
+    wants_gpu = any(n in gpu_checks and not (w and w(c)) for _d, n, _f, w in selected)
+    started = False
+    for domain, name, fn, when in selected:
+        # Right after the GitOps checks: starting earlier would make the "all Argo CD
+        # apps healthy" check wait for the new GPU nodes too.
+        if wants_gpu and not started and domain != "gitops":
+            start_gpu_models(c)
+            started = True
         reason = when(c) if when else None
         if reason:
             results.append(CheckResult(domain, prefix + name, True, f"skipped: {reason}", 0, skipped=True))

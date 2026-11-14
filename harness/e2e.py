@@ -415,6 +415,58 @@ class Runner:
         return 0 if self.report.passed else 1
 
 
+LONG_LIVED_NOTE = ("note: model checks deploy and remove their test models with git commits on the env's "
+                   "branch (as `platformctl new-model` does); on a long-lived env such as dev those commits stay "
+                   "in its history.")
+
+
+def run_check_only(a: argparse.Namespace) -> int:
+    """`e2e.py check`: the smoke checks against an environment that already runs
+    (dev, or an E2E env kept with --keep), with no provision, upgrade or teardown.
+    For trying a harness change in about 15-20 minutes before it is used in a
+    release run. --survival also seeds, snapshots twice and compares, which
+    exercises the survival code without an upgrade (it leaves the seeded team)."""
+    only = {n.strip() for n in a.only.split(",") if n.strip()} if a.only else None
+    unknown = sorted(only - {n for _d, n, _f, _w in checks.CHECKS}) if only else []
+    if unknown:
+        raise SubjectError(f"unknown check(s): {', '.join(unknown)}")
+    subject = Subject(a.subject_dir, a.env, a.region, dry_run=False)
+    tf = subject.path(subject.tfvars_rel)
+    if not os.path.isfile(tf):
+        raise SubjectError(f"{tf} not found: --subject-dir must be the checkout {a.env} was deployed from")
+    if subject.git("status", "--porcelain", "--untracked-files=no").stdout.strip():
+        raise SubjectError(f"{subject.root} has uncommitted changes; the model checks commit and push there")
+    upstream = subject.git("rev-parse", "--abbrev-ref", "--symbolic-full-name", "@{u}", check=False)
+    if upstream.returncode != 0:
+        raise SubjectError(f"{subject.root} has no upstream branch; the model checks push to the branch Argo CD tracks")
+    cluster = cluster_name(resources_prefix(subject.read(subject.tfvars_rel)), a.env)
+    log(f"check-only: env {a.env}, cluster {cluster}, branch {upstream.stdout.strip()}, profile {a.profile}")
+    if not a.env.startswith("e2e"):
+        log(LONG_LIVED_NOTE)
+    subject.run("aws", "eks", "update-kubeconfig", "--name", cluster, "--region", a.region, "--alias", a.env)
+    rep = Report("check", a.profile, a.env, {"env": a.env})
+    ctx = checks.Ctx(subject, cluster, a.profile, a.with_llmd)
+    if a.survival:
+        t0 = time.time()
+        try:
+            seed = survival.seed(ctx)
+            before = survival.snapshot(ctx, seed)
+            after = survival.snapshot(ctx, seed)
+            rep.survival = {"before": before, "after": after}
+            rep.results.append(checks.CheckResult("lifecycle", "seed", True, "seeded and snapshotted twice", time.time() - t0))
+            for name, ok, detail in survival.compare(before, after):
+                rep.results.append(checks.CheckResult("survival", name, ok, detail))
+        except Exception as e:  # noqa: BLE001 - recorded like a lifecycle step
+            rep.results.append(checks.CheckResult("lifecycle", "seed", False, f"{type(e).__name__}: {e}", time.time() - t0))
+    rep.results += checks.run_suite(ctx, only=only)
+    rep.finished = now_iso()
+    os.makedirs(a.report_dir, exist_ok=True)
+    with open(os.path.join(a.report_dir, f"{a.env}-check.md"), "w", encoding="utf-8") as fh:
+        fh.write(render_markdown(rep))
+    print(render_markdown(rep))
+    return 0 if rep.passed else 1
+
+
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     ap = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
     sub = ap.add_subparsers(dest="mode", required=True)
@@ -423,6 +475,15 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     u = sub.add_parser("upgrade", help="provision <base>, seed, upgrade to <candidate>, verify, teardown")
     u.add_argument("base")
     u.add_argument("candidate")
+    c = sub.add_parser("check", help="smoke checks against a running env (no provision/upgrade/teardown)")
+    c.add_argument("--env", required=True, help="environment name (its <env>.tfvars must be in --subject-dir)")
+    c.add_argument("--subject-dir", required=True, help="the checkout the env was deployed from (e.g. .worktrees/dev)")
+    c.add_argument("--profile", choices=tfvars.PROFILES, default="default")
+    c.add_argument("--region", default=os.environ.get("E2E_REGION") or DEFAULT_REGION)
+    c.add_argument("--only", default="", help="comma-separated check names (default: all)")
+    c.add_argument("--with-llmd", action="store_true", help="include the llm-d and KEDA checks")
+    c.add_argument("--survival", action="store_true", help="also seed, snapshot twice and run the survival rules")
+    c.add_argument("--report-dir", default=os.path.join(os.getcwd(), "reports"))
     gh_repo = os.environ.get("GITHUB_REPOSITORY", "")
     for p in (f, u):
         p.add_argument("--profile", choices=tfvars.PROFILES, default="default")
@@ -438,6 +499,9 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         p.add_argument("--with-llmd", action="store_true", help="also exercise the llm-d tier (second GPU node)")
         p.add_argument("--dry-run", action="store_true", help="print planned steps and rendered tfvars only")
     a = ap.parse_args(argv)
+    if a.mode == "check":
+        a.dry_run = False
+        return a
     if not a.dry_run:
         missing = [n for n, v in (("--repo-url", a.repo_url), ("--operator-cidr", a.operator_cidr)) if not v]
         if missing:
@@ -455,6 +519,12 @@ def main(argv: list[str] | None = None) -> int:
             and os.path.exists("/usr/bin/caffeinate")):
         os.environ["E2E_CAFFEINATED"] = "1"
         os.execv("/usr/bin/caffeinate", ["caffeinate", "-ims", sys.executable, *sys.argv])
+    if a.mode == "check":
+        try:
+            return run_check_only(a)
+        except SubjectError as e:
+            print(f"error: {e}", file=sys.stderr)
+            return 2
     return Runner(a).run()
 
 

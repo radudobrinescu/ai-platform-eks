@@ -479,3 +479,156 @@ def test_llmd_checks_never_reuse_a_model_that_upgrade_mode_seeds():
     import survival
     seeded = {checks.model_name_from_id(survival.SEED_GPU_MODEL), checks.model_name_from_id(checks.GPU_SMOKE_MODEL)}
     assert checks.model_name_from_id(checks.LLMD_SMOKE_MODEL) not in seeded
+
+
+# --------------------------------------------------------------------------- #
+# GPU models start up front, after the GitOps checks                          #
+# --------------------------------------------------------------------------- #
+def test_gpu_models_start_after_gitops_checks_and_before_the_rest(monkeypatch):
+    import checks
+    order = []
+    monkeypatch.setattr(checks, "start_gpu_models", lambda c: order.append("START"))
+    monkeypatch.setattr(checks, "log", lambda *_: None)
+    fake = [(d, n, (lambda c, n=n: (order.append(n), (True, "ok"))[1]), None) for d, n in
+            [("gitops", "argocd-applications-converged"), ("gitops", "kro-rgds-active"), ("infra", "eks-cluster-version"),
+             ("gateway", "litellm-ready"), ("inference", "vllmendpoint-gpu-chat"), ("inference", "llmdendpoint-routed-chat")]]
+    monkeypatch.setattr(checks, "CHECKS", fake)
+    checks.run_suite(checks.Ctx(subject=None, cluster="x", with_llmd=True))
+    assert order == ["argocd-applications-converged", "kro-rgds-active", "START", "eks-cluster-version",
+                     "litellm-ready", "vllmendpoint-gpu-chat", "llmdendpoint-routed-chat"]
+
+
+def test_no_gpu_start_when_every_gpu_check_is_skipped(monkeypatch):
+    import checks
+    started = []
+    monkeypatch.setattr(checks, "start_gpu_models", lambda c: started.append(1))
+    monkeypatch.setattr(checks, "CHECKS", [("gitops", "a", lambda c: (True, ""), None),
+                                           ("inference", "vllmendpoint-gpu-chat", lambda c: (True, ""), lambda c: "skip")])
+    checks.run_suite(checks.Ctx(subject=None, cluster="x"))
+    assert started == []
+
+
+def test_a_failed_up_front_start_is_reported_by_the_check_that_needs_it(monkeypatch):
+    import checks
+    monkeypatch.setattr(checks, "log", lambda *_: None)
+
+    def boom(*a, **k):
+        raise RuntimeError("platformctl new-model --deploy failed (exit 1)")
+    monkeypatch.setattr(checks, "deploy_model", boom)
+    monkeypatch.setattr(checks, "start_llmd_model", boom)
+    c = checks.Ctx(subject=None, cluster="x", with_llmd=True)
+    checks.start_gpu_models(c)
+    ok, detail = checks.chk_gpu_model_roundtrip(c)
+    assert not ok and "starting qwen2-5-0-5b-instruct at the beginning of the suite failed" in detail
+    ok, detail = checks.chk_llmd_roundtrip(c)
+    assert not ok and "starting the llm-d model at the beginning of the suite failed" in detail
+
+
+# --------------------------------------------------------------------------- #
+# e2e.py check: smoke checks against an env that already runs                 #
+# --------------------------------------------------------------------------- #
+def _git(cwd, *args):
+    subprocess.run(["git", *args], cwd=cwd, check=True, capture_output=True, text=True)
+
+
+def _env_checkout(tmp_path, env="dev", upstream=True):
+    """A checkout like .worktrees/dev: <env>.tfvars (gitignored) and a tracked branch."""
+    remote, work = tmp_path / "remote.git", tmp_path / "work"
+    _git(tmp_path, "init", "-q", "--bare", str(remote))
+    _git(tmp_path, "init", "-q", "-b", f"env/{env}", str(work))
+    (work / ".gitignore").write_text("*.tfvars\n")
+    vars_dir = work / "terraform" / "00.global" / "vars"
+    vars_dir.mkdir(parents=True)
+    (vars_dir / f"{env}.tfvars").write_text('resources_prefix = "ai-platform"\n')
+    _git(work, "add", ".")
+    _git(work, "commit", "-qm", "init")
+    if upstream:
+        _git(work, "remote", "add", "origin", str(remote))
+        _git(work, "push", "-qu", "origin", f"env/{env}")
+    return work
+
+
+def _check_args(work, tmp_path, *extra):
+    return e2e.parse_args(["check", "--env", "dev", "--subject-dir", str(work),
+                           "--region", "eu-central-1", "--report-dir", str(tmp_path / "reports"), *extra])
+
+
+def test_check_mode_needs_no_repo_url_or_operator_cidr():
+    a = e2e.parse_args(["check", "--env", "dev", "--subject-dir", "."])
+    assert a.mode == "check" and a.dry_run is False and a.only == "" and not a.survival
+
+
+def test_check_mode_rejects_unknown_check_names_before_touching_aws(tmp_path, monkeypatch):
+    calls = []
+    monkeypatch.setattr(e2e.Subject, "run", lambda self, *cmd, **k: calls.append(cmd))
+    a = _check_args(tmp_path, tmp_path, "--only", "litellm-ready,no-such-check")
+    with pytest.raises(e2e.SubjectError, match="unknown check.*no-such-check"):
+        e2e.run_check_only(a)
+    assert calls == []
+
+
+def test_check_mode_refuses_a_checkout_without_the_env_tfvars(tmp_path):
+    work = _env_checkout(tmp_path, env="other")
+    with pytest.raises(e2e.SubjectError, match="dev.tfvars not found"):
+        e2e.run_check_only(_check_args(work, tmp_path))
+
+
+def test_check_mode_refuses_uncommitted_changes(tmp_path):
+    work = _env_checkout(tmp_path)
+    (work / ".gitignore").write_text("changed\n*.tfvars\n")
+    with pytest.raises(e2e.SubjectError, match="uncommitted changes"):
+        e2e.run_check_only(_check_args(work, tmp_path))
+
+
+def test_check_mode_refuses_a_branch_without_upstream(tmp_path):
+    work = _env_checkout(tmp_path, upstream=False)
+    with pytest.raises(e2e.SubjectError, match="no upstream branch"):
+        e2e.run_check_only(_check_args(work, tmp_path))
+
+
+def test_check_mode_runs_only_the_named_checks_and_writes_a_report(tmp_path, monkeypatch):
+    work = _env_checkout(tmp_path)
+    aws, seen = [], {}
+    real_run = e2e.Subject.run
+
+    def fake_run(self, *cmd, **k):
+        if cmd[0] == "aws":
+            aws.append(cmd)
+            return subprocess.CompletedProcess(list(cmd), 0, "", "")
+        return real_run(self, *cmd, **k)
+
+    def fake_suite(ctx, prefix="", only=None):
+        seen.update(cluster=ctx.cluster, only=only, with_llmd=ctx.with_llmd)
+        return [checks.CheckResult("gateway", "litellm-ready", True, "ok")]
+
+    monkeypatch.setattr(e2e.Subject, "run", fake_run)
+    monkeypatch.setattr(e2e.checks, "run_suite", fake_suite)
+    monkeypatch.setattr(e2e, "log", lambda *_: None)
+    rc = e2e.run_check_only(_check_args(work, tmp_path, "--only", "litellm-ready"))
+    assert rc == 0
+    assert aws == [("aws", "eks", "update-kubeconfig", "--name", "ai-platform-dev", "--region", "eu-central-1",
+                    "--alias", "dev")]
+    assert seen == {"cluster": "ai-platform-dev", "only": {"litellm-ready"}, "with_llmd": False}
+    report = (tmp_path / "reports" / "dev-check.md").read_text()
+    assert "litellm-ready" in report
+
+
+def test_check_mode_fails_when_a_check_fails(tmp_path, monkeypatch):
+    work = _env_checkout(tmp_path)
+    real_run = e2e.Subject.run
+    monkeypatch.setattr(e2e.Subject, "run", lambda self, *cmd, **k: subprocess.CompletedProcess(list(cmd), 0, "", "")
+                        if cmd[0] == "aws" else real_run(self, *cmd, **k))
+    monkeypatch.setattr(e2e.checks, "run_suite",
+                        lambda ctx, prefix="", only=None: [checks.CheckResult("gateway", "litellm-ready", False, "down")])
+    monkeypatch.setattr(e2e, "log", lambda *_: None)
+    assert e2e.run_check_only(_check_args(work, tmp_path)) == 1
+
+
+def test_run_suite_only_runs_the_selected_checks(monkeypatch):
+    ran = []
+    monkeypatch.setattr(checks, "log", lambda *_: None)
+    monkeypatch.setattr(checks, "start_gpu_models", lambda c: ran.append("START"))
+    monkeypatch.setattr(checks, "CHECKS", [(d, n, (lambda c, n=n: (ran.append(n), (True, ""))[1]), None) for d, n in
+                                           [("gitops", "a"), ("gateway", "b"), ("inference", "vllmendpoint-gpu-chat")]])
+    results = checks.run_suite(checks.Ctx(subject=None, cluster="x"), only={"b"})
+    assert ran == ["b"] and [r.name for r in results] == ["b"]
