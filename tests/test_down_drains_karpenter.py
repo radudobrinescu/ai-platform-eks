@@ -51,7 +51,8 @@ def _run(tmp_path, **env):
     calls = tmp_path / "calls"
     calls.write_text("")
     script = ("set -euo pipefail\nlog(){ echo \"LOG $*\"; }\nok(){ echo \"OK $*\"; }\nwarn(){ echo \"WARN $*\"; }\n"
-              + _functions("_drain_karpenter_nodes", "_karpenter_nodeclaims_gone", "_karpenter_drain_blockers")
+              + _functions("_drain_karpenter_nodes", "_karpenter_nodeclaims_gone", "_karpenter_drain_blockers",
+                           "_wait_progress", "_probe_karpenter_drain")
               + "_drain_karpenter_nodes e2e\necho done\n")
     e = {**os.environ, "PATH": f"{tmp_path}:{os.environ['PATH']}", "CALLS": str(calls), "AWS_REGION": "eu-central-1",
          "PLATFORMCTL_KARPENTER_DRAIN_INTERVAL": "0", **env}
@@ -108,31 +109,67 @@ def _run_fn(tmp_path, fn, call, kubectl_body, **env):
     calls = tmp_path / "calls"
     calls.write_text("")
     script = ("set -euo pipefail\nlog(){ echo \"LOG $*\"; }\nok(){ echo \"OK $*\"; }\nwarn(){ echo \"WARN $*\"; }\n"
-              + _functions(fn) + call + "\necho done\n")
+              + _functions(*fn.split()) + call + "\necho done\n")
     e = {**os.environ, "PATH": f"{tmp_path}:{os.environ['PATH']}", "CALLS": str(calls),
          "PLATFORMCTL_KARPENTER_DRAIN_INTERVAL": "0", **env}
     return subprocess.run(["bash", "-c", script], capture_output=True, text=True, env=e, timeout=30), calls.read_text()
 
 
+APPS_FNS = "_wait_argocd_apps_gone _wait_progress _probe_argocd_apps"
+# APPS_AFTER: number of app listings that still show an app. PODS: "shrink" makes
+# the pod count drop on every listing (progress), "stuck" keeps it constant.
 APPS_FAKE = r"""#!/bin/bash
 echo "kubectl $*" >> "$CALLS"
-n=$(grep -c "get applications" "$CALLS")
-if [ "$n" -le "${APPS_AFTER:-0}" ]; then echo application.argoproj.io/litellm; fi
+case "$*" in
+  *"get applications.argoproj.io -n argocd -o name"*)
+    n=$(grep -c "get applications.argoproj.io -n argocd -o name" "$CALLS")
+    if [ "$n" -le "${APPS_AFTER:-0}" ]; then echo application.argoproj.io/litellm; fi ;;
+  *"get applications.argoproj.io -n argocd -o jsonpath"*) echo "  [drain] app litellm: Progressing, finalizers [resources-finalizer.argocd.argoproj.io]" ;;
+  *"get pods -A --no-headers"*)
+    n=$(grep -c "get pods -A --no-headers" "$CALLS")
+    left=$(( ${PODS_START:-5} - ( PODS_SHRINK ? n : 0 ) ))
+    for i in $(seq 1 $(( left > 0 ? left : 0 ))); do echo ai-platform; done
+    echo kube-system ;;
+esac
 """
 
 
 def test_waits_for_argocd_apps_to_be_deleted(tmp_path):
-    r, calls = _run_fn(tmp_path, "_wait_argocd_apps_gone", "_wait_argocd_apps_gone e2e", APPS_FAKE, APPS_AFTER="2")
+    r, calls = _run_fn(tmp_path, APPS_FNS, "_wait_argocd_apps_gone e2e", APPS_FAKE, APPS_AFTER="2")
     assert r.returncode == 0 and "done" in r.stdout, r.stderr
-    assert calls.count("get applications") == 3 and "OK Argo CD applications" in r.stdout
+    assert calls.count("get applications.argoproj.io -n argocd -o name") == 3 and "OK Argo CD applications" in r.stdout
 
 
 def test_apps_wait_times_out_and_continues(tmp_path):
-    r, _ = _run_fn(tmp_path, "_wait_argocd_apps_gone", "_wait_argocd_apps_gone e2e", APPS_FAKE,
+    r, _ = _run_fn(tmp_path, APPS_FNS, "_wait_argocd_apps_gone e2e", APPS_FAKE,
                    APPS_AFTER="999", PLATFORMCTL_APPS_DELETE_TIMEOUT="0")
-    assert r.returncode == 0 and "WARN Argo CD applications still deleting" in r.stdout
+    assert r.returncode == 0 and "WARN Argo CD applications not gone" in r.stdout
 
 
 def test_apps_wait_runs_before_the_node_drain():
     body = _functions("_predown_drain")
     assert body.index('_wait_argocd_apps_gone "$env"') < body.index('_drain_karpenter_nodes "$env"')
+
+
+def test_apps_wait_stops_once_nothing_changes(tmp_path):
+    r, calls = _run_fn(tmp_path, APPS_FNS, "_wait_argocd_apps_gone e2e", APPS_FAKE,
+                       APPS_AFTER="999", PODS_SHRINK="0", PLATFORMCTL_STALL_TIMEOUT="0")
+    assert r.returncode == 0 and "done" in r.stdout, r.stderr
+    assert calls.count("get applications.argoproj.io -n argocd -o name") == 2  # second identical probe = stalled
+    assert "WARN Argo CD applications not gone after" in r.stdout and "1 apps, 5 pods left, no progress" in r.stdout
+    assert "[drain] app litellm: Progressing" in r.stdout  # says what is left
+
+
+def test_apps_wait_keeps_waiting_while_pods_disappear(tmp_path):
+    r, calls = _run_fn(tmp_path, APPS_FNS, "_wait_argocd_apps_gone e2e", APPS_FAKE,
+                       APPS_AFTER="4", PODS_SHRINK="1", PLATFORMCTL_STALL_TIMEOUT="0")
+    assert r.returncode == 0 and "OK Argo CD applications and their workloads are deleted" in r.stdout, r.stdout
+    assert calls.count("get applications.argoproj.io -n argocd -o name") == 5
+
+
+def test_drain_forces_as_soon_as_it_stops_progressing(tmp_path):
+    r, calls = _run(tmp_path, NODECLAIMS_AFTER="999", GONE_AFTER_TERMINATE="1",
+                    PLATFORMCTL_KARPENTER_DRAIN_TIMEOUT="300", PLATFORMCTL_STALL_TIMEOUT="0")
+    assert r.returncode == 0 and "done" in r.stdout, r.stderr
+    assert "stopped progressing" in r.stdout and "1 nodeclaims, 1 pods left" in r.stdout
+    assert "aws ec2 terminate-instances --region eu-central-1 --instance-ids i-0abc123" in calls
