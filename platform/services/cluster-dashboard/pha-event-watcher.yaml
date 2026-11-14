@@ -70,7 +70,7 @@ spec:
             - |
               set -eu
               pip install --no-cache-dir --target=/pydeps \
-                  kubernetes==31.0.0 \
+                  kubernetes==37.0.2 \
                   psycopg[binary]==3.3.9
           volumeMounts:
             - name: pydeps
