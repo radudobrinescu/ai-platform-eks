@@ -54,7 +54,7 @@ jobs:
           git ls-files '*.py' | grep -v '/.terraform/' | xargs -r python3 -m py_compile
       - name: ruff (non-blocking style report)
         run: |
-          pip install ruff==0.17.4
+          pip install ruff==0.17.5
           # Report only — style drift shouldn't block a platform PR, but surface it.
           ruff check --output-format=github ops/ platform/ || true
 
