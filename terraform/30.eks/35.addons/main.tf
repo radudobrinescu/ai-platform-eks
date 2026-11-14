@@ -19,7 +19,7 @@ data "aws_iam_policy_document" "lbc_v3_supplement" {
 locals {
   # One pin for the AWS Load Balancer Controller chart and its CRDs. Since LBC
   # v3.0.0 the chart version aligns with the app version.
-  lbc_chart_version = "3.6.2"
+  lbc_chart_version = "3.6.3"
 }
 
 # The controller's CRDs, rendered from the same chart version and applied BEFORE

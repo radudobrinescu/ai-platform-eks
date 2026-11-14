@@ -131,7 +131,7 @@ module "karpenter" {
 ################################################################################
 locals {
   # One pin for the controller and its CRDs.
-  karpenter_chart_version = "1.15.1"
+  karpenter_chart_version = "1.15.2"
 }
 
 # Karpenter's CRDs, rendered from the same chart version and applied BEFORE the
