@@ -41,7 +41,7 @@ resource "helm_release" "argocd_selfmanaged" {
 locals {
   kro_selfmanaged = local.capabilities.kro && !local.use_managed_capabilities
   # One pin for the kro chart and its CRDs.
-  kro_chart_version = "0.9.4"
+  kro_chart_version = "0.10.0"
 }
 
 # kro's own CRDs (ResourceGraphDefinition, GraphRevision, and Graph from 0.10),
