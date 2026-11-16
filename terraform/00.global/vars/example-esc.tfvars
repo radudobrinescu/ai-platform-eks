@@ -20,7 +20,7 @@ shared_config = {
 # cluster_endpoint_public_access_cidrs = ["<REPLACE>/32"]   # e.g. ["203.0.113.10/32"]
 
 cluster_config = {
-  kubernetes_version  = "1.36"
+  kubernetes_version  = "1.37"
   eks_auto_mode       = false
   private_eks_cluster = false
   create_mng_system   = true # Not required when using auto mode — runs Karpenter, CoreDNS, VPC CNI
