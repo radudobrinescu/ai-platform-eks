@@ -172,8 +172,30 @@ def _ge(after, before) -> bool:
     return a is not None and b is not None and a >= b
 
 
-def compare(before: dict, after: dict) -> list[tuple[str, bool, str]]:
+# Survival rules a release breaks on purpose: (component, major before, major
+# after) -> (rule, why). The rule then checks that the store works again after
+# the upgrade instead of that its old data is still there.
+PLANNED_RESETS: dict[tuple[str, str, str], tuple[str, str]] = {
+    ("chart/langfuse", "1", "2"): (
+        "langfuse-traces-kept",
+        "Langfuse chart 2 (Langfuse 4) starts with empty trace storage; 1.x traces are "
+        "not carried over (owner decision 2026-11-16)"),
+}
+
+
+def _major(version: str | None) -> str:
+    return (version or "").lstrip("v").split(".", 1)[0]
+
+
+def planned_resets(base: dict, candidate: dict) -> dict[str, str]:
+    """{rule: why} for the resets this base -> candidate upgrade makes on purpose."""
+    return {rule: why for (comp, old, new), (rule, why) in PLANNED_RESETS.items()
+            if _major(base.get(comp)) == old and _major(candidate.get(comp)) == new}
+
+
+def compare(before: dict, after: dict, resets: dict[str, str] | None = None) -> list[tuple[str, bool, str]]:
     """Return (check name, ok, detail) per survival rule."""
+    resets = resets or {}
     out = []
     bt, at = before.get("team") or {}, after.get("team") or {}
     out.append(("team-survived",
@@ -195,8 +217,14 @@ def compare(before: dict, after: dict) -> list[tuple[str, bool, str]]:
     out.append(("seeded-models-answer", bool(bm) and not bad,
                 f"{len(bm) - len(bad)}/{len(bm)} seeded models listed and answering" + (f"; failing: {bad}" if bad else "")))
     bt_n, at_n = before.get("langfuse_traces"), after.get("langfuse_traces")
-    out.append(("langfuse-traces-kept", _ge(at_n, bt_n),
-                f"traces {bt_n} -> {at_n}" + ("; could not read the count before the upgrade" if bt_n is None else "")))
+    if "langfuse-traces-kept" in resets:
+        # The snapshot chats on every seeded model, so new traces must show up.
+        out.append(("langfuse-traces-kept", _ge(at_n, 1),
+                    f"reset by design ({resets['langfuse-traces-kept']}); traces {bt_n} -> {at_n}, "
+                    "new chats after the upgrade " + ("traced" if _ge(at_n, 1) else "NOT traced")))
+    else:
+        out.append(("langfuse-traces-kept", _ge(at_n, bt_n),
+                    f"traces {bt_n} -> {at_n}" + ("; could not read the count before the upgrade" if bt_n is None else "")))
     bo, ao = before.get("openwebui_user_ids") or {}, after.get("openwebui_user_ids") or {}
     changed = [e for e, i in bo.items() if not i or ao.get(e) != i]
     out.append(("openwebui-users-kept", bool(bo) and not changed,

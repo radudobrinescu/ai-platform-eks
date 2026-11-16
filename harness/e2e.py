@@ -366,7 +366,9 @@ class Runner:
             def do_compare():
                 after = survival.snapshot(self.make_ctx(), state["seed"])
                 self.report.survival["after"] = after
-                for name, ok, detail in survival.compare(state["before"], after):
+                resets = survival.planned_resets(self.report.versions.get("base") or {},
+                                                 self.report.versions.get("candidate") or {})
+                for name, ok, detail in survival.compare(state["before"], after, resets):
                     self.report.results.append(checks.CheckResult("survival", name, ok, detail))
                 return True, "snapshot after upgrade taken"
             self.step("survival-snapshot", do_compare)

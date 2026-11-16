@@ -632,3 +632,44 @@ def test_run_suite_only_runs_the_selected_checks(monkeypatch):
                                            [("gitops", "a"), ("gateway", "b"), ("inference", "vllmendpoint-gpu-chat")]])
     results = checks.run_suite(checks.Ctx(subject=None, cluster="x"), only={"b"})
     assert ran == ["b"] and [r.name for r in results] == ["b"]
+
+
+# --------------------------------------------------------------------------- #
+# Langfuse trace counts on Langfuse 3 and 4                                   #
+# --------------------------------------------------------------------------- #
+def test_trace_count_reads_langfuse_4_and_follows_the_cursor():
+    import json as _json
+    pages = {"": {"data": [{"traceId": "t1"}, {"traceId": "t1"}, {"traceId": "t2"}], "meta": {"cursor": "c1"}},
+             "c1": {"data": [], "meta": {"cursor": "c2"}},
+             "c2": {"data": [{"traceId": "t3"}, {"id": "o9"}], "meta": {"cursor": None}}}
+    seen = []
+
+    def get(path):
+        seen.append(path)
+        from urllib.parse import parse_qs, urlparse
+        q = parse_qs(urlparse(path).query)
+        assert urlparse(path).path == "/api/public/v2/observations" and q["fromStartTime"] == ["2026-11-16T10:00:00Z"]
+        return 200, _json.dumps(pages[q.get("cursor", [""])[0]])
+    assert checks._count_traces_v2(get, "2026-11-16T10:00:00Z") == 3 and len(seen) == 3
+
+
+def test_trace_count_falls_back_to_langfuse_3():
+    import json as _json
+
+    def get(path):
+        if path.startswith("/api/public/v2/"):
+            return 404, "not found"
+        assert path == "/api/public/traces?limit=1"
+        return 200, _json.dumps({"data": [{}], "meta": {"totalItems": 7}})
+    assert checks._count_traces_v2(get, None) is None
+    assert checks._count_traces_v1(get, None) == 7
+
+
+def test_versions_read_digest_pinned_images_and_split_helm_values(tmp_path):
+    (tmp_path / "platform" / "x").mkdir(parents=True)
+    (tmp_path / "platform" / "x" / "a.yaml").write_text(
+        "      containers:\n        - image: clickhouse/clickhouse-server:26.8.38.9@sha256:" + "a" * 64 + "\n"
+        "redis:\n  image:\n    registry: docker.io\n    repository: valkey/valkey\n"
+        '    tag: "8.0.12-alpine@sha256:' + "b" * 64 + '"\n')
+    v = versions.read_versions(str(tmp_path))
+    assert v["image/clickhouse/clickhouse-server"] == "26.8.38.9" and v["image/valkey/valkey"] == "8.0.12-alpine"

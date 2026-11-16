@@ -49,7 +49,11 @@ _PIP_FILES = [
     "platform/services/cluster-dashboard/scripts/event_watcher.py",
 ]
 _PIP_RX = re.compile(r"(?<![\w.-])([A-Za-z][A-Za-z0-9._-]*)(?:\[[^\]]+\])?==([0-9][A-Za-z0-9.]*)")
-_IMAGE_RX = re.compile(r"(?m)^\s*(?:-\s*)?image:\s*\"?([\w./-]+):([\w.-]+)\"?\s*$")
+# `image: repo:tag`, optionally `@sha256:<digest>` (the tag is the version shown).
+_IMAGE_RX = re.compile(r"(?m)^\s*(?:-\s*)?image:\s*\"?([\w./-]+):([\w.-]+)(?:@sha256:[a-f0-9]{64})?\"?\s*$")
+# Helm values that split an image: `repository: x` followed by `tag: "y[@digest]"`.
+_VALUES_IMAGE_RX = re.compile(
+    r"(?m)^\s*repository:\s*\"?([\w./-]+)\"?\s*\n\s*tag:\s*\"?([\w.-]+)(?:@sha256:[a-f0-9]{64})?\"?\s*$")
 _TF_MODULE_RX = re.compile(r'source\s*=\s*"([^"]+)"\s*\n\s*version\s*=\s*"([^"]+)"')
 
 
@@ -94,8 +98,10 @@ def read_versions(root: str) -> dict[str, str]:
 
     for path in sorted(glob.glob(os.path.join(root, "platform", "**", "*.yaml"), recursive=True)):
         with open(path, encoding="utf-8") as fh:
-            for m in _IMAGE_RX.finditer(fh.read()):
-                _add(v, f"image/{m.group(1)}", m.group(2))
+            text = fh.read()
+            for rx in (_IMAGE_RX, _VALUES_IMAGE_RX):
+                for m in rx.finditer(text):
+                    _add(v, f"image/{m.group(1)}", m.group(2))
 
     for path in sorted(glob.glob(os.path.join(root, "terraform", "**", "*.tf"), recursive=True)):
         if "/.terraform/" in path:

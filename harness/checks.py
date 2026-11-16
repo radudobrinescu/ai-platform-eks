@@ -26,6 +26,7 @@ import os
 import re
 import subprocess
 import time
+import urllib.parse
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 
@@ -340,17 +341,50 @@ def chk_litellm_ready(c: Ctx):
     return code == 200, detail
 
 
-def langfuse_trace_count(since: str | None = None) -> int | None:
-    pk = secret_value(NS_PLATFORM, "langfuse-litellm-keys", "LANGFUSE_PUBLIC_KEY")
-    sk = secret_value(NS_PLATFORM, "langfuse-litellm-keys", "LANGFUSE_SECRET_KEY")
-    auth = base64.b64encode(f"{pk}:{sk}".encode()).decode()
+LANGFUSE_EPOCH = "2020-01-01T00:00:00Z"
+
+
+def _count_traces_v2(get, since: str | None) -> int | None:
+    """Langfuse 4: distinct trace ids among observations (Observations API v2,
+    cursor-paginated, newest first). None when the API is not there (Langfuse 3)."""
+    now = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+    traces: set[str] = set()
+    cursor = ""
+    for _page in range(50):
+        q = urllib.parse.urlencode({"fromStartTime": since or LANGFUSE_EPOCH, "toStartTime": now, "limit": 1000,
+                                    **({"cursor": cursor} if cursor else {})})
+        code, body = get(f"/api/public/v2/observations?{q}")
+        if code != 200:
+            return None
+        d = json.loads(body)
+        traces.update(o["traceId"] for o in d.get("data", []) if o.get("traceId"))
+        cursor = (d.get("meta") or {}).get("cursor") or ""
+        if not cursor:
+            break
+    return len(traces)
+
+
+def _count_traces_v1(get, since: str | None) -> int | None:
+    """Langfuse 3: GET /api/public/traces (removed in Langfuse 4)."""
     q = f"fromTimestamp={since}&limit=1" if since else "limit=1"
-    with PortForward(NS_PLATFORM, "svc/langfuse-web", 3000) as pf:
-        code, body = http("GET", f"{pf.base}/api/public/traces?{q}", headers={"Authorization": f"Basic {auth}"})
+    code, body = get(f"/api/public/traces?{q}")
     if code != 200:
         return None
     d = json.loads(body)
     return int((d.get("meta") or {}).get("totalItems", len(d.get("data", []))))
+
+
+def langfuse_trace_count(since: str | None = None) -> int | None:
+    """Traces in the platform project (since a time, if given), on Langfuse 3 or 4:
+    upgrade jobs read the count on the base release and again after the upgrade."""
+    pk = secret_value(NS_PLATFORM, "langfuse-litellm-keys", "LANGFUSE_PUBLIC_KEY")
+    sk = secret_value(NS_PLATFORM, "langfuse-litellm-keys", "LANGFUSE_SECRET_KEY")
+    auth = base64.b64encode(f"{pk}:{sk}".encode()).decode()
+    with PortForward(NS_PLATFORM, "svc/langfuse-web", 3000) as pf:
+        def get(path):
+            return http("GET", f"{pf.base}{path}", headers={"Authorization": f"Basic {auth}"})
+        n = _count_traces_v2(get, since)
+        return n if n is not None else _count_traces_v1(get, since)
 
 
 def _langfuse_has_trace_since(c: Ctx) -> tuple[bool, str]:

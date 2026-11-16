@@ -99,3 +99,33 @@ def test_unreadable_before_count_still_fails_and_says_why():
     res = {n: (ok, d) for n, ok, d in survival.compare(before, after)}
     ok, detail = res["langfuse-traces-kept"]
     assert not ok and "could not read the count before the upgrade" in detail
+
+
+# --------------------------------------------------------------------------- #
+# Planned resets: a release that drops a store on purpose                     #
+# --------------------------------------------------------------------------- #
+def _rule(results, name):
+    return next(r for r in results if r[0] == name)
+
+
+def test_langfuse_chart_1_to_2_is_a_planned_trace_reset():
+    resets = survival.planned_resets({"chart/langfuse": "1.5.41"}, {"chart/langfuse": "2.2.4"})
+    assert list(resets) == ["langfuse-traces-kept"]
+    assert survival.planned_resets({"chart/langfuse": "1.5.41"}, {"chart/langfuse": "1.5.42"}) == {}
+    assert survival.planned_resets({"chart/langfuse": "2.2.4"}, {"chart/langfuse": "2.3.0"}) == {}
+    assert survival.planned_resets({}, {"chart/langfuse": "2.2.4"}) == {}
+
+
+def test_a_planned_reset_needs_new_traces_instead_of_the_old_ones():
+    before = copy.deepcopy(BEFORE)
+    after = copy.deepcopy(BEFORE)
+    after["langfuse_traces"] = 2
+    resets = {"langfuse-traces-kept": "chart 2 starts empty"}
+    name, ok, detail = _rule(survival.compare(before, after, resets), "langfuse-traces-kept")
+    assert ok and "reset by design (chart 2 starts empty)" in detail and "traced" in detail
+    assert not _rule(survival.compare(before, after), "langfuse-traces-kept")[1]
+    after["langfuse_traces"] = 0
+    name, ok, detail = _rule(survival.compare(before, after, resets), "langfuse-traces-kept")
+    assert not ok and "NOT traced" in detail
+    after["langfuse_traces"] = None
+    assert not _rule(survival.compare(before, after, resets), "langfuse-traces-kept")[1]
