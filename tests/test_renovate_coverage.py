@@ -146,7 +146,7 @@ class TestPolicy:
     def test_domains(self):
         groups = {r.get("groupName") for r in _renovate()["packageRules"] if r.get("groupName")}
         assert groups == {"infra", "inference", "gateway", "gitops", "tooling", "eks-kubernetes",
-                          "vllm", "kro minor", "llm-d router minor"}, groups
+                          "vllm", "kro minor", "llm-d router minor", "litellm minor"}, groups
 
     def test_targets_main_without_a_release_age(self):
         """No minimumReleaseAge: the E2E gate judges every version on real clusters,
@@ -162,7 +162,8 @@ class TestPolicy:
     def test_ticks_only_where_e2e_cannot_judge(self):
         """A dashboard tick is required for: every major; the EKS version (one-way);
         every vLLM change (it runs users' models); kro and llm-d router minors
-        (0.x APIs users write against). Nothing else: E2E judges Karpenter, Argo CD,
+        (0.x APIs users write against); LiteLLM minors (the gateway for every
+        request, key and budget). Nothing else: E2E judges Karpenter, Argo CD,
         Prometheus, the GPU operator and the rest. Each ticked update gets its own
         branch, so it never holds back the group it would otherwise sit in, and
         closing its PR means 'not now' (recreateWhen: always)."""
@@ -170,7 +171,8 @@ class TestPolicy:
         gated = [r for r in rules if r.get("dependencyDashboardApproval")]
         got = {(tuple(r.get("matchDepNames") or ()), tuple(r.get("matchUpdateTypes") or ())) for r in gated}
         assert got == {((), ("major",)), (("vllm/vllm-openai",), ()), (("kro",), ("minor",)),
-                       (("llm-d-router-standalone",), ("minor",)), (("amazon-eks",), ())}, got
+                       (("llm-d-router-standalone",), ("minor",)), (("litellm/litellm",), ("minor",)),
+                       (("amazon-eks",), ())}, got
         for r in gated:
             assert r["recreateWhen"] == "always", r["description"][:60]
             if r.get("matchDepNames"):
@@ -326,3 +328,21 @@ class TestHelmReleasesArePinned:
     def test_every_helm_release_has_a_version(self, subject_root):
         new = self._offenders(subject_root) - KNOWN_UNPINNED_HELM_RELEASES
         assert not new, f"helm_release without `version` floats on every apply: {sorted(new)}"
+
+
+def test_litellm_follows_lts_tags_and_compares_with_the_old_stable_pin():
+    """LiteLLM switched from '-stable' to '-lts' tags in 2026; the regex versioning
+    must read both, and only '-lts' releases may be proposed."""
+    rule = next(r for r in _renovate()["packageRules"]
+                if r.get("matchDepNames") == ["litellm/litellm"] and r.get("versioning"))
+    rx = re.compile(rule["versioning"][len("regex:"):].replace("(?<", "(?P<"))
+    allowed = re.compile(rule["allowedVersions"].strip("/"))
+    def key(v):
+        m = rx.match(v)
+        return m and tuple(int(m.group(g) or 0) for g in ("major", "minor", "patch", "build"))
+    assert key("v1.83.14-stable.patch.1") < key("v1.83.14-stable.patch.3") < key("v1.108.9-lts")
+    for tag in ("v1.108.9-lts",):
+        assert rx.match(tag) and allowed.match(tag)
+    for tag in ("v1.111.0-dev.4", "v1.110.0-rc.3", "main-stable", "main-latest", "1.108.9-lts", "v1.108.9"):
+        assert not (rx.match(tag) and allowed.match(tag)), tag
+

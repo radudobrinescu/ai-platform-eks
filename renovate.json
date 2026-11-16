@@ -382,11 +382,12 @@
       "groupSlug": "tooling"
     },
     {
-      "description": "LiteLLM publishes '-stable' tags; only follow those, never nightlies.",
+      "description": "LiteLLM: follow its long-term-support releases (vX.Y.Z-lts). Until May 2026 LiteLLM published '-stable' tags (last v1.83.14-stable.patch.3) and this rule followed those, so Renovate proposed nothing for six months after LiteLLM switched. The versioning reads both shapes, so the current '-stable' pin compares with the '-lts' tags; nightlies, dev and rc tags never match.",
       "matchDepNames": [
         "litellm/litellm"
       ],
-      "allowedVersions": "/-stable/"
+      "versioning": "regex:^v?(?<major>\\d+)\\.(?<minor>\\d+)\\.(?<patch>\\d+)(?:-stable(?:\\.patch\\.(?<build>\\d+))?|-lts)$",
+      "allowedVersions": "/^v\\d+\\.\\d+\\.\\d+-lts$/"
     },
     {
       "description": "Majors anywhere: nothing is proposed until a human ticks the checkbox on the Dependency Dashboard, so an open major PR means 'approved for the next release'. Closing the PR takes the approval back; recreateWhen=always makes Renovate offer it again on the dashboard instead of treating the close as 'never'.",
@@ -431,6 +432,20 @@
       ],
       "groupName": "llm-d router minor",
       "groupSlug": "llm-d-router-minor",
+      "dependencyDashboardApproval": true,
+      "recreateWhen": "always",
+      "automerge": false
+    },
+    {
+      "description": "LiteLLM is the gateway every user's requests, keys, budgets and spend go through, and its minors change proxy behaviour and the database schema (1.83 -> 1.108 in 2026). Minors need a tick and get their own branch, so a jump never rides along with the gateway group; LTS patches flow with the group.",
+      "matchDepNames": [
+        "litellm/litellm"
+      ],
+      "matchUpdateTypes": [
+        "minor"
+      ],
+      "groupName": "litellm minor",
+      "groupSlug": "litellm-minor",
       "dependencyDashboardApproval": true,
       "recreateWhen": "always",
       "automerge": false
