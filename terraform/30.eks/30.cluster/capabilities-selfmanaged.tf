@@ -17,6 +17,12 @@
 #
 ################################################################################
 
+locals {
+  # Docker Official Image redis, the same digest on Docker Hub and on the chart's
+  # registry (ecr-public.aws.com/docker/library/redis). "<tag>@<digest>".
+  argocd_redis_image = "8.6.8-alpine@sha256:91c71f9ea78fa3fe268ff832a985c48e592244f707993773f8b3e1b244ac1137"
+}
+
 resource "helm_release" "argocd_selfmanaged" {
   count = local.capabilities.gitops && !local.use_managed_capabilities ? 1 : 0
 
@@ -25,9 +31,17 @@ resource "helm_release" "argocd_selfmanaged" {
   chart      = "argo-cd"
   # Pinned: without a version every new install takes whatever chart is newest
   # that day, so two installs of the same commit could run different Argo CD.
-  version          = "10.18.0" # Argo CD v3.5.5
+  version          = "10.18.0" # Argo CD v3.6.1
   namespace        = "argocd"
   create_namespace = true
+
+  # Argo CD's Redis (a cache only) is pinned by the chart to a fixed tag, whose
+  # Alpine packages are never refreshed: 8.6.4-alpine carried Critical CVEs in
+  # musl, util-linux, zlib and openssl. Pin a current tag by digest instead, so
+  # Renovate also proposes the image's rebuilds with Alpine security fixes.
+  values = [yamlencode({
+    redis = { image = { tag = local.argocd_redis_image } }
+  })]
 
   # Wait for the release to be fully deployed (including the Application/
   # ApplicationSet CRDs) so kubernetes_secret.argocd_cluster and
