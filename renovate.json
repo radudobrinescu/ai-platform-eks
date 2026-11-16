@@ -108,12 +108,12 @@
     },
     {
       "customType": "regex",
-      "description": "Python base image used by the Platform Health Agent's spawned Jobs (a ConfigMap value, not an image: field).",
+      "description": "Python base image used by the Platform Health Agent's spawned Jobs (a ConfigMap value, not an image: field). An optional @digest is tracked too (rebuilds with OS fixes).",
       "managerFilePatterns": [
         "/^platform/services/cluster-dashboard/pha-config\\.yaml$/"
       ],
       "matchStrings": [
-        "PYTHON_IMAGE:\\s*\"(?<depName>[^:\"]+):(?<currentValue>[^\"]+)\""
+        "PYTHON_IMAGE:\\s*\"(?<depName>[^:\"]+):(?<currentValue>[^\"@]+)(?:@(?<currentDigest>sha256:[a-f0-9]{64}))?\""
       ],
       "datasourceTemplate": "docker"
     },

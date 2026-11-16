@@ -205,6 +205,20 @@ jobs:
           sudo dpkg -i /tmp/ssm.deb >/dev/null
           pip install --quiet boto3 pyyaml
 
+      - name: Install Trivy (image scan of fresh environments)
+        if: matrix.mode == 'fresh'
+        env:
+          # Pinned and checksummed; bump both together (Trivy releases on GitHub).
+          TRIVY_VERSION: "0.76.2"
+          TRIVY_SHA256: "bc0fc726e017b8927a62b2d3531d7a84ee01769daf5c99ed866dced54089fdbf"
+        run: |
+          set -euo pipefail
+          f="trivy_${TRIVY_VERSION}_Linux-64bit.tar.gz"
+          curl -fsSL -o "/tmp/$f" "https://github.com/aquasecurity/trivy/releases/download/v${TRIVY_VERSION}/$f"
+          echo "${TRIVY_SHA256}  /tmp/$f" | sha256sum -c -
+          sudo tar -xzf "/tmp/$f" -C /usr/local/bin trivy
+          trivy --version | head -1
+
       - name: Runner egress IP (EKS API allowlist)
         run: |
           set -euo pipefail
@@ -244,6 +258,8 @@ jobs:
           args=()
           if [ "$KEEP" = true ]; then args+=(--keep); fi
           if [ "$WITH_LLMD" = true ]; then args+=(--with-llmd); fi
+          # Report-only: lists fixable HIGH/CRITICAL CVEs of every running image.
+          if [ "$MODE" = fresh ]; then args+=(--image-scan); fi
           if [ "$MODE" = upgrade ]; then refs=("$BASE_SHA" "$STATUS_SHA"); else refs=("$STATUS_SHA"); fi
           set +e
           python3 harness/e2e.py "$MODE" "${refs[@]}" --profile "$PROFILE" \

@@ -40,6 +40,7 @@ if HERE not in sys.path:
     sys.path.insert(0, HERE)
 
 import checks  # noqa: E402
+import imagescan  # noqa: E402
 import survival  # noqa: E402
 import tfvars  # noqa: E402
 import versions  # noqa: E402
@@ -102,6 +103,8 @@ class Report:
     versions: dict = field(default_factory=dict)
     results: list = field(default_factory=list)
     survival: dict = field(default_factory=dict)
+    image_scan: list = field(default_factory=list)
+    image_scan_error: str = ""
 
     @property
     def passed(self) -> bool:
@@ -126,6 +129,9 @@ def render_markdown(rep: Report) -> str:
         res = "skipped" if r.skipped else ("pass" if r.ok else "FAIL")
         detail = redact(r.detail).replace("|", "\\|").replace("\n", " ")
         lines.append(f"| {r.domain} | {r.name} | {res} | {r.seconds:.0f}s | {detail} |")
+    if rep.image_scan or rep.image_scan_error:
+        lines += [""] + ([redact(x) for x in imagescan.render(rep.image_scan)] if rep.image_scan
+                         else ["### Image scan", "", f"Not run: {redact(rep.image_scan_error)}", ""])
     if rep.survival:
         lines += ["", "### Seeded state (upgrade survival)", "", "```json",
                   redact(json.dumps(rep.survival, indent=2, sort_keys=True)), "```"]
@@ -137,8 +143,24 @@ def to_json(rep: Report) -> str:
     d = {"mode": rep.mode, "profile": rep.profile, "env": rep.env, "refs": rep.refs,
          "started": rep.started, "finished": rep.finished, "passed": rep.passed,
          "versions": rep.versions, "survival": rep.survival,
+         "image_scan": imagescan.summary(rep.image_scan) if rep.image_scan else rep.image_scan_error,
          "results": [{**r.__dict__, "detail": r.detail} for r in rep.results]}
     return redact(json.dumps(d, indent=2))
+
+
+def run_image_scan(a: argparse.Namespace, rep: Report) -> None:
+    """Scan every running image (report-only unless --image-scan-fail-on). A broken
+    scanner never fails the run: the report says why it did not run."""
+    try:
+        rep.image_scan = imagescan.scan_cluster(trivy=a.trivy)
+    except Exception as e:  # noqa: BLE001 - the scan is advisory
+        rep.image_scan_error = f"{type(e).__name__}: {e}"[:300]
+        log(f"image scan not run: {rep.image_scan_error}")
+        return
+    imagescan.write(rep.image_scan, a.report_dir, rep.env)
+    log(imagescan.summary(rep.image_scan))
+    if a.image_scan_fail_on:
+        rep.results.append(imagescan.enforce(rep.image_scan, a.image_scan_fail_on))
 
 
 # --------------------------------------------------------------------------- #
@@ -297,6 +319,16 @@ class Runner:
             return
         if self.step("provision", self.provision):
             self.smoke()
+            self.image_scan()
+
+    def image_scan(self) -> None:
+        if not self.a.image_scan:
+            return
+        if self.dry:
+            print(f"\n- image scan: trivy image (remote, by digest) for every running image; fixable HIGH/CRITICAL "
+                  f"in the report{f', fail on {self.a.image_scan_fail_on}' if self.a.image_scan_fail_on else ' (report-only)'}")
+            return
+        run_image_scan(self.a, self.report)
 
     def run_upgrade(self) -> None:
         if not self.step("branch", lambda: self.prepare_branch(self.a.base)):
@@ -459,6 +491,8 @@ def run_check_only(a: argparse.Namespace) -> int:
         except Exception as e:  # noqa: BLE001 - recorded like a lifecycle step
             rep.results.append(checks.CheckResult("lifecycle", "seed", False, f"{type(e).__name__}: {e}", time.time() - t0))
     rep.results += checks.run_suite(ctx, only=only)
+    if a.image_scan:
+        run_image_scan(a, rep)
     rep.finished = now_iso()
     os.makedirs(a.report_dir, exist_ok=True)
     with open(os.path.join(a.report_dir, f"{a.env}-check.md"), "w", encoding="utf-8") as fh:
@@ -484,6 +518,12 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     c.add_argument("--with-llmd", action="store_true", help="include the llm-d and KEDA checks")
     c.add_argument("--survival", action="store_true", help="also seed, snapshot twice and run the survival rules")
     c.add_argument("--report-dir", default=os.path.join(os.getcwd(), "reports"))
+    for p in (f, u, c):
+        p.add_argument("--image-scan", action="store_true",
+                       help="scan every running image with Trivy after the checks (fresh mode and check)")
+        p.add_argument("--image-scan-fail-on", choices=imagescan.SEVERITIES, default=None,
+                       help="fail the run on a fixable vulnerability of this severity or worse (default: report-only)")
+        p.add_argument("--trivy", default=os.environ.get("TRIVY") or "trivy", help="trivy binary")
     gh_repo = os.environ.get("GITHUB_REPOSITORY", "")
     for p in (f, u):
         p.add_argument("--profile", choices=tfvars.PROFILES, default="default")

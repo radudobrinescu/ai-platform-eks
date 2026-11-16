@@ -129,6 +129,17 @@ team in place). The report is written to `reports/<env>-check.md`.
 GPU models for the GPU checks are started right after the GitOps checks, so
 their nodes come up while the other checks run.
 
+### Image scan
+
+Fresh jobs end with a Trivy scan of every image running in the cluster, by the
+digest the nodes pulled (`--image-scan`; `e2e.py check --image-scan` does the
+same against dev). The report lists the HIGH and CRITICAL vulnerabilities that
+have a fix, worst image first; the full list is `reports/<env>-image-scan.json`.
+It is report-only: `--image-scan-fail-on CRITICAL` turns it into a failing
+check `security/no-fixable-critical-cves` (not enabled yet). It catches what
+Renovate cannot see: tags that are never rebuilt and chart lines that ended
+with frozen images. Trivy is pinned and checksummed in `e2e.yaml`.
+
 ## Cut a release
 
 `release-candidate.yaml` runs cut, notes, release PR and E2E dispatch every second Monday
