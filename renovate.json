@@ -249,6 +249,19 @@
       "depNameTemplate": "kro",
       "packageNameTemplate": "registry.k8s.io/kro/charts/kro",
       "datasourceTemplate": "docker"
+    },
+    {
+      "customType": "regex",
+      "description": "Argo CD's Redis image: argocd_redis_image = \"<tag>@<digest>\" in capabilities-selfmanaged.tf overrides the argo-cd chart's fixed Redis tag, whose Alpine packages are never refreshed (Critical CVEs on dev, 2026-11-16). The digest makes Renovate also propose rebuilds of the same tag (Alpine security fixes). Docker Hub's redis has the same digests as the chart's ecr-public mirror.",
+      "managerFilePatterns": [
+        "/^terraform/30\\.eks/30\\.cluster/capabilities-selfmanaged\\.tf$/"
+      ],
+      "matchStrings": [
+        "\\bargocd_redis_image\\s*=\\s*\"(?<currentValue>[0-9][^\"@\\s]*)@(?<currentDigest>sha256:[a-f0-9]{64})\""
+      ],
+      "depNameTemplate": "argocd-redis",
+      "packageNameTemplate": "redis",
+      "datasourceTemplate": "docker"
     }
   ],
   "packageRules": [
@@ -333,6 +346,7 @@
       "description": "gitops domain - the engine that applies everything else (self-managed ESC path; managed capabilities are AWS-owned).",
       "matchDepNames": [
         "argo-cd",
+        "argocd-redis",
         "kro"
       ],
       "groupName": "gitops",
