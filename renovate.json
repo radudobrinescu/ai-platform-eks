@@ -262,6 +262,17 @@
       "depNameTemplate": "argocd-redis",
       "packageNameTemplate": "redis",
       "datasourceTemplate": "docker"
+    },
+    {
+      "customType": "regex",
+      "description": "Images in the Langfuse chart's values (Valkey, SeaweedFS) written as repository + tag \"<tag>@<digest>\": the sub-charts' defaults are floating tags, pinned here so Renovate proposes new versions and rebuilds.",
+      "managerFilePatterns": [
+        "/^platform/services/langfuse/helm-values\\.yaml$/"
+      ],
+      "matchStrings": [
+        "repository:\\s*\"?(?<depName>[\\w./-]+)\"?\\s*\\n\\s*tag:\\s*\"(?<currentValue>[^\"@\\s]+)@(?<currentDigest>sha256:[a-f0-9]{64})\""
+      ],
+      "datasourceTemplate": "docker"
     }
   ],
   "packageRules": [
@@ -324,7 +335,7 @@
       "groupSlug": "inference"
     },
     {
-      "description": "gateway domain - LiteLLM and everything that talks to it. Postgres major = dump/restore; Langfuse chart v2->v3 = ClickHouse data-store migration.",
+      "description": "gateway domain - LiteLLM and everything that talks to it. Postgres major = dump/restore; Langfuse chart v2->v3 = ClickHouse data-store migration. Langfuse 4 stores (ClickHouse >= 25.12, Valkey, SeaweedFS) move with Langfuse.",
       "matchDepNames": [
         "litellm/litellm",
         "postgres",
@@ -337,7 +348,10 @@
         "pyyaml",
         "boto3",
         "amazon/aws-cli",
-        "curlimages/curl"
+        "curlimages/curl",
+        "clickhouse/clickhouse-server",
+        "valkey/valkey",
+        "chrislusf/seaweedfs"
       ],
       "groupName": "gateway",
       "groupSlug": "gateway"
@@ -478,6 +492,13 @@
       "recreateWhen": "always",
       "automerge": false,
       "separateMultipleMinor": true
+    },
+    {
+      "description": "Langfuse's ClickHouse stays on LTS lines (x.3 and x.8, a year of fixes); the monthly releases in between get about three months. Langfuse 4 needs 25.12 or newer.",
+      "matchDepNames": [
+        "clickhouse/clickhouse-server"
+      ],
+      "allowedVersions": "/^\\d+\\.(3|8)\\./"
     }
   ]
 }

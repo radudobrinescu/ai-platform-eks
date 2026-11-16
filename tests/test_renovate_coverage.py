@@ -48,6 +48,8 @@ CUSTOM_INVENTORY = [
     ("terraform/30.eks/30.cluster/karpenter.tf", "karpenter"),
     ("terraform/30.eks/30.cluster/capabilities-selfmanaged.tf", "kro"),
     ("terraform/30.eks/30.cluster/capabilities-selfmanaged.tf", "argocd-redis"),
+    ("platform/services/langfuse/helm-values.yaml", "valkey/valkey"),
+    ("platform/services/langfuse/helm-values.yaml", "chrislusf/seaweedfs"),
     (".github/workflows/ci.yaml", "hashicorp/terraform"),
     (".github/workflows/ci.yaml", "ruff"),
     (".github/workflows/ci.yaml", "pytest"),
