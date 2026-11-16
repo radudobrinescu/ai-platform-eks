@@ -32,6 +32,9 @@ CASES = [
     ("terraform/30.eks/35.addons/main.tf", "lbc_chart_version",
      'data "helm_template" "lbc_crds"', 'resource "kubectl_manifest" "lbc_crds"',
      'module "eks_blueprints_addons"'),
+    ("terraform/30.eks/30.cluster/capabilities-selfmanaged.tf", "kro_chart_version",
+     'data "helm_template" "kro_crds"', 'resource "kubectl_manifest" "kro_crds"',
+     'resource "helm_release" "kro_selfmanaged"'),
 ]
 
 
@@ -58,3 +61,18 @@ def test_crds_are_applied_server_side_before_the_chart_and_never_deleted():
 def test_no_manual_crd_upgrade_notes_left():
     for rel, *_ in CASES:
         assert "kubectl apply -k" not in _read(rel) and "karpenter-crd chart" not in _read(rel), rel
+
+
+def test_every_stage_points_kubectl_at_its_own_cluster():
+    """A kubectl provider without an explicit block (or with load_config_file
+    left on) uses the operator's kubeconfig current-context, i.e. possibly
+    another cluster. Seen in 45.aws-oss-observability."""
+    import glob
+    for prov in glob.glob(os.path.join(ROOT, "terraform", "**", "providers.tf"), recursive=True):
+        if "/.terraform/" in prov:
+            continue
+        text = open(prov, encoding="utf-8").read()
+        if 'source  = "alekc/kubectl"' not in text and 'source = "alekc/kubectl"' not in text:
+            continue
+        block = _block(text, 'provider "kubectl"')
+        assert "host " in block and re.search(r"load_config_file\s*=\s*false", block), prov

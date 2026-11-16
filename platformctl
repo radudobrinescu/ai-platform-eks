@@ -376,26 +376,55 @@ _terminate_karpenter_orphans() {
   echo "  [watchdog] fallback: cluster gone; terminated orphaned Karpenter instance(s): ${ids}"
 }
 
-# Wait (bounded) until the Argo CD Applications deleted above are gone. Their
-# deletion cascades to the workloads they own, so the pods that would hold a
-# Karpenter drain (PodDisruptionBudgets, do-not-disrupt) are already removed
-# when the NodePools are deleted. Before this wait, every E2E teardown spent
-# the full drain timeout on such pods. PLATFORMCTL_APPS_DELETE_TIMEOUT
-# (default 300 s); on timeout the drain proceeds as before.
-_wait_argocd_apps_gone() {
-  local env="$1" timeout="${PLATFORMCTL_APPS_DELETE_TIMEOUT:-300}" interval="${PLATFORMCTL_KARPENTER_DRAIN_INTERVAL:-10}" waited=0 out
+# Poll a probe until it reports done, gives up at a hard cap, or stops making
+# progress. The probe prints a short state signature (for example "3:41" for
+# 3 apps and 41 pods left) or nothing when done. A wait that keeps running
+# after the state stopped changing only costs time: in E2E both teardown waits
+# below ran to their full 300 s cap in most runs, holding on objects that the
+# steps after them (finalizer stripping, the watchdog, forced termination)
+# clear anyway. Returns 0 when done, 1 on stall or cap; sets _WAIT_STATE to the
+# last signature and _WAIT_SECONDS to the time waited.
+_wait_progress() {
+  local probe="$1" cap="$2" stall="$3" interval="$4" waited=0 last="" since=0 cur
+  _WAIT_STATE="" _WAIT_SECONDS=0
   while :; do
-    if out="$(kubectl --context "$env" --request-timeout=20s get applications.argoproj.io -n argocd -o name 2>/dev/null)" && [ -z "$out" ]; then
-      ok "Argo CD applications and their workloads are deleted (${waited}s)."
-      return 0
-    fi
-    if [ "$waited" -ge "$timeout" ]; then
-      warn "Argo CD applications still deleting after ${timeout}s; continuing with the node drain."
-      return 0
-    fi
+    cur="$("$probe" 2>/dev/null)" || cur="?"
+    if [ -z "$cur" ]; then _WAIT_SECONDS=$waited; return 0; fi
+    _WAIT_STATE="$cur"
+    if [ "$cur" != "$last" ]; then last="$cur"; since=$waited
+    elif [ $((waited - since)) -ge "$stall" ]; then _WAIT_SECONDS=$waited; return 1; fi
+    if [ "$waited" -ge "$cap" ]; then _WAIT_SECONDS=$waited; return 1; fi
     sleep "$interval"
     waited=$((waited + interval))
   done
+}
+
+_probe_argocd_apps() {
+  # Pods in namespaces Terraform (not Argo CD) owns stay until destroy; ignore them.
+  local keep='^(kube-system|kube-public|kube-node-lease|argocd|kro-system|keda|default)$' apps pods
+  apps="$(kubectl --context "$_PROBE_ENV" --request-timeout=20s get applications.argoproj.io -n argocd -o name 2>/dev/null)" || { echo "?"; return 0; }
+  [ -n "$apps" ] || return 0
+  pods="$(kubectl --context "$_PROBE_ENV" --request-timeout=20s get pods -A --no-headers \
+    -o custom-columns=NS:.metadata.namespace 2>/dev/null | grep -Evc "$keep")" || pods=0
+  echo "$(printf '%s\n' "$apps" | grep -c .) apps, ${pods} pods"
+}
+
+# Wait until the Argo CD Applications deleted above are gone. Their deletion
+# cascades to the workloads they own, so the pods that would hold a Karpenter
+# drain (PodDisruptionBudgets, do-not-disrupt) are removed while the nodes still
+# run. Stops after PLATFORMCTL_STALL_TIMEOUT (60 s) without progress or at
+# PLATFORMCTL_APPS_DELETE_TIMEOUT (300 s), and says what is left.
+_wait_argocd_apps_gone() {
+  local env="$1" interval="${PLATFORMCTL_KARPENTER_DRAIN_INTERVAL:-10}"
+  _PROBE_ENV="$env"
+  if _wait_progress _probe_argocd_apps "${PLATFORMCTL_APPS_DELETE_TIMEOUT:-300}" "${PLATFORMCTL_STALL_TIMEOUT:-60}" "$interval"; then
+    ok "Argo CD applications and their workloads are deleted (${_WAIT_SECONDS}s)."
+    return 0
+  fi
+  warn "Argo CD applications not gone after ${_WAIT_SECONDS}s (${_WAIT_STATE} left, no progress); continuing with the node drain."
+  kubectl --context "$env" --request-timeout=20s get applications.argoproj.io -n argocd \
+    -o jsonpath='{range .items[*]}  [drain] app {.metadata.name}: {.status.health.status}, finalizers {.metadata.finalizers}{"\n"}{end}' 2>/dev/null || true
+  return 0
 }
 
 # Let Karpenter remove its own nodes BEFORE Terraform runs. Terraform destroys
@@ -406,7 +435,9 @@ _wait_argocd_apps_gone() {
 # namespaces in Terminating). Deleting the NodePools first, while Karpenter
 # still runs, makes it drain and terminate every node it launched. Bounded by
 # PLATFORMCTL_KARPENTER_DRAIN_TIMEOUT (default 300 s), then the instances of any
-# NodeClaims left are terminated (PLATFORMCTL_KARPENTER_FORCE_TIMEOUT, 300 s);
+# NodeClaims left are terminated (PLATFORMCTL_KARPENTER_FORCE_TIMEOUT, 300 s).
+# The drain wait also stops after PLATFORMCTL_STALL_TIMEOUT (60 s) without
+# progress: with every NodePool gone, pods that cannot be evicted never move;
 # after that the teardown watchdog's fallbacks still apply. Self-managed Karpenter only: under EKS Auto
 # Mode, AWS runs the controller and Terraform never removes it.
 _drain_karpenter_nodes() {
@@ -418,7 +449,10 @@ _drain_karpenter_nodes() {
   [ -n "$out" ] || return 0
   log "Deleting Karpenter NodePools so Karpenter drains and terminates its own nodes while it still runs…"
   kubectl --context "$env" --request-timeout=20s delete nodepools.karpenter.sh --all --wait=false >/dev/null 2>&1 || true
-  _karpenter_nodeclaims_gone "$env" "$grace" "$interval" && { ok "Karpenter terminated all of its nodes."; return 0; }
+  _PROBE_ENV="$env"
+  if _wait_progress _probe_karpenter_drain "$grace" "${PLATFORMCTL_STALL_TIMEOUT:-60}" "$interval"; then
+    ok "Karpenter terminated all of its nodes (${_WAIT_SECONDS}s)."; return 0
+  fi
   # Drain stuck. With every NodePool gone there is nowhere to reschedule, so a
   # PodDisruptionBudget whose other replica sits on another draining node can
   # never be satisfied (seen in E2E: one NodeClaim left after 600 s, both
@@ -429,7 +463,7 @@ _drain_karpenter_nodes() {
   ids="$(kubectl --context "$env" --request-timeout=20s get nodeclaims.karpenter.sh \
     -o jsonpath='{range .items[*]}{.status.providerID}{"\n"}{end}' 2>/dev/null | sed -n 's#.*/\(i-[0-9a-f]*\)$#\1#p' | tr '\n' ' ')" || ids=""
   if [ -n "${ids// /}" ]; then
-    warn "Karpenter drain did not finish in ${grace}s; terminating the instances behind its remaining NodeClaims: ${ids}"
+    warn "Karpenter drain stopped progressing after ${_WAIT_SECONDS}s (${_WAIT_STATE} left); terminating the instances behind its remaining NodeClaims: ${ids}"
     # shellcheck disable=SC2086
     aws ec2 terminate-instances --region "${AWS_REGION:-}" --instance-ids $ids >/dev/null 2>&1 || true
   fi
@@ -453,6 +487,22 @@ _karpenter_nodeclaims_gone() {
 }
 
 # Log what holds each remaining Karpenter node: its non-DaemonSet pods.
+# Drain state: NodeClaims left and the non-DaemonSet pods still on their nodes.
+# When neither number moves, only pods that cannot be evicted remain (no
+# NodePool is left to reschedule them), and waiting longer cannot help.
+_probe_karpenter_drain() {
+  local claims nodes pods=0 n
+  claims="$(kubectl --context "$_PROBE_ENV" --request-timeout=20s get nodeclaims.karpenter.sh -o name 2>/dev/null)" || { echo "?"; return 0; }
+  [ -n "$claims" ] || return 0
+  nodes="$(kubectl --context "$_PROBE_ENV" --request-timeout=20s get nodeclaims.karpenter.sh \
+    -o jsonpath='{range .items[*]}{.status.nodeName}{"\n"}{end}' 2>/dev/null)" || nodes=""
+  for n in $nodes; do
+    pods=$((pods + $(kubectl --context "$_PROBE_ENV" --request-timeout=20s get pods -A --field-selector "spec.nodeName=${n}" \
+      -o jsonpath='{range .items[?(@.metadata.ownerReferences[0].kind!="DaemonSet")]}{.metadata.name}{"\n"}{end}' 2>/dev/null | grep -c . || true)))
+  done
+  echo "$(printf '%s\n' "$claims" | grep -c .) nodeclaims, ${pods} pods"
+}
+
 _karpenter_drain_blockers() {
   local env="$1" node
   for node in $(kubectl --context "$env" --request-timeout=20s get nodeclaims.karpenter.sh \
