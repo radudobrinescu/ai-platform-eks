@@ -21,7 +21,7 @@ resource "helm_release" "keda" {
   create_namespace = true
   repository       = "https://kedacore.github.io/charts"
   chart            = "keda"
-  version          = "2.21.0"
+  version          = "2.21.1"
   wait             = true
   timeout          = 900
 
