@@ -1,0 +1,147 @@
+# ClickHouse for Langfuse (traces, observations, scores): one node, official image.
+#
+# The Langfuse chart 2.x can deploy ClickHouse only through the ClickHouse
+# operator, which is alpha and needs cert-manager. A single node needs neither,
+# so we run the official image ourselves and point the chart at it
+# (clickhouse.deploy: false in platform/services/langfuse/helm-values.yaml).
+#
+# Langfuse 4 needs ClickHouse 25.12 or newer and the built-in `default` user
+# (full access) is what Langfuse connects as. The image's entrypoint sets that
+# user's password from CLICKHOUSE_PASSWORD (langfuse-secrets, Terraform).
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: langfuse-clickhouse-config
+  namespace: ai-platform
+data:
+  # ClickHouse's own diagnostic tables grow without limit: system.trace_log once
+  # filled the whole volume and blocked every Langfuse insert. Keep 3 days.
+  # (They are recreated with these engines when the server starts.)
+  z-system-log-ttl.xml: |
+    <clickhouse>
+      <trace_log replace="1"><engine>ENGINE = MergeTree PARTITION BY toYYYYMM(event_date) ORDER BY (event_date, event_time) TTL event_date + INTERVAL 3 DAY DELETE SETTINGS ttl_only_drop_parts=1</engine></trace_log>
+      <metric_log replace="1"><engine>ENGINE = MergeTree PARTITION BY toYYYYMM(event_date) ORDER BY (event_date, event_time) TTL event_date + INTERVAL 3 DAY DELETE SETTINGS ttl_only_drop_parts=1</engine></metric_log>
+      <asynchronous_metric_log replace="1"><engine>ENGINE = MergeTree PARTITION BY toYYYYMM(event_date) ORDER BY (event_date, event_time) TTL event_date + INTERVAL 3 DAY DELETE SETTINGS ttl_only_drop_parts=1</engine></asynchronous_metric_log>
+      <query_log replace="1"><engine>ENGINE = MergeTree PARTITION BY toYYYYMM(event_date) ORDER BY (event_date, event_time) TTL event_date + INTERVAL 3 DAY DELETE SETTINGS ttl_only_drop_parts=1</engine></query_log>
+      <part_log replace="1"><engine>ENGINE = MergeTree PARTITION BY toYYYYMM(event_date) ORDER BY (event_date, event_time) TTL event_date + INTERVAL 3 DAY DELETE SETTINGS ttl_only_drop_parts=1</engine></part_log>
+    </clickhouse>
+---
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: langfuse-clickhouse
+  namespace: ai-platform
+spec:
+  serviceName: langfuse-clickhouse
+  replicas: 1
+  selector:
+    matchLabels:
+      app: langfuse-clickhouse
+  template:
+    metadata:
+      labels:
+        app: langfuse-clickhouse
+    spec:
+      securityContext:
+        # The image runs as uid/gid 101 (clickhouse); make the volume theirs.
+        fsGroup: 101
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: clickhouse
+          image: clickhouse/clickhouse-server:26.8.38.9@sha256:5d30ac138948b43fd928842be7da1dcd2de712d32ba6c42368ff5009ba2072ff
+          ports:
+            - name: http
+              containerPort: 8123
+            - name: native
+              containerPort: 9000
+          env:
+            - name: CLICKHOUSE_USER
+              value: default
+            - name: CLICKHOUSE_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: langfuse-secrets
+                  key: clickhouse-password
+            - name: TZ
+              value: UTC
+          volumeMounts:
+            - name: data
+              mountPath: /var/lib/clickhouse
+            - name: config
+              mountPath: /etc/clickhouse-server/config.d/z-system-log-ttl.xml
+              subPath: z-system-log-ttl.xml
+          readinessProbe:
+            httpGet:
+              path: /ping
+              port: http
+            initialDelaySeconds: 10
+            periodSeconds: 10
+          livenessProbe:
+            httpGet:
+              path: /ping
+              port: http
+            initialDelaySeconds: 60
+            periodSeconds: 20
+            failureThreshold: 6
+          resources:
+            requests:
+              cpu: 500m
+              memory: 2Gi
+            limits:
+              cpu: "2"
+              memory: 4Gi
+      volumes:
+        - name: config
+          configMap:
+            name: langfuse-clickhouse-config
+  volumeClaimTemplates:
+    # Explicit fields so Argo CD's diff matches the API server's defaults. No
+    # storageClassName: the cluster default class (gp3, or auto-ebs-sc on Auto Mode).
+    - apiVersion: v1
+      kind: PersistentVolumeClaim
+      metadata:
+        name: data
+      spec:
+        accessModes: ["ReadWriteOnce"]
+        volumeMode: Filesystem
+        resources:
+          requests:
+            storage: 50Gi
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: langfuse-clickhouse
+  namespace: ai-platform
+spec:
+  selector:
+    app: langfuse-clickhouse
+  ports:
+    - name: http
+      port: 8123
+      targetPort: http
+    - name: native
+      port: 9000
+      targetPort: native
+---
+# Only Langfuse (web and worker) talks to ClickHouse.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: langfuse-clickhouse
+  namespace: ai-platform
+spec:
+  podSelector:
+    matchLabels:
+      app: langfuse-clickhouse
+  policyTypes:
+    - Ingress
+  ingress:
+    - from:
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/name: langfuse
+      ports:
+        - port: 8123
+        - port: 9000

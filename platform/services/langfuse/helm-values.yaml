@@ -1,10 +1,17 @@
 # Langfuse Helm Values — LLM Observability & Tracing
-# Chart: langfuse/langfuse v1.5.20
+# Chart: langfuse/langfuse 2.x (Langfuse 4), pinned in argocd/bootstrap/templates/platform.yaml
 # Repository: https://langfuse.github.io/langfuse-k8s
 #
-# Uses shared platform-db PostgreSQL, bundled ClickHouse, Redis, and MinIO.
-# Secrets are created by Terraform (langfuse-secrets, platform-db-credentials)
-# and referenced here via secretKeyRef — no secrets stored in git.
+# Stores:
+#   - PostgreSQL: the shared platform-db (platform/services/litellm/), database `langfuse`.
+#   - ClickHouse: our own single-node StatefulSet, platform/services/langfuse-clickhouse/
+#     (official image). The chart's bundled ClickHouse needs the alpha ClickHouse
+#     operator plus cert-manager; we run it ourselves instead (decision 2026-11-16).
+#   - Valkey (cache and queues) and SeaweedFS (S3 blob storage): the chart's sub-charts.
+# Every credential is created by Terraform (langfuse-secrets, langfuse-valkey-auth,
+# langfuse-s3-auth, platform-db-credentials in terraform/30.eks/30.cluster/capabilities.tf)
+# and referenced here. Argo CD renders the chart with `helm template`, where the chart's
+# own lookup-or-generate secrets would get a new random password on every sync.
 
 langfuse:
   # --- Tracing on first boot (turnkey) ---
@@ -16,9 +23,8 @@ langfuse:
   # clicks. See terraform/30.eks/30.cluster/langfuse-init.tf.
   #
   # The LANGFUSE_INIT_* keys drive headless initialization (org/project/API
-  # keys/admin user on first boot). This chart (1.5.20) has NO `additionalEnvFrom`
-  # support — it only honors `additionalEnv` (a list) — so each key is pulled
-  # individually from the langfuse-init Secret via secretKeyRef. We deliberately
+  # keys/admin user on first boot). Each key is pulled individually from the
+  # langfuse-init Secret via secretKeyRef. We deliberately
   # do NOT include NEXTAUTH_URL here: the chart already emits it from
   # `nextauth.url` (below), and a second entry would make ServerSideApply reject
   # the sync ("duplicate entries for key NEXTAUTH_URL"). `nextauth.url` is the
@@ -66,6 +72,11 @@ langfuse:
       valueFrom: { secretKeyRef: { name: langfuse-init, key: LANGFUSE_INIT_ORG_ID } }
     - name: LANGFUSE_DEFAULT_ORG_ROLE
       value: "MEMBER"
+    # LiteLLM sends traces over OpenTelemetry. Its v1.83 exporter does not send
+    # `x-langfuse-ingestion-version: 4`, and without it Langfuse 4 shows the data
+    # up to 15 minutes late. `direct` makes every OTLP ingestion real time.
+    - name: LANGFUSE_MIGRATION_V4_NATIVE_OTEL_BEHAVIOUR
+      value: "direct"
 
   salt:
     secretKeyRef:
@@ -101,24 +112,22 @@ langfuse:
       name: langfuse-secrets
       key: encryption-key
 
-  service:
-    type: ClusterIP
-    port: 3000
-
-  resources:
-    requests:
-      cpu: 500m
-      memory: 512Mi
-    limits:
-      cpu: "2"
-      memory: 2Gi
+  web:
+    service:
+      type: ClusterIP
+      port: 3000
+    resources:
+      requests:
+        cpu: 500m
+        memory: 512Mi
+      limits:
+        cpu: "2"
+        memory: 2Gi
 
   ingress:
     enabled: false
 
-# External PostgreSQL — shared platform-db (managed in platform/services/litellm/).
-# Chart uses postgresql.* for DB config, not a separate database section.
-# postgresql.auth.existingSecret + secretKeys for password from K8s secret.
+# External PostgreSQL: the shared platform-db (managed in platform/services/litellm/).
 postgresql:
   deploy: false
   host: platform-db.ai-platform.svc.cluster.local
@@ -130,78 +139,169 @@ postgresql:
     secretKeys:
       userPasswordKey: password
 
-# ClickHouse for analytics/event ingestion (also stores trace events)
+# ClickHouse: our own StatefulSet (platform/services/langfuse-clickhouse/), single
+# node, no Keeper. The built-in `default` user's password is langfuse-secrets
+# clickhouse-password on both sides.
 clickhouse:
-  deploy: true
-  replicaCount: 1
+  deploy: false
+  host: langfuse-clickhouse.ai-platform.svc.cluster.local
+  httpPort: 8123
+  nativePort: 9000
+  database: default
   auth:
+    username: default
     existingSecret: langfuse-secrets
     existingSecretKey: clickhouse-password
-  # Cap ClickHouse's OWN internal profiling tables (system.trace_log,
-  # *_metric_log, etc.) with a 3-day TTL. These are unrelated to Langfuse
-  # traces; left uncapped, system.trace_log alone grew to ~47 GiB and filled
-  # the 50Gi PVC, which silently blocked Langfuse trace ingestion (every
-  # ClickHouse insert failed with "not enough space"). The <engine> override
-  # applies at table creation; existing clusters also need a one-time
-  # `ALTER TABLE system.trace_log MODIFY TTL event_date + INTERVAL 3 DAY`.
-  extraOverrides: |
-    <clickhouse>
-      <trace_log replace="1"><engine>ENGINE = MergeTree PARTITION BY toYYYYMM(event_date) ORDER BY (event_date, event_time) TTL event_date + INTERVAL 3 DAY DELETE SETTINGS ttl_only_drop_parts=1</engine></trace_log>
-      <metric_log replace="1"><engine>ENGINE = MergeTree PARTITION BY toYYYYMM(event_date) ORDER BY (event_date, event_time) TTL event_date + INTERVAL 3 DAY DELETE SETTINGS ttl_only_drop_parts=1</engine></metric_log>
-      <asynchronous_metric_log replace="1"><engine>ENGINE = MergeTree PARTITION BY toYYYYMM(event_date) ORDER BY (event_date, event_time) TTL event_date + INTERVAL 3 DAY DELETE SETTINGS ttl_only_drop_parts=1</engine></asynchronous_metric_log>
-    </clickhouse>
-  # PVCs intentionally omit `storageClass` so they bind the cluster DEFAULT
-  # StorageClass, which Terraform marks per cluster mode: `gp3` (ebs.csi.aws.com)
-  # on classic/self-managed clusters incl. ESC (capabilities.blockstorage), and
-  # `auto-ebs-sc` (ebs.csi.eks.amazonaws.com) on EKS Auto Mode — see
-  # terraform/30.eks/30.cluster/main.tf. Do NOT pin `storageClass: gp3` here:
-  # that class does not exist in Auto Mode, so the PVC would stay Pending.
-  # (A non-Auto cluster with capabilities.blockstorage=false has no default SC at
-  # all — stateful components like Langfuse aren't supported in that config.)
-  persistence:
-    enabled: true
-    size: 50Gi
-  resources:
-    requests:
-      cpu: 500m
-      memory: 1Gi
-    limits:
-      cpu: "2"
-      memory: 4Gi
-  zookeeper:
-    resources:
-      requests:
-        cpu: 250m
-        memory: 512Mi
-      limits:
-        cpu: 500m
-        memory: 1Gi
+  migration:
+    url: "clickhouse://langfuse-clickhouse.ai-platform.svc.cluster.local:9000"
+    ssl: false
+    autoMigrate: true
+  cluster:
+    enabled: false
 
-# Redis for caching and queue management
+# Valkey for caching and queues. The chart's ACL user `default` takes its
+# password from langfuse-valkey-auth (key `default`).
 redis:
   deploy: true
   auth:
-    existingSecret: langfuse-secrets
-    existingSecretPasswordKey: redis-password
-  primary:
-    # Binds the cluster default StorageClass (see the clickhouse.persistence note
-    # above) — no `storageClass` pinned, so it works on classic/self-managed (gp3)
-    # and Auto Mode (auto-ebs-sc) alike.
-    persistence:
-      enabled: true
-      size: 8Gi
+    username: default
+    existingSecret: langfuse-valkey-auth
+    existingSecretPasswordKey: default
+    usersExistingSecret: langfuse-valkey-auth
+  # The sub-chart's default is the floating tag "8.0". Pinned by digest so
+  # Renovate proposes rebuilds with OS security fixes.
+  image:
+    registry: docker.io
+    repository: valkey/valkey
+    tag: "8.0.12-alpine@sha256:19f0b3d350f5e6de618086d79ecdc9c474ab159bebb16ed95a92e4211562fee5"
+  # Binds the cluster default StorageClass: `gp3` on classic/self-managed
+  # clusters, `auto-ebs-sc` on EKS Auto Mode (terraform/30.eks/30.cluster/main.tf).
+  # Do not pin a class here: `gp3` does not exist in Auto Mode.
+  dataStorage:
+    enabled: true
+    requestedSize: 8Gi
 
-# MinIO (bundled S3-compatible blob storage for traces/events)
+# SeaweedFS (S3-compatible blob storage for events and media), all-in-one pod.
+# langfuse-s3-auth (Terraform) holds the access key, the secret key and the
+# SeaweedFS IAM config built from them.
 s3:
   deploy: true
-  accessKeyId:
-    value: "minio"
-  secretAccessKey:
-    secretKeyRef:
-      name: langfuse-secrets
-      key: s3-secret-key
+  bucket: langfuse
+  # The sub-chart's tag (its appVersion), pinned by digest like Valkey.
+  image:
+    repository: chrislusf/seaweedfs
+    tag: "4.23@sha256:c6d6fb84b081f1f09bb089184ff4b45d2f163a1bfa8b354d04cf400c6e06f242"
   auth:
-    rootUser: "minio"
-    existingSecret: langfuse-secrets
-    rootPasswordSecretKey: s3-secret-key
-    rootUserSecretKey: ""
+    rootUser: langfuse
+    existingSecret: langfuse-s3-auth
+    rootUserSecretKey: accessKey
+    rootPasswordSecretKey: secretKey
+  # The sub-chart always renders an SFTP password Secret (a PreSync hook with
+  # random passwords, new on every sync). SFTP stays off, so nothing uses it.
+  allInOne:
+    s3:
+      existingConfigSecret: langfuse-s3-auth
+    data:
+      size: 50Gi
+
+# Upgrades from chart 1.x: Argo CD prunes the old Bitnami StatefulSets
+# (ClickHouse, ZooKeeper, Valkey) but not the volumes their volumeClaimTemplates
+# created, which would keep ~82 GiB of EBS (and its cost) forever. After each
+# sync, this Job deletes those exact PVCs once their StatefulSet is gone. Langfuse
+# 1.x trace data is intentionally not carried over (decision 2026-11-16). On a
+# cluster that never ran chart 1.x it finds nothing and exits.
+extraManifests:
+  - apiVersion: v1
+    kind: ServiceAccount
+    metadata:
+      name: langfuse-v1-volume-cleanup
+      namespace: ai-platform
+  - apiVersion: rbac.authorization.k8s.io/v1
+    kind: Role
+    metadata:
+      name: langfuse-v1-volume-cleanup
+      namespace: ai-platform
+    rules:
+      - apiGroups: [""]
+        resources: ["persistentvolumeclaims"]
+        resourceNames:
+          - data-langfuse-clickhouse-shard0-0
+          - data-langfuse-zookeeper-0
+          - data-langfuse-zookeeper-1
+          - data-langfuse-zookeeper-2
+          - valkey-data-langfuse-redis-primary-0
+        verbs: ["get", "delete"]
+      - apiGroups: ["apps"]
+        resources: ["statefulsets"]
+        verbs: ["get"]
+  - apiVersion: rbac.authorization.k8s.io/v1
+    kind: RoleBinding
+    metadata:
+      name: langfuse-v1-volume-cleanup
+      namespace: ai-platform
+    roleRef:
+      apiGroup: rbac.authorization.k8s.io
+      kind: Role
+      name: langfuse-v1-volume-cleanup
+    subjects:
+      - kind: ServiceAccount
+        name: langfuse-v1-volume-cleanup
+        namespace: ai-platform
+  - apiVersion: batch/v1
+    kind: Job
+    metadata:
+      name: langfuse-v1-volume-cleanup
+      namespace: ai-platform
+      annotations:
+        argocd.argoproj.io/hook: PostSync
+        argocd.argoproj.io/hook-delete-policy: BeforeHookCreation,HookSucceeded
+    spec:
+      backoffLimit: 2
+      activeDeadlineSeconds: 900
+      template:
+        spec:
+          serviceAccountName: langfuse-v1-volume-cleanup
+          restartPolicy: Never
+          securityContext:
+            runAsNonRoot: true
+            runAsUser: 65534
+            seccompProfile:
+              type: RuntimeDefault
+          containers:
+            - name: cleanup
+              image: alpine/k8s:1.37.2
+              securityContext:
+                allowPrivilegeEscalation: false
+                capabilities:
+                  drop: ["ALL"]
+              env:
+                - name: HOME
+                  value: /tmp
+              command: ["/bin/sh", "-c"]
+              args:
+                - |
+                  set -u
+                  NS=ai-platform
+                  for pair in \
+                    langfuse-clickhouse-shard0:data-langfuse-clickhouse-shard0-0 \
+                    langfuse-zookeeper:data-langfuse-zookeeper-0 \
+                    langfuse-zookeeper:data-langfuse-zookeeper-1 \
+                    langfuse-zookeeper:data-langfuse-zookeeper-2 \
+                    langfuse-redis-primary:valkey-data-langfuse-redis-primary-0; do
+                    sts="${pair%%:*}"; pvc="${pair#*:}"
+                    kubectl get pvc "$pvc" -n "$NS" >/dev/null 2>&1 || continue
+                    # Wait (up to 10 min) for Argo CD to prune the old StatefulSet.
+                    n=0
+                    while kubectl get statefulset "$sts" -n "$NS" >/dev/null 2>&1; do
+                      n=$((n + 1))
+                      if [ "$n" -gt 60 ]; then echo "kept $pvc: StatefulSet $sts still exists"; continue 2; fi
+                      sleep 10
+                    done
+                    kubectl delete pvc "$pvc" -n "$NS" --wait=false && echo "deleted $pvc (Langfuse 1.x volume)"
+                  done
+              resources:
+                requests:
+                  cpu: 10m
+                  memory: 32Mi
+                limits:
+                  memory: 128Mi
