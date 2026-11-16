@@ -207,6 +207,9 @@ jobs:
 
       - name: Install Trivy (image scan of fresh environments)
         if: matrix.mode == 'fresh'
+        # The scan is report-only: if the download fails, the report says the
+        # scan did not run and the job goes on.
+        continue-on-error: true
         env:
           # Pinned and checksummed; bump both together (Trivy releases on GitHub).
           TRIVY_VERSION: "0.76.2"
