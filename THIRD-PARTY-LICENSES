@@ -46,6 +46,20 @@ Container images (pinned tags in platform/services/**):
      separate commercial license. This project deploys the OSS core (no "ee"
      feature is enabled by default).
 
+  ** ClickHouse — https://github.com/ClickHouse/ClickHouse
+     image: clickhouse/clickhouse-server (Langfuse's trace store,
+     platform/services/langfuse-clickhouse/)
+     License: Apache License 2.0
+
+  ** Valkey — https://github.com/valkey-io/valkey
+     image: valkey/valkey, via the Langfuse chart's valkey sub-chart (cache, queues)
+     License: BSD 3-Clause
+
+  ** SeaweedFS — https://github.com/seaweedfs/seaweedfs
+     image: chrislusf/seaweedfs, via the Langfuse chart's seaweedfs sub-chart
+     (S3-compatible blob storage for Langfuse)
+     License: Apache License 2.0
+
   ** oauth2-proxy — https://github.com/oauth2-proxy/oauth2-proxy
      image: quay.io/oauth2-proxy/oauth2-proxy:v7.7.1
      License: MIT

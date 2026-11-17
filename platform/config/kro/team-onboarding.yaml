@@ -348,6 +348,8 @@ spec:
                         | kubectl apply -f -
 
                       # --- Configure per-team Langfuse project (optional) ---
+                      # langfuse_otel, like the platform-wide callback: Langfuse 4
+                      # rejects the older "langfuse" callback's SDK v2.
                       # LANGFUSE_* come from an optional Secret and may be unset.
                       # Relax nounset for the presence check; brace-default
                       # parameter expansion would collide with KRO interpolation.
@@ -360,7 +362,7 @@ spec:
                           -d "$(jq -n \
                             --arg pk "$LANGFUSE_PK" \
                             --arg sk "$LANGFUSE_SK" \
-                            '{callback_name:"langfuse", callback_type:"success_and_failure",
+                            '{callback_name:"langfuse_otel", callback_type:"success_and_failure",
                               callback_vars:{langfuse_public_key:$pk, langfuse_secret_key:$sk,
                               langfuse_host:"http://langfuse-web.ai-platform.svc.cluster.local:3000"}}')" \
                           > /dev/null && echo "✓ Langfuse callback configured" || echo "⚠ Langfuse callback failed (non-blocking)"

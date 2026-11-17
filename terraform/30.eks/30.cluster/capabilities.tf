@@ -600,9 +600,54 @@ resource "kubernetes_secret" "langfuse_secrets" {
       "encryption-key"  = random_id.langfuse_encryption_key[0].hex
       "nextauth-secret" = random_id.langfuse_nextauth_secret[0].hex
       "salt"            = random_id.langfuse_salt[0].hex
-      "root-user"       = "minio"
     }
   )
+
+  depends_on = [kubernetes_namespace.ai_platform]
+}
+
+# Langfuse chart 2.x stores. Argo CD renders the chart with `helm template`, where
+# the chart's own lookup-or-generate secrets would get a new random password on
+# every sync, so their credentials are created here, in the shapes the sub-charts
+# read (platform/services/langfuse/helm-values.yaml).
+
+# Valkey: one key per ACL user; the chart's user is `default`.
+resource "kubernetes_secret" "langfuse_valkey_auth" {
+  count = local.capabilities.gitops ? 1 : 0
+
+  metadata {
+    name      = "langfuse-valkey-auth"
+    namespace = "ai-platform"
+  }
+
+  data = {
+    default = random_password.langfuse["redis-password"].result
+  }
+
+  depends_on = [kubernetes_namespace.ai_platform]
+}
+
+# SeaweedFS S3 gateway: the access key pair Langfuse uses, and the SeaweedFS IAM
+# config that grants it (same layout the chart would generate).
+resource "kubernetes_secret" "langfuse_s3_auth" {
+  count = local.capabilities.gitops ? 1 : 0
+
+  metadata {
+    name      = "langfuse-s3-auth"
+    namespace = "ai-platform"
+  }
+
+  data = {
+    accessKey = "langfuse"
+    secretKey = random_password.langfuse["s3-secret-key"].result
+    seaweedfs_s3_config = jsonencode({
+      identities = [{
+        name        = "langfuse"
+        credentials = [{ accessKey = "langfuse", secretKey = random_password.langfuse["s3-secret-key"].result }]
+        actions     = ["Admin", "Read", "Write", "List", "Tagging"]
+      }]
+    })
+  }
 
   depends_on = [kubernetes_namespace.ai_platform]
 }
