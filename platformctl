@@ -227,6 +227,11 @@ _delete_cluster_albs() {
 #     Karpenter nodes, so once the drain removes them nothing can release a
 #     ScaledObject deleted later, and the llm-d model's namespace never
 #     finishes deleting (seen in E2E: cluster left ACTIVE, `down` exit 1).
+#   - argocd.argoproj.io/hook-finalizer on Argo CD hook objects (PreSync and
+#     PostSync Jobs, Secrets, Pods). Argo CD removes it when the hook finishes;
+#     a hook still running when `down` removes Argo CD keeps it forever, and its
+#     namespace never finishes deleting (seen in E2E: the litellm-enduser-budget
+#     PostSync Job held ai-platform Terminating, cluster left ACTIVE).
 # Safe: every one of these objects is being destroyed anyway.
 # Pods already being deleted on a node whose kubelet is gone never finish:
 # nothing confirms the deletion, so their namespace stays Terminating and
@@ -260,6 +265,16 @@ _strip_teardown_finalizers() {
       kubectl --context "$env" patch "$kind" "${r#*/}" -n "${r%%/*}" \
         --type=merge -p '{"metadata":{"finalizers":[]}}' >/dev/null 2>&1 || true
     done
+  done
+  # Argo CD hooks: only the objects that carry its hook finalizer.
+  for kind in jobs.batch pods secrets configmaps; do
+    { kubectl --context "$env" get "$kind" -A \
+        -o jsonpath='{range .items[?(@.metadata.finalizers)]}{.metadata.namespace}/{.metadata.name} {.metadata.finalizers}{"\n"}{end}' 2>/dev/null || true; } \
+      | awk '/argocd\.argoproj\.io\/hook-finalizer/ {print $1}' \
+      | while read -r r; do
+          kubectl --context "$env" patch "$kind" "${r#*/}" -n "${r%%/*}" \
+            --type=merge -p '{"metadata":{"finalizers":[]}}' >/dev/null 2>&1 || true
+        done
   done
 }
 
