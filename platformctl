@@ -10,7 +10,7 @@
 #   ./platformctl edge    [MODE] [ENV] Choose the public front door: cloudfront | domain | tunnel
 #   ./platformctl new-model MODEL [..] Right-size a model + scaffold its serving YAML (VLLMEndpoint/LLMDEndpoint)
 #   ./platformctl onboard-team NAME [..] Scaffold an AITeam YAML (namespace + GPU quota + budget + scoped key) for a new team
-#   ./platformctl upgrade [ENV] [--plan-only] [--yes] [--allow-replace ADDR]...  Upgrade to the release merged into HEAD (see UPGRADING.md)
+#   ./platformctl upgrade [ENV] [--to TAG] [--plan-only] [--yes] [--allow-replace ADDR]...  Upgrade to the newest release, one release at a time (see UPGRADING.md)
 #   ./platformctl down    [ENV] [--purge]  Tear down infra; --purge also deletes the env definition (tfvars + workspaces)
 #   ./platformctl list-envs            List configured environments (cluster + region; marks the active one)
 set -euo pipefail
@@ -132,6 +132,22 @@ check_env_name_length() {
   die "env name '${env}' is too long: cluster '${cluster}' makes the node group prefix '${prefix}' ${#prefix} characters (EKS allows 37). Use at most ${max} characters for the env name."
 }
 
+# A fresh install records the release it was built from (see _release_marker_get),
+# so its first upgrade starts from the right one. Best-effort, and never over an
+# existing record: on an installed env only a completed `upgrade` moves it.
+_up_record_release() {
+  local env="$1" rel
+  command -v kubectl >/dev/null 2>&1 && command -v python3 >/dev/null 2>&1 || return 0
+  kubectl config get-contexts "$env" >/dev/null 2>&1 || return 0
+  [ -z "$(_release_marker_get "$env")" ] || return 0
+  # What Argo CD syncs (the branch upstream), not a release merged here and not pushed.
+  local rev='@{u}'
+  git -C "$REPO_ROOT" rev-parse -q --verify '@{u}' >/dev/null 2>&1 || rev=HEAD
+  rel="$(python3 "${LIB_DIR}/release_manifest.py" release-of --repo "$REPO_ROOT" --rev "$rev" 2>/dev/null || true)"
+  case "$rel" in baseline|v[0-9]*) ;; *) return 0 ;; esac
+  _release_marker_set "$env" "$rel" "$(git -C "$REPO_ROOT" rev-parse "$rev" 2>/dev/null || echo unknown)" || true
+}
+
 cmd_up() {
   local env; env=$(need_env "${1:-}" "up")
   need terraform; need aws; need make; require_tfvars "$env"; check_tfvars_filled "$env"; check_env_name_length "$env"; pin_region "$env"
@@ -141,6 +157,7 @@ cmd_up() {
   # otherwise fall through to the "Done" banner and return 0.
   make -C "$TF_DIR" bootstrap ENVIRONMENT="$env" || { warn "state backend bootstrap failed"; return 1; }
   make -C "$TF_DIR" apply-all ENVIRONMENT="$env" || { warn "terraform apply failed (see above)"; return 1; }
+  _up_record_release "$env"
   echo
   ok "Done. Next:"
   echo "  ./platformctl status --check     # confirm it's healthy AND working"
@@ -1149,22 +1166,57 @@ EOF
 
 # ---- upgrade --------------------------------------------------------------- #
 
-# Upgrade an env to the release merged into HEAD (see UPGRADING.md). The forker
-# merges the release tag locally first (not pushed), so the command that runs is
-# the NEW release's. Order matters: Terraform first, push last. Argo CD
+# Upgrade an env to a newer release (see UPGRADING.md), one release at a time.
+#
+# When no release is merged yet, upgrade fetches the release tags from the
+# repository this one was forked from (remote UPGRADE_REMOTE), merges the NEXT
+# release locally (not pushed) and starts the merged platformctl again, so each
+# release is applied by its own code. It repeats until the newest release (or
+# --to TAG). A forker may also merge a release tag by hand first; then only
+# that release is applied.
+#
+# Order matters within a release: Terraform first, push last. Argo CD
 # auto-syncs with prune + selfHeal, so pushing first would roll out chart and
 # manifest changes before the IAM/CRD/ConfigMap changes Terraform makes for them.
 UPGRADE_CONVERGE_TIMEOUT="${UPGRADE_CONVERGE_TIMEOUT:-1800}"   # seconds (30 min)
+UPGRADE_REMOTE="${UPGRADE_REMOTE:-upstream}"                   # git remote that publishes the release tags
+RELEASE_MARKER="platform-release"                              # ConfigMap in $NS_PLATFORM (see below)
+
+# The release an environment runs is recorded in the cluster (ConfigMap
+# platform-release, data.release) at the end of every successful upgrade and of
+# the first `up`. Git alone cannot tell: a release pushed before it was upgraded
+# to, or a second environment on the same branch, looks deployed when it is not.
+# Empty when there is no record (installs older than this mechanism, no access).
+_release_marker_get() {
+  command -v kubectl >/dev/null 2>&1 || return 0
+  local v
+  v="$(kubectl --context "$1" --request-timeout=10s get configmap "$RELEASE_MARKER" -n "$NS_PLATFORM" \
+        -o jsonpath='{.data.release}' 2>/dev/null || true)"
+  case "$v" in baseline|v[0-9][0-9][0-9][0-9].[0-9][0-9].[0-9]*) echo "$v" ;; esac
+  return 0
+}
+
+# _release_marker_set ENV RELEASE COMMIT. Not managed by Argo CD or Terraform, so neither reverts it.
+_release_marker_set() {
+  kubectl --context "$1" create configmap "$RELEASE_MARKER" -n "$NS_PLATFORM" \
+      --from-literal=release="$2" --from-literal=commit="$3" --dry-run=client -o yaml 2>/dev/null \
+    | kubectl --context "$1" apply -f - >/dev/null 2>&1
+}
 
 _upgrade_usage() {
   cat <<EOF
-usage: platformctl upgrade [ENV] [--plan-only] [--yes] [--allow-replace [STAGE:]ADDR]...
-  Upgrade ENV to the release you merged into this branch (not pushed yet):
-    git fetch upstream --tags && git merge <tag>
+usage: platformctl upgrade [ENV] [--to TAG] [--plan-only] [--yes] [--allow-replace [STAGE:]ADDR]...
+  Upgrade ENV to the newest release (or to --to TAG), one release at a time:
     ./platformctl upgrade <env>
-  Steps: checks -> release notes -> plan guard on every stage -> apply each stage
-  from its saved plan -> git push -> wait for Argo CD -> status --check.
-  --plan-only      run the checks and the plan guard, change nothing
+  It fetches the release tags from the repository you forked from (git remote
+  '${UPGRADE_REMOTE}'), merges the next release into this branch, applies it, and
+  repeats. If you already merged a release tag yourself (not pushed), only that
+  release is applied.
+  Steps per release: checks -> release notes -> plan guard on every stage ->
+  apply each stage from its saved plan -> git push -> wait for Argo CD ->
+  status --check.
+  --to TAG         stop at this release (e.g. v2026.11.3) instead of the newest
+  --plan-only      run the checks and the plan guard for the next release, change nothing
   --yes, -y        do not ask for confirmation after the release notes
   --allow-replace  accept a guarded delete/replace at this Terraform address
                    (repeatable; prefix STAGE: to limit it to one stage)
@@ -1225,10 +1277,14 @@ ${pending:-    (no Applications found in namespace argocd)}"
 }
 
 cmd_upgrade() {
-  local envarg="" plan_only=0 yes=0 allow=()
+  local envarg="" plan_only=0 yes=0 to="" allow=()
   while [ $# -gt 0 ]; do
     case "$1" in
       --plan-only) plan_only=1 ;;
+      --to)
+        shift; [ $# -gt 0 ] && [ -n "$1" ] || die "--to needs a release tag (e.g. v2026.11.3)"
+        to="$1" ;;
+      --to=*)      to="${1#--to=}" ;;
       -y|--yes)    yes=1 ;;
       --allow-replace)
         shift; [ $# -gt 0 ] && [ -n "$1" ] || die "--allow-replace needs a Terraform address (e.g. aws_s3_bucket.model_cache[0])"
@@ -1264,17 +1320,91 @@ $(printf '%s\n' "$dirty" | sed 's/^/    /')
   "${g[@]}" merge-base --is-ancestor '@{u}' HEAD || die "HEAD does not contain ${upstream} (someone pushed since you merged, or the branches diverged).
   Bring it in first (git merge ${upstream}), then rerun."
   local ahead; ahead="$("${g[@]}" rev-list --count '@{u}..HEAD')"
-  [ "$ahead" -gt 0 ] || die "nothing to upgrade: HEAD is the same as ${upstream}.
-  Merge a release first:  git fetch upstream --tags && git merge <tag>
-  If an earlier upgrade already pushed and then stopped, check the platform with:  ./platformctl status ${env} --check"
+  case "$to" in ""|v[0-9][0-9][0-9][0-9].[0-9][0-9].[0-9]*) ;; *) die "--to takes a release tag (vYYYY.MM.N, e.g. v2026.11.3), not '${to}'." ;; esac
 
   # -- 2. release path ------------------------------------------------------ #
-  local path deployed target manifest
-  path="$(python3 "${LIB_DIR}/release_manifest.py" release-path --repo "$REPO_ROOT" --deployed '@{u}' --target HEAD --env "$env")" \
-    || die "cannot upgrade from ${upstream} to HEAD (see above)."
-  deployed="${path% *}"; target="${path#* }"
+  # Deployed = what the cluster recorded; without a record, what Argo CD syncs.
+  local rm=(python3 "${LIB_DIR}/release_manifest.py") recorded deployed head_rel
+  recorded="$(_release_marker_get "$env")"
+  deployed="$recorded"
+  [ -n "$deployed" ] || deployed="$("${rm[@]}" release-of --repo "$REPO_ROOT" --rev '@{u}')" \
+    || die "cannot read the releases in ${upstream} (see above)."
+  head_rel="$("${rm[@]}" release-of --repo "$REPO_ROOT" --rev HEAD)" || die "cannot read the releases in HEAD (see above)."
+
+  # Carried from one release to the next when several are applied in a row.
+  local again=("${BASH:-bash}" "${REPO_ROOT}/platformctl" upgrade "$env")
+  [ "$yes" -eq 0 ] || again+=(--yes)
+  [ ${#allow[@]} -eq 0 ] || again+=("${allow[@]}")
+
+  # -- 2a. nothing merged yet: fetch the releases, merge the next one -------- #
+  if [ "$head_rel" = "$deployed" ]; then
+    "${g[@]}" remote get-url "$UPGRADE_REMOTE" >/dev/null 2>&1 || die "'${env}' is on ${deployed} and no newer release is merged in this checkout.
+  To look for one, upgrade needs the repository you forked from as git remote '${UPGRADE_REMOTE}':
+    git remote add ${UPGRADE_REMOTE} <its URL>
+  then rerun:  ./platformctl upgrade ${env}"
+    "${g[@]}" fetch --quiet --tags "$UPGRADE_REMOTE" || die "could not fetch the releases from git remote '${UPGRADE_REMOTE}'."
+    local final="$to" hops next
+    [ -n "$final" ] || final="$("${rm[@]}" newest-tag --repo "$REPO_ROOT" --remote "$UPGRADE_REMOTE")" \
+      || die "could not list the release tags of git remote '${UPGRADE_REMOTE}' (see above)."
+    [ -n "$final" ] || die "git remote '${UPGRADE_REMOTE}' has no release tags (vYYYY.MM.N)."
+    local newest_ok=(); [ -n "$to" ] || newest_ok=(--older-ok)
+    hops="$("${rm[@]}" upgrade-path --repo "$REPO_ROOT" --deployed-release "$deployed" --target "$final" ${newest_ok[@]+"${newest_ok[@]}"})" \
+      || die "cannot upgrade '${env}' from ${deployed} to ${final} (see above)."
+    if [ -z "$hops" ]; then
+      ok "'${env}' is on ${deployed}; there is no newer release to upgrade to."
+      return 0
+    fi
+    next="$(printf '%s\n' "$hops" | head -n 1)"
+    log "Upgrade path for '${env}': ${deployed} -> $(printf '%s\n' "$hops" | paste -sd' ' - | sed 's/ / -> /g')"
+    local before; before="$("${g[@]}" rev-parse HEAD)"
+    log "Merging ${next} into ${branch} (local; pushed after Terraform)"
+    if ! "${g[@]}" merge --no-edit "refs/tags/${next}" >/dev/null 2>&1; then
+      die "release ${next} conflicts with changes in this fork:
+$("${g[@]}" diff --name-only --diff-filter=U 2>/dev/null | sed 's/^/    /')
+  Resolve the conflicts, then:
+    git add -A && git commit
+    ./platformctl upgrade ${env}${to:+ --to ${to}}
+  Or give up on this upgrade:  git merge --abort"
+    fi
+    if [ "$plan_only" -eq 1 ]; then
+      # Plan the next release with its own code, then put the checkout back.
+      local rc=0
+      # shellcheck disable=SC2064  # expand now: the values are gone when the trap fires
+      trap "git -C '${REPO_ROOT}' reset -q --hard '${before}'" INT TERM
+      "${again[@]}" --plan-only || rc=$?
+      trap - INT TERM
+      "${g[@]}" reset -q --hard "$before"
+      [ "$next" = "$final" ] || log "--plan-only planned ${next} only; later releases are planned after it is applied."
+      return "$rc"
+    fi
+    exec "${again[@]}" --to "$final"
+  fi
+
+  # -- 2b. a release is merged: it must be the next one, and a published one -- #
+  local path target manifest
+  path="$("${rm[@]}" release-path --repo "$REPO_ROOT" --deployed-release "$deployed" --target HEAD --env "$env")" \
+    || die "cannot upgrade '${env}' from ${deployed} to HEAD (see above)."
+  target="${path#* }"
   manifest="${REPO_ROOT}/releases/${target}.json"
   [ -f "$manifest" ] || die "release manifest ${manifest#"$REPO_ROOT"/} is missing from the working tree."
+  _upgrade_has_tag() { "${g[@]}" rev-parse -q --verify "refs/tags/${target}^{commit}" >/dev/null 2>&1 \
+    && "${g[@]}" merge-base --is-ancestor "refs/tags/${target}" HEAD; }
+  if ! _upgrade_has_tag; then
+    "${g[@]}" fetch --quiet --tags "$UPGRADE_REMOTE" 2>/dev/null || true
+    if ! _upgrade_has_tag; then
+      if [ "${UPGRADE_ALLOW_UNTAGGED:-0}" = 1 ]; then
+        warn "UPGRADE_ALLOW_UNTAGGED=1: HEAD carries ${target} without its tag. This is not a published release; for release testing only."
+      else
+        die "HEAD carries releases/${target}.json but not the release tag ${target}: what is merged here is a
+  branch, not a published release (it may not have passed the release tests).
+  Undo the merge and let upgrade fetch the release:
+    git reset --hard ORIG_HEAD     # the commit before the merge; check with: git log --oneline -3
+    ./platformctl upgrade ${env}"
+      fi
+    fi
+  fi
+  [ -z "$to" ] || "${rm[@]}" upgrade-path --repo "$REPO_ROOT" --deployed-release "$target" --target "$to" >/dev/null \
+    || die "--to ${to} cannot be reached from ${target} (see above). Nothing changed."
   log "Upgrade '${env}': ${deployed} -> ${c_bold}${target}${c_rst}  (${ahead} commit(s) ahead of ${upstream})"
 
   # -- 3. Kubernetes version ----------------------------------------------- #
@@ -1294,6 +1424,12 @@ $(printf '%s\n' "$dirty" | sed 's/^/    /')
     [ "$(kubectl config current-context 2>/dev/null)" = "$env" ] || die "the current kubectl context is not '${env}' (status --check runs against it). Run:  ./platformctl use ${env}"
     [ "$(kubectl --context "$env" --request-timeout=10s get --raw /readyz 2>/dev/null)" = "ok" ] \
       || die "cannot reach the '${env}' cluster API (your IP is probably not allowlisted). Run:  ./platformctl allow-ip ${env}"
+    # First upgrade with a release record: write down where the env starts,
+    # before anything changes. If this upgrade pushes and then stops (Argo CD
+    # not healthy), git alone would call the new release deployed; the record
+    # makes the rerun repeat this release instead of moving on.
+    [ -n "$recorded" ] || _release_marker_set "$env" "$deployed" "$("${g[@]}" rev-parse '@{u}')" \
+      || warn "could not record ${deployed} in the cluster (ConfigMap ${RELEASE_MARKER} in ${NS_PLATFORM}); continuing."
   fi
 
   # -- 5. release notes + manual steps -------------------------------------- #
@@ -1383,8 +1519,23 @@ $(printf '%b' "$blocked")
   local hint
   hint="$(python3 "${LIB_DIR}/release_manifest.py" kubernetes-hint --manifest "$manifest" --tfvars "$tfvars" --env "$env" 2>/dev/null || true)"
   [ -z "$hint" ] || { echo; warn "$hint"; }
+  local recorded_ok=1
+  _release_marker_set "$env" "$target" "$head" || recorded_ok=0
+  [ "$recorded_ok" -eq 1 ] \
+    || warn "could not record ${target} in the cluster (ConfigMap ${RELEASE_MARKER} in ${NS_PLATFORM})."
   echo
   ok "'${env}' is on ${target}."
+
+  # -- 12. more releases to go (upgrade was asked for a later one) ---------- #
+  if [ -n "$to" ] && [ "$to" != "$target" ]; then
+    # The next release starts from the record. Without it, an older record
+    # would make the next run apply this release again, and again.
+    [ "$recorded_ok" -eq 1 ] || die "'${env}' is on ${target}, but that could not be recorded in the cluster, so upgrade
+  stops here instead of going on to ${to}. Check that you may write ConfigMaps in namespace ${NS_PLATFORM}, then rerun:
+    ./platformctl upgrade ${env} --to ${to}"
+    echo
+    exec "${again[@]}" --to "$to"
+  fi
 }
 
 # ---- use ------------------------------------------------------------------- #

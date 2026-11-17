@@ -4,17 +4,23 @@
 Each release ships `releases/<version>.json` (format: releases/README.md).
 `platformctl upgrade` uses this module to:
 
-  * find the deployed release (the branch upstream, what Argo CD syncs) and the
-    target release (HEAD), reading `releases/*.json` straight from git objects,
-    so nothing is checked out. A tree without manifests is the `baseline`;
-  * refuse more than one release at a time;
+  * find the deployed release (recorded in the cluster by the last upgrade; for
+    installs without that record, the branch upstream, what Argo CD syncs) and
+    the target release (HEAD), reading `releases/*.json` straight from git
+    objects, so nothing is checked out. A tree without manifests is the
+    `baseline`;
+  * list the releases between the deployed one and a release tag, in the order
+    they must be applied, and refuse more than one release at a time;
   * check that `<env>.tfvars` sets every variable the release requires, and that
     its `kubernetes_version` is supported by the release.
 
 Subcommands (all print actionable errors to stderr and exit 1 on failure):
 
   validate FILE...
-  release-path --repo DIR [--deployed REV] [--target REV] [--env ENV]  -> "DEPLOYED TARGET"
+  release-path --repo DIR [--deployed REV | --deployed-release V] [--target REV] [--env ENV]  -> "DEPLOYED TARGET"
+  release-of --repo DIR --rev REV                                      -> newest release in REV, or "baseline"
+  upgrade-path --repo DIR --deployed-release V --target TAG            -> releases to apply, one per line
+  newest-tag --repo DIR --remote NAME                                  -> newest release tag of the remote
   check-tfvars --manifest F --tfvars F [--example F]
   check-kubernetes --manifest F --tfvars F [--env ENV]
   manual-steps --manifest F
@@ -36,6 +42,9 @@ K8S_RE = re.compile(r"^1\.(\d+)$")
 REQUIRED_KEYS = ("version", "previous", "kubernetes", "required_tfvars",
                  "manual_steps", "acknowledged_replacements")
 TFVAR_NAME_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_-]*$")
+# How to undo a release merge that was not pushed. ORIG_HEAD, not @{u}: a fork
+# may have commits of its own that are not pushed yet, and those must survive.
+UNDO_MERGE = "git reset --hard ORIG_HEAD     # the commit before the merge; check with: git log --oneline -3"
 
 
 class ReleaseError(Exception):
@@ -184,19 +193,31 @@ def release_of(repo: str, rev: str) -> str:
     return latest(list(releases_in(repo, rev)))
 
 
+def _check_release_name(value: str, what: str) -> str:
+    if value != BASELINE and not is_version(value):
+        raise ReleaseError("{} {!r} is not a release (vYYYY.MM.N or '{}').".format(what, value, BASELINE))
+    return value
+
+
 def release_path(repo: str, deployed_rev: str = "@{u}", target_rev: str = "HEAD",
-                 env: str = "<env>") -> Tuple[str, str]:
-    """(deployed, target) releases; raises ReleaseError unless exactly one release apart."""
-    deployed_set = releases_in(repo, deployed_rev)
+                 env: str = "<env>", deployed_release: Optional[str] = None) -> Tuple[str, str]:
+    """(deployed, target) releases; raises ReleaseError unless exactly one release apart.
+
+    The deployed release is `deployed_release` when given (what the cluster
+    recorded), else the newest release in `deployed_rev` (the branch Argo CD
+    syncs). The two differ when a release was pushed before it was upgraded to,
+    and when several environments track one branch."""
     target_set = releases_in(repo, target_rev)
-    deployed = latest(list(deployed_set))
+    if deployed_release is not None:
+        deployed = _check_release_name(deployed_release, "the deployed release")
+    else:
+        deployed = latest(list(releases_in(repo, deployed_rev)))
     if not target_set:
         raise ReleaseError(
             "HEAD has no release manifest (releases/<version>.json), so there is no release to upgrade to.\n"
             "  Merge a release tag first:  git fetch upstream --tags && git merge <tag>")
     target = latest(list(target_set))
-    newer = sorted((v for v in target_set if v not in deployed_set
-                    and (deployed == BASELINE or version_key(v) > version_key(deployed))),
+    newer = sorted((v for v in target_set if deployed == BASELINE or version_key(v) > version_key(deployed)),
                    key=version_key)
     if deployed != BASELINE and version_key(target) < version_key(deployed):
         raise ReleaseError("HEAD ({}) is older than the deployed release ({}); downgrades are not "
@@ -207,19 +228,61 @@ def release_path(repo: str, deployed_rev: str = "@{u}", target_rev: str = "HEAD"
             "  To upgrade, merge the next release tag. To ship your own commits, push them as usual."
             .format(deployed))
     if len(newer) > 1:
-        steps = "\n".join("    git merge {v} && ./platformctl upgrade {e}".format(v=v, e=env) for v in newer)
         raise ReleaseError(
             "HEAD is {n} releases ahead of the deployed one ({d}): {lst}.\n"
-            "  Upgrade one release at a time. Undo this merge (the tree is clean, so this loses nothing):\n"
-            "    git reset --hard @{{u}}\n"
-            "  then, in this order:\n{steps}".format(
-                n=len(newer), d=deployed, lst=", ".join(newer), steps=steps))
+            "  Releases are applied one at a time. Undo this merge and let upgrade merge and apply them in order:\n"
+            "    {undo}\n"
+            "    ./platformctl upgrade {e}".format(n=len(newer), d=deployed, lst=", ".join(newer), e=env,
+                                                   undo=UNDO_MERGE))
     previous = target_set[target]["previous"]
     if previous != deployed:
         raise ReleaseError(
             "release {t} upgrades from {p}, but the deployed release is {d}.\n"
             "  Upgrade to {p} first (one release at a time).".format(t=target, p=previous, d=deployed))
     return deployed, target
+
+
+def upgrade_path(repo: str, deployed: str, target_tag: str, older_ok: bool = False) -> List[str]:
+    """Releases to apply, in order, to get from `deployed` to the release tag
+    `target_tag`. Read from the manifests in the tag's tree (every release keeps
+    the manifests of the ones before it), following `previous`. Empty when
+    `deployed` is the target. A target older than `deployed` is an error
+    (downgrade) unless `older_ok`: the caller only asked for 'the newest
+    published release' and the environment is already past it."""
+    _check_release_name(deployed, "the deployed release")
+    if not is_version(target_tag):
+        raise ReleaseError("{!r} is not a release tag (vYYYY.MM.N).".format(target_tag))
+    proc = subprocess.run(["git", "-C", repo, "rev-parse", "-q", "--verify",
+                           "refs/tags/{}^{{commit}}".format(target_tag)],
+                          stdout=subprocess.PIPE, stderr=subprocess.PIPE, universal_newlines=True)
+    if proc.returncode != 0:
+        raise ReleaseError("there is no release tag {} (fetch the releases: git fetch upstream --tags).".format(target_tag))
+    manifests = releases_in(repo, "refs/tags/{}".format(target_tag))
+    if target_tag not in manifests:
+        raise ReleaseError("tag {t} does not carry releases/{t}.json, so it is not a release.".format(t=target_tag))
+    if deployed != BASELINE and version_key(target_tag) < version_key(deployed):
+        if older_ok:
+            return []
+        raise ReleaseError("{} is older than the deployed release ({}); downgrades are not supported.".format(
+            target_tag, deployed))
+    hops = []  # type: List[str]
+    current = target_tag
+    while current != deployed:
+        if current == BASELINE or current not in manifests:
+            raise ReleaseError(
+                "no upgrade path from {d} to {t}: the releases before {t} are {chain}, and {d} is not one of them."
+                .format(d=deployed, t=target_tag, chain=", ".join(reversed(hops[1:])) or "none"))
+        hops.append(current)
+        current = manifests[current]["previous"]
+    return list(reversed(hops))
+
+
+def newest_tag(repo: str, remote: str) -> Optional[str]:
+    """Newest release tag (vYYYY.MM.N) that `remote` has, or None."""
+    out = _git(repo, "ls-remote", "--tags", "--refs", remote)
+    names = [line.split("refs/tags/", 1)[1].strip() for line in out.splitlines() if "refs/tags/" in line]
+    versions = [n for n in names if is_version(n)]
+    return max(versions, key=version_key) if versions else None
 
 
 # --------------------------------------------------------------------------- #
@@ -318,11 +381,11 @@ def check_kubernetes(manifest: dict, current: str, env: str = "<env>") -> None:
         raise ReleaseError(
             "{v} supports Kubernetes {s}; this environment runs {c}.\n"
             "  Move Kubernetes up one minor at a time on the release you run now, then upgrade:\n"
-            "    git reset --hard @{{u}}      # undo the merge (the tree is clean, this loses nothing)\n"
+            "    {undo}\n"
             "    # set kubernetes_version = \"1.{n}\" in {e}.tfvars, then:\n"
             "    ./platformctl up {e}\n"
             "  Repeat until you reach {lo}, then merge {v} again. See UPGRADING.md, 'Kubernetes versions'."
-            .format(v=version, s=", ".join(supported), c=current, n=cur + 1, lo=lowest, e=env))
+            .format(v=version, s=", ".join(supported), c=current, n=cur + 1, lo=lowest, e=env, undo=UNDO_MERGE))
     raise ReleaseError(
         "{v} supports Kubernetes {s}; this environment runs {c}, which is newer. Kubernetes cannot be "
         "downgraded; wait for a release that supports {c}.".format(v=version, s=", ".join(supported), c=current))
@@ -358,8 +421,26 @@ def _cmd_validate(args):
 
 
 def _cmd_release_path(args):
-    deployed, target = release_path(args.repo, args.deployed, args.target, args.env)
+    deployed, target = release_path(args.repo, args.deployed, args.target, args.env, args.deployed_release)
     print("{} {}".format(deployed, target))
+    return 0
+
+
+def _cmd_release_of(args):
+    print(release_of(args.repo, args.rev))
+    return 0
+
+
+def _cmd_upgrade_path(args):
+    for version in upgrade_path(args.repo, args.deployed_release, args.target, args.older_ok):
+        print(version)
+    return 0
+
+
+def _cmd_newest_tag(args):
+    tag = newest_tag(args.repo, args.remote)
+    if tag:
+        print(tag)
     return 0
 
 
@@ -398,9 +479,29 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     p = sub.add_parser("release-path", help="print 'DEPLOYED TARGET' releases")
     p.add_argument("--repo", default=".")
     p.add_argument("--deployed", default="@{u}")
+    p.add_argument("--deployed-release", default=None,
+                   help="the release the environment runs (from the cluster); overrides --deployed")
     p.add_argument("--target", default="HEAD")
     p.add_argument("--env", default="<env>")
     p.set_defaults(func=_cmd_release_path)
+
+    p = sub.add_parser("release-of", help="print the newest release in a revision, or 'baseline'")
+    p.add_argument("--repo", default=".")
+    p.add_argument("--rev", required=True)
+    p.set_defaults(func=_cmd_release_of)
+
+    p = sub.add_parser("upgrade-path", help="print the releases to apply to reach a release tag, in order")
+    p.add_argument("--repo", default=".")
+    p.add_argument("--deployed-release", required=True)
+    p.add_argument("--target", required=True)
+    p.add_argument("--older-ok", action="store_true",
+                   help="a target older than the deployed release means 'nothing to apply', not an error")
+    p.set_defaults(func=_cmd_upgrade_path)
+
+    p = sub.add_parser("newest-tag", help="print the newest release tag of a remote")
+    p.add_argument("--repo", default=".")
+    p.add_argument("--remote", required=True)
+    p.set_defaults(func=_cmd_newest_tag)
 
     for name, func, help_text in (
             ("check-tfvars", _cmd_check_tfvars, "check required_tfvars are set"),

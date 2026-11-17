@@ -10,40 +10,73 @@ release at a time.
 On the branch Argo CD syncs from (usually `main`), with a clean working tree:
 
 ```bash
+./platformctl upgrade <env>
+```
+
+That is the whole procedure. The command fetches the release tags from the
+repository you forked from, works out which releases lie between the one your
+environment runs and the newest one, and applies them in order. For each
+release it merges the tag into your branch, shows the release notes, runs
+Terraform, pushes, and waits until the platform is healthy before it starts
+the next one.
+
+It needs a git remote named `upstream` that points at the repository you
+forked from. Add it once:
+
+```bash
+git remote add upstream <url of the repository you forked from>
+```
+
+Useful variations:
+
+```bash
+./platformctl upgrade <env> --plan-only        # show what the next release would change; change nothing
+./platformctl upgrade <env> --to v2026.11.3    # stop at this release instead of the newest
+./platformctl upgrade <env> --yes              # do not ask after each release's notes
+```
+
+If a release changed a file that you also edited, the merge stops with the
+list of conflicting files. Resolve them, `git add -A && git commit`, and run
+the same command again.
+
+Do not push a release merge yourself. Argo CD syncs with prune and self-heal,
+so a push would roll out the new charts and manifests before Terraform has
+created the IAM roles, CRDs and ConfigMaps they need. `upgrade` pushes for
+you, after Terraform.
+
+### Merging by hand
+
+You can still merge a release yourself and then run the command; it applies
+exactly the release you merged:
+
+```bash
 git fetch upstream --tags
 git merge v2026.11.0            # the next release after the one you run; do NOT push
 ./platformctl upgrade <env>
 ```
 
-`upstream` is a git remote pointing at the repository you forked from
-(`git remote add upstream <url>` once). If you edited files that the release
-also changed, resolve the merge conflicts and commit before you run the command.
-
-Merge with plain git first, then run the command. The `platformctl` that runs
-is the one from the new release, so this works even when your current
-version does not have the `upgrade` command yet.
-
-Do not push the merge yourself. Argo CD syncs with prune and self-heal, so a
-push would roll out the new charts and manifests before Terraform has created
-the IAM roles, CRDs and ConfigMaps they need. `upgrade` pushes for you, after
-Terraform.
-
-To see what would change without changing anything:
-
-```bash
-./platformctl upgrade <env> --plan-only
-```
+Use this for the first upgrade of an environment whose `platformctl` is older
+than this procedure: the `platformctl` that runs is the one from the release
+you merged. The merge must be a release **tag**. A branch (for example
+upstream `main`, or a release candidate) is refused even when it carries a
+release manifest, because only tagged releases passed the release tests.
 
 ## What `upgrade` does
 
+For each release:
+
 1. **Checks.** The working tree is clean (gitignored files such as your
-   tfvars do not count). The branch has an upstream, HEAD contains it and is
-   ahead of it. The kubectl context `<env>` is current and its API is
-   reachable (skipped with `--plan-only`).
-2. **Release path.** The deployed release is the newest manifest on the
-   upstream branch (what Argo CD syncs), or `baseline` if it has none. The
-   target is the newest manifest in HEAD. Exactly one release apart is
-   accepted.
+   tfvars do not count). The branch has an upstream and HEAD contains it. The
+   kubectl context `<env>` is current and its API is reachable (skipped with
+   `--plan-only`).
+2. **Release path.** The deployed release is the one the environment recorded
+   at its last upgrade (ConfigMap `platform-release` in namespace
+   `ai-platform`). Environments installed before that record existed fall back
+   to the newest manifest on the upstream branch (what Argo CD syncs), or
+   `baseline` if it has none. If no newer release is merged in HEAD, the next
+   release tag is fetched and merged. The target is the newest manifest in
+   HEAD: it must be exactly one release after the deployed one, and HEAD must
+   contain its tag.
 3. **Kubernetes.** `kubernetes_version` in `<env>.tfvars` must be in the
    release's supported list.
 4. **tfvars.** Every variable the release lists in `required_tfvars` must be
@@ -63,6 +96,8 @@ To see what would change without changing anything:
 10. **Check.** Runs `./platformctl status <env> --check`.
 11. **Kubernetes hint.** If the release recommends a newer Kubernetes
     version than yours, prints how to move to it.
+12. **Record.** Writes the release into the `platform-release` ConfigMap, then
+    starts the next release if there is one.
 
 ## The plan guard
 
@@ -113,18 +148,32 @@ shows it as `allowed` with that reason, and you do not need the flag.
 
 ## Several releases behind
 
-Upgrade through each release in order. `upgrade` refuses HEAD when it is more
-than one release ahead of what is deployed, and prints the order. For example,
-from `v2026.10.0` to `v2026.12.0`:
+Nothing special: `./platformctl upgrade <env>` prints the path (for example
+`v2026.10.0 -> v2026.11.0 -> v2026.12.0`) and applies the releases one after
+the other. Each release shows its own notes and manual steps, and each must
+leave the platform healthy before the next one starts. If one stops, fix the
+cause and run the command again; it continues from the release the
+environment is on.
+
+Releases cannot be skipped: every release is tested as an upgrade from the
+one before it. If you merged several releases at once by hand, `upgrade`
+refuses and tells you to undo the merge (`git reset --hard ORIG_HEAD` right
+after the merge; that keeps commits of your own that are not pushed yet) and
+let it apply them in order.
+
+## Several environments
+
+Give each environment its own branch (`gitops_revision` in its tfvars), for
+example `env/dev` and `env/prod`, and upgrade them one after the other:
 
 ```bash
-git merge v2026.11.0 && ./platformctl upgrade <env>
-git merge v2026.12.0 && ./platformctl upgrade <env>
+git switch env/dev  && ./platformctl upgrade dev
+git switch env/prod && ./platformctl upgrade prod
 ```
 
-If you already merged the newest tag, undo that merge first with
-`git reset --hard @{u}`. The command requires a clean tree before it starts,
-so this discards only the merge.
+With one branch for two environments, the push at the end of the first
+upgrade would also roll the new manifests out to the second environment,
+before its Terraform ran.
 
 ## Kubernetes versions
 
@@ -146,7 +195,7 @@ the control plane one minor at a time):
 
 Repeat until you reach the release's recommended version. If `upgrade` says
 your version is too old for the new release, undo the merge
-(`git reset --hard @{u}`), move Kubernetes up on the release you run now, and
+(`git reset --hard ORIG_HEAD`), move Kubernetes up on the release you run now, and
 merge again.
 
 ## If a step fails
@@ -156,11 +205,12 @@ changes the second time.
 
 | Where it stopped | State | What to do |
 |---|---|---|
-| Checks, release notes (steps 1 to 5) | Nothing changed | Fix what the message says, rerun |
+| Checks, release notes (steps 1 to 5) | Nothing changed in the environment. The release is merged in your checkout, not pushed | Fix what the message says, rerun: it continues with that release. To drop the merge instead: `git reset --hard ORIG_HEAD` |
 | Plan guard (step 6 or 7) | Nothing applied in that stage | See [When the plan guard stops](#when-the-plan-guard-stops) |
 | Terraform plan or apply of a stage (step 7) | Earlier stages applied, nothing pushed. Argo CD still runs the previous release's manifests | Fix the cause (often credentials, quotas or the API allowlist: `./platformctl allow-ip <env>`), rerun `upgrade` |
 | Push rejected (step 8) | Terraform applied, nothing pushed | Someone pushed in the meantime. `git pull --no-rebase`, `git push`, then `./platformctl status <env> --check` |
-| Argo CD not converged or `status --check` failed (steps 9, 10) | Everything applied and pushed | Inspect the listed applications (`kubectl get applications -n argocd`). Rerunning `upgrade` reports nothing to upgrade, because the release is already pushed |
+| Argo CD not converged or `status --check` failed (steps 9, 10) | Everything applied and pushed; the environment is still recorded on the previous release | Inspect the listed applications (`kubectl get applications -n argocd`). When they are healthy, rerun `upgrade`: Terraform plans no changes, the checks run again, and the release is recorded |
+| A later release of several (step 12) | The earlier releases are applied, pushed and recorded | Fix the cause, rerun `upgrade`; it continues with the release that stopped |
 
 There is no automatic rollback. Undoing the git merge does not undo Terraform
 changes that were already applied, so fix forward and rerun.

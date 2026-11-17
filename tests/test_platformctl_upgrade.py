@@ -7,6 +7,10 @@ helpers, the real terraform/Makefile and two empty stages. Fake `terraform`,
 call, so the tests can assert what ran, in which order, and that nothing was
 applied or pushed when the command stops.
 
+Releases in these forks are tagged, as published releases are: `upgrade`
+refuses a release manifest without its tag. `Fork.publish()` adds the product
+repository as remote `upstream` (where `upgrade` fetches release tags from).
+
 platformctl runs under /bin/bash when present (bash 3.2 on macOS).
 """
 
@@ -61,10 +65,16 @@ case " $* " in
   *" config get-contexts "*) exit 0 ;;
   *" config view "*) echo "ai-platform-test" ;;
   *" get --raw /readyz "*) echo ok ;;
+  *" get configmap platform-release "*)
+    if [ -f "$FAKE_LOG.marker" ]; then cat "$FAKE_LOG.marker"; else printf '%s' "${FAKE_MARKER:-}"; fi ;;
+  *" apply -f - "*) [ "${FAKE_FAIL_MARKER_WRITE:-0}" != 1 ] || exit 1 ;;
+  *" create configmap platform-release "*)
+    [ "${FAKE_FAIL_MARKER_WRITE:-0}" != 1 ] || exit 0
+    for a in "$@"; do case "$a" in --from-literal=release=*) printf '%s' "${a#--from-literal=release=}" > "$FAKE_LOG.marker" ;; esac; done ;;
   *" get application bootstrap "*) echo "$FAKE_REPO_URL" ;;
   *" get applications -n argocd -o jsonpath="*)
     head=$(git -C "$FAKE_UPSTREAM" rev-parse refs/heads/main)
-    printf 'bootstrap\tSynced\tHealthy\t%s\t%s\n' "$head" "$FAKE_REPO_URL"
+    printf 'bootstrap\tSynced\t%s\t%s\t%s\n' "${FAKE_APP_HEALTH:-Healthy}" "$head" "$FAKE_REPO_URL"
     printf 'litellm\tSynced\tHealthy\t1.2.3\thttps://charts.example.com\n' ;;
   *" get secret litellm-secrets "*) printf 'c2stdGVzdA==' ;;
 esac
@@ -150,7 +160,27 @@ class Fork:
         git(w, "commit", "-q", "-m", "product")
         git(w, "remote", "add", "origin", str(self.upstream))
 
-    def release(self, version, previous, notes=None, **over):
+    def release(self, version, previous, notes=None, tag=True, **over):
+        sha = self._release_commit(version, previous, notes, **over)
+        if tag:
+            git(self.work, "tag", "-f", version, sha)
+        return sha
+
+    def publish(self):
+        """The product repository (remote `upstream`) with every release tag made so far."""
+        product = self.tmp / "product.git"
+        if not product.exists():
+            git(self.tmp, "init", "-q", "--bare", "-b", "main", str(product))
+            git(self.work, "remote", "add", "upstream", str(product))
+        git(self.work, "push", "-q", "--force", "upstream", "--tags")
+
+    def marker_sets(self):
+        """Releases written to the cluster's release marker, in order."""
+        prefix = "--from-literal=release="
+        return [a[len(prefix):] for c in self.calls("kubectl") if "create configmap platform-release" in c
+                for a in c.split() if a.startswith(prefix)]
+
+    def _release_commit(self, version, previous, notes=None, **over):
         d = self.work / "releases"
         d.mkdir(exist_ok=True)
         (d / "{}.json".format(version)).write_text(json.dumps(manifest(version, previous, **over), indent=2))
@@ -252,13 +282,40 @@ def test_gitignored_files_do_not_make_the_tree_dirty(fork):
     assert p.returncode == 0, p.stderr
 
 
-def test_nothing_to_push_refused(fork):
+def test_on_the_newest_release_there_is_nothing_to_do(fork):
+    fork.push()
+    fork.publish()
+    p = fork.run("upgrade", ENV_NAME, "--yes")
+    assert p.returncode == 0, p.stderr
+    assert "'test' is on v2026.11.0" in p.stdout and "no newer release" in p.stdout
+    assert fork.calls("terraform") == []
+
+
+def test_without_the_upstream_remote_it_says_how_to_add_it(fork):
     fork.push()
     p = fork.run("upgrade", ENV_NAME, "--yes")
     assert p.returncode == 1
-    assert "nothing to upgrade" in p.stderr
-    assert "status {} --check".format(ENV_NAME) in p.stderr
+    assert "git remote add upstream" in p.stderr
     assert fork.calls("terraform") == []
+
+
+def test_release_without_its_tag_refused(tmp_path):
+    """A manifest without the tag is a branch (a candidate that may have failed
+    its tests), not a published release."""
+    f = Fork(tmp_path)
+    f.release("v2026.10.0", "baseline")
+    f.push()
+    deployed = f.upstream_head()
+    f.release("v2026.11.0", "v2026.10.0", tag=False)
+    p = f.run("upgrade", ENV_NAME, "--yes", FAKE_ALLOW_APPLY="1")
+    assert p.returncode == 1
+    assert "not the release tag v2026.11.0" in p.stderr and "git reset --hard ORIG_HEAD" in p.stderr
+    assert f.calls("terraform") == []
+    assert_nothing_changed(f, deployed)
+    # The release tests upgrade to a candidate before it is tagged.
+    p = f.run("upgrade", ENV_NAME, "--plan-only", UPGRADE_ALLOW_UNTAGGED="1")
+    assert p.returncode == 0, p.stderr
+    assert "not a published release" in p.stderr
 
 
 def test_no_upstream_refused(tmp_path):
@@ -276,7 +333,7 @@ def test_missing_manifest_refused(tmp_path):
     f.commit("a change without a release manifest")
     p = f.run("upgrade", ENV_NAME, "--yes")
     assert p.returncode == 1
-    assert "no release manifest" in p.stderr and "git merge <tag>" in p.stderr
+    assert "no newer release is merged" in p.stderr and "git remote add upstream" in p.stderr
     assert f.calls("terraform") == []
     assert_nothing_changed(f, deployed)
 
@@ -286,7 +343,8 @@ def test_two_releases_at_once_refused(fork):
     p = fork.run("upgrade", ENV_NAME, "--yes")
     assert p.returncode == 1
     assert "2 releases ahead" in p.stderr
-    assert "git merge v2026.11.0 && ./platformctl upgrade test" in p.stderr
+    assert "git reset --hard ORIG_HEAD" in p.stderr and "./platformctl upgrade test" in p.stderr
+    assert "@{u}" not in p.stderr          # would drop the fork's own unpushed commits
     assert fork.calls("terraform") == []
 
 
@@ -334,7 +392,8 @@ def test_plan_only_plans_every_stage_and_changes_nothing(fork):
     plans = [c for c in fork.calls("terraform") if " plan " in c]
     assert [c.split()[1] for c in plans] == ["-chdir=./10.networking", "-chdir=./30.eks/30.cluster"]
     assert all("-out=" in c and "tf-plans/" in c for c in plans)
-    assert fork.calls("kubectl") == [] and fork.calls("aws") == []
+    # The only cluster call is the read of the release marker.
+    assert all("get configmap platform-release" in c for c in fork.calls("kubectl")) and fork.calls("aws") == []
     assert "--plan-only: nothing changed" in p.stdout
     assert_nothing_changed(fork, deployed)
 
@@ -393,6 +452,13 @@ def test_full_upgrade_applies_then_pushes(fork):
     assert "argocd.argoproj.io/refresh=hard" in log[refresh]
     assert "'test' is on v2026.11.0" in p.stdout
     assert "recommends Kubernetes 1.37" in p.stderr  # step 11 hint
+    # The cluster records the release it runs: where it started (first upgrade
+    # with a record, written before anything changed), then the new release, last.
+    assert fork.marker_sets() == ["v2026.10.0", "v2026.11.0"]
+    stamps = [i for i, ln in enumerate(log) if "create configmap platform-release" in ln]
+    first_plan = next(i for i, ln in enumerate(log) if ln.startswith("terraform ") and " plan " in ln)
+    assert stamps[0] < first_plan and "--from-literal=commit={}".format(deployed) in log[stamps[0]]
+    assert stamps[1] > refresh and "--from-literal=commit={}".format(head) in log[stamps[1]]
     assert not list((fork.work / "terraform" / "tf-plans").glob("*"))  # saved plans removed after apply
 
 
@@ -404,3 +470,153 @@ def test_failed_apply_pushes_nothing(fork):
     assert "Nothing pushed" in p.stderr
     assert fork.upstream_head() == deployed
     assert not [c for c in fork.calls("kubectl") if "annotate" in c]
+    assert fork.marker_sets() == ["v2026.10.0"]      # still on the old release, and now it says so
+
+
+def test_rerun_after_a_push_that_did_not_converge_repeats_the_release(fork):
+    """Pushed, then stopped (Argo CD unhealthy): git says the new release is
+    deployed. The record written at the start says it is not, so the rerun
+    repeats this release's checks instead of reporting nothing to do."""
+    p = fork.run("upgrade", ENV_NAME, "--yes", FAKE_ALLOW_APPLY="1", UPGRADE_CONVERGE_TIMEOUT="0",
+                 FAKE_APP_HEALTH="Degraded")
+    assert p.returncode == 1 and "has not converged" in p.stderr
+    assert fork.marker_sets() == ["v2026.10.0"]
+    assert fork.upstream_head() == git(fork.work, "rev-parse", "HEAD")  # pushed
+    p = fork.run("upgrade", ENV_NAME, "--yes", FAKE_ALLOW_APPLY="1")
+    assert p.returncode == 0, p.stdout + p.stderr
+    assert "v2026.10.0 -> " in p.stdout and "'test' is on v2026.11.0" in p.stdout
+    assert fork.marker_sets() == ["v2026.10.0", "v2026.11.0"]
+
+
+# --------------------------------------------------------------------------- #
+# The release the environment runs is read from the cluster                   #
+# --------------------------------------------------------------------------- #
+def test_release_pushed_before_the_upgrade_is_still_upgraded(fork):
+    """Pushed too early (or a second environment on the same branch): git says
+    v2026.11.0 is deployed, the cluster says v2026.10.0. The cluster is right."""
+    fork.push()
+    head = fork.upstream_head()
+    p = fork.run("upgrade", ENV_NAME, "--yes", FAKE_ALLOW_APPLY="1", FAKE_MARKER="v2026.10.0")
+    assert p.returncode == 0, p.stdout + p.stderr
+    assert "v2026.10.0 -> " in p.stdout and "'test' is on v2026.11.0" in p.stdout
+    assert len([c for c in fork.calls("terraform") if " apply " in c]) == 2
+    assert fork.upstream_head() == head and fork.marker_sets() == ["v2026.11.0"]   # a record existed: one write
+
+
+def test_head_older_than_the_cluster_refused(fork):
+    p = fork.run("upgrade", ENV_NAME, "--yes", FAKE_MARKER="v2026.12.0")
+    assert p.returncode == 1
+    assert "downgrades are not supported" in p.stderr
+    assert fork.calls("terraform") == []
+
+
+# --------------------------------------------------------------------------- #
+# Nothing merged: upgrade fetches the releases and walks them in order        #
+# --------------------------------------------------------------------------- #
+@pytest.fixture
+def behind(tmp_path):
+    """Deployed: v2026.10.0. Published upstream: v2026.11.0 and v2026.12.0. Nothing merged."""
+    f = Fork(tmp_path)
+    base = f.release("v2026.10.0", "baseline")
+    f.push()
+    f.release("v2026.11.0", "v2026.10.0", notes="# v2026.11.0\n\nFirst.\n")
+    f.release("v2026.12.0", "v2026.11.0", notes="# v2026.12.0\n\nSecond.\n")
+    f.publish()
+    git(f.work, "reset", "-q", "--hard", base)
+    git(f.work, "tag", "-d", "v2026.11.0", "v2026.12.0")   # known only upstream until fetched
+    return f
+
+
+def test_walks_every_release_in_order(behind):
+    f = behind
+    p = f.run("upgrade", ENV_NAME, "--yes", FAKE_ALLOW_APPLY="1")
+    assert p.returncode == 0, p.stdout + p.stderr
+    assert "v2026.10.0 -> v2026.11.0 -> v2026.12.0" in p.stdout
+    assert p.stdout.index("First.") < p.stdout.index("'test' is on v2026.11.0") < p.stdout.index("Second.")
+    assert "'test' is on v2026.12.0" in p.stdout
+    assert f.upstream_head() == git(f.work, "rev-parse", "v2026.12.0^{commit}")
+    assert f.marker_sets() == ["v2026.10.0", "v2026.11.0", "v2026.12.0"]
+    # One release at a time: the first one is applied and pushed before the second is merged.
+    seen = [ln.split("=", 1)[1] for ln in f.calls() if ln.startswith("apply-while-upstream=")]
+    v10, v11 = git(f.work, "rev-parse", "v2026.10.0^{commit}"), git(f.work, "rev-parse", "v2026.11.0^{commit}")
+    assert seen == [v10, v10, v11, v11]
+
+
+def test_stops_instead_of_looping_when_the_release_cannot_be_recorded(behind):
+    """An older record plus a failing write would make every next run apply the
+    same release again. Apply it once, say so, stop."""
+    f = behind
+    p = f.run("upgrade", ENV_NAME, "--yes", FAKE_ALLOW_APPLY="1", FAKE_MARKER="v2026.10.0",
+              FAKE_FAIL_MARKER_WRITE="1")
+    assert p.returncode == 1
+    assert "'test' is on v2026.11.0" in p.stdout and "could not be recorded" in p.stderr
+    assert "./platformctl upgrade test --to v2026.12.0" in p.stderr
+    assert len([c for c in f.calls("terraform") if " apply " in c]) == 2          # one release, two stages
+    assert f.upstream_head() == git(f.work, "rev-parse", "v2026.11.0^{commit}")
+
+
+def test_environment_past_the_newest_published_release_has_nothing_to_do(behind):
+    p = behind.run("upgrade", ENV_NAME, "--yes", FAKE_MARKER="v2027.01.0")
+    assert p.returncode == 1 and "downgrades are not supported" in p.stderr       # HEAD (v2026.10.0) is older
+    git(behind.work, "fetch", "-q", "--tags", "upstream")
+    git(behind.work, "merge", "-q", "--ff-only", "v2026.12.0")
+    behind.push()
+    behind.release("v2026.12.1", "v2026.12.0")                                    # e.g. a candidate under test,
+    behind.push()                                                                 # not published upstream
+    p = behind.run("upgrade", ENV_NAME, "--yes")
+    assert p.returncode == 0, p.stderr
+    assert "'test' is on v2026.12.1; there is no newer release" in p.stdout
+
+
+def test_to_stops_at_the_named_release(behind):
+    f = behind
+    p = f.run("upgrade", ENV_NAME, "--yes", "--to", "v2026.11.0", FAKE_ALLOW_APPLY="1")
+    assert p.returncode == 0, p.stdout + p.stderr
+    assert "'test' is on v2026.11.0" in p.stdout and "v2026.12.0" not in p.stdout
+    assert f.upstream_head() == git(f.work, "rev-parse", "v2026.11.0^{commit}")
+    assert f.marker_sets() == ["v2026.10.0", "v2026.11.0"]
+
+
+def test_to_an_unknown_release_refused(behind):
+    p = behind.run("upgrade", ENV_NAME, "--yes", "--to", "v2027.01.0")
+    assert p.returncode == 1 and "v2027.01.0" in p.stderr
+    assert behind.calls("terraform") == []
+    p = behind.run("upgrade", ENV_NAME, "--yes", "--to", "main")
+    assert p.returncode == 1 and "vYYYY.MM.N" in p.stderr
+
+
+def test_plan_only_shows_the_next_release_and_puts_the_checkout_back(behind):
+    f = behind
+    deployed, before = f.upstream_head(), git(f.work, "rev-parse", "HEAD")
+    p = f.run("upgrade", ENV_NAME, "--plan-only")
+    assert p.returncode == 0, p.stdout + p.stderr
+    assert "First." in p.stdout and "Second." not in p.stdout
+    assert len([c for c in f.calls("terraform") if " plan " in c]) == 2
+    assert git(f.work, "rev-parse", "HEAD") == before and not git(f.work, "status", "--porcelain")
+    assert_nothing_changed(f, deployed)
+
+
+def test_a_fork_with_its_own_commits_gets_a_merge_and_keeps_them(behind):
+    f = behind
+    (f.work / "workloads").mkdir()
+    (f.work / "workloads" / "my-model.yaml").write_text("kind: VLLMEndpoint\n")
+    git(f.work, "add", "-A")
+    git(f.work, "commit", "-q", "-m", "my model")
+    f.push()
+    p = f.run("upgrade", ENV_NAME, "--yes", "--to", "v2026.11.0", FAKE_ALLOW_APPLY="1")
+    assert p.returncode == 0, p.stdout + p.stderr
+    assert (f.work / "workloads" / "my-model.yaml").exists()
+    assert git(f.work, "rev-parse", "HEAD") == f.upstream_head() != git(f.work, "rev-parse", "v2026.11.0^{commit}")
+
+
+def test_merge_conflict_stops_with_instructions(behind):
+    f = behind
+    deployed = f.commit("the fork edits a file the release also changes")   # CHANGES.txt
+    f.push()
+    p = f.run("upgrade", ENV_NAME, "--yes", FAKE_ALLOW_APPLY="1")
+    assert p.returncode == 1
+    assert "conflicts with changes in this fork" in p.stderr and "git commit" in p.stderr
+    assert "./platformctl upgrade test" in p.stderr
+    assert f.calls("terraform") == []
+    assert_nothing_changed(f, deployed)
+    git(f.work, "rev-parse", "--verify", "MERGE_HEAD")     # left in progress for the forker to resolve
