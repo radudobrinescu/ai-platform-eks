@@ -176,6 +176,20 @@ def test_pr_body_lists_what_was_left_out(repo):
     assert "`renovate/stale`" in body and "`renovate/held`" in body and "# Release v2026.11.2" in body
 
 
+def test_finishable_is_the_release_in_flight_or_one_tagged_but_not_cleaned_up(repo, capsys):
+    """What release-finish.yaml looks at after an E2E run."""
+    c, o = repo
+    assert rc.finishable(str(c)) is None                       # only v2026.11.1 exists, no release branch
+    g(o, "branch", "release/v2026.11.0", "main")               # an old leftover: older than the newest tag
+    g(o, "branch", "release/v2026.11.1", "main")               # tagged, finish died before deleting it
+    g(c, "fetch", "-q", "origin", "+refs/heads/release/*:refs/remotes/origin/release/*")
+    assert rc.finishable(str(c)) == "v2026.11.1"
+    g(o, "branch", "release/v2026.11.2", "main")               # cut, E2E running or done
+    g(c, "fetch", "-q", "origin", "+refs/heads/release/*:refs/remotes/origin/release/*")
+    assert rc.finishable(str(c)) == "v2026.11.2"
+    assert rc.main(["finishable", "--repo", str(c)]) == 0 and capsys.readouterr().out.strip() == "v2026.11.2"
+
+
 class TestWorkflow:
     def _wf(self):
         with open(os.path.join(ROOT, ".github/workflows/release-candidate.yaml"), encoding="utf-8") as fh:

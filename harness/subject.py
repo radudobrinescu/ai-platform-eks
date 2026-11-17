@@ -28,7 +28,11 @@ class Subject:
     def _env(self) -> dict:
         e = dict(os.environ)
         e.update({"AWS_REGION": self.region, "AWS_DEFAULT_REGION": self.region,
-                  "TF_IN_AUTOMATION": "1", "PLATFORM_ENV": self.env})
+                  "TF_IN_AUTOMATION": "1", "PLATFORM_ENV": self.env,
+                  # `./platformctl upgrade` refuses a release without its tag (forkers
+                  # must only get published releases). The harness upgrades to the
+                  # candidate, which is tagged only after these runs pass.
+                  "UPGRADE_ALLOW_UNTAGGED": "1"})
         return e
 
     def plan(self, step: str) -> None:

@@ -673,3 +673,10 @@ def test_versions_read_digest_pinned_images_and_split_helm_values(tmp_path):
         '    tag: "8.0.12-alpine@sha256:' + "b" * 64 + '"\n')
     v = versions.read_versions(str(tmp_path))
     assert v["image/clickhouse/clickhouse-server"] == "26.8.38.9" and v["image/valkey/valkey"] == "8.0.12-alpine"
+
+
+def test_the_harness_may_upgrade_to_an_untagged_candidate():
+    """`./platformctl upgrade` refuses a release without its tag; the candidate
+    under test gets its tag only after E2E, so the harness opts out."""
+    from subject import Subject
+    assert Subject(".", "e2eud1", "eu-central-1", dry_run=True)._env()["UPGRADE_ALLOW_UNTAGGED"] == "1"

@@ -291,8 +291,15 @@ jobs:
         env:
           RC: ${{ steps.e2e.outputs.rc }}
         run: |
-          if [ "$RC" = "0" ]; then state=success; desc="E2E ${MODE} (${PROFILE}) passed"
-          else state=failure; desc="E2E ${MODE} (${PROFILE}) failed"; fi
+          if [ "$RC" = "0" ]; then state=success; outcome=passed; else state=failure; outcome=failed; fi
+          # The text says what this run tested (upgrade: from which base; llm-d on
+          # or off). `release.py finish` accepts only the release's own run: upgrade
+          # from the previous release, llm-d on. Same format as status_description()
+          # in tools/release.py (tests/test_workflows.py keeps the two in step).
+          desc="E2E ${MODE} (${PROFILE}) ${outcome}"
+          if [ "$MODE" = upgrade ]; then desc="${desc}; base=${BASE_REF}"; fi
+          desc="${desc}; llmd=${WITH_LLMD}"
+          desc="${desc:0:140}"
           gh api -X POST "repos/${GITHUB_REPOSITORY}/statuses/${STATUS_SHA}" \
             -f state="$state" -f context="$CONTEXT" -f target_url="$RUN_URL" -f description="$desc" >/dev/null
 

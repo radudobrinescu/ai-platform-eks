@@ -15,7 +15,7 @@ here.
 | `tools/shellcheck_workflows.py` | shellcheck every workflow `run:` step |
 | `terraform/github-oidc/` | GitHub OIDC provider + E2E provisioning role (local state, applied once) |
 | `tests/` | unit tests: harness, tools, workflows, Renovate coverage of `main` |
-| `.github/workflows/` | `ci.yaml` (static checks), `e2e.yaml` (dispatch-only E2E), `coverage.yaml` (weekly coverage guard), `release-candidate.yaml` (every second Monday: cut, notes, PR, dispatch E2E), `main-schedules.yaml` (runs `main`'s scheduled workflows, since `schedule` fires only on the default branch) |
+| `.github/workflows/` | `ci.yaml` (static checks), `e2e.yaml` (dispatch-only E2E), `coverage.yaml` (weekly coverage guard), `release-candidate.yaml` (every second Monday: cut, notes, PR, dispatch E2E), `release-finish.yaml` (after a green E2E run: merge, tag, publish), `main-schedules.yaml` (runs `main`'s scheduled workflows, since `schedule` fires only on the default branch) |
 
 ## How a run works
 
@@ -144,53 +144,50 @@ with frozen images. Trivy is pinned and checksummed in `e2e.yaml`.
 
 `release-candidate.yaml` runs cut, notes, release PR and E2E dispatch every second Monday
 (first try 07:41 UTC, catch-up runs until Tuesday; `gh workflow run release-candidate.yaml -f force=true`
-for an off-week release, `-f dry_run=true` to see the plan without changing anything). You approve the E2E run; when
-all four `e2e/*` statuses are green, one command finishes the release and prints the canary steps:
+for an off-week release, `-f dry_run=true` to see the plan without changing anything). You approve the E2E run:
+that is the only action a release needs. When all four `e2e/*` statuses are green, `release-finish.yaml`
+(it runs after every green E2E run) merges, tags and publishes the release; if that fails it opens the issue
+"Release candidate needs attention", and rerunning it resumes. The same step by hand, from any clone of the
+product (it reads the remote refs):
 
 ```bash
-git -C subject switch release/v2026.11.3 && git -C subject pull
 python3 tools/release.py --repo subject finish v2026.11.3 --github OWNER/REPO [--dry-run]
 ```
 
-`finish` = `record` (below) + wait for the PR's required checks + merge + tag the
-merge commit + create the GitHub Release from the notes + delete the release
-branch. `release.py publish <v> --github OWNER/REPO` creates the GitHub Release
+`finish` commits nothing after E2E: what was tested is what is merged and tagged. It
+
+1. refuses unless the four statuses on the release head are green **and** come from the release's own run:
+   upgrade jobs started from the previous release, every job ran the llm-d tier (the status text carries
+   `base=` and `llmd=`; a manual run with other inputs on the same commit does not count);
+2. refuses when `main` moved since the cut (`main` must be an ancestor of the release head, so the merge
+   result is the tested tree);
+3. waits for the PR's required checks, merges the PR at exactly that head, and tags the merge commit only
+   if its tree is the tested tree;
+4. creates the GitHub Release from the notes and deletes the release branch.
+
+It resumes: if an earlier run stopped after the merge or after the tag, run it again and it continues from
+there. `release.py publish <v> --github OWNER/REPO` creates the GitHub Release
 for an existing tag. The notes list the platform changes (PRs merged into main
 since the previous release, grouped as fixes, improvements and other changes;
-no PR numbers, because the notes travel to the public repo). It refuses without four green statuses
-on the PR head, when the local head differs from the PR head, or when the tag
-exists. See COMPATIBILITY.md "Releases". The same steps by hand:
+no PR numbers, because the notes travel to the public repo). See COMPATIBILITY.md "Releases". The steps by hand:
 
 ```bash
 python3 tools/release.py --repo subject cut v2026.11.0 renovate/infra renovate/gateway
 python3 tools/release.py --repo subject notes v2026.11.0 --base main      # first release
-# E2E: fresh + upgrade (base = previous tag, or main), both profiles
-python3 tools/release.py --repo subject record v2026.11.0 --github OWNER/REPO     # after all 4 runs pass
-# then: merge the PR, tag the merge commit, delete the branch (what `finish` does)
+# E2E: fresh + upgrade (base = previous tag, or main), both profiles, llm-d on
+python3 tools/release.py --repo subject finish v2026.11.0 --github OWNER/REPO     # after all 4 runs pass
 ```
 
 `notes` writes `docs/releases/<v>.md`, `releases/<v>.json` (the manifest
 `./platformctl upgrade` reads) and the `docs/validated-versions.md` row, and
-commits them. It refuses a version that is not `vYYYY.MM.N`, a version not newer
+commits them. The row has no E2E column: a release reaches `main`, and so that
+table, only through `finish`. `notes` refuses a version that is not `vYYYY.MM.N`, a version not newer
 than the base release, a Kubernetes set that drops a version of the previous
 release or adds more than one newer minor, and any text that would mention
 Renovate, this branch, or an account id.
 
-### Recording the E2E results (decision A)
-
-The upgrade E2E needs `releases/<v>.json` in the candidate, so `notes` runs
-before E2E and the row says "not run". After all four runs pass:
-
-```bash
-python3 tools/release.py --repo subject record v2026.11.0 --github OWNER/REPO
-```
-
-`record` is the one allowed change after E2E (BR2 exception). It refuses unless
-all four `e2e/*` statuses are `success` on the tested head; writes only the E2E
-cell of that release's row as a single commit (`Tested commit: <sha>` in the
-message); checks the commit changes nothing else; pushes; and posts the four
-statuses on the new head, each linking the original run and naming the tested
-SHA. `--no-push` commits and verifies only. Any other change needs a rerun.
+Any push to the release branch after E2E needs a new E2E run (BR2, no exceptions): the statuses are on
+the tested commit only.
 
 ## Checks
 

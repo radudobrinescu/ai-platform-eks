@@ -4,7 +4,9 @@ provisioning role against a real account, so these properties must not regress."
 import glob
 import os
 import re
+import subprocess
 
+import pytest
 import yaml
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -39,7 +41,7 @@ class TestAllWorkflows:
             assert "pull_request_target" not in text, path
 
     def test_top_level_permissions_are_read_only(self):
-        for name in ("ci.yaml", "e2e.yaml", "main-schedules.yaml"):
+        for name in ("ci.yaml", "e2e.yaml", "main-schedules.yaml", "release-finish.yaml"):
             wf, _ = _load(name)
             assert wf["permissions"] == {"contents": "read"}, name
 
@@ -50,6 +52,50 @@ class TestAllWorkflows:
             for job in wf["jobs"].values():
                 for s in _steps(job):
                     assert "inputs." not in (s.get("run") or ""), (path, s.get("name"))
+
+
+class TestReleaseFinishWorkflow:
+    """The only human action in a release is the e2e approval: this workflow
+    finishes the release when (and only when) its E2E is green."""
+
+    def test_runs_after_e2e_and_by_hand(self):
+        wf, _ = _load("release-finish.yaml")
+        on = _on(wf)
+        assert on["workflow_run"] == {"workflows": ["e2e"], "types": ["completed"]}
+        e2e, _ = _load("e2e.yaml")
+        assert e2e["name"] == "e2e"                                   # workflow_run matches by name
+        assert set(on["workflow_dispatch"]["inputs"]) == {"version", "dry_run"}
+        job = wf["jobs"]["finish"]
+        assert "github.event.workflow_run.conclusion == 'success'" in job["if"]
+        assert wf["concurrency"] == {"group": "release-finish", "cancel-in-progress": False}
+
+    def test_permissions_and_no_expressions_in_run_scripts(self):
+        wf, _ = _load("release-finish.yaml")
+        job = wf["jobs"]["finish"]
+        assert job["permissions"] == {"contents": "read", "issues": "write"}
+        for s in _steps(job):
+            assert "${{" not in (s.get("run") or ""), s.get("name")
+
+    def test_finishes_through_the_release_tool_only_when_green(self):
+        wf, text = _load("release-finish.yaml")
+        job = wf["jobs"]["finish"]
+        finish = _step(job, "Finish the release")
+        assert '--repo subject finish "$VERSION" --github "$REPO" --if-green' in finish["run"]
+        assert "args+=(--dry-run)" in finish["run"]
+        assert "gh pr merge" not in text and "git tag" not in text     # release.py owns the checks
+        assert finish["env"]["GH_TOKEN"] == "${{ secrets.E2E_PUSH_TOKEN }}"
+        assert "tools/release_candidate.py finishable --repo subject" in _step(job, "Find the release")["run"]
+        subject = next(s for s in _steps(job) if s.get("with", {}).get("path") == "subject")
+        assert subject["with"]["ref"] == "main" and subject["with"]["fetch-depth"] == 0
+        issue = _step(job, "Open or update an issue")
+        assert issue["if"].startswith("failure()") and issue["env"]["GH_TOKEN"] == "${{ github.token }}"
+
+    def test_unconfigured_repo_skips_green(self):
+        wf, _ = _load("release-finish.yaml")
+        steps = _steps(wf["jobs"]["finish"])
+        assert steps[0]["id"] == "cfg"
+        for s in steps[1:]:
+            assert "steps.cfg.outputs.configured == 'true'" in s.get("if", "") or s["if"].startswith("failure()"), s
 
 
 class TestE2EWorkflow:
@@ -124,6 +170,34 @@ class TestE2EWorkflow:
         assert result["if"] == "always()" and "state=success" in result["run"] and "state=failure" in result["run"]
         names = [s.get("name", "") for s in _steps(job)]
         assert names.index("Commit status pending") < names.index("Run the harness") < names.index("Commit status result")
+
+    @pytest.mark.parametrize("mode,profile,rc,base,llmd", [
+        ("upgrade", "managed", "0", "v2026.11.5", "true"),
+        ("upgrade", "default", "1", "main", "false"),
+        ("fresh", "default", "0", "main", "true"),
+        ("fresh", "managed", "", "v2026.11.5", "true"),       # harness killed: no rc
+    ])
+    def test_result_status_says_what_was_tested_in_the_format_finish_reads(self, tmp_path, mode, profile, rc,
+                                                                            base, llmd):
+        """Run the step's own script with a fake gh and compare with release.status_description."""
+        import release
+        wf, _ = _load("e2e.yaml")
+        script = _step(wf["jobs"]["e2e"], "Commit status result")["run"]
+        out = tmp_path / "args"
+        fake = tmp_path / "gh"
+        fake.write_text(f'#!/bin/sh\nfor a in "$@"; do printf \'%s\\n\' "$a"; done > "{out}"\n')
+        fake.chmod(0o755)
+        env = {"PATH": f"{tmp_path}:{os.environ['PATH']}", "MODE": mode, "PROFILE": profile, "RC": rc,
+               "BASE_REF": base, "WITH_LLMD": llmd, "GITHUB_REPOSITORY": "o/r", "STATUS_SHA": "abc",
+               "CONTEXT": f"e2e/{mode}-{profile}", "RUN_URL": "https://ci/run/1"}
+        subprocess.run(["bash", "-euo", "pipefail", "-c", script], check=True, env=env)
+        args = out.read_text().splitlines()
+        passed = rc == "0"
+        assert f"state={'success' if passed else 'failure'}" in args
+        desc = next(a for a in args if a.startswith("description="))[len("description="):]
+        assert desc == release.status_description(mode, profile, "passed" if passed else "failed", base=base, llmd=llmd)
+        fields = release.status_fields(desc)
+        assert fields.get("llmd") == llmd and fields.get("base") == (base if mode == "upgrade" else None)
 
     def test_teardown_safety_net(self):
         wf, _ = _load("e2e.yaml")

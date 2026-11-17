@@ -1,7 +1,12 @@
 """release.py finish: the one command after four green E2E runs. gh is faked; git
 runs against a local bare origin, so the merge, the tag and the branch delete are
 checked for real. The merge is done by the fake gh the way GitHub does it (a merge
-commit on main)."""
+commit on main).
+
+finish works on the remote refs, so it runs from any clone (a workflow or a
+laptop), changes nothing in the release branch after E2E, tags only a merge
+commit whose tree is the tested tree, and resumes when an earlier run stopped
+half way."""
 
 import json
 import os
@@ -22,8 +27,15 @@ def git(repo, *args):
                           env=GIT_ENV).stdout
 
 
-def green(url="https://ci/run/1"):
-    return {c: {"state": "success", "target_url": url, "description": f"{c} passed"} for c in release.E2E_CONTEXTS}
+def green(url="https://ci/run/1", base="main", llmd="true"):
+    return {c: {"state": "success", "target_url": url,
+                "description": release.status_description(c.split("/")[1].split("-")[0], c.split("-")[1], "passed",
+                                                          base=base, llmd=llmd)}
+            for c in release.E2E_CONTEXTS}
+
+
+def tree_of(repo, rev):
+    return git(repo, "rev-parse", f"{rev}^{{tree}}").strip()
 
 
 class FakeFail(Exception):
@@ -32,34 +44,46 @@ class FakeFail(Exception):
 
 
 class FakeGh:
-    """Just enough of gh: pr list / pr view / pr merge / api statuses."""
+    """Just enough of gh: pr list / pr view / pr merge / release / api statuses."""
 
     def __init__(self, origin, pr=7, states=("CLEAN",), statuses=None):
         self.origin, self.pr, self.states, self.calls = origin, pr, list(states), []
         self.statuses = statuses if statuses is not None else green()
         self.merged = False
+        self.merge_commit = None
+        self.race = False          # another PR lands on main between the check and the merge
         self.releases = {}
+        self._head = None
 
     def head(self):
-        return git(self.origin, "rev-parse", f"release/{V}").strip()
+        if self._head is None:
+            self._head = git(self.origin, "rev-parse", f"release/{V}").strip()
+        return self._head
 
     def __call__(self, *args):
         self.calls.append(args)
         a = list(args)
         if a[:2] == ["pr", "list"]:
-            if self.merged:
-                return "[]"
-            return json.dumps([{"number": self.pr, "headRefOid": self.head(), "mergeStateStatus": "BLOCKED",
-                                "baseRefName": "main"}])
+            assert a[a.index("--state") + 1] == "all"   # finish must also find a merged PR (resume)
+            return json.dumps([{"number": self.pr, "headRefOid": self.head(), "baseRefName": "main",
+                                "state": "MERGED" if self.merged else "OPEN",
+                                "mergeCommit": {"oid": self.merge_commit} if self.merged else None}])
         if a[:2] == ["pr", "view"]:
             state = self.states.pop(0) if len(self.states) > 1 else self.states[0]
             return json.dumps({"mergeStateStatus": state, "headRefOid": self.head()})
         if a[:2] == ["pr", "merge"]:
+            assert a[a.index("--match-head-commit") + 1] == self.head()
             git(self.origin, "symbolic-ref", "HEAD", "refs/heads/main")  # bare repo: merge via a temp clone
-            tmp = str(self.origin) + "-clone"
+            tmp = str(self.origin) + f"-clone{len(self.calls)}"
             subprocess.run(["git", "clone", "-q", str(self.origin), tmp], check=True, env=GIT_ENV)
+            if self.race:
+                with open(os.path.join(tmp, "late.txt"), "w") as fh:
+                    fh.write("landed on main after the cut\n")
+                git(tmp, "add", "-A")
+                git(tmp, "commit", "-qm", "fix: lands during the merge")
             git(tmp, "merge", "--no-ff", "-m", f"Merge pull request #{self.pr}", f"origin/release/{V}")
             git(tmp, "push", "-q", "origin", "HEAD:main")
+            self.merge_commit = git(tmp, "rev-parse", "HEAD").strip()
             self.merged = True
             return ""
         if a[:2] == ["release", "view"]:
@@ -73,14 +97,13 @@ class FakeGh:
             return ""
         if a[:1] == ["api"] and "/statuses" in a[1] and "-X" not in a:
             return json.dumps([{"context": c, **d} for c, d in self.statuses.items()])
-        if a[:1] == ["api"]:
-            return ""  # posting carried statuses
         raise AssertionError(f"unexpected gh call: {args}")
 
 
 @pytest.fixture
 def repos(tmp_path, monkeypatch):
-    """origin (bare) with main + release/v2026.11.0 that has notes; a clone on the release branch."""
+    """origin (bare) with main + release/v2026.11.0 that has notes; a clone that is NOT on the
+    release branch (finish reads the remote refs)."""
     work = tmp_path / "work"
     work.mkdir()
     git(work, "init", "-q", "-b", "main")
@@ -99,6 +122,7 @@ def repos(tmp_path, monkeypatch):
     git(work, "commit", "-qm", "bumps")
     release.notes(str(work), V, "base", date="2026-11-02")
     git(work, "push", "-q", "-u", "origin", f"release/{V}")
+    git(work, "switch", "-q", "main")
     fake = FakeGh(origin)
     monkeypatch.setattr(release, "gh", fake)
     monkeypatch.setattr(release, "status_details_from_github", lambda slug, sha: fake.statuses)
@@ -107,7 +131,7 @@ def repos(tmp_path, monkeypatch):
 
 
 def _no_real_gh(real_run, fake):
-    """record() posts carried statuses with subprocess.run(['gh', ...]); route that to the fake."""
+    """publish() probes `gh release view` with subprocess.run(['gh', ...]); route that to the fake."""
     def run(cmd, *a, **k):
         if cmd and cmd[0] == "gh":
             try:
@@ -118,16 +142,16 @@ def _no_real_gh(real_run, fake):
     return run
 
 
-def test_finish_records_merges_tags_and_deletes_the_branch(repos):
+def test_finish_merges_tags_the_tested_tree_and_deletes_the_branch(repos):
     work, origin, fake = repos
-    tested = git(work, "rev-parse", "HEAD").strip()
+    tested = git(origin, "rev-parse", f"release/{V}").strip()
     res = release.finish(str(work), V, SLUG)
     assert res["tested"] == tested and res["tag"] == V
     main = git(origin, "rev-parse", "main").strip()
-    assert res["merge"] == main
+    assert res["merge"] == main == fake.merge_commit
     assert git(origin, "rev-parse", f"{V}^{{commit}}").strip() == main          # tag on the merge commit
-    assert git(origin, "merge-base", "--is-ancestor", res["recorded"], main) == ""  # recorded head is in main
-    assert git(origin, "log", "-1", "--format=%s", res["recorded"]).startswith("docs(release): record E2E results")
+    assert tree_of(origin, V) == tree_of(origin, tested)                         # ...whose tree is the tested tree
+    assert git(origin, "rev-parse", f"{main}^2").strip() == tested               # nothing added after E2E
     assert f"release/{V}" not in git(origin, "branch", "--list")                    # branch deleted
     assert any(c[:2] == ("pr", "merge") and "--merge" in c for c in fake.calls)
     assert fake.releases[V].startswith(f"# Release {V}")                 # GitHub Release from the notes
@@ -145,10 +169,9 @@ def test_dry_run_changes_nothing(repos):
     work, origin, fake = repos
     before = git(origin, "for-each-ref")
     res = release.finish(str(work), V, SLUG, dry_run=True)
-    assert res["dry_run"] and res["pr"] == 7 and len(res["steps"]) == 6
+    assert res["dry_run"] and res["pr"] == 7 and len(res["steps"]) == 5
     assert git(origin, "for-each-ref") == before
     assert not any(c[:2] == ("pr", "merge") for c in fake.calls) and not fake.releases
-    assert "not run" in (work / "docs/validated-versions.md").read_text()
 
 
 def test_refuses_without_four_green_runs(repos):
@@ -156,27 +179,77 @@ def test_refuses_without_four_green_runs(repos):
     fake.statuses = {**green(), "e2e/upgrade-managed": {"state": "failure", "target_url": "", "description": ""}}
     with pytest.raises(release.ReleaseError, match="not every E2E run passed"):
         release.finish(str(work), V, SLUG)
-    assert f"release/{V}" in git(origin, "branch", "--list")
+    assert f"release/{V}" in git(origin, "branch", "--list") and not fake.merged
 
 
-def test_refuses_when_pr_head_differs_from_local(repos):
+def test_refuses_runs_that_tested_something_else(repos):
+    """The statuses must come from the release run: upgrade from the previous
+    release, llm-d tier on. A manual run with other inputs does not count."""
+    work, origin, fake = repos
+    git(work, "switch", "-q", f"release/{V}")
+    path = work / f"releases/{V}.json"
+    manifest = json.loads(path.read_text())
+    manifest["previous"] = "v2026.10.3"
+    path.write_text(json.dumps(manifest, indent=2) + "\n")
+    git(work, "commit", "-qam", "upgrades from v2026.10.3")
+    git(work, "push", "-q", "origin", f"release/{V}")
+    git(work, "switch", "-q", "main")
+    fake.statuses = green(base="main")
+    with pytest.raises(release.ReleaseError, match="e2e/upgrade-default=upgraded from main, not v2026.10.3"):
+        release.finish(str(work), V, SLUG)
+    fake.statuses = green(base="v2026.10.3", llmd="false")
+    with pytest.raises(release.ReleaseError, match="without the llm-d tier"):
+        release.finish(str(work), V, SLUG)
+    assert not fake.merged
+    fake.statuses = green(base="v2026.10.3")
+    assert release.finish(str(work), V, SLUG)["tag"] == V
+
+
+def test_refuses_when_main_moved_since_the_cut(repos):
+    """main must be an ancestor of the release head: otherwise the merge result
+    is a tree that E2E never saw."""
     work, origin, fake = repos
     (work / "b.txt").write_text("b\n")
     git(work, "add", "-A")
-    git(work, "commit", "-qm", "local only")
-    with pytest.raises(release.ReleaseError, match="differs from local HEAD"):
+    git(work, "commit", "-qm", "fix: merged into main after the cut")
+    git(work, "push", "-q", "origin", "main")
+    with pytest.raises(release.ReleaseError, match="main moved since"):
         release.finish(str(work), V, SLUG)
+    assert not fake.merged and not git(origin, "tag", "--list", V).strip()
 
 
-def test_refuses_off_the_release_branch_or_with_an_existing_tag(repos):
+def test_never_tags_a_merge_whose_tree_was_not_tested(repos):
+    """Race: a commit lands on main between the check and the merge."""
     work, origin, fake = repos
-    git(work, "tag", V)
-    with pytest.raises(release.ReleaseError, match="already exists"):
+    fake.race = True
+    with pytest.raises(release.ReleaseError, match="not the tree E2E tested"):
         release.finish(str(work), V, SLUG)
-    git(work, "tag", "-d", V)
-    git(work, "switch", "-q", "main")
-    with pytest.raises(release.ReleaseError, match="check out release/"):
+    assert fake.merged and not git(origin, "tag", "--list", V).strip() and not fake.releases
+    with pytest.raises(release.ReleaseError, match="not the tree E2E tested"):   # and a rerun does not tag it either
         release.finish(str(work), V, SLUG)
+
+
+def test_resumes_after_the_merge(repos):
+    """An earlier run merged the PR and died before tagging."""
+    work, origin, fake = repos
+    tested = fake.head()
+    fake("pr", "merge", "7", "--repo", SLUG, "--merge", "--match-head-commit", tested)
+    res = release.finish(str(work), V, SLUG)
+    assert res["resumed"] == "merged" and res["merge"] == fake.merge_commit
+    assert git(origin, "rev-parse", f"{V}^{{commit}}").strip() == fake.merge_commit
+    assert sum(1 for c in fake.calls if c[:2] == ("pr", "merge")) == 1          # not merged twice
+    assert V in fake.releases and f"release/{V}" not in git(origin, "branch", "--list")
+
+
+def test_resumes_after_the_tag_and_is_a_no_op_when_done(repos):
+    work, origin, fake = repos
+    release.finish(str(work), V, SLUG)
+    del fake.releases[V]                                  # died before the GitHub Release
+    res = release.finish(str(work), V, SLUG)
+    assert res["resumed"] == "tagged" and V in fake.releases
+    again = release.finish(str(work), V, SLUG)
+    assert again["resumed"] == "tagged" and again["published"] is False
+    assert sum(1 for c in fake.calls if c[:2] == ("pr", "merge")) == 1
 
 
 def test_dirty_pr_is_refused_not_merged(repos):
@@ -220,3 +293,29 @@ def test_publish_adds_platform_changes_to_pages_of_older_releases(repos, tmp_pat
     page = fake.releases[nxt]
     assert "## Platform changes" in page and "- Something users notice" in page
     assert page.index("## Platform changes") < page.index("## Component versions") and "#3" not in page
+
+
+def test_if_green_is_quiet_while_e2e_has_not_passed_and_loud_about_everything_else(repos, capsys):
+    """The workflow that runs after every E2E run: not green yet is not an error."""
+    work, origin, fake = repos
+    fake.statuses = {**green(), "e2e/upgrade-managed": {"state": "pending", "target_url": "", "description": ""}}
+    assert release.main(["--repo", str(work), "finish", V, "--github", SLUG, "--if-green"]) == 0
+    assert "not finishing" in capsys.readouterr().out and not fake.merged
+    assert release.main(["--repo", str(work), "finish", V, "--github", SLUG]) == 2          # by hand: an error
+    fake.statuses = green()
+    fake.states = ["DIRTY"]
+    assert release.main(["--repo", str(work), "finish", V, "--github", SLUG, "--if-green"]) == 2   # a real problem
+    fake.states = ["CLEAN"]
+    assert release.main(["--repo", str(work), "finish", V, "--github", SLUG, "--if-green"]) == 0
+    assert fake.merged and git(origin, "tag", "--list", V).strip() == V
+
+
+def test_a_tag_that_is_not_on_main_is_not_published(repos):
+    """Resume trusts a tag only if it is where finish puts it: on main."""
+    work, origin, fake = repos
+    git(work, "fetch", "-q", "origin", f"release/{V}")
+    git(work, "tag", "-a", V, "-m", "by hand", "FETCH_HEAD")        # the release head, never merged
+    git(work, "push", "-q", "origin", V)
+    with pytest.raises(release.ReleaseError, match="is not on origin/main"):
+        release.finish(str(work), V, SLUG)
+    assert not fake.releases and f"release/{V}" in git(origin, "branch", "--list")
