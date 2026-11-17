@@ -37,7 +37,10 @@ All keys are required. Use empty lists rather than leaving keys out.
 ## Rules
 
 - Each release has exactly one manifest, and published manifests are not
-  edited afterwards. The deployed release is detected from them.
+  edited afterwards. `upgrade` reads the order of releases from them
+  (`previous`), so a release keeps the manifests of every release before it.
+- A manifest alone does not make a release: `upgrade` also requires the git
+  tag of the same name. A manifest without its tag is a release candidate.
 - Acknowledge a replacement only when the data it holds can be lost or
   regenerated, and say so in `reason`.
 
