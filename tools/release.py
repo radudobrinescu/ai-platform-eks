@@ -3,7 +3,6 @@
 
   release.py cut    <vYYYY.MM.N> <branch>...    [--repo DIR] [--no-push]
   release.py notes  <vYYYY.MM.N> --base <ref>   [--repo DIR] [options] [--no-commit]
-  release.py record <vYYYY.MM.N> --github OWNER/REPO [--repo DIR] [--no-push]
   release.py finish <vYYYY.MM.N> --github OWNER/REPO [--repo DIR] [--dry-run]
   release.py publish <vYYYY.MM.N> --github OWNER/REPO [--repo DIR]
 
@@ -18,17 +17,12 @@ files, then commits them to the release branch:
   docs/releases/<version>.md    version table old -> new, majors, manual steps,
                                 supported Kubernetes versions
   releases/<version>.json       release manifest read by `./platformctl upgrade`
-  docs/validated-versions.md    one row per release, filled from the E2E statuses
+  docs/validated-versions.md    one row per release (a release reaches main, and
+                                so this table, only after E2E passed)
 
 These files ship to the public product repo, so they name components and
 versions only: nothing about how updates are found, and no account identifiers
 (a test enforces both).
-
-`record` runs after the four E2E runs passed on the release head (decision A).
-It writes the results into that release's row of docs/validated-versions.md as
-ONE follow-up commit, verifies the commit changes nothing but that row's E2E
-cell, pushes it, and posts the four statuses on the new head, each saying which
-commit was actually tested. Any other change after E2E needs a rerun.
 
 `notes` also lists the platform changes since the base release: the pull
 requests merged into main in that range (release and update branches
@@ -36,11 +30,20 @@ excluded), grouped by type from their conventional-commit titles. PR numbers
 are left out on purpose: the notes travel to the public repo, where numbers
 differ.
 
-`finish` is the one command after the four E2E runs are green: record (above),
-wait for the release PR's required checks on the recorded head, merge it, tag the
-merge commit vYYYY.MM.N, push the tag, create the GitHub Release from the
-release notes, delete the release branch, and print the canary commands.
---dry-run shows each step without changing anything.
+`finish` is the one command after the four E2E runs are green. Nothing is
+committed after E2E: the release head that was tested is what gets merged. It
+works on the remote refs (run it from any clone, a workflow or a laptop) and
+  1. requires the four `e2e/*` statuses green on the release head, from runs
+     that upgraded from the previous release with the llm-d tier on (a run with
+     other inputs on the same commit does not count);
+  2. requires main to be an ancestor of the release head, so the merge result
+     is exactly the tested tree;
+  3. waits for the PR's required checks, merges it (only at that head);
+  4. tags the merge commit vYYYY.MM.N, after checking again that its tree is
+     the tested tree; pushes the tag;
+  5. creates the GitHub Release from the notes, deletes the release branch.
+It resumes: when an earlier run stopped after the merge or after the tag, the
+next run continues from there. --dry-run shows the steps and changes nothing.
 
 `publish` creates the GitHub Release for an existing tag from the notes at that
 tag (idempotent; used for releases tagged before `finish` did it).
@@ -68,23 +71,28 @@ sys.path.insert(0, os.path.join(os.path.dirname(HERE), "harness"))
 import versions  # noqa: E402
 
 E2E_CONTEXTS = ("e2e/fresh-default", "e2e/fresh-managed", "e2e/upgrade-default", "e2e/upgrade-managed")
-STATUS_ICON = {"success": "pass", "failure": "fail", "error": "fail", "pending": "pending"}
 FORBIDDEN_RX = re.compile(r"renovate|lifecycle|\b\d{12}\b|arn:aws", re.I)
-VALIDATED_HEADER = (
+VALIDATED_INTRO = (
     "# Validated versions\n\n"
-    "Each release is a set of component versions proven together on a real cluster: a fresh\n"
+    "Each release is a set of component versions proven together on real clusters: a fresh\n"
     "install and an upgrade from the previous release, each with the default profile\n"
-    "(self-managed Argo CD and kro) and with EKS Managed Capabilities. Upgrade with\n"
-    "`./platformctl upgrade` (see UPGRADING.md), one release at a time.\n\n"
-    "| Release | Date | Kubernetes | vLLM | LiteLLM | Karpenter | E2E (fresh / upgrade) |\n"
-    "|---|---|---|---|---|---|---|\n"
+    "(self-managed Argo CD and kro) and with EKS Managed Capabilities. Every release listed\n"
+    "here passed all four runs before it was tagged. Upgrade with `./platformctl upgrade`\n"
+    "(see UPGRADING.md).\n\n"
 )
+VALIDATED_COLUMNS = ("Release", "Date", "Kubernetes", "vLLM", "LiteLLM", "Karpenter")
 # Components whose major version moving needs attention in the notes.
 _MAJOR_IGNORE_PREFIXES = ("ci/",)
 
 
 class ReleaseError(RuntimeError):
     pass
+
+
+class NotGreen(ReleaseError):
+    """The release's E2E has not (all) passed on the release head. Not a fault of
+    the tooling: `finish --if-green` (run after every E2E run) treats it as
+    'nothing to do yet'."""
 
 
 def validate_version(v: str) -> str:
@@ -253,10 +261,9 @@ def render_notes(manifest: dict, rows: list, majors: list[str], unchanged: int, 
     k = manifest["kubernetes"]
     out = [f"# Release {manifest['version']}", "",
            f"Released {date}. Upgrades from: `{manifest['previous']}`.", "",
-           "Upgrade one release at a time:", "", "```bash",
-           "git fetch upstream --tags",
-           f"git merge {manifest['version']}",
+           "To upgrade an environment:", "", "```bash",
            "./platformctl upgrade <env>", "```", "",
+           "Releases are applied one at a time, in order. See UPGRADING.md.", "",
            "## Kubernetes", "",
            f"Supported: {', '.join(k['supported'])}. Recommended: {k['recommended']}.", ""]
     out += ["## Before you upgrade", ""]
@@ -291,35 +298,31 @@ def render_notes(manifest: dict, rows: list, majors: list[str], unchanged: int, 
     return "\n".join(out)
 
 
-def e2e_cell(statuses: dict) -> str:
-    def icon(ctx):
-        return STATUS_ICON.get(statuses.get(ctx, ""), "not run")
-    return (f"default {icon('e2e/fresh-default')}, managed {icon('e2e/fresh-managed')} / "
-            f"default {icon('e2e/upgrade-default')}, managed {icon('e2e/upgrade-managed')}")
-
-
-def validated_row(version: str, date: str, new: dict, manifest: dict, statuses: dict) -> str:
+def validated_row(version: str, date: str, new: dict, manifest: dict) -> str:
     return (f"| [{version}](releases/{version}.md) | {date} | {', '.join(manifest['kubernetes']['supported'])} "
-            f"| `{new.get('vllm', '-')}` | `{new.get('image/litellm/litellm', '-')}` | `{new.get('karpenter', '-')}` "
-            f"| {e2e_cell(statuses)} |")
+            f"| `{new.get('vllm', '-')}` | `{new.get('image/litellm/litellm', '-')}` | `{new.get('karpenter', '-')}` |")
+
+
+def _table_row(line: str) -> str:
+    """A release row cut to the current columns (older files had a seventh, E2E)."""
+    cells = [c.strip() for c in line.strip().strip("|").split("|")]
+    return "| " + " | ".join(cells[:len(VALIDATED_COLUMNS)]) + " |"
 
 
 def upsert_row(text: str, version: str, row: str) -> str:
-    if not text.strip():
-        text = VALIDATED_HEADER
-    lines = text.rstrip("\n").split("\n")
+    """docs/validated-versions.md with `row` for `version`: replaced in place, or
+    added on top (newest first). The file is generated as a whole: intro, header,
+    one row per release. Rows written by older versions of this tool lose their
+    E2E column (it only ever said 'pass': a release is tagged after four green
+    runs or not at all)."""
+    rows = [_table_row(ln) for ln in text.split("\n") if ln.startswith("| [v")]
     key = f"| [{version}]("
-    for i, ln in enumerate(lines):
-        if ln.startswith(key):
-            lines[i] = row
-            return "\n".join(lines) + "\n"
-    # Newest first: insert right after the table separator.
-    sep = next((i for i, ln in enumerate(lines) if ln.startswith("|---")), None)
-    if sep is None:
-        lines += ["", *VALIDATED_HEADER.rstrip("\n").split("\n")[-2:]]
-        sep = len(lines) - 1
-    lines.insert(sep + 1, row)
-    return "\n".join(lines) + "\n"
+    if any(r.startswith(key) for r in rows):
+        rows = [row if r.startswith(key) else r for r in rows]
+    else:
+        rows.insert(0, row)
+    header = "| " + " | ".join(VALIDATED_COLUMNS) + " |\n" + "|" + "---|" * len(VALIDATED_COLUMNS) + "\n"
+    return VALIDATED_INTRO + header + "\n".join(rows) + "\n"
 
 
 def status_details_from_github(repo_slug: str, sha: str) -> dict:
@@ -334,9 +337,31 @@ def status_details_from_github(repo_slug: str, sha: str) -> dict:
     return latest
 
 
-def statuses_from_github(repo_slug: str, sha: str) -> dict:
-    """Read-only: latest state per E2E context on the release head."""
-    return {k: v["state"] for k, v in status_details_from_github(repo_slug, sha).items()}
+def status_description(mode: str, profile: str, outcome: str, *, base: str = "", llmd: str = "") -> str:
+    """Text of an E2E commit status. Besides the outcome it says what the run
+    tested (upgrade: from which base; llm-d tier on or off), so `finish` can tell
+    the release's own run from any other run on the same commit. e2e.yaml writes
+    the same text (tests/test_workflows.py keeps the two in step)."""
+    parts = [f"E2E {mode} ({profile}) {outcome}"]
+    if mode == "upgrade" and base:
+        parts.append(f"base={base}")
+    if llmd:
+        parts.append(f"llmd={llmd}")
+    return "; ".join(parts)[:140]
+
+
+def status_fields(description: str) -> dict:
+    """{'base': ..., 'llmd': ...} as far as an E2E status description carries them.
+    Strict: after the outcome, every '; '-separated part must be one known
+    key=value, each key once. Anything else (a field given twice, free text)
+    yields {} and the status counts as not saying what it tested."""
+    out: dict = {}
+    for part in (description or "").split("; ")[1:]:
+        m = re.fullmatch(r"(base|llmd)=(\S+)", part)
+        if not m or m.group(1) in out:
+            return {}
+        out[m.group(1)] = m.group(2)
+    return out
 
 
 def assert_product_safe(*texts: str) -> None:
@@ -348,7 +373,7 @@ def assert_product_safe(*texts: str) -> None:
 
 def notes(repo: str, version: str, base: str, *, supported: list[str] | None = None, recommended: str | None = None,
           required_tfvars: list[str] | None = None, manual_steps: list[str] | None = None,
-          statuses: dict | None = None, date: str | None = None, commit: bool = True) -> dict:
+          date: str | None = None, commit: bool = True) -> dict:
     validate_version(version)
     date = date or _dt.date.today().isoformat()
     with tempfile.TemporaryDirectory() as tmp:
@@ -379,7 +404,7 @@ def notes(repo: str, version: str, base: str, *, supported: list[str] | None = N
     notes_md = render_notes(manifest, rows, majors, unchanged, date, platform_changes(repo, base))
     vv_path = os.path.join(repo, "docs", "validated-versions.md")
     vv_old = open(vv_path, encoding="utf-8").read() if os.path.exists(vv_path) else ""
-    vv_new = upsert_row(vv_old, version, validated_row(version, date, new, manifest, statuses or {}))
+    vv_new = upsert_row(vv_old, version, validated_row(version, date, new, manifest))
     manifest_json = json.dumps(manifest, indent=2) + "\n"
     assert_product_safe(notes_md, manifest_json, vv_new)
 
@@ -398,102 +423,47 @@ def notes(repo: str, version: str, base: str, *, supported: list[str] | None = N
 
 
 # --------------------------------------------------------------------------- #
-# record (decision A: one docs-only commit after E2E)
+# finish: the one command after E2E (merge, tag, publish). Nothing is committed
+# after E2E; the tag is put on a merge commit whose tree is the tested tree.
 # --------------------------------------------------------------------------- #
 
-def require_all_green(details: dict) -> None:
-    bad = [f"{c}={(details.get(c) or {}).get('state', 'missing')}" for c in E2E_CONTEXTS
-           if (details.get(c) or {}).get("state") != "success"]
+def require_all_green(details: dict, previous: str) -> None:
+    """Every E2E context is `success`, and the runs are the release's own:
+    upgrade jobs started from `previous` (the release this one upgrades from;
+    'baseline' = first release, any base) and every job ran the llm-d tier."""
+    bad = []
+    for ctx in E2E_CONTEXTS:
+        d = details.get(ctx) or {}
+        state = d.get("state", "missing")
+        if state != "success":
+            bad.append(f"{ctx}={state}")
+            continue
+        fields = status_fields(d.get("description", ""))
+        if "llmd" not in fields:
+            bad.append(f"{ctx}=does not say what it tested (posted by an older workflow)")
+        elif fields["llmd"] != "true":
+            bad.append(f"{ctx}=ran without the llm-d tier")
+        elif "/upgrade-" in ctx and previous != "baseline" and fields.get("base") != previous:
+            bad.append(f"{ctx}=upgraded from {fields.get('base', 'an unknown base')}, not {previous}")
     if bad:
-        raise ReleaseError("not every E2E run passed on the tested commit: " + ", ".join(bad)
-                           + ". Fix and rerun; nothing recorded.")
+        raise NotGreen("not every E2E run passed on the tested commit: " + ", ".join(bad)
+                           + ". Fix and rerun E2E (fresh,upgrade from the previous release, both profiles, "
+                             "llm-d on); nothing merged or tagged.")
 
 
-def set_e2e_cell(text: str, version: str, details: dict) -> str:
-    """Replace only the E2E cell (last column) of `version`'s row."""
-    key = f"| [{version}]("
-    lines = text.split("\n")
-    hits = [i for i, ln in enumerate(lines) if ln.startswith(key)]
-    if len(hits) != 1:
-        raise ReleaseError(f"docs/validated-versions.md has {len(hits)} rows for {version}; run `notes` first")
-    i = hits[0]
-    cells = lines[i].rstrip().rstrip("|").split("|")
-    cells[-1] = " " + e2e_cell({c: d["state"] for c, d in details.items()}) + " "
-    lines[i] = "|".join(cells) + "|"
-    return "\n".join(lines)
-
-
-def verify_record_commit(repo: str, tested: str, head: str, version: str) -> None:
-    """`head` must be exactly one commit on `tested` that changes one line: `version`'s row."""
-    if git(repo, "rev-parse", f"{head}^").strip() != git(repo, "rev-parse", tested).strip():
-        raise ReleaseError(f"{head[:12]} is not a single commit on the tested commit {tested[:12]}")
-    files = git(repo, "diff", "--name-only", tested, head).split()
-    if files != ["docs/validated-versions.md"]:
-        raise ReleaseError(f"the record commit may change docs/validated-versions.md only, not {files}")
-    diff = git(repo, "diff", "-U0", tested, head, "--", "docs/validated-versions.md").splitlines()
-    removed = [ln[1:] for ln in diff if ln.startswith("-") and not ln.startswith("---")]
-    added = [ln[1:] for ln in diff if ln.startswith("+") and not ln.startswith("+++")]
-    key = f"| [{version}]("
-    if len(removed) != 1 or len(added) != 1 or not removed[0].startswith(key) or not added[0].startswith(key):
-        raise ReleaseError(f"the record commit must change exactly one line, the {version} row")
-    if removed[0].split("|")[:-2] != added[0].split("|")[:-2]:
-        raise ReleaseError(f"the record commit may change only the E2E cell of the {version} row")
-
-
-def carried_status_payloads(details: dict, tested_sha: str) -> list[dict]:
-    """Statuses to post on the record commit: same context, state and run link, plus the tested SHA."""
-    return [{"context": c, "state": "success", "target_url": details[c].get("target_url", ""),
-             "description": f"tested on {tested_sha[:12]}; this commit only records the result"[:140]}
-            for c in E2E_CONTEXTS]
-
-
-def record(repo: str, version: str, details: dict, *, push: bool = False, repo_slug: str = "",
-           remote: str = "origin") -> str:
-    validate_version(version)
-    if git(repo, "status", "--porcelain", "--untracked-files=no").strip():
-        raise ReleaseError("working tree has uncommitted changes")
-    require_all_green(details)
-    tested = git(repo, "rev-parse", "HEAD").strip()
-    path = os.path.join(repo, "docs", "validated-versions.md")
-    if not os.path.exists(path):
-        raise ReleaseError("docs/validated-versions.md is missing; run `notes` first")
-    with open(path, encoding="utf-8") as fh:
-        old = fh.read()
-    new = set_e2e_cell(old, version, details)
-    assert_product_safe(new)
-    if new == old:
-        raise ReleaseError(f"the {version} row already shows these results; nothing to record")
-    with open(path, "w", encoding="utf-8") as fh:
-        fh.write(new)
-    git(repo, "add", "--", "docs/validated-versions.md")
-    git(repo, "commit", "--quiet", "-m", f"docs(release): record E2E results for {version}",
-        "-m", f"Tested commit: {tested}")
-    head = git(repo, "rev-parse", "HEAD").strip()
-    verify_record_commit(repo, tested, head, version)
-    if push:
-        git(repo, "push", "--quiet", remote, "HEAD")
-        for p in carried_status_payloads(details, tested):
-            subprocess.run(["gh", "api", "-X", "POST", f"repos/{repo_slug}/statuses/{head}",
-                            "-f", f"state={p['state']}", "-f", f"context={p['context']}",
-                            "-f", f"target_url={p['target_url']}", "-f", f"description={p['description']}"],
-                           capture_output=True, text=True, check=True)
-    return head
-
-
-# --------------------------------------------------------------------------- #
-# finish (record + merge + tag), the one command after E2E
-# --------------------------------------------------------------------------- #
 def gh(*args: str) -> str:
     """Run gh and return stdout; tests replace this."""
     return subprocess.run(["gh", *args], capture_output=True, text=True, check=True).stdout
 
 
 def release_pr(repo_slug: str, version: str) -> dict:
-    out = gh("pr", "list", "--repo", repo_slug, "--state", "open", "--head", f"release/{version}",
-             "--json", "number,headRefOid,mergeStateStatus,baseRefName")
-    prs = json.loads(out or "[]")
+    """The release PR, open or already merged (a finish that stopped half way
+    resumes). Closed, unmerged PRs are earlier attempts and do not count."""
+    out = gh("pr", "list", "--repo", repo_slug, "--state", "all", "--head", f"release/{version}",
+             "--json", "number,state,headRefOid,baseRefName,mergeCommit")
+    prs = [p for p in json.loads(out or "[]") if p.get("state") in ("OPEN", "MERGED")]
     if len(prs) != 1:
-        raise ReleaseError(f"expected one open PR from release/{version}, found {len(prs)}")
+        raise ReleaseError(f"expected one open or merged PR from release/{version}, found {len(prs)}")
     if prs[0]["baseRefName"] != "main":
         raise ReleaseError(f"PR #{prs[0]['number']} targets {prs[0]['baseRefName']}, not main")
     return prs[0]
@@ -517,41 +487,100 @@ def wait_mergeable(repo_slug: str, number: int, head: str, timeout: int = 900, p
         time.sleep(poll)
 
 
+def _is_ancestor(repo: str, older: str, newer: str) -> bool:
+    return subprocess.run(["git", "-C", repo, "merge-base", "--is-ancestor", older, newer],
+                          capture_output=True).returncode == 0
+
+
+def _tree(repo: str, rev: str) -> str:
+    return git(repo, "rev-parse", f"{rev}^{{tree}}").strip()
+
+
+def _tag_and_push(repo: str, version: str, commit: str, remote: str) -> None:
+    """Annotated tag `version` on `commit`, pushed. A local tag left by a run that
+    died before the push is reused when it points at the same commit."""
+    if git(repo, "tag", "--list", version).strip():
+        at = git(repo, "rev-parse", f"{version}^{{commit}}").strip()
+        if at != commit:
+            raise ReleaseError(f"local tag {version} points at {at[:12]}, not at the merge commit {commit[:12]}; "
+                               f"delete it (git tag -d {version}) and rerun")
+    else:
+        git(repo, "tag", "-a", version, "-m", f"Release {version}", commit)
+    git(repo, "push", "--quiet", remote, f"refs/tags/{version}")
+
+
 def finish(repo: str, version: str, repo_slug: str, *, dry_run: bool = False, remote: str = "origin",
            poll: int = 20) -> dict:
     validate_version(version)
     branch = f"release/{version}"
-    if git(repo, "rev-parse", "--abbrev-ref", "HEAD").strip() != branch:
-        raise ReleaseError(f"check out {branch} first (its head must be the tested commit)")
+    res = {"dry_run": dry_run, "resumed": None, "pr": None, "tested": None, "merge": None, "tag": version,
+           "published": None, "steps": []}
+
+    # Already tagged on the remote: only the GitHub Release and the branch may be left.
+    if git(repo, "ls-remote", "--tags", remote, f"refs/tags/{version}").strip():
+        git(repo, "fetch", "--quiet", remote, f"+refs/tags/{version}:refs/tags/{version}",
+            f"+refs/heads/main:refs/remotes/{remote}/main")
+        if not _is_ancestor(repo, f"refs/tags/{version}", f"{remote}/main"):
+            raise ReleaseError(f"tag {version} exists on {remote} but is not on {remote}/main: it was not put there "
+                               "by `finish`. Not publishing it; remove the tag or fix main by hand.")
+        res.update(resumed="tagged", merge=git(repo, "rev-parse", f"{version}^{{commit}}").strip(),
+                   steps=[f"publish: GitHub Release {version} from docs/releases/{version}.md (if missing)",
+                          f"delete: {remote}/{branch} (if still there)"])
+        if not dry_run:
+            res["published"] = publish(repo, version, repo_slug)
+            git(repo, "push", "--quiet", remote, "--delete", branch, check=False)
+        return res
+
     pr = release_pr(repo_slug, version)
-    tested = git(repo, "rev-parse", "HEAD").strip()
-    if pr["headRefOid"] != tested:
-        raise ReleaseError(f"PR #{pr['number']} head {pr['headRefOid'][:12]} differs from local HEAD {tested[:12]}; "
-                           "git pull first")
-    if git(repo, "tag", "--list", version).strip():
-        raise ReleaseError(f"tag {version} already exists")
-    details = status_details_from_github(repo_slug, tested)
-    require_all_green(details)
-    steps = [f"record: one docs-only commit on {tested[:12]} with the four green E2E results, pushed, statuses carried",
-             f"wait: PR #{pr['number']} required checks on the recorded head",
-             f"merge: PR #{pr['number']} into main (merge commit)",
-             f"tag: {version} on the merge commit, pushed to {remote}",
+    tested = pr["headRefOid"]
+    res.update(pr=pr["number"], tested=tested)
+    git(repo, "fetch", "--quiet", remote, f"+refs/heads/main:refs/remotes/{remote}/main")
+    if pr["state"] == "OPEN":
+        git(repo, "fetch", "--quiet", remote, f"+refs/heads/{branch}:refs/remotes/{remote}/{branch}")
+        if git(repo, "rev-parse", f"{remote}/{branch}").strip() != tested:
+            raise ReleaseError(f"{remote}/{branch} moved while reading PR #{pr['number']}; rerun")
+    previous = json.loads(git(repo, "show", f"{tested}:releases/{version}.json")).get("previous", "")
+    require_all_green(status_details_from_github(repo_slug, tested), previous)
+
+    steps = [f"tag: {version} on the merge commit (its tree must be the tested tree {tested[:12]}), pushed to {remote}",
              f"publish: GitHub Release {version} from docs/releases/{version}.md",
              f"delete: {remote}/{branch}"]
+    if pr["state"] == "OPEN":
+        main = git(repo, "rev-parse", f"{remote}/main").strip()
+        if not _is_ancestor(repo, main, tested):
+            raise ReleaseError(
+                f"main moved since {branch} was cut ({remote}/main {main[:12]} is not in the release head "
+                f"{tested[:12]}), so the merge would be a tree E2E never tested. Bring main into {branch} and "
+                "rerun E2E, or cut the release again.")
+        steps = [f"wait: PR #{pr['number']} required checks on {tested[:12]}",
+                 f"merge: PR #{pr['number']} into main (merge commit, only at {tested[:12]})"] + steps
+    else:
+        res["resumed"] = "merged"
+    res["steps"] = steps
     if dry_run:
-        return {"dry_run": True, "pr": pr["number"], "tested": tested, "steps": steps}
-    head = record(repo, version, details, push=True, repo_slug=repo_slug)
-    wait_mergeable(repo_slug, pr["number"], head, poll=poll)
-    gh("pr", "merge", str(pr["number"]), "--repo", repo_slug, "--merge", "--delete-branch=false")
-    git(repo, "fetch", "--quiet", remote, "main")
-    merge = git(repo, "rev-parse", f"{remote}/main").strip()
-    if not subprocess.run(["git", "-C", repo, "merge-base", "--is-ancestor", head, merge], capture_output=True).returncode == 0:
-        raise ReleaseError(f"{remote}/main ({merge[:12]}) does not contain the recorded head; not tagging")
-    git(repo, "tag", "-a", version, "-m", f"Release {version}", merge)
-    git(repo, "push", "--quiet", remote, version)
-    publish(repo, version, repo_slug)
+        return res
+
+    if pr["state"] == "OPEN":
+        wait_mergeable(repo_slug, pr["number"], tested, poll=poll)
+        gh("pr", "merge", str(pr["number"]), "--repo", repo_slug, "--merge", "--match-head-commit", tested,
+           "--delete-branch=false")
+        pr = release_pr(repo_slug, version)
+    merge = (pr.get("mergeCommit") or {}).get("oid")
+    if pr["state"] != "MERGED" or not merge:
+        raise ReleaseError(f"PR #{pr['number']} is not merged yet (state {pr['state']}); rerun in a moment")
+    git(repo, "fetch", "--quiet", remote, f"+refs/heads/main:refs/remotes/{remote}/main")
+    if not _is_ancestor(repo, merge, f"{remote}/main"):
+        raise ReleaseError(f"merge commit {merge[:12]} of PR #{pr['number']} is not on {remote}/main; not tagging")
+    if _tree(repo, merge) != _tree(repo, tested):
+        raise ReleaseError(
+            f"merge commit {merge[:12]} is not the tree E2E tested ({tested[:12]}): main moved while the release "
+            f"was being merged. {version} is NOT tagged. Delete {remote}/{branch} and cut the release again; "
+            "its E2E then covers what is on main.")
+    res["merge"] = merge
+    _tag_and_push(repo, version, merge, remote)
+    res["published"] = publish(repo, version, repo_slug)
     git(repo, "push", "--quiet", remote, "--delete", branch, check=False)
-    return {"dry_run": False, "pr": pr["number"], "tested": tested, "recorded": head, "merge": merge, "tag": version}
+    return res
 
 
 def publish(repo: str, version: str, repo_slug: str) -> bool:
@@ -606,22 +635,18 @@ def main(argv: list[str] | None = None) -> int:
     n.add_argument("--kubernetes-recommended", default=None)
     n.add_argument("--required-tfvar", action="append", default=[])
     n.add_argument("--manual-step", action="append", default=[])
-    n.add_argument("--status", action="append", default=[], metavar="CONTEXT=STATE",
-                   help="E2E status, e.g. e2e/fresh-default=success (repeatable)")
-    n.add_argument("--statuses-from-github", metavar="OWNER/REPO", default=None,
-                   help="read the E2E statuses of HEAD from GitHub (read-only)")
     n.add_argument("--no-commit", action="store_true")
-    r = sub.add_parser("record", help="record green E2E results in one docs-only commit (decision A)")
-    r.add_argument("version")
-    r.add_argument("--github", required=True, metavar="OWNER/REPO", help="repo holding the E2E statuses")
-    r.add_argument("--no-push", action="store_true", help="commit and verify only; do not push or post statuses")
     pb = sub.add_parser("publish", help="create the GitHub Release of an existing tag from its notes")
     pb.add_argument("version")
     pb.add_argument("--github", required=True, metavar="OWNER/REPO")
-    f = sub.add_parser("finish", help="after 4 green E2E runs: record, merge the release PR, tag, delete the branch")
+    f = sub.add_parser("finish", help="after 4 green E2E runs: merge the release PR, tag, publish, delete the "
+                                      "branch (resumes a finish that stopped half way)")
     f.add_argument("version")
     f.add_argument("--github", required=True, metavar="OWNER/REPO")
     f.add_argument("--dry-run", action="store_true", help="show the steps; change nothing")
+    f.add_argument("--if-green", action="store_true",
+                   help="exit 0 without doing anything when E2E has not passed on the release head (for automation "
+                        "that runs after every E2E run)")
     a = ap.parse_args(argv)
     try:
         if a.cmd == "publish":
@@ -629,33 +654,28 @@ def main(argv: list[str] | None = None) -> int:
             print(f"{'created' if made else 'already exists:'} GitHub Release {a.version}")
             return 0
         if a.cmd == "finish":
-            res = finish(a.repo, a.version, a.github, dry_run=a.dry_run)
+            try:
+                res = finish(a.repo, a.version, a.github, dry_run=a.dry_run)
+            except NotGreen as e:
+                if not a.if_green:
+                    raise
+                print(f"not finishing {a.version} yet: {e}")
+                return 0
+            resumed = {"merged": " (PR already merged)", "tagged": " (already tagged)"}.get(res["resumed"], "")
             if res["dry_run"]:
-                print(f"finish {a.version} would (PR #{res['pr']}, tested {res['tested'][:12]}):")
+                print(f"finish {a.version} would{resumed}:")
                 print("\n".join(f"  - {st}" for st in res["steps"]))
             else:
-                print(f"finished {a.version}: recorded {res['recorded'][:12]}, merged PR #{res['pr']} -> "
-                      f"{res['merge'][:12]}, tagged and pushed {res['tag']}, GitHub Release created, "
-                      "release branch deleted")
+                print(f"finished {a.version}{resumed}: tag {res['tag']} on {res['merge'][:12]}, GitHub Release "
+                      f"{'created' if res['published'] else 'already there'}, release branch deleted")
             print(canary_hint(a.version))
             return 0
         if a.cmd == "cut":
             print(cut(a.repo, a.version, a.branches, push=not a.no_push))
             return 0
-        if a.cmd == "record":
-            tested = git(a.repo, "rev-parse", "HEAD").strip()
-            details = status_details_from_github(a.github, tested)
-            head = record(a.repo, a.version, details, push=not a.no_push, repo_slug=a.github)
-            print(f"recorded E2E results for {a.version}: {tested[:12]} -> {head[:12]}"
-                  + ("" if a.no_push else "; pushed, statuses carried"))
-            return 0
-        statuses = dict(s.split("=", 1) for s in a.status)
-        if a.statuses_from_github:
-            statuses.update(statuses_from_github(a.statuses_from_github, git(a.repo, "rev-parse", "HEAD").strip()))
         sup = [s.strip() for s in a.kubernetes_supported.split(",")] if a.kubernetes_supported else None
         m = notes(a.repo, a.version, a.base, supported=sup, recommended=a.kubernetes_recommended,
-                  required_tfvars=a.required_tfvar, manual_steps=a.manual_step, statuses=statuses,
-                  commit=not a.no_commit)
+                  required_tfvars=a.required_tfvar, manual_steps=a.manual_step, commit=not a.no_commit)
         print(json.dumps(m, indent=2))
         return 0
     except ReleaseError as e:

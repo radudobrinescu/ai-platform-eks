@@ -1,0 +1,131 @@
+# Release finish: when E2E passed on the release in flight, merge, tag and publish it.
+#
+# Runs after every e2e run that ended green (workflow_run fires from the default
+# branch, so this file must live here). It looks for the release in flight
+# (the newest release/<version> branch that is not older than the newest tag)
+# and runs `tools/release.py finish <version> --if-green`:
+#   * not all four e2e/* statuses green on the release head, or green from a run
+#     with other inputs (another base, llm-d off): nothing happens, the run is
+#     green. A later e2e run triggers this again.
+#   * all green: wait for the PR's required checks, merge the PR at the tested
+#     head, tag the merge commit (only if its tree is the tested tree), create
+#     the GitHub Release, delete the release branch.
+#   * a finish that stopped half way (after the merge, after the tag) resumes.
+# Any other failure opens (or comments on) the issue "Release candidate needs
+# attention". So the only human action in a release is the approval of the e2e
+# environment; `workflow_dispatch` (optionally with dry_run) is the manual way.
+#
+# It never runs code from the product: tools/release.py only reads git objects
+# of the checkout in subject/. Needs secret E2E_PUSH_TOKEN (the release may
+# change .github/workflows/*, which GITHUB_TOKEN cannot merge).
+name: release-finish
+run-name: release finish${{ inputs.version && format(' · {0}', inputs.version) || '' }}${{ inputs.dry_run && ' (dry run)' || '' }}
+
+on:
+  workflow_run:
+    workflows: [e2e]
+    types: [completed]
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "Release to finish (vYYYY.MM.N). Empty: the release in flight"
+        type: string
+        default: ""
+      dry_run:
+        description: "Show the steps; change nothing"
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release-finish
+  cancel-in-progress: false
+
+jobs:
+  finish:
+    name: merge, tag, publish (only when E2E is green)
+    if: github.event_name == 'workflow_dispatch' || github.event.workflow_run.conclusion == 'success'
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      contents: read
+      issues: write
+    env:
+      REPO: ${{ github.repository }}
+      VERSION_INPUT: ${{ inputs.version }}
+      DRY_RUN: ${{ inputs.dry_run }}
+      HAS_PUSH_TOKEN: ${{ secrets.E2E_PUSH_TOKEN != '' }}
+    steps:
+      - name: Check configuration (skip cleanly if unset)
+        id: cfg
+        run: |
+          if [ "$HAS_PUSH_TOKEN" = true ]; then echo "configured=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "::notice::release-finish not configured: secret E2E_PUSH_TOKEN is not set. Skipping."
+            echo "configured=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - uses: actions/checkout@v7
+        if: steps.cfg.outputs.configured == 'true'
+
+      - name: Check out main into subject/
+        if: steps.cfg.outputs.configured == 'true'
+        uses: actions/checkout@v7
+        with:
+          ref: main
+          path: subject
+          fetch-depth: 0
+          fetch-tags: true
+          token: ${{ secrets.E2E_PUSH_TOKEN }}
+
+      - uses: actions/setup-python@v7
+        if: steps.cfg.outputs.configured == 'true'
+        with:
+          python-version: "3.12"
+
+      - name: Find the release in flight
+        id: find
+        if: steps.cfg.outputs.configured == 'true'
+        run: |
+          set -euo pipefail
+          git -C subject fetch --quiet --tags origin '+refs/heads/release/*:refs/remotes/origin/release/*'
+          if [ -n "$VERSION_INPUT" ]; then version="$VERSION_INPUT"
+          else version="$(python3 tools/release_candidate.py finishable --repo subject)"; fi
+          if [ -z "$version" ]; then echo "::notice::no release in flight; nothing to finish"; fi
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+
+      - name: Finish the release (merge, tag, publish) if E2E is green
+        if: steps.cfg.outputs.configured == 'true' && steps.find.outputs.version != ''
+        env:
+          VERSION: ${{ steps.find.outputs.version }}
+          GH_TOKEN: ${{ secrets.E2E_PUSH_TOKEN }}
+        run: |
+          set -euo pipefail
+          git -C subject config user.name "github-actions[bot]"
+          git -C subject config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          args=(--repo subject finish "$VERSION" --github "$REPO" --if-green)
+          if [ "$DRY_RUN" = true ]; then args+=(--dry-run); fi
+          python3 tools/release.py "${args[@]}" | tee finish.log
+          {
+            echo "## Release finish: $VERSION"
+            echo
+            echo '```'
+            cat finish.log
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Open or update an issue on failure
+        if: failure() && (!inputs.dry_run)
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+          VERSION: ${{ steps.find.outputs.version }}
+        run: |
+          set -euo pipefail
+          title="Release candidate needs attention"
+          printf 'Finishing release %s failed: %s\n\nE2E passed, but the release could not be merged, tagged or published. See the failed step. Once the cause is fixed, rerun the workflow release-finish: it resumes where it stopped. If it says the merge commit is not the tested tree, delete the release branch and cut again (COMPATIBILITY.md, Releases).\n' "${VERSION:-(unknown)}" "$RUN_URL" > body.md
+          num="$(gh issue list --repo "$REPO" --state open --search "in:title \"${title}\"" --json number --jq '.[0].number // empty')"
+          if [ -n "$num" ]; then gh issue comment "$num" --repo "$REPO" --body-file body.md
+          else gh issue create --repo "$REPO" --title "$title" --body-file body.md; fi

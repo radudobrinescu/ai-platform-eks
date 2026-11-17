@@ -70,6 +70,18 @@ def release_in_flight(repo: str, tag: str, remote: str = "origin") -> str | None
     return max(newer, key=lambda r: _key(r[8:])) if newer else None
 
 
+def finishable(repo: str, ref: str = "origin/main", remote: str = "origin") -> str | None:
+    """The release `release.py finish` should look at: the newest remote
+    release/<v> branch that is not older than the newest tag. Newer = cut, E2E
+    running or done; equal = tagged, but the finish stopped before it deleted
+    the branch (it resumes: GitHub Release, branch). None when there is none."""
+    tag = newest_tag(repo, ref)
+    refs = git(repo, "for-each-ref", "--format=%(refname:lstrip=3)", f"refs/remotes/{remote}/release/").stdout.split()
+    versions = [r[8:] for r in refs if r.startswith("release/") and TAG_RX.match(r[8:])]
+    live = [v for v in versions if tag is None or _key(v) >= _key(tag)]
+    return max(live, key=_key) if live else None
+
+
 def tag_date(repo: str, tag: str) -> date:
     ts = git(repo, "for-each-ref", "--format=%(creatordate:unix)", f"refs/tags/{tag}").stdout.strip()
     return datetime.fromtimestamp(int(ts), tz=timezone.utc).date()
@@ -175,8 +187,9 @@ def pr_body(p: dict, notes_md: str) -> str:
         if p[key]:
             lines += ["", f"{why}: " + ", ".join(f"`{b}`" for b in p[key])]
     lines += ["", "E2E (fresh + upgrade, both profiles) was dispatched and waits for approval of the `e2e`"
-              " environment. Merge only after all four `e2e/*` statuses are green and `release.py record`"
-              " ran.", "", "---", "", notes_md]
+              " environment. Do not merge by hand: when all four `e2e/*` statuses are green,"
+              " `release.py finish` merges, tags and publishes. Any push to this branch needs a new"
+              " E2E run.", "", "---", "", notes_md]
     return "\n".join(lines)
 
 
@@ -193,7 +206,14 @@ def main(argv: list[str] | None = None) -> int:
     b = sub.add_parser("pr-body")
     b.add_argument("--plan", required=True)
     b.add_argument("--notes", required=True)
+    f = sub.add_parser("finishable", help="print the release in flight (for release-finish.yaml), or nothing")
+    f.add_argument("--repo", required=True)
     a = ap.parse_args(argv)
+    if a.cmd == "finishable":
+        version = finishable(a.repo)
+        if version:
+            print(version)
+        return 0
     if a.cmd == "plan":
         with open(a.prs, encoding="utf-8") as fh:
             prs = json.load(fh)

@@ -89,7 +89,6 @@ class TestRules:
 class TestNotes:
     def test_generates_the_three_product_files_and_commits(self, repo):
         m = release.notes(str(repo), "v2026.11.0", "base", date="2026-11-02",
-                          statuses={"e2e/fresh-default": "success", "e2e/upgrade-default": "failure"},
                           manual_steps=["Rotate nothing; this is a test."], required_tfvars=["new_var"])
         assert m == {
             "version": "v2026.11.0", "previous": "baseline",
@@ -100,13 +99,14 @@ class TestNotes:
         notes = (repo / "docs/releases/v2026.11.0.md").read_text()
         assert "| vllm | `v0.24.0` | `v0.32.0` |" in notes
         assert "| karpenter | `1.14.0` | `1.15.0` |" in notes
-        assert "git merge v2026.11.0" in notes and "./platformctl upgrade <env>" in notes
+        assert "./platformctl upgrade <env>" in notes and "git merge" not in notes   # one command; see UPGRADING.md
         assert "Supported: 1.36. Recommended: 1.36." in notes and "`new_var`" in notes
         assert json.loads((repo / "releases/v2026.11.0.json").read_text()) == m
         vv = (repo / "docs/validated-versions.md").read_text()
         row = next(ln for ln in vv.splitlines() if ln.startswith("| [v2026.11.0]"))
         assert "`v0.32.0`" in row and "`v1.83.14-stable`" in row
-        assert "default pass, managed not run / default fail, managed not run" in row
+        assert row.count("|") == 7 and "default pass" not in vv and "not run" not in vv   # no E2E column:
+        assert "E2E" not in next(ln for ln in vv.splitlines() if ln.startswith("| Release"))  # listed = passed
         assert "docs(release)" in git(repo, "log", "-1", "--format=%s")
         assert not git(repo, "status", "--porcelain").strip()
 
@@ -205,79 +205,85 @@ class TestCut:
             release.cut(str(tmp_path), "2026.11", [], push=False)
 
 
-GREEN = {c: {"state": "success", "target_url": f"https://example.invalid/run/{i}", "description": "passed"}
+OLD_TABLE = (
+    "# Validated versions\n\nOld intro.\n\n"
+    "| Release | Date | Kubernetes | vLLM | LiteLLM | Karpenter | E2E (fresh / upgrade) |\n"
+    "|---|---|---|---|---|---|---|\n"
+    "| [v2026.10.1](releases/v2026.10.1.md) | 2026-10-20 | 1.36 | `v0.31.0` | `v1.83.1` | `1.15.0` "
+    "| default pass, managed pass / default pass, managed pass |\n"
+    "| [v2026.10.0](releases/v2026.10.0.md) | 2026-10-05 | 1.36 | `v0.30.0` | `v1.83.0` | `1.14.0` "
+    "| default pass, managed pass / default pass, managed pass |\n")
+
+
+class TestValidatedVersions:
+    def test_a_table_written_with_the_e2e_column_loses_it(self):
+        row = "| [v2026.11.0](releases/v2026.11.0.md) | 2026-11-02 | 1.36 | `v0.32.0` | `v1.83.14` | `1.15.1` |"
+        out = release.upsert_row(OLD_TABLE, "v2026.11.0", row).splitlines()
+        table = [ln for ln in out if ln.startswith("|")]
+        assert table[0] == "| Release | Date | Kubernetes | vLLM | LiteLLM | Karpenter |"
+        assert table[1] == "|---|---|---|---|---|---|"
+        assert table[2] == row
+        assert table[3] == "| [v2026.10.1](releases/v2026.10.1.md) | 2026-10-20 | 1.36 | `v0.31.0` | `v1.83.1` | `1.15.0` |"
+        assert all(ln.count("|") == 7 for ln in table) and "default pass" not in "\n".join(out)
+        assert "Old intro." not in out and any("passed all four" in ln for ln in out)
+        assert release.upsert_row("\n".join(out) + "\n", "v2026.11.0", row).splitlines() == out   # idempotent
+
+
+def details(base="v2026.10.1", llmd="true", **override):
+    d = {c: {"state": "success", "target_url": f"https://example.invalid/run/{i}",
+             "description": release.status_description(c.split("/")[1].split("-")[0], c.split("-")[1], "passed",
+                                                       base=base, llmd=llmd)}
          for i, c in enumerate(release.E2E_CONTEXTS)}
+    d.update(override)
+    return d
 
 
-class TestRecord:
-    """Decision A: one docs-only commit after E2E, verified, statuses carried."""
+class TestGreen:
+    """What counts as 'E2E passed' for a release: four green statuses, from runs
+    that upgraded from the previous release with the llm-d tier on."""
 
-    def _noted(self, repo):
-        release.notes(str(repo), "v2026.11.0", "base", date="2026-11-02")
-        return git(repo, "rev-parse", "HEAD").strip()
+    def test_four_green_runs_from_the_previous_release_pass(self):
+        release.require_all_green(details(), previous="v2026.10.1")
 
-    def test_records_only_the_e2e_cell_in_one_commit(self, repo):
-        tested = self._noted(repo)
-        before = (repo / "docs/validated-versions.md").read_text()
-        head = release.record(str(repo), "v2026.11.0", GREEN, push=False)
-        assert git(repo, "rev-parse", f"{head}^").strip() == tested
-        assert git(repo, "diff", "--name-only", tested, head).split() == ["docs/validated-versions.md"]
-        after = (repo / "docs/validated-versions.md").read_text()
-        old_row = next(ln for ln in before.splitlines() if ln.startswith("| [v2026.11.0]"))
-        new_row = next(ln for ln in after.splitlines() if ln.startswith("| [v2026.11.0]"))
-        assert "not run" in old_row
-        assert new_row.endswith("| default pass, managed pass / default pass, managed pass |")
-        assert old_row.split("|")[:-2] == new_row.split("|")[:-2]  # every other cell unchanged
-        assert f"Tested commit: {tested}" in git(repo, "log", "-1", "--format=%B")
-
-    def test_refuses_when_any_run_did_not_pass(self, repo):
-        self._noted(repo)
-        details = {**GREEN, "e2e/upgrade-managed": {"state": "failure", "target_url": ""}}
+    def test_refuses_when_any_run_did_not_pass_or_is_missing(self):
         with pytest.raises(release.ReleaseError, match="e2e/upgrade-managed=failure"):
-            release.record(str(repo), "v2026.11.0", details, push=False)
-        missing = {k: v for k, v in GREEN.items() if k != "e2e/fresh-managed"}
+            release.require_all_green(details(**{"e2e/upgrade-managed": {"state": "failure", "target_url": ""}}),
+                                      previous="v2026.10.1")
+        missing = {k: v for k, v in details().items() if k != "e2e/fresh-managed"}
         with pytest.raises(release.ReleaseError, match="e2e/fresh-managed=missing"):
-            release.record(str(repo), "v2026.11.0", missing, push=False)
+            release.require_all_green(missing, previous="v2026.10.1")
 
-    def test_refuses_without_a_notes_row(self, repo):
-        with pytest.raises(release.ReleaseError, match="run `notes` first"):
-            release.record(str(repo), "v2026.11.0", GREEN, push=False)
+    def test_refuses_an_upgrade_from_another_base(self):
+        with pytest.raises(release.ReleaseError) as e:
+            release.require_all_green(details(base="main"), previous="v2026.10.1")
+        assert "e2e/upgrade-default=upgraded from main, not v2026.10.1" in str(e.value)
+        assert "e2e/fresh-default" not in str(e.value)        # fresh runs have no base
 
-    def test_verify_rejects_any_other_change(self, repo):
-        tested = self._noted(repo)
-        write(repo, "docs/validated-versions.md",
-              (repo / "docs/validated-versions.md").read_text() + "\nextra line\n")
-        git(repo, "commit", "-qam", "sneaky")
-        with pytest.raises(release.ReleaseError, match="exactly one line"):
-            release.verify_record_commit(str(repo), tested, "HEAD", "v2026.11.0")
+    def test_first_release_has_no_previous_to_compare(self):
+        release.require_all_green(details(base="main"), previous="baseline")
 
-    def test_verify_rejects_other_files_and_other_cells(self, repo):
-        tested = self._noted(repo)
-        write(repo, "terraform/30.eks/30.cluster/locals.tf", LOCALS.replace("{v}", "v0.33.0"))
-        git(repo, "commit", "-qam", "code change after E2E")
-        with pytest.raises(release.ReleaseError, match="docs/validated-versions.md only"):
-            release.verify_record_commit(str(repo), tested, "HEAD", "v2026.11.0")
-        git(repo, "reset", "-q", "--hard", tested)
-        vv = (repo / "docs/validated-versions.md").read_text()
-        write(repo, "docs/validated-versions.md", vv.replace("`v0.32.0`", "`v0.99.0`"))
-        git(repo, "commit", "-qam", "edits the vLLM cell")
-        with pytest.raises(release.ReleaseError, match="only the E2E cell"):
-            release.verify_record_commit(str(repo), tested, "HEAD", "v2026.11.0")
+    def test_refuses_runs_without_the_llmd_tier_or_without_the_fields(self):
+        with pytest.raises(release.ReleaseError, match="without the llm-d tier"):
+            release.require_all_green(details(llmd="false"), previous="v2026.10.1")
+        old = {c: {"state": "success", "target_url": "", "description": "E2E fresh (default) passed"}
+               for c in release.E2E_CONTEXTS}
+        with pytest.raises(release.ReleaseError, match="does not say what it tested"):
+            release.require_all_green(old, previous="v2026.10.1")
 
-    def test_verify_rejects_more_than_one_commit(self, repo):
-        tested = self._noted(repo)
-        release.record(str(repo), "v2026.11.0", GREEN, push=False)
-        git(repo, "commit", "-q", "--allow-empty", "-m", "another")
-        with pytest.raises(release.ReleaseError, match="single commit"):
-            release.verify_record_commit(str(repo), tested, "HEAD", "v2026.11.0")
+    def test_description_fits_a_commit_status_and_round_trips(self):
+        d = release.status_description("upgrade", "managed", "passed", base="release/v2026.11.12", llmd="true")
+        assert len(d) <= 140 and d.startswith("E2E upgrade (managed) passed")
+        assert release.status_fields(d) == {"base": "release/v2026.11.12", "llmd": "true"}
+        assert release.status_fields("E2E fresh (default) passed") == {}
 
-    def test_carried_statuses_name_the_tested_commit_and_keep_the_run_links(self):
-        sha = "0123456789abcdef0123456789abcdef01234567"
-        payloads = release.carried_status_payloads(GREEN, sha)
-        assert [p["context"] for p in payloads] == list(release.E2E_CONTEXTS)
-        assert all(p["state"] == "success" for p in payloads)
-        assert all("0123456789ab" in p["description"] and len(p["description"]) <= 140 for p in payloads)
-        assert [p["target_url"] for p in payloads] == [GREEN[c]["target_url"] for c in release.E2E_CONTEXTS]
+    def test_a_status_text_with_a_field_twice_or_extra_text_says_nothing(self):
+        assert release.status_fields("E2E fresh (default) passed; llmd=false; llmd=true") == {}
+        assert release.status_fields("E2E upgrade (default) passed; base=main; base=v2026.10.1; llmd=true") == {}
+        assert release.status_fields("E2E fresh (default) passed; trust me; llmd=true") == {}
+        twice = details(**{"e2e/fresh-default": {"state": "success", "target_url": "",
+                                                 "description": "E2E fresh (default) passed; llmd=false; llmd=true"}})
+        with pytest.raises(release.ReleaseError, match="e2e/fresh-default=does not say what it tested"):
+            release.require_all_green(twice, previous="v2026.10.1")
 
 
 class TestPlatformChanges:

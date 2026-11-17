@@ -183,27 +183,28 @@ profiles) pending (Unit 1b). Pins: see the left column above, plus kro chart
 3. Cut a release: `python3 tools/release.py --repo <product checkout> cut vYYYY.MM.N renovate/infra renovate/inference ...`;
    cherry-pick coupled fixes by hand onto `release/<version>`.
 4. `python3 tools/release.py --repo <checkout> notes vYYYY.MM.N --base <previous tag or main>`
-   writes the notes, the release manifest and the validated-versions row (E2E
-   "not run"). The manifest must exist before E2E: the candidate's
+   writes the notes, the release manifest and the validated-versions row. The
+   manifest must exist before E2E: the candidate's
    `./platformctl upgrade` refuses a target without one. Add
    `acknowledged_replacements` by hand if the upgrade plan guard needs them.
 5. Run E2E on the release head: one dispatch with `modes: fresh,upgrade` (base =
-   previous release tag, or `main` for the first), both profiles, one approval:
-   four commit statuses
-   `e2e/{fresh,upgrade}-{default,managed}`, all required (BR1). Any push to the
-   release branch needs a rerun (BR2), with one exception (step 6).
-6. Record the results (decision A, the only exception to BR2):
-   `python3 tools/release.py --repo <checkout> record vYYYY.MM.N --github OWNER/REPO`.
-   It refuses unless all four statuses are `success` on the tested head, writes
-   only the E2E cell of this release's row in `docs/validated-versions.md` as one
-   commit, verifies that commit changes nothing else, pushes it, and posts the
-   four statuses on the new head with the run links and "tested on <sha>".
-   The tested SHA is also in the commit message. Any other change: rerun E2E.
-7. Merge the release PR, tag the merge commit `vYYYY.MM.N`, delete the branch.
-   Steps 6 and 7 are one command: `python3 tools/release.py --repo <checkout>
-   finish vYYYY.MM.N --github OWNER/REPO` (run on the release branch at the
-   tested head; `--dry-run` lists the steps). It waits for the PR's required
-   checks on the recorded head before merging.
+   previous release tag, or `main` for the first), both profiles, llm-d on, one
+   approval: four commit statuses `e2e/{fresh,upgrade}-{default,managed}`, all
+   required (BR1). Each status says what it tested (`base=`, `llmd=`); give the
+   base as the tag name (`v2026.11.5`, not a SHA or `refs/tags/...`), because
+   `finish` compares it with the manifest's `previous`. Any push
+   to the release branch needs a rerun (BR2, no exceptions).
+6. Finish: `python3 tools/release.py --repo <checkout> finish vYYYY.MM.N --github OWNER/REPO`
+   (from any clone; `--dry-run` lists the steps). It refuses unless the four
+   statuses on the release head are green and from the release's own run, and
+   unless `main` is an ancestor of the release head. Then it waits for the PR's
+   required checks, merges the PR at that head, tags the merge commit after
+   checking that its tree is the tested tree, creates the GitHub Release and
+   deletes the branch. Nothing is committed between E2E and the tag.
+7. If `finish` stops half way (after the merge, after the tag), run it again:
+   it resumes. If it reports that the merge commit is not the tested tree (a PR
+   landed on `main` during the merge), the release stays untagged: delete the
+   release branch and cut again.
 8. Canary: in the long-lived dev environment's checkout (branch `env/dev`),
    `git merge vYYYY.MM.N`, `./platformctl upgrade dev --plan-only`, then
    `--yes`, then `make -C terraform plan-all ENVIRONMENT=dev` (expect no changes).
@@ -239,4 +240,8 @@ one E2E dispatch that waits for the `e2e` approval). A merge conflict or any
 other failure opens or comments on the issue "Release candidate needs
 attention"; resolve conflicts by hand on `release/<version>` (or delete the
 branch and rerun with `force`). So does a release week with no release because
-every group branch is stale. Steps 6 to 8 stay manual.
+every group branch is stale. Steps 6 and 7 are done by `release-finish.yaml`,
+which runs after every green E2E run and finishes the release in flight when
+all four statuses are green (`finish --if-green`); a failure there opens or
+comments on the same issue, and a rerun resumes. Step 8 (the canary) stays
+manual, as does the approval of the `e2e` environment.
