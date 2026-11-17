@@ -312,14 +312,14 @@
       "matchDepNames": [
         "kubernetes"
       ],
-      "allowedVersions": "<38"
+      "allowedVersions": "<39"
     },
     {
       "description": "alpine/k8s bundles kubectl; keep within +/-1 minor of the API server (kubectl skew policy). Raise with the anchor. Ceiling = 1.(EKS default minor + 2), exclusive; raise it with the EKS anchor.",
       "matchDepNames": [
         "alpine/k8s"
       ],
-      "allowedVersions": "<1.38"
+      "allowedVersions": "<1.39"
     },
     {
       "description": "inference domain - anchored on the vLLM image. GPU operator driver/CUDA >= vLLM's CUDA runtime; GIE CRDs + llm-d router must match the vLLM routing protocol.",
