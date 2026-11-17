@@ -146,7 +146,7 @@ with frozen images. Trivy is pinned and checksummed in `e2e.yaml`.
 (first try 07:41 UTC, catch-up runs until Tuesday; `gh workflow run release-candidate.yaml -f force=true`
 for an off-week release, `-f dry_run=true` to see the plan without changing anything). You approve the E2E run:
 that is the only action a release needs. When all four `e2e/*` statuses are green, `release-finish.yaml`
-(it runs after every green E2E run) merges, tags and publishes the release; if that fails it opens the issue
+(the last job of every green E2E run dispatches it) merges, tags and publishes the release; if that fails it opens the issue
 "Release candidate needs attention", and rerunning it resumes. The same step by hand, from any clone of the
 product (it reads the remote refs):
 

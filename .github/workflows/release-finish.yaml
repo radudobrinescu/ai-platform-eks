@@ -1,7 +1,10 @@
 # Release finish: when E2E passed on the release in flight, merge, tag and publish it.
 #
-# Runs after every e2e run that ended green (workflow_run fires from the default
-# branch, so this file must live here). It looks for the release in flight
+# Started by e2e.yaml (its last job, `finish`) after every run in which all
+# jobs passed, and by hand. Not `on: workflow_run`: the scheduled release
+# candidate dispatches e2e with GITHUB_TOKEN, and the completion of such a run
+# did not trigger this workflow (v2026.11.7 had to be finished by a manual
+# dispatch). It looks for the release in flight
 # (the newest release/<version> branch that is not older than the newest tag)
 # and runs `tools/release.py finish <version> --if-green`:
 #   * not all four e2e/* statuses green on the release head, or green from a run
@@ -22,9 +25,6 @@ name: release-finish
 run-name: release finish${{ inputs.version && format(' · {0}', inputs.version) || '' }}${{ inputs.dry_run && ' (dry run)' || '' }}
 
 on:
-  workflow_run:
-    workflows: [e2e]
-    types: [completed]
   workflow_dispatch:
     inputs:
       version:
@@ -46,7 +46,6 @@ concurrency:
 jobs:
   finish:
     name: merge, tag, publish (only when E2E is green)
-    if: github.event_name == 'workflow_dispatch' || github.event.workflow_run.conclusion == 'success'
     runs-on: ubuntu-latest
     timeout-minutes: 30
     permissions:

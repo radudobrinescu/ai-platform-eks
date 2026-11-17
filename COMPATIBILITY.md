@@ -241,7 +241,7 @@ other failure opens or comments on the issue "Release candidate needs
 attention"; resolve conflicts by hand on `release/<version>` (or delete the
 branch and rerun with `force`). So does a release week with no release because
 every group branch is stale. Steps 6 and 7 are done by `release-finish.yaml`,
-which runs after every green E2E run and finishes the release in flight when
+which the last job of every green E2E run dispatches, and which finishes the release in flight when
 all four statuses are green (`finish --if-green`); a failure there opens or
 comments on the same issue, and a rerun resumes. Step 8 (the canary) stays
 manual, as does the approval of the `e2e` environment.

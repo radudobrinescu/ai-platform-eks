@@ -323,3 +323,26 @@ jobs:
         run: |
           [ "$RC" = "0" ] || { echo "::error::E2E ${MODE} (${PROFILE}) failed (exit ${RC:-none}); see the report"; exit 1; }
           echo "E2E ${MODE} (${PROFILE}) passed"
+
+  # When every job of this run passed, start release-finish: it merges, tags and
+  # publishes the release in flight if all four e2e/* statuses on its head are
+  # green, and does nothing otherwise (so any green run may start it: a release
+  # run, a rerun of the jobs that failed, or a run of something else).
+  # Dispatched explicitly, not left to `on: workflow_run` in release-finish.yaml:
+  # the scheduled release candidate starts this workflow with GITHUB_TOKEN, and
+  # the completion of such a run did not start release-finish (v2026.11.7). A
+  # workflow_dispatch made with GITHUB_TOKEN does start a run.
+  finish:
+    name: start release-finish
+    needs: [plan, e2e]
+    if: needs.plan.outputs.configured == 'true' && needs.e2e.result == 'success'
+    runs-on: ubuntu-latest
+    permissions:
+      actions: write
+    steps:
+      - name: Dispatch release-finish
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh workflow run release-finish.yaml --repo "$GITHUB_REPOSITORY" --ref lifecycle
+          echo "release-finish dispatched; it finishes the release in flight if its four statuses are green." >> "$GITHUB_STEP_SUMMARY"
