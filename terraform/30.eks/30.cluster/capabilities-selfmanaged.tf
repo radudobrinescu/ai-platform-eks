@@ -20,7 +20,7 @@
 locals {
   # Docker Official Image redis, the same digest on Docker Hub and on the chart's
   # registry (ecr-public.aws.com/docker/library/redis). "<tag>@<digest>".
-  argocd_redis_image = "8.6.8-alpine@sha256:91c71f9ea78fa3fe268ff832a985c48e592244f707993773f8b3e1b244ac1137"
+  argocd_redis_image = "8.10.3-alpine@sha256:7958cfbb9d152f87dadfbc89f1b0b15938f0b81ff8982feb327476f4911935c3"
 }
 
 resource "helm_release" "argocd_selfmanaged" {
