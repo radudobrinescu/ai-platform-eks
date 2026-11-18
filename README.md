@@ -8,10 +8,11 @@ here.
 | Path | What |
 |---|---|
 | `renovate.json` | Renovate config (read from the default branch), targets `main` only |
-| `COMPATIBILITY.md` | anchors, domains, coupling notes, validated sets, release procedure |
-| `harness/` | E2E harness: `e2e.py` (entry), `checks.py` (22 smoke checks; `e2e.py check` runs them alone against a running env), `sso.py`, `survival.py`, `tfvars.py`, `versions.py`, `subject.py`, `common.py` |
-| `tools/release.py` | cut a release branch; write release notes, manifest, validated-versions row |
+| `COMPATIBILITY.md` | why the updates are grouped as they are: anchors, what waits, domains, how pins are found, coupling notes |
+| `harness/` | E2E harness: `e2e.py` (entry), `checks.py` (22 smoke checks; `e2e.py check` runs them alone against a running env), `sso.py`, `survival.py` (what an upgrade must not lose), `imagescan.py`, `leftovers.py` (preflight: leaked environments, Elastic IPs), `tfvars.py`, `versions.py`, `subject.py`, `common.py` |
+| `tools/release.py` | the steps of a release: `cut` the branch, `notes` (release notes, manifest, validated-versions row), `finish` (merge, tag, GitHub Release), `publish-public` (one commit to the public repository) |
 | `tools/release_candidate.py` | decide what the factory does next: start a cycle, wait, retry, finish or abandon it (used by `release-candidate.yaml`) |
+| `tools/watchdog.py` | what goes wrong quietly: token expiry, disabled workflows, stalled cycles (used by `watchdog.yaml`) |
 | `tools/shellcheck_workflows.py` | shellcheck every workflow `run:` step |
 | `terraform/github-oidc/` | GitHub OIDC provider + E2E provisioning role (local state, applied once) |
 | `tests/` | unit tests: harness, tools, workflows, Renovate coverage of `main` |
@@ -48,7 +49,7 @@ Env names are `e2e<m><p><run number>` (`m` = f/u, `p` = d/m, run number mod
 prefix at 37 characters. Reports (`reports/<env>.md|json`) and the streamed
 command output redact account ids, ARNs and AWS hostnames.
 
-## One-time setup (Unit 4, by an admin)
+## One-time setup (by a repository admin)
 
 1. Apply the OIDC role with local state:
    ```bash
@@ -62,15 +63,19 @@ command output redact account ids, ARNs and AWS hostnames.
      Workflows write (release candidates change `.github/workflows/*`, which
      `GITHUB_TOKEN` cannot push), and Pull requests write so the scheduled
      release PR is opened as that user and main's CI runs on it
-   - variables `CYCLE_DAYS` (7), `PUBLISH_DAYS` (90), `WAIT_DAYS` (5): all optional, see
+   - variables `CYCLE_DAYS` (7), `PUBLISH_DAYS` (90), `WAIT_DAYS` (5), `MARK_DAYS` (14): all optional, see
      "The factory: cycles and releases"
    - label `hold` (keeps a Renovate PR out of the next release)
    - variable `E2E_REGION` (optional, default `eu-central-1`)
    - variables `E2E_IDC_INSTANCE_ARN`, `E2E_IDC_REGION`, `E2E_IDC_GROUP_ID`
      (Identity Center instance and the group mapped to Argo CD ADMIN, profile `managed`)
-   - environment `e2e` with a required reviewer
+   - environment `e2e` with a required reviewer, deployments allowed from the branch `lifecycle` only (the
+     cloud role is reachable through this environment, so no other branch's workflow may use it)
 3. Make `lifecycle` the default branch (Renovate reads its config there, and
    GitHub only offers `workflow_dispatch` for workflows on the default branch).
+4. Protect both branches. `main`: pull request and its CI checks. `lifecycle`: pull request and the four
+   checks of `ci.yaml`, for administrators too. A change to the harness or the factory decides what gets
+   released, so it goes through CI like the product.
 
 Until `E2E_ROLE_ARN` and `E2E_PUSH_TOKEN` exist, `e2e.yaml` finishes green
 without calling AWS.
@@ -80,8 +85,8 @@ without calling AWS.
 Actions -> e2e -> Run workflow: `modes` (fresh | upgrade | fresh,upgrade),
 `subject` (the ref under test; in upgrade mode the candidate), `base` (upgrade
 mode, default `main`), `profiles` (default `default,managed`), `keep`,
-`with_llmd`. The run is named after these, e.g. `e2e fresh,upgrade ·
-release/v2026.11.0 (from main) · default,managed`, so the approval screen says
+`with_llmd`, `note` (free text put first in the run's name). The run is named after these, e.g.
+`e2e fresh,upgrade · release/v2026.11.8 (from v2026.11.7) · default,managed`, so the approval screen says
 what it tests. One approval of the `e2e` environment starts every
 (mode, profile) job of the run in parallel (each env uses 3 Elastic IPs; the
 account quota is 15).
@@ -107,7 +112,7 @@ Dry run (offline, no git, AWS or cluster calls): prints every planned command
 and the rendered tfvars.
 
 ```bash
-python3 harness/e2e.py upgrade main release/v2026.11.0 --profile managed --dry-run
+python3 harness/e2e.py upgrade v2026.11.7 release/v2026.11.8 --profile managed --dry-run
 ```
 
 ### Checks only, against an env that already runs
@@ -191,37 +196,49 @@ By hand:
 gh workflow run release-candidate.yaml -f dry_run=true           # what would the next run do?
 gh workflow run release-candidate.yaml -f force=true             # start a cycle now
 gh workflow run release-candidate.yaml -f force=true -f publish=true   # start a cycle that is a release
-python3 tools/release.py --repo subject finish v2026.11.3 --github OWNER/REPO [--dry-run] [--publish|--no-publish]
+python3 tools/release.py --repo subject finish v2026.11.9 --github OWNER/REPO [--dry-run] [--publish|--no-publish]
 ```
 
-### An environment that was left behind
+### What `finish` does, and the notes
 
-The issue "E2E environments left behind" names a cluster (`<prefix>-<env>`, for example `ai-platform-e2eud129`).
-It bills until a person removes it; the factory never deletes a cluster it does not own in the current job.
-With credentials for the E2E account and the Terraform version that `e2e.yaml` installs:
+`finish` commits nothing after E2E: what was tested is what is merged and tagged. It
 
-1. Check out the product at the newest release, not at the ref the job ran. An old `down` may be what left
-   the cluster (the September `down` reported success with the cluster running).
-2. Recreate the env's variables the way the harness does (`harness/tfvars.py`): copy
-   `terraform/00.global/vars/example.tfvars` to `<env>.tfvars` in the same directory, set the region, put your
-   public IP (`a.b.c.d/32`) in `cluster_endpoint_public_access_cidrs`, and for an env whose name has `m` as its
-   fifth letter (profile managed) set `eks_capabilities = true` and the `capabilities_config` block.
-3. `./platformctl down <env>`. It asks for the env name, destroys the Terraform modules in reverse order and
-   sweeps what the controllers created. It is safe to run again.
-4. Check: `aws eks describe-cluster --name <prefix>-<env>` says the cluster does not exist, and no VPC has
-   that name. Then close the issue.
+1. refuses unless the four statuses on the release head are green **and** come from the release's own run:
+   upgrade jobs started from the previous release, every job ran the llm-d tier (the status text carries
+   `base=` and `llmd=`; a manual run with other inputs on the same commit does not count);
+2. refuses when `main` moved since the cut (`main` must be an ancestor of the release head, so the merge
+   result is the tested tree);
+3. waits for the PR's required checks, merges the PR at exactly that head, and checks that the merge
+   commit's tree is the tested tree;
+4. for a release (label `publish`): tags the merge commit and creates the GitHub Release from the notes;
+5. deletes the release branch.
 
-What stopped the destroy on 2026-11-18, and what cleared it:
+It resumes: if an earlier run stopped after the merge or after the tag, run it again and it continues from
+there. `release.py publish <v> --github OWNER/REPO` creates the GitHub Release
+for an existing tag. The notes list the platform changes (PRs merged into main
+since the previous release, grouped as fixes, improvements and other changes;
+no PR numbers, because the notes travel to the public repo). The steps of a cycle by hand, which is what
+`release-candidate.yaml` and `release-finish.yaml` run:
 
-- The cluster's KMS key was scheduled for deletion while the cluster still existed, and EKS refused every
-  change. `aws kms cancel-key-deletion` and `aws kms enable-key` on that key; the sweep schedules it again
-  once the cluster is gone.
-- The job's role had created the cluster and its runner was gone, so nobody could reach the Kubernetes API.
-  An EKS access entry for your own identity with `AmazonEKSClusterAdminPolicy`, plus your IP in the
-  cluster's public access list.
-- The namespace `inference` waited on a finalizer whose controller was already deleted. Remove the
-  finalizers of what is left in it (`bedrockmodels`, the Argo CD applications, `nodeclaims`), then destroy
-  again.
+```bash
+python3 tools/release.py --repo subject cut v2026.11.9 renovate/infra renovate/gateway
+python3 tools/release.py --repo subject notes v2026.11.9 --base v2026.11.8      # the newest tag
+# push, open the PR (label `publish` for a release), E2E: fresh + upgrade from the newest tag, both profiles, llm-d on
+python3 tools/release.py --repo subject finish v2026.11.9 --github OWNER/REPO   # after all 4 jobs pass
+```
+
+`notes` writes `docs/releases/<v>.md`, `releases/<v>.json` (the manifest
+`./platformctl upgrade` reads) and the `docs/validated-versions.md` row, and
+commits them. Files of a version that was never tagged are drafts from earlier
+cycles: it removes them and carries what was written into their manifest by
+hand (`manual_steps`, `acknowledged_replacements`) into the new one. The row has no E2E column: a release reaches `main`, and so that
+table, only through `finish`. `notes` refuses a version that is not `vYYYY.MM.N`, a version not newer
+than the base release, a Kubernetes set that drops a version of the previous
+release or adds more than one newer minor, and any text that would mention
+Renovate, this branch, or an account id.
+
+Any push to the release branch after E2E needs a new E2E run, without exception: the statuses are on
+the tested commit only.
 
 ### Publishing to the public repository
 
@@ -263,43 +280,34 @@ green `release-finish` merges, tags and, with the three settings above and `PUBL
 The upgrade jobs of that run are the test of the jump existing public forks will make. The long-lived dev
 environment sits on the internal releases and cannot take this one with `upgrade`; recreate it from the tag.
 
-`finish` commits nothing after E2E: what was tested is what is merged and tagged. It
+### An environment that was left behind
 
-1. refuses unless the four statuses on the release head are green **and** come from the release's own run:
-   upgrade jobs started from the previous release, every job ran the llm-d tier (the status text carries
-   `base=` and `llmd=`; a manual run with other inputs on the same commit does not count);
-2. refuses when `main` moved since the cut (`main` must be an ancestor of the release head, so the merge
-   result is the tested tree);
-3. waits for the PR's required checks, merges the PR at exactly that head, and checks that the merge
-   commit's tree is the tested tree;
-4. for a release (label `publish`): tags the merge commit and creates the GitHub Release from the notes;
-5. deletes the release branch.
+The issue "E2E environments left behind" names a cluster (`<prefix>-<env>`, for example `ai-platform-e2eud129`).
+It bills until a person removes it; the factory never deletes a cluster it does not own in the current job.
+With credentials for the E2E account and the Terraform version that `e2e.yaml` installs:
 
-It resumes: if an earlier run stopped after the merge or after the tag, run it again and it continues from
-there. `release.py publish <v> --github OWNER/REPO` creates the GitHub Release
-for an existing tag. The notes list the platform changes (PRs merged into main
-since the previous release, grouped as fixes, improvements and other changes;
-no PR numbers, because the notes travel to the public repo). See COMPATIBILITY.md "Releases". The steps by hand:
+1. Check out the product at the newest release, not at the ref the job ran. An old `down` may be what left
+   the cluster (the September `down` reported success with the cluster running).
+2. Recreate the env's variables the way the harness does (`harness/tfvars.py`): copy
+   `terraform/00.global/vars/example.tfvars` to `<env>.tfvars` in the same directory, set the region, put your
+   public IP (`a.b.c.d/32`) in `cluster_endpoint_public_access_cidrs`, and for an env whose name has `m` as its
+   fifth letter (profile managed) set `eks_capabilities = true` and the `capabilities_config` block.
+3. `./platformctl down <env>`. It asks for the env name, destroys the Terraform modules in reverse order and
+   sweeps what the controllers created. It is safe to run again.
+4. Check: `aws eks describe-cluster --name <prefix>-<env>` says the cluster does not exist, and no VPC has
+   that name. Then close the issue.
 
-```bash
-python3 tools/release.py --repo subject cut v2026.11.0 renovate/infra renovate/gateway
-python3 tools/release.py --repo subject notes v2026.11.0 --base main      # first release
-# E2E: fresh + upgrade (base = previous tag, or main), both profiles, llm-d on
-python3 tools/release.py --repo subject finish v2026.11.0 --github OWNER/REPO     # after all 4 runs pass
-```
+What stopped the destroy on 2026-11-18, and what cleared it:
 
-`notes` writes `docs/releases/<v>.md`, `releases/<v>.json` (the manifest
-`./platformctl upgrade` reads) and the `docs/validated-versions.md` row, and
-commits them. Files of a version that was never tagged are drafts from earlier
-cycles: it removes them and carries what was written into their manifest by
-hand (`manual_steps`, `acknowledged_replacements`) into the new one. The row has no E2E column: a release reaches `main`, and so that
-table, only through `finish`. `notes` refuses a version that is not `vYYYY.MM.N`, a version not newer
-than the base release, a Kubernetes set that drops a version of the previous
-release or adds more than one newer minor, and any text that would mention
-Renovate, this branch, or an account id.
-
-Any push to the release branch after E2E needs a new E2E run (BR2, no exceptions): the statuses are on
-the tested commit only.
+- The cluster's KMS key was scheduled for deletion while the cluster still existed, and EKS refused every
+  change. `aws kms cancel-key-deletion` and `aws kms enable-key` on that key; the sweep schedules it again
+  once the cluster is gone.
+- The job's role had created the cluster and its runner was gone, so nobody could reach the Kubernetes API.
+  An EKS access entry for your own identity with `AmazonEKSClusterAdminPolicy`, plus your IP in the
+  cluster's public access list.
+- The namespace `inference` waited on a finalizer whose controller was already deleted. Remove the
+  finalizers of what is left in it (`bedrockmodels`, the Argo CD applications, `nodeclaims`), then destroy
+  again.
 
 ## Checks
 
