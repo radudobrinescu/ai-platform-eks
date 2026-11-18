@@ -205,6 +205,18 @@ class Runner:
         rc = self.subject.platformctl(*args, input_=input_)
         return rc == 0, f"./platformctl {' '.join(args)} exited {rc}"
 
+    GUARD_STOPPED = 3   # `platformctl upgrade`: the plan guard refused; nothing was applied
+
+    def upgrade_platform(self) -> tuple[bool, str]:
+        """The candidate's `./platformctl upgrade --yes`. When it fails after it
+        started applying, the report keeps what is stuck in the cluster: the
+        cluster is gone when somebody reads it."""
+        rc = self.subject.platformctl("upgrade", self.env, "--yes")
+        detail = f"./platformctl upgrade {self.env} --yes exited {rc}"
+        if rc not in (0, self.GUARD_STOPPED) and not self.dry:
+            detail += f" || stuck: {checks.diagnose()}"
+        return rc == 0, detail
+
     # -- steps --------------------------------------------------------------- #
 
     def prepare_branch(self, ref: str) -> tuple[bool, str]:
@@ -376,7 +388,7 @@ class Runner:
             self.report.versions["candidate"] = versions.read_versions(self.subject.root)
         if not self.step("required-tfvars", self.fill_required_tfvars):
             return
-        upgraded = self.step("platformctl-upgrade", lambda: self._platformctl_ok("upgrade", self.env, "--yes"))
+        upgraded = self.step("platformctl-upgrade", self.upgrade_platform)
         if upgraded and not self.dry:
             def do_compare():
                 after = survival.snapshot(self.make_ctx(), state["seed"])

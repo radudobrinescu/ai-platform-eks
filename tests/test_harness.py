@@ -419,6 +419,18 @@ STUCK = {
         {"metadata": {"namespace": "team-x", "name": "ignored"}, "status": {"phase": "Pending"}}]},
     "events": {"items": [{"involvedObject": {"namespace": "ai-platform", "name": "langfuse-web-1"}, "reason": "Failed",
                           "message": "Failed to pull image", "lastTimestamp": "2026-11-11T15:00:00Z"}]},
+    "vllmendpoints": {"items": [
+        {"metadata": {"name": "qwen"}, "status": {"state": "IN_PROGRESS", "ready": "False", "conditions": [
+            {"type": "ResourcesReady", "status": "False", "message": "waiting for deployment qwen-vllm"},
+            {"type": "InstanceManaged", "status": "True"}]}},
+        {"metadata": {"name": "fine"}, "status": {"state": "ACTIVE", "ready": "True"}}]},
+    "nodeclaims": {"items": [
+        {"metadata": {"name": "gpu-shared-abc", "labels": {"karpenter.sh/nodepool": "gpu-shared",
+                                                            "node.kubernetes.io/instance-type": "g7.4xlarge"}},
+         "status": {"conditions": [{"type": "Ready", "status": "False", "message": "Node not registered with cluster"}]}},
+        {"metadata": {"name": "default-xyz", "labels": {"karpenter.sh/nodepool": "default",
+                                                         "node.kubernetes.io/instance-type": "m7i.xlarge"}},
+         "status": {"conditions": [{"type": "Ready", "status": "True"}]}}]},
 }
 
 
@@ -436,6 +448,32 @@ def test_diagnose_names_unhealthy_apps_stuck_pods_and_warnings(monkeypatch):
     assert "web:ImagePullBackOff toomanyrequests" in out
     assert "ok-1" not in out and "team-x" not in out
     assert "event langfuse-web-1: Failed Failed to pull image" in out
+    # A model that does not come up: what kro says, and which GPU node Karpenter picked for it.
+    assert "vllmendpoint qwen: IN_PROGRESS ready=False (ResourcesReady: waiting for deployment qwen-vllm)" in out
+    assert "vllmendpoint fine" not in out
+    assert "nodeclaim gpu-shared-abc (gpu-shared, g7.4xlarge) Ready=False: Node not registered with cluster" in out
+    assert "default-xyz" not in out
+
+
+def test_a_failed_upgrade_reports_what_is_stuck(monkeypatch):
+    """2026-11-19: the upgrade from the public state applied every stage and then
+    waited 30 minutes for one application. The cluster was torn down, and the
+    report said only "exited 1"."""
+    monkeypatch.setattr(e2e.checks, "diagnose", lambda: "app models-inference: Synced/Progressing")
+    r = e2e.Runner.__new__(e2e.Runner)
+    r.env, r.dry = "e2eud1", False
+
+    class Subject:
+        rc = 1
+        @classmethod
+        def platformctl(cls, *a, **k): return cls.rc
+    r.subject = Subject
+    ok, detail = r.upgrade_platform()
+    assert not ok and detail == "./platformctl upgrade e2eud1 --yes exited 1 || stuck: app models-inference: Synced/Progressing"
+    Subject.rc = 3                                   # the plan guard stopped it: nothing was applied, nothing is stuck
+    assert r.upgrade_platform() == (False, "./platformctl upgrade e2eud1 --yes exited 3")
+    Subject.rc = 0
+    assert r.upgrade_platform() == (True, "./platformctl upgrade e2eud1 --yes exited 0")
 
 
 def test_a_timed_out_check_reports_what_is_stuck(monkeypatch):

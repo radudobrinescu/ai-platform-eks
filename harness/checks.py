@@ -751,7 +751,7 @@ DOMAINS = sorted({d for d, *_ in CHECKS})
 DIAG_NAMESPACES = ("ai-platform", "inference", "argocd", "keda", "gpu-operator", "kro-system", "kube-system")
 
 
-def diagnose(limit: int = 1800) -> str:
+def diagnose(limit: int = 2400) -> str:
     """What is stuck right now: Argo CD apps that are not Synced+Healthy (with their
     unhealthy resources), pods that are not Ready (with the waiting/termination
     reason and the scheduling message), and the latest Warning events. Added
@@ -791,6 +791,31 @@ def diagnose(limit: int = 1800) -> str:
             parts.append(f"pod {meta['namespace']}/{meta['name']} {st.get('phase')}: {'; '.join(why) or 'not Ready'}")
     except Exception as e:  # noqa: BLE001
         parts.append(f"pods unreadable: {e}")
+    # A model that does not come up: what kro reports for it, and the GPU nodes
+    # Karpenter picked (an instance family the node image cannot drive never joins).
+    for kind in ("vllmendpoints", "llmdendpoints"):
+        try:
+            for ep in kubectl_json("get", kind, "-n", NS_INFERENCE).get("items", []):
+                st = ep.get("status") or {}
+                if st.get("ready") == "True":
+                    continue
+                why = [f"{cd.get('type')}: {(cd.get('message') or cd.get('reason') or '')[:110]}"
+                       for cd in st.get("conditions") or [] if cd.get("status") != "True"]
+                parts.append(f"{kind[:-1]} {ep['metadata']['name']}: {st.get('state')} ready={st.get('ready')}"
+                             + (f" ({'; '.join(why[:2])})" if why else ""))
+        except Exception:  # noqa: BLE001 - the kind may not exist on this release
+            pass
+    try:
+        for nc in kubectl_json("get", "nodeclaims").get("items", []):
+            labels = (nc.get("metadata") or {}).get("labels") or {}
+            ready = next((cd for cd in (nc.get("status") or {}).get("conditions") or [] if cd.get("type") == "Ready"), {})
+            if ready.get("status") == "True":
+                continue
+            parts.append(f"nodeclaim {nc['metadata']['name']} ({labels.get('karpenter.sh/nodepool')}, "
+                         f"{labels.get('node.kubernetes.io/instance-type')}) Ready={ready.get('status')}: "
+                         f"{(ready.get('message') or ready.get('reason') or '')[:110]}")
+    except Exception as e:  # noqa: BLE001
+        parts.append(f"nodeclaims unreadable: {e}")
     try:
         evs = [e for e in kubectl_json("get", "events", "-A", "--field-selector", "type=Warning").get("items", [])
                if (e.get("involvedObject") or {}).get("namespace") in DIAG_NAMESPACES]
