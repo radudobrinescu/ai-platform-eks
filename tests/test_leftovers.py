@@ -43,7 +43,8 @@ def test_report_says_what_to_do():
 FAKE_AWS = r"""#!/bin/sh
 case "$1 $2" in
   "eks list-clusters") printf '%s' "$FAKE_CLUSTERS" ;;
-  "eks describe-cluster") printf '{"cluster": {"createdAt": "%s"}}' "$FAKE_CREATED" ;;
+  "eks describe-cluster") printf '{"cluster": {"createdAt": "%s", "status": "ACTIVE"}}' "$FAKE_CREATED" ;;
+  "ec2 describe-vpcs") [ -n "$FAKE_VPCS" ] || exit 255; printf '%s' "$FAKE_VPCS" ;;
   "service-quotas get-service-quota") [ -n "$FAKE_QUOTA" ] || exit 255; printf '{"Quota": {"Value": %s}}' "$FAKE_QUOTA" ;;
   "ec2 describe-addresses") printf '%s' "$FAKE_ADDRESSES" ;;
 esac
@@ -63,9 +64,10 @@ def run_cli(tmp_path, monkeypatch, **env):
     defaults = {"FAKE_CLUSTERS": json.dumps({"clusters": ["ai-platform-dev", "ai-platform-e2eud17"]}),
                 "FAKE_CREATED": "2020-01-01T00:00:00Z", "FAKE_QUOTA": "15",
                 "FAKE_ADDRESSES": json.dumps({"Addresses": [{}] * 6})}
+    argv = env.pop("argv", ["--env", "e2efd18", "--region", "eu-central-1"])
     for k, v in {**defaults, **env}.items():
         monkeypatch.setenv(k, v)
-    rc = leftovers.main(["--env", "e2efd18", "--region", "eu-central-1"])
+    rc = leftovers.main(argv)
     return rc, out.read_text(), summary.read_text()
 
 
@@ -83,3 +85,34 @@ def test_cli_blocks_without_room_and_says_so_through_the_output(tmp_path, monkey
 def test_cli_never_blocks_on_what_it_cannot_read(tmp_path, monkeypatch):
     rc, out, summary = run_cli(tmp_path, monkeypatch, FAKE_QUOTA="", FAKE_CLUSTERS="not json")
     assert rc == 0 and "leaked=\n" in out and "blocked=false" in out and "could not be read" in summary
+
+
+# --- the job's own environment, after its teardown ----------------------------
+
+def test_what_is_left_of_the_job_s_own_environment():
+    assert leftovers.own_left([], []) == ""
+    assert leftovers.own_left([{"name": "ai-platform-e2eud17", "status": "ACTIVE"}], ["vpc-0abc"]) \
+        == "EKS cluster ai-platform-e2eud17 (ACTIVE); VPC vpc-0abc"
+    assert leftovers.own_left([], ["vpc-0abc"]) == "VPC vpc-0abc"
+
+
+OWN = ["--env", "e2eud17", "--region", "eu-central-1", "--own"]
+
+
+def test_own_says_what_this_job_left_and_nothing_about_other_environments(tmp_path, monkeypatch, capsys):
+    rc, out, summary = run_cli(tmp_path, monkeypatch, argv=OWN,
+                               FAKE_CLUSTERS=json.dumps({"clusters": ["ai-platform-dev", "ai-platform-e2eud17", "ai-platform-e2efd3"]}),
+                               FAKE_VPCS=json.dumps({"Vpcs": [{"VpcId": "vpc-0abc"}]}))
+    printed = capsys.readouterr().out.strip()
+    assert rc == 0 and printed == "EKS cluster ai-platform-e2eud17 (ACTIVE); VPC vpc-0abc"
+    assert "left=EKS cluster ai-platform-e2eud17 (ACTIVE); VPC vpc-0abc\n" in out
+    assert "still billing" in summary and "e2efd3" not in summary and "leaked=" not in out
+
+
+def test_own_is_silent_when_the_environment_is_gone_or_cannot_be_read(tmp_path, monkeypatch, capsys):
+    rc, out, summary = run_cli(tmp_path, monkeypatch, argv=OWN,
+                               FAKE_CLUSTERS=json.dumps({"clusters": ["ai-platform-dev"]}),
+                               FAKE_VPCS=json.dumps({"Vpcs": []}))
+    assert rc == 0 and capsys.readouterr().out.strip() == "" and "left=\n" in out and summary == ""
+    rc, out, _ = run_cli(tmp_path, monkeypatch, argv=OWN, FAKE_CLUSTERS="not json", FAKE_VPCS="")
+    assert rc == 0 and capsys.readouterr().out.strip() == ""        # unknown is not a leak

@@ -14,6 +14,11 @@ in it. So before anything is provisioned this check
     this job it exits 3, and the workflow marks the job "not run" instead of
     "failed", so nothing is blamed.
 
+With --own, after the job's teardown: what is left of the job's own environment
+(its cluster, its VPC). A teardown can report success and leave both (seen on
+2026-11-18), and the preflight of a later run reports a leak only once it is
+older than a run can take. The workflow opens the issue at once.
+
 Read-only. Any AWS call that fails makes the check pass with a warning: a
 preflight must never be the reason a healthy run does not start.
 """
@@ -79,6 +84,15 @@ def report(found: dict, quota: float | None, used: int | None, room: bool | None
     return "\n".join(lines) + "\n"
 
 
+def own_left(clusters: list[dict], vpcs: list[str]) -> str:
+    """clusters: [{name, status}] and VPC ids of the job's own environment that
+    still exist. One line for the log and the issue; empty when nothing is left."""
+    parts = [f"EKS cluster {c['name']} ({c['status']})" for c in clusters]
+    if vpcs:
+        parts.append("VPC " + " ".join(vpcs))
+    return "; ".join(parts)
+
+
 # --------------------------------------------------------------------------- #
 # AWS (read-only); every failure is "unknown", never an error
 # --------------------------------------------------------------------------- #
@@ -106,6 +120,33 @@ def e2e_clusters(region: str) -> list[dict]:
     return out
 
 
+def own_environment(region: str, env: str) -> tuple[list[dict], list[str]]:
+    """The clusters and VPCs named for `env` that exist now. Unknown counts as none."""
+    names = (_aws("eks", "list-clusters", "--region", region) or {}).get("clusters") or []
+    clusters = []
+    for name in sorted(n for n in names if e2e_env(n) == env):
+        status = ((_aws("eks", "describe-cluster", "--region", region, "--name", name) or {}).get("cluster") or {}).get("status")
+        clusters.append({"name": name, "status": status or "status unknown"})
+    # The VPC carries the cluster's name; the cluster may be gone, so match on the env.
+    vpcs = (_aws("ec2", "describe-vpcs", "--region", region, "--filters", f"Name=tag:Name,Values=*-{env}") or {}).get("Vpcs") or []
+    return clusters, sorted(v["VpcId"] for v in vpcs if v.get("VpcId"))
+
+
+def _write(var: str, text: str) -> None:
+    if os.environ.get(var):
+        with open(os.environ[var], "a", encoding="utf-8") as fh:
+            fh.write(text)
+
+
+def own(region: str, env: str) -> int:
+    left = own_left(*own_environment(region, env))
+    if left:
+        print(left)
+        _write("GITHUB_STEP_SUMMARY", f"### Not torn down\n\n`{env}` is still there, still billing: {left}.\n")
+    _write("GITHUB_OUTPUT", f"left={left}\n")
+    return 0
+
+
 def eip_numbers(region: str) -> tuple[float | None, int | None]:
     quota = ((_aws("service-quotas", "get-service-quota", "--region", region, "--service-code", "ec2",
                    "--quota-code", EIP_QUOTA_CODE) or {}).get("Quota") or {}).get("Value")
@@ -118,18 +159,19 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--env", required=True, help="this job's E2E env name")
     ap.add_argument("--region", required=True)
     ap.add_argument("--max-age-hours", type=float, default=8, help="older E2E environments are leaks (a job runs < 6 h)")
+    ap.add_argument("--own", action="store_true",
+                    help="after the teardown: print what is left of this job's own environment (nothing else)")
     a = ap.parse_args(argv)
+    if a.own:
+        return own(a.region, a.env)
     found = classify(e2e_clusters(a.region), a.env, datetime.now(timezone.utc), a.max_age_hours)
     quota, used = eip_numbers(a.region)
     room = headroom(quota, used)
     text = report(found, quota, used, room)
     print(text)
-    for var, line in (("GITHUB_STEP_SUMMARY", text),
-                      ("GITHUB_OUTPUT", "leaked=" + " ".join(c["name"] for c in found["leaked"]) + "\n"
-                                        + f"blocked={'true' if room is False else 'false'}\n")):
-        if os.environ.get(var):
-            with open(os.environ[var], "a", encoding="utf-8") as fh:
-                fh.write(line)
+    _write("GITHUB_STEP_SUMMARY", text)
+    _write("GITHUB_OUTPUT", "leaked=" + " ".join(c["name"] for c in found["leaked"]) + "\n"
+                            + f"blocked={'true' if room is False else 'false'}\n")
     return BLOCKED if room is False else 0
 
 
