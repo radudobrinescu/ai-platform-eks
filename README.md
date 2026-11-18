@@ -15,7 +15,7 @@ here.
 | `tools/shellcheck_workflows.py` | shellcheck every workflow `run:` step |
 | `terraform/github-oidc/` | GitHub OIDC provider + E2E provisioning role (local state, applied once) |
 | `tests/` | unit tests: harness, tools, workflows, Renovate coverage of `main` |
-| `.github/workflows/` | `ci.yaml` (static checks), `e2e.yaml` (dispatch-only E2E), `coverage.yaml` (weekly coverage guard), `release-candidate.yaml` (twice a day: one step of the factory), `release-finish.yaml` (after a green E2E run: merge; tag and publish a release), `main-schedules.yaml` (runs `main`'s scheduled workflows, since `schedule` fires only on the default branch) |
+| `.github/workflows/` | `ci.yaml` (static checks), `e2e.yaml` (dispatch-only E2E), `coverage.yaml` (weekly coverage guard), `release-candidate.yaml` (twice a day: one step of the factory), `release-finish.yaml` (after a green E2E run: merge; tag and publish a release), `watchdog.yaml` (weekly: tokens, disabled workflows, stalled cycles), `main-schedules.yaml` (runs `main`'s scheduled workflows, since `schedule` fires only on the default branch) |
 
 ## How a run works
 
@@ -172,6 +172,14 @@ approval request says it. The run's summary page, where the approval button is, 
 request: a table of the changed components (anchor, major and CI-only ones marked), whether it is a release,
 whether it includes a security update, and what happens if you do not approve (nothing: after `WAIT_DAYS` the
 candidate is replaced by a fresh one, so letting an unimportant cycle wait is safe).
+
+**Leaks and quiet failures.** Every E2E job starts with a preflight (`harness/leftovers.py`): E2E
+environments older than 8 hours are reported in the issue "E2E environments left behind" (they bill until a
+person tears them down), and a job that would not get its 3 Elastic IPs is marked "not run" instead of
+"failed", so a full account is never blamed on the updates under test. `watchdog.yaml` runs weekly without
+any cloud credentials (`tools/watchdog.py`): it warns 30 days before a push token expires, when a factory
+workflow is disabled, when the scheduled run stopped, when no cycle was merged for 21 days, and when the
+attention issue stays open. It keeps the issue "Factory status" up to date.
 
 The issue "Release candidate needs attention" is opened or commented on when a step fails, when a candidate
 is abandoned and when `main` fails alone; `release-finish.yaml` closes it when a cycle is merged.
