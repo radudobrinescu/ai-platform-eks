@@ -249,6 +249,15 @@ resource "aws_s3_bucket" "model_cache" {
   force_destroy = true # cache is regeneratable; safe to destroy with the cluster
 
   tags = merge(local.tags, { Purpose = "hf-model-weights-cache" })
+
+  # The name is fixed when the bucket is created. A bucket cannot be renamed, so
+  # a change to the naming rule (the account id was added after the first
+  # environments were built) would otherwise replace the bucket of every
+  # existing environment, with its cached weights and fine-tuned models.
+  # Everything else reads the name from this resource, never from the local.
+  lifecycle {
+    ignore_changes = [bucket]
+  }
 }
 
 resource "aws_s3_bucket_public_access_block" "model_cache" {
