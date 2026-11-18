@@ -8,6 +8,7 @@ here passed all four runs before it was tagged. Upgrade with `./platformctl upgr
 
 | Release | Date | Kubernetes | vLLM | LiteLLM | Karpenter |
 |---|---|---|---|---|---|
+| [v2026.11.8](releases/v2026.11.8.md) | 2026-11-18 | 1.36, 1.37 | `v0.33.0` | `v1.108.10-lts` | `1.15.2` |
 | [v2026.11.7](releases/v2026.11.7.md) | 2026-11-17 | 1.36, 1.37 | `v0.33.0` | `v1.108.10-lts` | `1.15.2` |
 | [v2026.11.6](releases/v2026.11.6.md) | 2026-11-17 | 1.36, 1.37 | `v0.33.0` | `v1.108.10-lts` | `1.15.2` |
 | [v2026.11.5](releases/v2026.11.5.md) | 2026-11-16 | 1.36, 1.37 | `v0.33.0` | `v1.83.14-stable.patch.1` | `1.15.2` |
