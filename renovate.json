@@ -213,7 +213,7 @@
     },
     {
       "customType": "regex",
-      "description": "EKS Kubernetes version (anchor): cluster_config.kubernetes_version in the example tfvars, the default for new clusters. Source: endoflife.date (amazon-eks). Proposed only after a Dependency Dashboard tick; one minor at a time (see packageRules).",
+      "description": "EKS Kubernetes version (anchor): cluster_config.kubernetes_version in the example tfvars, the default for new clusters. Source: endoflife.date (amazon-eks). Proposed 60 days after the minor's release, one minor at a time (see packageRules).",
       "managerFilePatterns": [
         "/^terraform/00\\.global/vars/example(-esc)?\\.tfvars$/"
       ],
@@ -404,7 +404,7 @@
       "allowedVersions": "/^v\\d+\\.\\d+\\.\\d+-lts$/"
     },
     {
-      "description": "Majors anywhere: nothing is proposed until a human ticks the checkbox on the Dependency Dashboard, so an open major PR means 'approved for the next release'. Closing the PR takes the approval back; recreateWhen=always makes Renovate offer it again on the dashboard instead of treating the close as 'never'.",
+      "description": "Majors anywhere: nothing is proposed until a human ticks the checkbox on the Dependency Dashboard, so an open major PR means 'approved for the next cycle'. Majors are the one kind of update that stays with a person: they usually need code changes or a data migration. Closing the PR takes the approval back; recreateWhen=always makes Renovate offer it again on the dashboard instead of treating the close as 'never'.",
       "matchUpdateTypes": [
         "major"
       ],
@@ -412,18 +412,18 @@
       "recreateWhen": "always"
     },
     {
-      "description": "Ticks are for changes E2E cannot judge: what users' own workloads run on, and one-way steps. vLLM runs every user's model; under 0.x each minor can drop architectures or change flags users set in extraArgs, and E2E serves one small model. Every vLLM update needs a dashboard tick and gets its own branch, so it never holds back the rest of the inference group.",
+      "description": "vLLM runs every user's model; under 0.x each minor can drop architectures or change flags users set in extraArgs, and E2E serves one small model. Its own branch, so it never holds back the rest of the inference group. No dashboard tick: nobody is assigned to tick. The update is proposed by itself, on its own branch, once the version is 14 days old (minimumReleaseAge; the registry gives release dates, and a version without a date is held, never proposed early). The factory takes at most one anchor update (vLLM, EKS version) per cycle, tests it like everything else, and forkers get it only with the next published release.",
       "matchDepNames": [
         "vllm/vllm-openai"
       ],
       "groupName": "vllm",
       "groupSlug": "vllm",
-      "dependencyDashboardApproval": true,
       "recreateWhen": "always",
-      "automerge": false
+      "automerge": false,
+      "minimumReleaseAge": "14 days"
     },
     {
-      "description": "kro's ResourceGraphDefinitions (VLLMEndpoint, LLMDEndpoint) are the API users write model manifests against, and the llm-d router routes their llm-d traffic. Both are 0.x, where a minor may break that contract: minors need a tick and get their own branch; patches flow with their group.",
+      "description": "kro's ResourceGraphDefinitions (VLLMEndpoint, LLMDEndpoint) are the API users write model manifests against. It is 0.x, where a minor may break that contract: minors get their own branch, so a failure blames them alone; patches flow with their group. No dashboard tick and no release age: this registry gives Renovate no release dates, and an age without a date would hold the update forever. E2E judges it (kro expands a VLLMEndpoint, llm-d routes and scales), and forkers get it only with the next published release, after weeks of cycles.",
       "matchDepNames": [
         "kro"
       ],
@@ -432,12 +432,11 @@
       ],
       "groupName": "kro minor",
       "groupSlug": "kro-minor",
-      "dependencyDashboardApproval": true,
       "recreateWhen": "always",
       "automerge": false
     },
     {
-      "description": "llm-d router: same rule as kro (0.x; a minor can change how users' llm-d traffic is routed). Minors need a tick and get their own branch; patches flow with the inference group.",
+      "description": "llm-d router: same rule as kro (0.x; a minor can change how users' llm-d traffic is routed). Minors get their own branch; patches flow with the inference group. No dashboard tick and no release age: this registry gives Renovate no release dates, and an age without a date would hold the update forever. E2E judges it (kro expands a VLLMEndpoint, llm-d routes and scales), and forkers get it only with the next published release, after weeks of cycles.",
       "matchDepNames": [
         "llm-d-router-standalone"
       ],
@@ -446,12 +445,11 @@
       ],
       "groupName": "llm-d router minor",
       "groupSlug": "llm-d-router-minor",
-      "dependencyDashboardApproval": true,
       "recreateWhen": "always",
       "automerge": false
     },
     {
-      "description": "LiteLLM is the gateway every user's requests, keys, budgets and spend go through, and its minors change proxy behaviour and the database schema (1.83 -> 1.108 in 2026). Minors need a tick and get their own branch, so a jump never rides along with the gateway group; LTS patches flow with the group.",
+      "description": "LiteLLM is the gateway every user's requests, keys, budgets and spend go through, and its minors change proxy behaviour and the database schema (1.83 -> 1.108 in 2026). Minors get their own branch, so a jump never rides along with the gateway group; LTS patches flow with the group. No dashboard tick: nobody is assigned to tick. The update is proposed by itself, on its own branch, once the version is 14 days old (minimumReleaseAge; the registry gives release dates, and a version without a date is held, never proposed early). The factory takes at most one anchor update (vLLM, EKS version) per cycle, tests it like everything else, and forkers get it only with the next published release.",
       "matchDepNames": [
         "litellm/litellm"
       ],
@@ -460,9 +458,9 @@
       ],
       "groupName": "litellm minor",
       "groupSlug": "litellm-minor",
-      "dependencyDashboardApproval": true,
       "recreateWhen": "always",
-      "automerge": false
+      "automerge": false,
+      "minimumReleaseAge": "14 days"
     },
     {
       "description": "The github-actions manager also reads setup-terraform's terraform_version (depName 'terraform'). The regex manager above owns that pin (depName hashicorp/terraform, same as the terraform manager), so disable the built-in copy to avoid two PRs for one line.",
@@ -478,7 +476,7 @@
       "enabled": false
     },
     {
-      "description": "EKS Kubernetes anchor: its own branch and PR, created only after a dashboard tick. endoflife.date lists versions as 1.37-eks-N; keep the minor only. A release may add at most one minor above the previous release (release.py enforces it), so each newer minor is listed separately (separateMultipleMinor) and you tick one step at a time. Raise the alpine/k8s and kubernetes-client allowedVersions ceilings in the same release (tests/test_renovate_coverage.py pairs them).",
+      "description": "EKS Kubernetes anchor: its own branch and PR. endoflife.date lists versions as 1.37-eks-N; keep the minor only. A release may add at most one minor above the previous release (release.py enforces it), so each newer minor is listed separately (separateMultipleMinor). Raise the alpine/k8s and kubernetes-client allowedVersions ceilings in the same release (tests/test_renovate_coverage.py pairs them). No dashboard tick: nobody is assigned to tick. The update is proposed by itself, on its own branch, once the version is 60 days old (minimumReleaseAge; the registry gives release dates, and a version without a date is held, never proposed early). The factory takes at most one anchor update (vLLM, EKS version) per cycle, tests it like everything else, and forkers get it only with the next published release.",
       "matchDatasources": [
         "endoflife-date"
       ],
@@ -488,10 +486,10 @@
       "extractVersion": "^(?<version>\\d+\\.\\d+)-eks.+$",
       "groupName": "eks-kubernetes",
       "groupSlug": "eks-kubernetes",
-      "dependencyDashboardApproval": true,
       "recreateWhen": "always",
       "automerge": false,
-      "separateMultipleMinor": true
+      "separateMultipleMinor": true,
+      "minimumReleaseAge": "60 days"
     },
     {
       "description": "Langfuse's ClickHouse stays on LTS lines (x.3 and x.8, a year of fixes); the monthly releases in between get about three months. Langfuse 4 needs 25.12 or newer.",

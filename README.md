@@ -11,11 +11,11 @@ here.
 | `COMPATIBILITY.md` | anchors, domains, coupling notes, validated sets, release procedure |
 | `harness/` | E2E harness: `e2e.py` (entry), `checks.py` (22 smoke checks; `e2e.py check` runs them alone against a running env), `sso.py`, `survival.py`, `tfvars.py`, `versions.py`, `subject.py`, `common.py` |
 | `tools/release.py` | cut a release branch; write release notes, manifest, validated-versions row |
-| `tools/release_candidate.py` | decide whether and what to release this week (used by `release-candidate.yaml`) |
+| `tools/release_candidate.py` | decide what the factory does next: start a cycle, wait, retry, finish or abandon it (used by `release-candidate.yaml`) |
 | `tools/shellcheck_workflows.py` | shellcheck every workflow `run:` step |
 | `terraform/github-oidc/` | GitHub OIDC provider + E2E provisioning role (local state, applied once) |
 | `tests/` | unit tests: harness, tools, workflows, Renovate coverage of `main` |
-| `.github/workflows/` | `ci.yaml` (static checks), `e2e.yaml` (dispatch-only E2E), `coverage.yaml` (weekly coverage guard), `release-candidate.yaml` (every second Monday: cut, notes, PR, dispatch E2E), `release-finish.yaml` (after a green E2E run: merge, tag, publish), `main-schedules.yaml` (runs `main`'s scheduled workflows, since `schedule` fires only on the default branch) |
+| `.github/workflows/` | `ci.yaml` (static checks), `e2e.yaml` (dispatch-only E2E), `coverage.yaml` (weekly coverage guard), `release-candidate.yaml` (twice a day: one step of the factory), `release-finish.yaml` (after a green E2E run: merge; tag and publish a release), `main-schedules.yaml` (runs `main`'s scheduled workflows, since `schedule` fires only on the default branch) |
 
 ## How a run works
 
@@ -62,8 +62,8 @@ command output redact account ids, ARNs and AWS hostnames.
      Workflows write (release candidates change `.github/workflows/*`, which
      `GITHUB_TOKEN` cannot push), and Pull requests write so the scheduled
      release PR is opened as that user and main's CI runs on it
-   - variable `RELEASE_ANCHOR` (optional, default `2026-11-09`): a Monday;
-     releases are cut every second Monday from it
+   - variables `CYCLE_DAYS` (7), `PUBLISH_DAYS` (90), `WAIT_DAYS` (5): all optional, see
+     "The factory: cycles and releases"
    - label `hold` (keeps a Renovate PR out of the next release)
    - variable `E2E_REGION` (optional, default `eu-central-1`)
    - variables `E2E_IDC_INSTANCE_ARN`, `E2E_IDC_REGION`, `E2E_IDC_GROUP_ID`
@@ -140,19 +140,83 @@ check `security/no-fixable-critical-cves` (not enabled yet). It catches what
 Renovate cannot see: tags that are never rebuilt and chart lines that ended
 with frozen images. Trivy is pinned and checksummed in `e2e.yaml`.
 
-## Cut a release
+## The factory: cycles and releases
 
-`release-candidate.yaml` runs cut, notes, release PR and E2E dispatch every second Monday
-(first try 07:41 UTC, catch-up runs until Tuesday; `gh workflow run release-candidate.yaml -f force=true`
-for an off-week release, `-f dry_run=true` to see the plan without changing anything). You approve the E2E run:
-that is the only action a release needs. When all four `e2e/*` statuses are green, `release-finish.yaml`
-(the last job of every green E2E run dispatches it) merges, tags and publishes the release; if that fails it opens the issue
-"Release candidate needs attention", and rerunning it resumes. The same step by hand, from any clone of the
-product (it reads the remote refs):
+`release-candidate.yaml` runs twice a day and does one step per run; `tools/release_candidate.py plan` decides
+which. Nobody has to watch it: the only thing a person does is approve the `e2e` environment.
+
+**A cycle** (every `CYCLE_DAYS`, default 7) cuts `release/<version>` = `main` + the eligible Renovate group
+branches + the notes and manifest of the next release, opens its PR and dispatches E2E: a fresh install, and an
+upgrade **from the last published release** (the newest tag), both profiles. When all four `e2e/*` statuses are
+green, the last job of the E2E run starts `release-finish.yaml`, which merges the candidate into `main`.
+
+**A release** is a cycle whose PR carries the label `publish`: after the merge it is also tagged and gets its
+GitHub Release. A cycle gets the label when the newest tag is `PUBLISH_DAYS` old (default 90), when it includes
+a PR labelled `security`, or when dispatched with `publish`. Add or remove the label on the PR to change that
+before E2E is green. All other cycles are integrations: `main` moves forward, proven, with no tag. So `main`
+always holds a state that was tested as one upgrade from the last published release, the version name
+(`vYYYY.MM.N`) is reused until a cycle is published, and the notes always describe "since the last release".
+
+**When E2E fails** the failed jobs are dispatched once more (one approval). If they fail again, the candidate
+is abandoned: PR closed, branch deleted, and the suspects marked with commit statuses. One suspect: it failed
+alone (`candidate/solo`) and stays out until its branch gets a newer commit. Several: each is marked
+`candidate/combined` and the next cycles, one a day, test one suspect at a time, `main` first if it had commits
+no cycle had tested. If `main` fails alone, cycles stop until `main` moves. A candidate that nobody approves
+for `WAIT_DAYS` (default 5) is abandoned without marks and cut again, so an approver never approves a stale
+one. A group that does not merge cleanly is left out of that cycle. At most one of the anchor updates (vLLM,
+the EKS Kubernetes version) goes into a cycle.
+
+The issue "Release candidate needs attention" is opened or commented on when a step fails, when a candidate
+is abandoned and when `main` fails alone; `release-finish.yaml` closes it when a cycle is merged.
+
+By hand:
 
 ```bash
-python3 tools/release.py --repo subject finish v2026.11.3 --github OWNER/REPO [--dry-run]
+gh workflow run release-candidate.yaml -f dry_run=true           # what would the next run do?
+gh workflow run release-candidate.yaml -f force=true             # start a cycle now
+gh workflow run release-candidate.yaml -f force=true -f publish=true   # start a cycle that is a release
+python3 tools/release.py --repo subject finish v2026.11.3 --github OWNER/REPO [--dry-run] [--publish|--no-publish]
 ```
+
+### Publishing to the public repository
+
+A release reaches the public repository as **one commit**: the release's tree on top of the public `main`,
+the tag, and the GitHub Release (titled with the Kubernetes version). None of this repository's history goes
+with it. `release-finish.yaml` does it for the newest release when these are set, and does nothing otherwise:
+
+- variable `PUBLIC_REPO` (`OWNER/REPO`), variable `PUBLIC_SINCE` (the first version to publish; older, internal
+  releases are never published), secret `PUBLIC_PUSH_TOKEN` (contents write on the public repository).
+
+It refuses when the public `main` is not where the previous release left it (something was merged there
+directly: bring it into `main` here, so it ships with a release). A publication that failed is repeated: the
+factory starts `release-finish` every day while the newest release is not public. By hand:
+
+```bash
+export PUBLIC_URL=https://github.com/OWNER/PUBLIC-REPO.git      # with a credential helper, or a token in the URL
+python3 tools/release.py --repo subject publish-public v2027.01.0 --url-env PUBLIC_URL --github OWNER/PUBLIC-REPO [--dry-run]
+```
+
+**The first public release** is cut by hand, once, because it does not upgrade from a release of this
+repository but from what the public repository holds today:
+
+```bash
+git -C subject fetch https://github.com/OWNER/PUBLIC-REPO.git main      # FETCH_HEAD = the public main; note its SHA
+python3 tools/release.py --repo subject cut v2027.01.0                  # from main; add group branches if wanted
+python3 tools/release.py --repo subject notes v2027.01.0 --base <public main SHA> \
+    --kubernetes-supported <what public forks may run>,<today's default> --kubernetes-recommended <today's default>
+#   -> one manifest, `previous: baseline`; the manifests and notes of the internal releases are removed
+#   Add --manual-step "..." for every manual step of the internal releases that still applies to someone
+#   coming from the public state (read their manifests first: only the newest one is carried over).
+git -C subject push -u origin release/v2027.01.0
+gh pr create --base main --head release/v2027.01.0 --title "release: v2027.01.0" --label publish --body "First public release"
+gh workflow run e2e.yaml --ref lifecycle -f modes=fresh,upgrade -f subject=release/v2027.01.0 \
+    -f base=<public main SHA> -f profiles=default,managed
+```
+
+From there it is an ordinary cycle (the factory sees `release/v2027.01.0` in flight): approve E2E, and when it is
+green `release-finish` merges, tags and, with the three settings above and `PUBLIC_SINCE=v2027.01.0`, publishes.
+The upgrade jobs of that run are the test of the jump existing public forks will make. The long-lived dev
+environment sits on the internal releases and cannot take this one with `upgrade`; recreate it from the tag.
 
 `finish` commits nothing after E2E: what was tested is what is merged and tagged. It
 
@@ -161,9 +225,10 @@ python3 tools/release.py --repo subject finish v2026.11.3 --github OWNER/REPO [-
    `base=` and `llmd=`; a manual run with other inputs on the same commit does not count);
 2. refuses when `main` moved since the cut (`main` must be an ancestor of the release head, so the merge
    result is the tested tree);
-3. waits for the PR's required checks, merges the PR at exactly that head, and tags the merge commit only
-   if its tree is the tested tree;
-4. creates the GitHub Release from the notes and deletes the release branch.
+3. waits for the PR's required checks, merges the PR at exactly that head, and checks that the merge
+   commit's tree is the tested tree;
+4. for a release (label `publish`): tags the merge commit and creates the GitHub Release from the notes;
+5. deletes the release branch.
 
 It resumes: if an earlier run stopped after the merge or after the tag, run it again and it continues from
 there. `release.py publish <v> --github OWNER/REPO` creates the GitHub Release
@@ -180,7 +245,9 @@ python3 tools/release.py --repo subject finish v2026.11.0 --github OWNER/REPO   
 
 `notes` writes `docs/releases/<v>.md`, `releases/<v>.json` (the manifest
 `./platformctl upgrade` reads) and the `docs/validated-versions.md` row, and
-commits them. The row has no E2E column: a release reaches `main`, and so that
+commits them. Files of a version that was never tagged are drafts from earlier
+cycles: it removes them and carries what was written into their manifest by
+hand (`manual_steps`, `acknowledged_replacements`) into the new one. The row has no E2E column: a release reaches `main`, and so that
 table, only through `finish`. `notes` refuses a version that is not `vYYYY.MM.N`, a version not newer
 than the base release, a Kubernetes set that drops a version of the previous
 release or adds more than one newer minor, and any text that would mention

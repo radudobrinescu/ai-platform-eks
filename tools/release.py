@@ -5,10 +5,18 @@
   release.py notes  <vYYYY.MM.N> --base <ref>   [--repo DIR] [options] [--no-commit]
   release.py finish <vYYYY.MM.N> --github OWNER/REPO [--repo DIR] [--dry-run]
   release.py publish <vYYYY.MM.N> --github OWNER/REPO [--repo DIR]
+  release.py publish-public <vYYYY.MM.N> --url-env VAR --github OWNER/REPO [--repo DIR] [--dry-run]
 
 `cut` creates release/<version> from origin/main, merges the listed branches
 (update branches, fixes) with --no-ff, and pushes it. Coupled fixes that need
-code changes are cherry-picked by hand afterwards.
+code changes are cherry-picked by hand afterwards. With --skip-conflicts a
+branch that does not merge cleanly is left out (and reported) instead of
+stopping the cut: it returns in a later cycle, after Renovate rebased it.
+
+A candidate is a release only when its PR carries the label `publish`. Without
+it, `finish` merges the candidate into main and stops: an integration cycle.
+The notes and manifest of a version that was never tagged are drafts: the next
+`notes` run replaces them (also when the month, and so the version, changed).
 
 `notes` runs on the checked-out release branch. It reads every pin from the base
 ref and from the working tree (harness/versions.py) and writes three product
@@ -48,6 +56,14 @@ next run continues from there. --dry-run shows the steps and changes nothing.
 `publish` creates the GitHub Release for an existing tag from the notes at that
 tag (idempotent; used for releases tagged before `finish` did it).
 
+`publish-public` gives a tagged release to the public repository as ONE commit:
+the release's tree on top of the public main, tagged with the same name, plus
+the GitHub Release there. Nothing of this repository's history (candidate
+branches, update branches, their commit messages) goes with it; forkers see one
+commit per release and merge its tag. It refuses when the public main is not
+where the previous release left it (something was merged there directly: bring
+it into main here first), and it resumes when the tag is already there.
+
 Kubernetes rule (enforced here): a release supports every Kubernetes version
 of the previous release plus at most one newer minor, which must be exactly one
 minor above the previous release's newest, so a forker always has a path.
@@ -71,6 +87,7 @@ sys.path.insert(0, os.path.join(os.path.dirname(HERE), "harness"))
 import versions  # noqa: E402
 
 E2E_CONTEXTS = ("e2e/fresh-default", "e2e/fresh-managed", "e2e/upgrade-default", "e2e/upgrade-managed")
+PUBLISH_LABEL = "publish"     # on the candidate's PR: when E2E is green, also tag and publish (a release)
 FORBIDDEN_RX = re.compile(r"renovate|lifecycle|\b\d{12}\b|arn:aws", re.I)
 VALIDATED_INTRO = (
     "# Validated versions\n\n"
@@ -136,7 +153,10 @@ def _stale_branches(repo: str, refs: list[str], main: str) -> str:
             "Leave them out of this release, or tick 'rebase' for them on the Dependency Dashboard and retry.")
 
 
-def cut(repo: str, version: str, branches: list[str], push: bool = True, remote: str = "origin") -> str:
+def cut(repo: str, version: str, branches: list[str], push: bool = True, remote: str = "origin",
+        conflicts: list[str] | None = None) -> str:
+    """`conflicts`: when a list is given, a branch that does not merge cleanly is
+    appended to it and left out; without it, the first conflict is an error."""
     validate_version(version)
     if git(repo, "status", "--porcelain", "--untracked-files=no").strip():
         raise ReleaseError("working tree has uncommitted changes")
@@ -153,7 +173,9 @@ def cut(repo: str, version: str, branches: list[str], push: bool = True, remote:
         r = subprocess.run(["git", "-C", repo, "merge", "--no-ff", "--no-edit", ref], capture_output=True, text=True)
         if r.returncode != 0:
             git(repo, "merge", "--abort", check=False)
-            raise ReleaseError(f"merge of {ref} conflicts; resolve by hand on {name}:\n{r.stdout}{r.stderr}")
+            if conflicts is None:
+                raise ReleaseError(f"merge of {ref} conflicts; resolve by hand on {name}:\n{r.stdout}{r.stderr}")
+            conflicts.append(ref[len(remote) + 1:])
     if push:
         git(repo, "push", "--quiet", "-u", remote, f"{name}:refs/heads/{name}")
     return name
@@ -162,6 +184,21 @@ def cut(repo: str, version: str, branches: list[str], push: bool = True, remote:
 # --------------------------------------------------------------------------- #
 # notes
 # --------------------------------------------------------------------------- #
+
+def _manifest_versions(directory: str) -> set[str]:
+    """Versions that have a releases/<version>.json in `directory`."""
+    if not os.path.isdir(directory):
+        return set()
+    out = set()
+    for name in os.listdir(directory):
+        try:
+            versions.version_key(name[:-5])
+        except ValueError:
+            continue
+        if name.endswith(".json"):
+            out.add(name[:-5])
+    return out
+
 
 def export_tree(repo: str, ref: str, dest: str) -> None:
     data = subprocess.run(["git", "-C", repo, "archive", "--format=tar", ref], capture_output=True, check=True).stdout
@@ -309,13 +346,16 @@ def _table_row(line: str) -> str:
     return "| " + " | ".join(cells[:len(VALIDATED_COLUMNS)]) + " |"
 
 
-def upsert_row(text: str, version: str, row: str) -> str:
+def upsert_row(text: str, version: str, row: str, published: set[str] | None = None) -> str:
     """docs/validated-versions.md with `row` for `version`: replaced in place, or
     added on top (newest first). The file is generated as a whole: intro, header,
     one row per release. Rows written by older versions of this tool lose their
     E2E column (it only ever said 'pass': a release is tagged after four green
-    runs or not at all)."""
+    runs or not at all). With `published`, rows of other versions that are not
+    in it (drafts of a release that was never tagged) are dropped."""
     rows = [_table_row(ln) for ln in text.split("\n") if ln.startswith("| [v")]
+    if published is not None:
+        rows = [r for r in rows if r[len("| ["):r.index("]")] in published | {version}]
     key = f"| [{version}]("
     if any(r.startswith(key) for r in rows):
         rows = [row if r.startswith(key) else r for r in rows]
@@ -380,7 +420,20 @@ def notes(repo: str, version: str, base: str, *, supported: list[str] | None = N
         export_tree(repo, base, tmp)
         old = versions.read_versions(tmp)
         prev_version, prev = versions.current_release(tmp)
+        published = _manifest_versions(os.path.join(tmp, "releases"))
     new = versions.read_versions(repo)
+    # Manifests in the working tree that the base (the last published release)
+    # does not have are drafts of a version that was never tagged. This run
+    # replaces them; what was written into the newest one by hand is kept.
+    drafts = sorted(_manifest_versions(os.path.join(repo, "releases")) - published - {version},
+                    key=versions.version_key)
+    carried = None
+    for draft in drafts:
+        with open(os.path.join(repo, "releases", f"{draft}.json"), encoding="utf-8") as fh:
+            carried = json.load(fh)
+        for rel in (f"releases/{draft}.json", f"docs/releases/{draft}.md"):
+            if os.path.exists(os.path.join(repo, rel)):
+                os.remove(os.path.join(repo, rel))
     if prev and versions.version_key(version) <= versions.version_key(prev_version):
         raise ReleaseError(f"{version} is not newer than the base release {prev_version}")
 
@@ -393,7 +446,7 @@ def notes(repo: str, version: str, base: str, *, supported: list[str] | None = N
     check_kubernetes(prev, supported, recommended)
 
     man_path = os.path.join(repo, "releases", f"{version}.json")
-    existing = None
+    existing = carried
     if os.path.exists(man_path):
         with open(man_path, encoding="utf-8") as fh:
             existing = json.load(fh)
@@ -404,7 +457,7 @@ def notes(repo: str, version: str, base: str, *, supported: list[str] | None = N
     notes_md = render_notes(manifest, rows, majors, unchanged, date, platform_changes(repo, base))
     vv_path = os.path.join(repo, "docs", "validated-versions.md")
     vv_old = open(vv_path, encoding="utf-8").read() if os.path.exists(vv_path) else ""
-    vv_new = upsert_row(vv_old, version, validated_row(version, date, new, manifest))
+    vv_new = upsert_row(vv_old, version, validated_row(version, date, new, manifest), published)
     manifest_json = json.dumps(manifest, indent=2) + "\n"
     assert_product_safe(notes_md, manifest_json, vv_new)
 
@@ -416,7 +469,7 @@ def notes(repo: str, version: str, base: str, *, supported: list[str] | None = N
         with open(path, "w", encoding="utf-8") as fh:
             fh.write(text)
     if commit:
-        git(repo, "add", "--", *files)
+        git(repo, "add", "-A", "--", "releases", "docs/releases", "docs/validated-versions.md")
         if git(repo, "diff", "--cached", "--name-only").strip():
             git(repo, "commit", "--quiet", "-m", f"docs(release): notes and manifest for {version}")
     return manifest
@@ -457,16 +510,23 @@ def gh(*args: str) -> str:
 
 
 def release_pr(repo_slug: str, version: str) -> dict:
-    """The release PR, open or already merged (a finish that stopped half way
-    resumes). Closed, unmerged PRs are earlier attempts and do not count."""
+    """The release PR: the open one, else the newest merged one (a finish that
+    stopped half way resumes). A version name is reused by every cycle until one
+    is published, so earlier cycles left merged PRs from the same branch name;
+    closed, unmerged PRs are abandoned candidates. Neither counts."""
     out = gh("pr", "list", "--repo", repo_slug, "--state", "all", "--head", f"release/{version}",
-             "--json", "number,state,headRefOid,baseRefName,mergeCommit")
-    prs = [p for p in json.loads(out or "[]") if p.get("state") in ("OPEN", "MERGED")]
-    if len(prs) != 1:
-        raise ReleaseError(f"expected one open or merged PR from release/{version}, found {len(prs)}")
-    if prs[0]["baseRefName"] != "main":
-        raise ReleaseError(f"PR #{prs[0]['number']} targets {prs[0]['baseRefName']}, not main")
-    return prs[0]
+             "--json", "number,state,headRefOid,baseRefName,mergeCommit,labels")
+    prs = json.loads(out or "[]")
+    opened = [p for p in prs if p.get("state") == "OPEN"]
+    merged = sorted((p for p in prs if p.get("state") == "MERGED"), key=lambda p: p["number"])
+    if len(opened) > 1:
+        raise ReleaseError(f"{len(opened)} open PRs from release/{version}; close all but one")
+    if not opened and not merged:
+        raise ReleaseError(f"no open or merged PR from release/{version}")
+    pr = opened[0] if opened else merged[-1]
+    if pr["baseRefName"] != "main":
+        raise ReleaseError(f"PR #{pr['number']} targets {pr['baseRefName']}, not main")
+    return pr
 
 
 def wait_mergeable(repo_slug: str, number: int, head: str, timeout: int = 900, poll: int = 20) -> None:
@@ -510,7 +570,9 @@ def _tag_and_push(repo: str, version: str, commit: str, remote: str) -> None:
 
 
 def finish(repo: str, version: str, repo_slug: str, *, dry_run: bool = False, remote: str = "origin",
-           poll: int = 20) -> dict:
+           poll: int = 20, publish_release: bool | None = None) -> dict:
+    """`publish_release`: True = merge, tag and publish; False = merge only (an
+    integration cycle); None = decided by the label `publish` on the PR."""
     validate_version(version)
     branch = f"release/{version}"
     res = {"dry_run": dry_run, "resumed": None, "pr": None, "tested": None, "merge": None, "tag": version,
@@ -534,17 +596,29 @@ def finish(repo: str, version: str, repo_slug: str, *, dry_run: bool = False, re
     pr = release_pr(repo_slug, version)
     tested = pr["headRefOid"]
     res.update(pr=pr["number"], tested=tested)
+    if publish_release is None:
+        publish_release = PUBLISH_LABEL in {(lb.get("name") if isinstance(lb, dict) else lb)
+                                            for lb in pr.get("labels") or []}
+    if not publish_release:
+        res["tag"] = None
     git(repo, "fetch", "--quiet", remote, f"+refs/heads/main:refs/remotes/{remote}/main")
+    on_remote = (git(repo, "ls-remote", remote, f"refs/heads/{branch}").split() or [""])[0]
     if pr["state"] == "OPEN":
         git(repo, "fetch", "--quiet", remote, f"+refs/heads/{branch}:refs/remotes/{remote}/{branch}")
         if git(repo, "rev-parse", f"{remote}/{branch}").strip() != tested:
             raise ReleaseError(f"{remote}/{branch} moved while reading PR #{pr['number']}; rerun")
+    elif on_remote and on_remote != tested:
+        # The merged PR belongs to an earlier cycle that used the same version name.
+        raise ReleaseError(f"{remote}/{branch} ({on_remote[:12]}) has no PR of its own: the newest PR from that "
+                           f"branch name, #{pr['number']}, is merged at {tested[:12]}. Open a PR for the branch.")
     previous = json.loads(git(repo, "show", f"{tested}:releases/{version}.json")).get("previous", "")
     require_all_green(status_details_from_github(repo_slug, tested), previous)
 
-    steps = [f"tag: {version} on the merge commit (its tree must be the tested tree {tested[:12]}), pushed to {remote}",
-             f"publish: GitHub Release {version} from docs/releases/{version}.md",
-             f"delete: {remote}/{branch}"]
+    steps = [f"check: the merge commit's tree is the tested tree {tested[:12]}"]
+    if publish_release:
+        steps += [f"tag: {version} on the merge commit, pushed to {remote}",
+                  f"publish: GitHub Release {version} from docs/releases/{version}.md"]
+    steps.append(f"delete: {remote}/{branch}")
     if pr["state"] == "OPEN":
         main = git(repo, "rev-parse", f"{remote}/main").strip()
         if not _is_ancestor(repo, main, tested):
@@ -577,8 +651,9 @@ def finish(repo: str, version: str, repo_slug: str, *, dry_run: bool = False, re
             f"was being merged. {version} is NOT tagged. Delete {remote}/{branch} and cut the release again; "
             "its E2E then covers what is on main.")
     res["merge"] = merge
-    _tag_and_push(repo, version, merge, remote)
-    res["published"] = publish(repo, version, repo_slug)
+    if publish_release:
+        _tag_and_push(repo, version, merge, remote)
+        res["published"] = publish(repo, version, repo_slug)
     git(repo, "push", "--quiet", remote, "--delete", branch, check=False)
     return res
 
@@ -605,11 +680,75 @@ def publish(repo: str, version: str, repo_slug: str) -> bool:
     with tempfile.NamedTemporaryFile("w", suffix=".md", delete=False, encoding="utf-8") as fh:
         fh.write(notes_md)
         path = fh.name
+    k8s = (json.loads(git(repo, "show", f"{version}:releases/{version}.json")).get("kubernetes") or {}).get("recommended")
+    title = f"{version} · Kubernetes {k8s}" if k8s else version
     try:
-        gh("release", "create", version, "--repo", repo_slug, "--verify-tag", "--title", version, "--notes-file", path)
+        gh("release", "create", version, "--repo", repo_slug, "--verify-tag", "--title", title, "--notes-file", path)
     finally:
         os.unlink(path)
     return True
+
+
+# --------------------------------------------------------------------------- #
+# publish-public: one commit per release in the public repository
+# --------------------------------------------------------------------------- #
+
+def _remote_ref(repo: str, url: str, ref: str) -> str | None:
+    """Commit that `ref` (a branch, or a tag: peeled) points at in the repository at `url`, or None."""
+    out = git(repo, "ls-remote", url, ref, f"{ref}^{{}}")
+    found = {line.split("\t")[1]: line.split("\t")[0] for line in out.splitlines() if "\t" in line}
+    return found.get(f"{ref}^{{}}") or found.get(ref)
+
+
+def publish_public(repo: str, version: str, url: str, *, branch: str = "main", dry_run: bool = False) -> dict:
+    """Publish the tagged release `version` to the public repository at `url` as
+    one commit on `branch`, with the tag `version` on it. Returns {commit, parent,
+    pushed}. `url` may carry a credential: it is never put into a message."""
+    try:
+        return _publish_public(repo, version, url, branch, dry_run)
+    except ReleaseError as e:
+        raise ReleaseError(str(e).replace(url, "<public repository>")) from None
+
+
+def _publish_public(repo: str, version: str, url: str, branch: str, dry_run: bool) -> dict:
+    validate_version(version)
+    if not git(repo, "tag", "--list", version).strip():
+        raise ReleaseError(f"there is no tag {version} here; only a finished release can be published")
+    tree = git(repo, "rev-parse", f"{version}^{{tree}}").strip()
+    previous = json.loads(git(repo, "show", f"{version}:releases/{version}.json")).get("previous", "")
+    parent = _remote_ref(repo, url, f"refs/heads/{branch}")
+    if not parent:
+        raise ReleaseError(f"the public repository has no branch {branch}")
+    there = _remote_ref(repo, url, f"refs/tags/{version}")
+    if there:
+        return {"commit": there, "parent": None, "pushed": False}        # an earlier run got this far
+    if previous and previous != "baseline":
+        # The public main must be exactly where the previous release left it.
+        before = _remote_ref(repo, url, f"refs/tags/{previous}")
+        if not before:
+            raise ReleaseError(f"{version} upgrades from {previous}, which is not published in the public "
+                               "repository; publish that one first")
+        if parent != before:
+            raise ReleaseError(
+                f"the public {branch} ({parent[:12]}) is not the release {previous} ({before[:12]}): something was "
+                "merged there directly. Bring those changes into main here (they then ship with a release), "
+                f"reset the public {branch} to {previous}, and rerun.")
+    git(repo, "fetch", "--quiet", url, parent)
+    message = f"Release {version}\n\nNotes: docs/releases/{version}.md. To upgrade: UPGRADING.md.\n"
+    assert_product_safe(message)
+    commit = git(repo, "commit-tree", tree, "-p", parent, "-m", message).strip()
+    if dry_run:
+        return {"commit": commit, "parent": parent, "pushed": False}
+    # The same tag name points at another commit here (this repository's merge
+    # commit), so the public tag is made under a private name and pushed as <version>.
+    local = f"public-release/{version}"
+    git(repo, "tag", "-f", "-a", local, "-m", f"Release {version}", commit)
+    try:
+        git(repo, "push", "--quiet", "--atomic", url, f"{commit}:refs/heads/{branch}",
+            f"refs/tags/{local}:refs/tags/{version}")
+    finally:
+        git(repo, "tag", "-d", local, check=False)
+    return {"commit": commit, "parent": parent, "pushed": True}
 
 
 def canary_hint(version: str) -> str:
@@ -628,6 +767,8 @@ def main(argv: list[str] | None = None) -> int:
     c.add_argument("version")
     c.add_argument("branches", nargs="*", help="group branches to merge; none for a product-only release")
     c.add_argument("--no-push", action="store_true")
+    c.add_argument("--skip-conflicts", action="store_true",
+                   help="leave out a branch that does not merge cleanly (printed as 'conflict: <branch>')")
     n = sub.add_parser("notes")
     n.add_argument("version")
     n.add_argument("--base", required=True, help="ref of the previous release (or main for the first)")
@@ -639,23 +780,49 @@ def main(argv: list[str] | None = None) -> int:
     pb = sub.add_parser("publish", help="create the GitHub Release of an existing tag from its notes")
     pb.add_argument("version")
     pb.add_argument("--github", required=True, metavar="OWNER/REPO")
+    pp = sub.add_parser("publish-public", help="give a tagged release to the public repository as one commit")
+    pp.add_argument("version")
+    pp.add_argument("--url-env", required=True, metavar="VAR",
+                    help="environment variable holding the public repository's git URL (it may carry a credential)")
+    pp.add_argument("--github", metavar="OWNER/REPO", help="also create the GitHub Release there")
+    pp.add_argument("--branch", default="main")
+    pp.add_argument("--dry-run", action="store_true", help="build the commit, push nothing")
     f = sub.add_parser("finish", help="after 4 green E2E runs: merge the release PR, tag, publish, delete the "
                                       "branch (resumes a finish that stopped half way)")
     f.add_argument("version")
     f.add_argument("--github", required=True, metavar="OWNER/REPO")
     f.add_argument("--dry-run", action="store_true", help="show the steps; change nothing")
+    f.add_argument("--publish", dest="publish_release", action="store_const", const=True, default=None,
+                   help="tag and publish, whatever the PR's labels say")
+    f.add_argument("--no-publish", dest="publish_release", action="store_const", const=False,
+                   help="merge only (integration cycle), whatever the PR's labels say")
     f.add_argument("--if-green", action="store_true",
                    help="exit 0 without doing anything when E2E has not passed on the release head (for automation "
                         "that runs after every E2E run)")
     a = ap.parse_args(argv)
     try:
+        if a.cmd == "publish-public":
+            url = os.environ.get(a.url_env, "")
+            if not url:
+                raise ReleaseError(f"environment variable {a.url_env} is not set")
+            res = publish_public(a.repo, a.version, url, branch=a.branch, dry_run=a.dry_run)
+            if a.dry_run:
+                print(f"would publish {a.version} as one commit on top of {res['parent'][:12]}" if res["parent"]
+                      else f"{a.version} is already published ({res['commit'][:12]})")
+                return 0
+            print(f"published {a.version} as {res['commit'][:12]}" if res["pushed"]
+                  else f"{a.version} was already published ({res['commit'][:12]})")
+            if a.github:
+                made = publish(a.repo, a.version, a.github)
+                print(f"{'created' if made else 'already exists:'} GitHub Release {a.version} in {a.github}")
+            return 0
         if a.cmd == "publish":
             made = publish(a.repo, a.version, a.github)
             print(f"{'created' if made else 'already exists:'} GitHub Release {a.version}")
             return 0
         if a.cmd == "finish":
             try:
-                res = finish(a.repo, a.version, a.github, dry_run=a.dry_run)
+                res = finish(a.repo, a.version, a.github, dry_run=a.dry_run, publish_release=a.publish_release)
             except NotGreen as e:
                 if not a.if_green:
                     raise
@@ -665,13 +832,20 @@ def main(argv: list[str] | None = None) -> int:
             if res["dry_run"]:
                 print(f"finish {a.version} would{resumed}:")
                 print("\n".join(f"  - {st}" for st in res["steps"]))
-            else:
+            elif res["tag"]:
                 print(f"finished {a.version}{resumed}: tag {res['tag']} on {res['merge'][:12]}, GitHub Release "
                       f"{'created' if res['published'] else 'already there'}, release branch deleted")
-            print(canary_hint(a.version))
+            else:
+                print(f"integrated {a.version}{resumed}: merged as {res['merge'][:12]}, not tagged (no `{PUBLISH_LABEL}` "
+                      "label), release branch deleted")
+            if res["tag"]:
+                print(canary_hint(a.version))
             return 0
         if a.cmd == "cut":
-            print(cut(a.repo, a.version, a.branches, push=not a.no_push))
+            conflicts: list[str] | None = [] if a.skip_conflicts else None
+            print(cut(a.repo, a.version, a.branches, push=not a.no_push, conflicts=conflicts))
+            for branch in conflicts or []:
+                print(f"conflict: {branch}")
             return 0
         sup = [s.strip() for s in a.kubernetes_supported.split(",")] if a.kubernetes_supported else None
         m = notes(a.repo, a.version, a.base, supported=sup, recommended=a.kubernetes_recommended,

@@ -53,6 +53,9 @@ class FakeGh:
         self.merge_commit = None
         self.race = False          # another PR lands on main between the check and the merge
         self.releases = {}
+        self.titles = {}
+        self.labels = ["publish"]  # a release; [] = an integration cycle
+        self.earlier = []          # PRs of earlier cycles that used the same branch name
         self._head = None
 
     def head(self):
@@ -65,9 +68,10 @@ class FakeGh:
         a = list(args)
         if a[:2] == ["pr", "list"]:
             assert a[a.index("--state") + 1] == "all"   # finish must also find a merged PR (resume)
-            return json.dumps([{"number": self.pr, "headRefOid": self.head(), "baseRefName": "main",
-                                "state": "MERGED" if self.merged else "OPEN",
-                                "mergeCommit": {"oid": self.merge_commit} if self.merged else None}])
+            return json.dumps(self.earlier + [{
+                "number": self.pr, "headRefOid": self.head(), "baseRefName": "main",
+                "state": "MERGED" if self.merged else "OPEN", "labels": [{"name": n} for n in self.labels],
+                "mergeCommit": {"oid": self.merge_commit} if self.merged else None}])
         if a[:2] == ["pr", "view"]:
             state = self.states.pop(0) if len(self.states) > 1 else self.states[0]
             return json.dumps({"mergeStateStatus": state, "headRefOid": self.head()})
@@ -94,6 +98,7 @@ class FakeGh:
             notes = open(a[a.index("--notes-file") + 1], encoding="utf-8").read()
             assert "--verify-tag" in a
             self.releases[a[2]] = notes
+            self.titles[a[2]] = a[a.index("--title") + 1]
             return ""
         if a[:1] == ["api"] and "/statuses" in a[1] and "-X" not in a:
             return json.dumps([{"context": c, **d} for c, d in self.statuses.items()])
@@ -169,7 +174,7 @@ def test_dry_run_changes_nothing(repos):
     work, origin, fake = repos
     before = git(origin, "for-each-ref")
     res = release.finish(str(work), V, SLUG, dry_run=True)
-    assert res["dry_run"] and res["pr"] == 7 and len(res["steps"]) == 5
+    assert res["dry_run"] and res["pr"] == 7 and len(res["steps"]) == 6     # wait, merge, check, tag, publish, delete
     assert git(origin, "for-each-ref") == before
     assert not any(c[:2] == ("pr", "merge") for c in fake.calls) and not fake.releases
 
@@ -319,3 +324,61 @@ def test_a_tag_that_is_not_on_main_is_not_published(repos):
     with pytest.raises(release.ReleaseError, match="is not on origin/main"):
         release.finish(str(work), V, SLUG)
     assert not fake.releases and f"release/{V}" in git(origin, "branch", "--list")
+
+
+# --------------------------------------------------------------------------- #
+# Integration cycles: merged, never tagged
+# --------------------------------------------------------------------------- #
+def test_without_the_publish_label_the_candidate_is_merged_and_not_tagged(repos):
+    work, origin, fake = repos
+    fake.labels = []
+    tested = git(origin, "rev-parse", f"release/{V}").strip()
+    assert len(release.finish(str(work), V, SLUG, dry_run=True)["steps"]) == 4       # no tag, no publish
+    res = release.finish(str(work), V, SLUG)
+    assert res["tag"] is None and res["published"] is None and res["merge"] == fake.merge_commit
+    assert tree_of(origin, "main") == tree_of(origin, tested)                         # same checks as a release
+    assert not git(origin, "tag", "--list", V).strip() and not fake.releases
+    assert f"release/{V}" not in git(origin, "branch", "--list")
+
+
+def test_the_label_can_be_overridden_either_way(repos):
+    work, origin, fake = repos
+    fake.labels = []
+    assert release.finish(str(work), V, SLUG, publish_release=True)["tag"] == V
+    assert git(origin, "tag", "--list", V).strip() == V
+
+
+def test_cli_says_integrated_or_finished(repos, capsys):
+    work, origin, fake = repos
+    assert release.main(["--repo", str(work), "finish", V, "--github", SLUG, "--no-publish"]) == 0
+    out = capsys.readouterr().out
+    assert out.startswith(f"integrated {V}") and "Canary" not in out
+    assert not git(origin, "tag", "--list", V).strip()
+
+
+def test_the_release_page_names_the_kubernetes_version(repos):
+    work, origin, fake = repos
+    release.finish(str(work), V, SLUG)
+    assert fake.titles[V] == f"{V} · Kubernetes 1.36"
+
+
+def test_earlier_cycles_with_the_same_version_name_do_not_confuse_finish(repos):
+    """Until a cycle is published the version name is reused: older merged and
+    closed PRs from release/<v> exist. The open one is this candidate's."""
+    work, origin, fake = repos
+    fake.earlier = [{"number": 3, "headRefOid": "1" * 40, "baseRefName": "main", "state": "MERGED", "labels": [],
+                     "mergeCommit": {"oid": "2" * 40}},
+                    {"number": 4, "headRefOid": "3" * 40, "baseRefName": "main", "state": "CLOSED", "labels": [],
+                     "mergeCommit": None}]
+    assert release.release_pr(SLUG, V)["number"] == 7
+    assert release.finish(str(work), V, SLUG)["pr"] == 7
+
+
+def test_a_branch_without_its_own_pr_is_not_finished_as_an_earlier_cycle(repos):
+    work, origin, fake = repos
+    head = fake.head()
+    fake.merged, fake.merge_commit, fake._head = True, git(origin, "rev-parse", "main").strip(), "4" * 40
+    assert git(origin, "rev-parse", f"release/{V}").strip() == head != fake.head()
+    with pytest.raises(release.ReleaseError, match="has no PR of its own"):
+        release.finish(str(work), V, SLUG)
+    assert f"release/{V}" in git(origin, "branch", "--list")
