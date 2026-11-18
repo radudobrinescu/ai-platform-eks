@@ -41,13 +41,23 @@ class Seed:
     def __init__(self):
         self.team_key: str | None = None
         self.models: list[str] = []
+        self.gpu_skipped: str | None = None    # why no GPU model was seeded (old bases only)
 
 
 def _team_key() -> str:
     return secret_value(TEAM_NS, TEAM_SECRET, "api-key")
 
 
-def seed(c: checks.Ctx) -> Seed:
+def seed(c: checks.Ctx, gpu_optional: bool = False) -> Seed:
+    """Seed the base with state that the upgrade must not lose.
+
+    `gpu_optional`: for a base from before the first release (no release
+    manifest). Such a tree leaves parts unpinned, so built today it is not the
+    installation its users have, and it may be unable to bring up a self-hosted
+    model at all (2026-11-18: on the public repository's September state the
+    model was committed and never appeared). The upgrade is what is under test,
+    so that does not stop the run: the team, the key, the Bedrock model, the
+    traces and the users are seeded, and the reason is kept in `gpu_skipped`."""
     s = Seed()
     rc = c.subject.platformctl("onboard-team", TEAM, "--budget", TEAM_BUDGET, "--deploy", "-y")
     if rc != 0:
@@ -57,19 +67,25 @@ def seed(c: checks.Ctx) -> Seed:
     alias, _ = checks.deploy_bedrock(c)
     checks.wait_alias(c, alias, c.timeouts["bedrock"])
     gpu = checks.model_name_from_id(SEED_GPU_MODEL)
-    checks.deploy_model(c, gpu, SEED_GPU_MODEL, "--tier", "vllm", "--users", "1", "--seq", "2048")
-    checks.wait_endpoint_ready(c, "vllmendpoint", gpu)
-    checks.wait_alias(c, gpu, c.timeouts["bedrock"])
     s.models = [alias, gpu]
+    try:
+        checks.deploy_model(c, gpu, SEED_GPU_MODEL, "--tier", "vllm", "--users", "1", "--seq", "2048")
+        checks.wait_endpoint_ready(c, "vllmendpoint", gpu)
+        checks.wait_alias(c, gpu, c.timeouts["bedrock"])
+    except Exception as e:  # noqa: BLE001 - only swallowed for a base that cannot be expected to do this
+        if not gpu_optional:
+            raise
+        s.models, s.gpu_skipped = [alias], f"{type(e).__name__}: {e}"[:300]
 
     with PortForward(NS_PLATFORM, "svc/litellm", 4000) as pf:
         for _ in range(SEED_BEDROCK_CHATS):
             code, body = checks.chat(pf, s.team_key, alias)
             if code != 200:
                 raise RuntimeError(f"seed chat on {alias} with the team key: HTTP {code}: {body[:120]}")
-        code, body = checks.chat(pf, s.team_key, gpu)
-        if code != 200:
-            raise RuntimeError(f"seed chat on {gpu} with the team key: HTTP {code}: {body[:120]}")
+        if not s.gpu_skipped:
+            code, body = checks.chat(pf, s.team_key, gpu)
+            if code != 200:
+                raise RuntimeError(f"seed chat on {gpu} with the team key: HTTP {code}: {body[:120]}")
     # Sign the seed users in once, so Open WebUI creates their accounts.
     openwebui_ids(c)
     return s
