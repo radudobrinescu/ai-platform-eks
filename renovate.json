@@ -13,12 +13,14 @@
     "  gateway    - LiteLLM and what talks to it (postgres, langfuse, open-webui, oauth2-proxy, python libs)",
     "  gitops     - ArgoCD / KRO (self-managed path)",
     "  tooling    - GitHub Actions + CI tool versions",
-    "The Kubernetes version itself (cluster_config.kubernetes_version) is deliberately NOT managed",
-    "here: anchor bumps are human commits that follow the EKS support calendar. EKS managed addons",
-    "are converged by Terraform most_recent=true and reported by addon-freshness on `main`.",
+    "What waits, and for what (COMPATIBILITY.md, 'Anchors, and what waits'): majors need a tick on the",
+    "Dependency Dashboard; the EKS Kubernetes version is proposed 60 days after the minor's release;",
+    "vLLM changes and LiteLLM minors when the version is 14 days old; kro and llm-d router minors at",
+    "once on their own branch. Everything else flows with its group. EKS managed add-ons are not",
+    "managed here: Terraform takes the newest build (most_recent = true) and addon-freshness on",
+    "`main` reports drift.",
     "Merge policy: nothing automerges and Renovate PRs into `main` are never merged directly; their",
-    "branches are merged into a `release/<version>` branch, validated by E2E, and released together.",
-    "Majors and anchors need a tick on the Dependency Dashboard before a branch is even created."
+    "branches are merged into a `release/<version>` branch, validated by E2E, and merged together."
   ],
   "extends": [
     "config:recommended",
@@ -305,7 +307,7 @@
       "groupSlug": "infra"
     },
     {
-      "description": "k8s Python client must stay within +/-1 minor of the API server (kubernetes-client policy). Current anchor k8s 1.36 -> client 31..33 OK; raise the ceiling when bumping kubernetes_version. Ceiling = (EKS default minor + 2), exclusive; raise it with the EKS anchor.",
+      "description": "k8s Python client must stay within +/-1 minor of the API server (kubernetes-client policy). Ceiling = (EKS default minor + 2), exclusive; raise it by hand with the EKS anchor.",
       "matchDatasources": [
         "pypi"
       ],
@@ -315,7 +317,7 @@
       "allowedVersions": "<39"
     },
     {
-      "description": "alpine/k8s bundles kubectl; keep within +/-1 minor of the API server (kubectl skew policy). Raise with the anchor. Ceiling = 1.(EKS default minor + 2), exclusive; raise it with the EKS anchor.",
+      "description": "alpine/k8s bundles kubectl; keep within +/-1 minor of the API server (kubectl skew policy). Ceiling = 1.(EKS default minor + 2), exclusive; raise it by hand with the EKS anchor.",
       "matchDepNames": [
         "alpine/k8s"
       ],
