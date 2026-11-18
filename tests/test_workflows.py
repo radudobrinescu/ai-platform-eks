@@ -58,16 +58,27 @@ class TestReleaseFinishWorkflow:
     """The only human action in a release is the e2e approval: this workflow
     finishes the release when (and only when) its E2E is green."""
 
-    def test_runs_after_e2e_and_by_hand(self):
+    def test_started_by_e2e_and_by_hand_never_by_workflow_run(self):
+        """`on: workflow_run` did not fire for an e2e run that the release candidate
+        dispatched with GITHUB_TOKEN (v2026.11.7). e2e.yaml dispatches explicitly."""
         wf, _ = _load("release-finish.yaml")
         on = _on(wf)
-        assert on["workflow_run"] == {"workflows": ["e2e"], "types": ["completed"]}
-        e2e, _ = _load("e2e.yaml")
-        assert e2e["name"] == "e2e"                                   # workflow_run matches by name
+        assert list(on) == ["workflow_dispatch"]
         assert set(on["workflow_dispatch"]["inputs"]) == {"version", "dry_run"}
-        job = wf["jobs"]["finish"]
-        assert "github.event.workflow_run.conclusion == 'success'" in job["if"]
+        assert all(not i.get("required") for i in on["workflow_dispatch"]["inputs"].values())   # dispatched bare
+        assert "if" not in wf["jobs"]["finish"]
         assert wf["concurrency"] == {"group": "release-finish", "cancel-in-progress": False}
+
+    def test_e2e_starts_it_only_when_every_job_passed(self):
+        wf, _ = _load("e2e.yaml")
+        job = wf["jobs"]["finish"]
+        assert job["needs"] == ["plan", "e2e"]
+        assert job["if"] == "needs.plan.outputs.configured == 'true' && needs.e2e.result == 'success'"
+        assert job["permissions"] == {"actions": "write"} and "environment" not in job
+        step = _steps(job)[0]
+        assert 'gh workflow run release-finish.yaml --repo "$GITHUB_REPOSITORY" --ref lifecycle' in step["run"]
+        assert step["env"] == {"GH_TOKEN": "${{ github.token }}"}       # a dispatch with GITHUB_TOKEN starts a run
+        assert os.path.exists(os.path.join(WF_DIR, "release-finish.yaml"))
 
     def test_permissions_and_no_expressions_in_run_scripts(self):
         wf, _ = _load("release-finish.yaml")
