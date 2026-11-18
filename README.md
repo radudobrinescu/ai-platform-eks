@@ -314,8 +314,9 @@ edge gotchas the Terraform handles.
 
 ## Upgrading
 
-To move an existing environment to a newer release, merge the release tag and
-run `./platformctl upgrade <env>`. See [UPGRADING.md](UPGRADING.md).
+To move an existing environment to the newest release, run
+`./platformctl upgrade <env>`. It fetches the releases, applies them one at a
+time and checks the platform after each. See [UPGRADING.md](UPGRADING.md).
 
 ## Cleanup
 
