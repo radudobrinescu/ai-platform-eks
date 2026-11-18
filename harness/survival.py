@@ -75,7 +75,8 @@ def seed(c: checks.Ctx, gpu_optional: bool = False) -> Seed:
     except Exception as e:  # noqa: BLE001 - only swallowed for a base that cannot be expected to do this
         if not gpu_optional:
             raise
-        s.models, s.gpu_skipped = [alias], f"{type(e).__name__}: {e}"[:300]
+        # The cluster is gone when the report is read: keep what was stuck with it.
+        s.models, s.gpu_skipped = [alias], f"{type(e).__name__}: {e}"[:300] + f" || stuck: {checks.diagnose()}"
 
     with PortForward(NS_PLATFORM, "svc/litellm", 4000) as pf:
         for _ in range(SEED_BEDROCK_CHATS):

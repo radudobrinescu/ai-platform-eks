@@ -179,6 +179,7 @@ jobs:
       contents: read
       id-token: write
       statuses: write
+      issues: write        # only for "Report this job's environment if it is still there"
     strategy:
       fail-fast: false
       matrix: ${{ fromJSON(needs.plan.outputs.matrix) }}
@@ -352,6 +353,31 @@ jobs:
               || echo "::warning::teardown reported errors; check for orphans of ${ENV_NAME}"
           fi
           git push --quiet origin --delete "e2e/${ENV_NAME}" 2>/dev/null || true
+
+      # A teardown can report success and leave the cluster running (2026-11-18:
+      # an old base's `down`). It bills until a person removes it, and the
+      # preflight of a later run reports it only once it is 8 hours old. So look
+      # now, and say so in the issue the preflight uses. Never fails the job.
+      - name: Report this job's environment if it is still there
+        if: always() && inputs.keep != true
+        continue-on-error: true
+        run: |
+          set -uo pipefail
+          [ -n "${ENV_NAME:-}" ] || exit 0
+          left="$(python3 harness/leftovers.py --env "$ENV_NAME" --region "$E2E_REGION" --own)" || exit 0
+          [ -n "$left" ] || exit 0
+          echo "::error::${ENV_NAME} was not torn down, still billing: ${left}"
+          title="E2E environments left behind"
+          {
+            echo "The E2E job ${MODE} / ${PROFILE} did not tear down its own environment \`${ENV_NAME}\`. It keeps billing, and holds 3 of the account's Elastic IPs."
+            echo
+            echo "- ${left}"
+            echo
+            echo "How to remove it: the lifecycle README, \"An environment that was left behind\". Run: ${RUN_URL}"
+          } > own.md
+          num="$(gh issue list --repo "$GITHUB_REPOSITORY" --state open --search "in:title \"${title}\"" --json number --jq '.[0].number // empty')"
+          if [ -n "$num" ]; then gh issue comment "$num" --repo "$GITHUB_REPOSITORY" --body-file own.md
+          else gh issue create --repo "$GITHUB_REPOSITORY" --title "$title" --body-file own.md; fi
 
       - name: Commit status result
         if: always()

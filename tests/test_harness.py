@@ -698,6 +698,7 @@ class TestOldBase:
             if fail:
                 raise TimeoutError("timed out after 1500s waiting for vllmendpoint")
         monkeypatch.setattr(survival.checks, "wait_endpoint_ready", ready)
+        monkeypatch.setattr(survival.checks, "diagnose", lambda: "app models-inference: OutOfSync/Progressing")
         monkeypatch.setattr(survival.checks, "chat", lambda pf, key, model: (calls.append(("chat", model)) or (200, "ok")))
         monkeypatch.setattr(survival, "openwebui_ids", lambda c: {})
 
@@ -718,6 +719,8 @@ class TestOldBase:
         survival, Ctx, calls = self._seed(monkeypatch, fail=True)
         s = survival.seed(Ctx, gpu_optional=True)
         assert s.models == ["nova-lite"] and "TimeoutError" in s.gpu_skipped
+        # The cluster is gone when somebody reads the report: what was stuck is in it.
+        assert "stuck: app models-inference: OutOfSync/Progressing" in s.gpu_skipped
         chats = [m for kind, m in calls if kind == "chat"]
         assert chats and set(chats) == {"nova-lite"}                 # no chat on the model that is not there
 

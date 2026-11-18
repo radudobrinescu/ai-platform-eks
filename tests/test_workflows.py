@@ -225,7 +225,7 @@ class TestE2EWorkflow:
         wf, _ = _load("e2e.yaml")
         job = wf["jobs"]["e2e"]
         assert job["environment"] == "e2e"
-        assert job["permissions"] == {"contents": "read", "id-token": "write", "statuses": "write"}
+        assert job["permissions"] == {"contents": "read", "id-token": "write", "statuses": "write", "issues": "write"}
         assert job["timeout-minutes"] == 345
         assert job["needs"] == "plan" and "needs.plan.outputs.configured == 'true'" in job["if"]
         assert job["strategy"]["matrix"] == "${{ fromJSON(needs.plan.outputs.matrix) }}"
@@ -334,6 +334,45 @@ class TestE2EWorkflow:
         assert job["permissions"] == {"issues": "write"} and "environment" not in job
         run = _steps(job)[0]["run"]
         assert 'title="E2E environments left behind"' in run and "for c in $LEAKED" in run and "${{" not in run
+
+    def test_a_job_that_leaves_its_own_environment_says_so_at_once(self, tmp_path):
+        """2026-11-18: a job's teardown left its cluster running. The preflight of a
+        later run reports a leak only once it is 8 hours old."""
+        wf, _ = _load("e2e.yaml")
+        job = wf["jobs"]["e2e"]
+        names = [s.get("name", "") for s in _steps(job)]
+        own = "Report this job's environment if it is still there"
+        assert names.index("Safety net, tear down if the harness was killed before its own teardown") < names.index(own) \
+            < names.index("Result")
+        step = _step(job, own)
+        assert step["if"] == "always() && inputs.keep != true" and step["continue-on-error"] is True
+        assert "${{" not in step["run"]
+        calls = tmp_path / "calls"
+        for name, body in (("python3", 'printf "%s" "$FAKE_LEFT"'),
+                           ("gh", f'echo "$*" >> "{calls}"; [ "$1 $2" = "issue list" ] && printf "%s" "$FAKE_ISSUE"; exit 0')):
+            f = tmp_path / name
+            f.write_text(f"#!/bin/sh\n{body}\n")
+            f.chmod(0o755)
+        env = {"PATH": f"{tmp_path}:{os.environ['PATH']}", "ENV_NAME": "e2eud17", "E2E_REGION": "eu-central-1",
+               "GITHUB_REPOSITORY": "o/r", "RUN_URL": "https://ci/run/1", "MODE": "upgrade", "PROFILE": "default",
+               "FAKE_LEFT": "", "FAKE_ISSUE": ""}
+
+        def run(**over):
+            calls.write_text("")
+            r = subprocess.run(["bash", "-c", step["run"]], env={**env, **over}, cwd=tmp_path, capture_output=True, text=True)
+            return r, calls.read_text()
+
+        r, said = run()
+        assert r.returncode == 0 and said == ""                                  # gone: nothing to say
+        r, said = run(FAKE_LEFT="EKS cluster ai-platform-e2eud17 (ACTIVE)")
+        assert r.returncode == 0 and "::error::" in r.stdout and "issue create" in said
+        assert "--title E2E environments left behind" in said
+        body = (tmp_path / "own.md").read_text()
+        assert "EKS cluster ai-platform-e2eud17 (ACTIVE)" in body and "https://ci/run/1" in body and "upgrade / default" in body
+        r, said = run(FAKE_LEFT="VPC vpc-0abc", FAKE_ISSUE="12")
+        assert "issue comment 12" in said and "issue create" not in said         # one issue, not one per job
+        r, said = run(ENV_NAME="")
+        assert r.returncode == 0 and said == ""                                  # the job failed before it had a name
 
     def test_teardown_safety_net(self):
         wf, _ = _load("e2e.yaml")

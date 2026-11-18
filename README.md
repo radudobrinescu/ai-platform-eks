@@ -176,7 +176,8 @@ candidate is replaced by a fresh one, so letting an unimportant cycle wait is sa
 **Leaks and quiet failures.** Every E2E job starts with a preflight (`harness/leftovers.py`): E2E
 environments older than 8 hours are reported in the issue "E2E environments left behind" (they bill until a
 person tears them down), and a job that would not get its 3 Elastic IPs is marked "not run" instead of
-"failed", so a full account is never blamed on the updates under test. `watchdog.yaml` runs weekly without
+"failed", so a full account is never blamed on the updates under test. A job whose own cluster or VPC is
+still there after its teardown says so in the same issue at once (`leftovers.py --own`). `watchdog.yaml` runs weekly without
 any cloud credentials (`tools/watchdog.py`): it warns 30 days before a push token expires, when a factory
 workflow is disabled, when the scheduled run stopped, when no cycle was merged for 21 days, and when the
 attention issue stays open. It keeps the issue "Factory status" up to date.
@@ -192,6 +193,35 @@ gh workflow run release-candidate.yaml -f force=true             # start a cycle
 gh workflow run release-candidate.yaml -f force=true -f publish=true   # start a cycle that is a release
 python3 tools/release.py --repo subject finish v2026.11.3 --github OWNER/REPO [--dry-run] [--publish|--no-publish]
 ```
+
+### An environment that was left behind
+
+The issue "E2E environments left behind" names a cluster (`<prefix>-<env>`, for example `ai-platform-e2eud129`).
+It bills until a person removes it; the factory never deletes a cluster it does not own in the current job.
+With credentials for the E2E account and the Terraform version that `e2e.yaml` installs:
+
+1. Check out the product at the newest release, not at the ref the job ran. An old `down` may be what left
+   the cluster (the September `down` reported success with the cluster running).
+2. Recreate the env's variables the way the harness does (`harness/tfvars.py`): copy
+   `terraform/00.global/vars/example.tfvars` to `<env>.tfvars` in the same directory, set the region, put your
+   public IP (`a.b.c.d/32`) in `cluster_endpoint_public_access_cidrs`, and for an env whose name has `m` as its
+   fifth letter (profile managed) set `eks_capabilities = true` and the `capabilities_config` block.
+3. `./platformctl down <env>`. It asks for the env name, destroys the Terraform modules in reverse order and
+   sweeps what the controllers created. It is safe to run again.
+4. Check: `aws eks describe-cluster --name <prefix>-<env>` says the cluster does not exist, and no VPC has
+   that name. Then close the issue.
+
+What stopped the destroy on 2026-11-18, and what cleared it:
+
+- The cluster's KMS key was scheduled for deletion while the cluster still existed, and EKS refused every
+  change. `aws kms cancel-key-deletion` and `aws kms enable-key` on that key; the sweep schedules it again
+  once the cluster is gone.
+- The job's role had created the cluster and its runner was gone, so nobody could reach the Kubernetes API.
+  An EKS access entry for your own identity with `AmazonEKSClusterAdminPolicy`, plus your IP in the
+  cluster's public access list.
+- The namespace `inference` waited on a finalizer whose controller was already deleted. Remove the
+  finalizers of what is left in it (`bedrockmodels`, the Argo CD applications, `nodeclaims`), then destroy
+  again.
 
 ### Publishing to the public repository
 
