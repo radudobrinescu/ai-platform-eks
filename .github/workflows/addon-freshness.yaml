@@ -13,8 +13,8 @@
 #
 # SCOPE — EKS MANAGED ADDONS ONLY. The detector talks to the EKS Addons API, which
 # cannot see Helm-/manifest-managed OSS components (LiteLLM, Open WebUI, Langfuse,
-# Karpenter, KEDA, …). Those are intentionally operator-pinned and are never in
-# scope here.
+# Karpenter, KEDA, …). Those are pinned in this repository, move with its
+# releases, and are never in scope here.
 #
 # ENABLING (opt-in — this is a sample many forks deploy differently). Set three
 # repository *variables* (Settings → Secrets and variables → Actions → Variables):

@@ -12,8 +12,8 @@
 # Deployment to the platform's browser-facing origin — the CloudFront edge URL,
 # or the localhost tunnel URL when the edge is off (both match the registered
 # Cognito callback, so SSO completes) — falling back to the auto-provisioned ALB
-# hostname only if that public URL can't be read. It is the event-less reconciler
-# counterpart to litellm-cleanup (platform/config/litellm-cleanup.yaml).
+# hostname only if that public URL can't be read. It is an event-less reconciler:
+# it runs on a schedule and sets the value it finds to be right.
 #
 # Paired requirement: ArgoCD's selfHeal would otherwise revert NEXTAUTH_URL to
 # the chart placeholder every sync (flapping the pod). An `ignoreDifferences`

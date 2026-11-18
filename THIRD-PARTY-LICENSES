@@ -15,9 +15,9 @@ SOFTWARE DEPLOYED / FETCHED AT RUNTIME (referenced, not redistributed)
 ================================================================================
 
 ** Gateway API Inference Extension (CRDs) — https://github.com/kubernetes-sigs/gateway-api-inference-extension
-   Fetched at sync time from a pinned tag (currently v1.5.0), NOT vendored:
+   Fetched at sync time from a pinned tag, NOT vendored:
    platform/services/inference-gateway/kustomization.yaml references
-   `.../config/crd?ref=v1.5.0`; ArgoCD runs kustomize build to install the CRDs
+   `.../config/crd?ref=<tag>`; ArgoCD runs kustomize build to install the CRDs
    (group inference.networking.x-k8s.io / inference.networking.k8s.io).
    Copyright The Kubernetes Authors. License: Apache-2.0.
 
@@ -29,11 +29,11 @@ Container images (pinned tags in platform/services/**):
      License: Apache-2.0
 
   ** LiteLLM — https://github.com/BerriAI/litellm
-     image: litellm/litellm:v1.81.9-stable.patch.1
+     image: litellm/litellm:<tag>
      License: MIT
 
   ** Open WebUI — https://github.com/open-webui/open-webui
-     image: ghcr.io/open-webui/open-webui:v0.10.2
+     image: ghcr.io/open-webui/open-webui:<tag>
      License: Open WebUI License (BSD-3-Clause + branding-protection clause).
      ** NOT a standard OSI license. ** Removing/altering the "Open WebUI"
      branding is a material breach for deployments over 50 users; deployments of
@@ -61,7 +61,7 @@ Container images (pinned tags in platform/services/**):
      License: Apache License 2.0
 
   ** oauth2-proxy — https://github.com/oauth2-proxy/oauth2-proxy
-     image: quay.io/oauth2-proxy/oauth2-proxy:v7.7.1
+     image: quay.io/oauth2-proxy/oauth2-proxy:<tag>
      License: MIT
 
   ** curl (container) — https://github.com/curl/curl-container ; https://curl.se

@@ -107,7 +107,7 @@ class Sweeper:
 
         # 3. Leftover available ENIs, BEFORE the security groups: an available
         #    ENI still references its SGs, so the SG delete fails while it exists.
-        #    Seen in E2E: the VPC CNI could not delete a node's secondary ENI
+        #    Seen in testing: the VPC CNI could not delete a node's secondary ENI
         #    during the drain ("currently in use"), the ENI kept the EKS cluster
         #    SG, and the SG (deleted first) then held the VPC delete for 20 min.
         try:

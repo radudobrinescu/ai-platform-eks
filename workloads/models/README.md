@@ -41,8 +41,7 @@ litellm-sync registers it on the `/v1` API. Nothing ships by default — list wh
 invokable in your region/partition with `--source bedrock --list-available-models`.
 To serve any open-source model instead, point a `VLLMEndpoint` at a HuggingFace
 model ID — including a model you've fine-tuned and pushed to HF (private repos need
-a token). The platform serves models; it does not train them. (Serving weights
-directly from your own S3 bucket is on the roadmap.)
+a token). The platform serves models; it does not train them.
 
 ## Tool / function calling
 
@@ -54,4 +53,4 @@ out of the box instead of erroring. It's written explicitly so you can see and
 change it: delete the line for chat-only, or adjust it if you pin a different
 `vllmImage` (parser names are vLLM-version-specific). Models from unrecognized
 families deploy chat-only (no `toolCallParser`) — add one if the model
-supports tools. For any other vLLM flag, use `--extraArgs`.
+supports tools. For any other vLLM flag, use `--extra-arg`.

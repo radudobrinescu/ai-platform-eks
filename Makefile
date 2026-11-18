@@ -3,9 +3,9 @@
 # `make check` runs the fast, OFFLINE checks this project expects before a change
 # lands: Python byte-compile + unit tests, Terraform formatting, YAML parsing,
 # and shell syntax. It needs no AWS credentials and makes no network calls, so it
-# is safe to run anywhere — and it is the body a CI job would call in the final
-# repo. Steps whose tool is missing self-skip with a notice rather than fail, so
-# a partial toolchain still gets partial coverage.
+# is safe to run anywhere; CI (.github/workflows/ci.yaml) runs the same kinds of
+# checks on every pull request. Steps whose tool is missing self-skip with a
+# notice rather than fail, so a partial toolchain still gets partial coverage.
 #
 # (Infra orchestration lives in terraform/Makefile, driven by ./platformctl.)
 

@@ -27,7 +27,7 @@ this pod only, and a Kubernetes finalizer gives us the on-delete hook.
 
 ## How it works
 
-A single-replica Deployment (no custom image — `python:3.12-slim` + an
+A single-replica Deployment (no custom image — a stock `python:<version>-slim` + an
 initContainer that pip-installs the kubernetes client) running
 [scripts/litellm_sync.py](scripts/litellm_sync.py):
 
@@ -72,9 +72,8 @@ kubectl patch <vllmendpoint|llmdendpoint|llmddisaggendpoint> <name> -n <ns> \
 
 (The reconcile sweep will then deregister the now-orphaned model on its next pass.)
 
-**Relationship to `litellm-cleanup`.** This controller owns **model** consistency.
-The hourly `litellm-model-cleanup` CronJob (`platform/config/litellm-cleanup.yaml`)
-owns **team** consistency only (orphaned LiteLLM teams from deleted `AITeam`s).
+**Scope.** This controller owns **model** consistency only. LiteLLM teams are
+created and updated by the `AITeam` onboarding Job (`platform/config/kro/`).
 
 ## Config (env vars, see `deployment.yaml`)
 

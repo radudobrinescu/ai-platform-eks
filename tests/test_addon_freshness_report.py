@@ -10,7 +10,7 @@ import addon_freshness as af
 
 class TestVersionKey:
     def test_patch_and_eksbuild_ordering(self):
-        # Real versions from the ai-platform-e2e incident.
+        # Real versions, from an incident on a test cluster.
         assert af._version_key("v1.62.0-eksbuild.1") < af._version_key("v1.65.0-eksbuild.1")
         # eksbuild number breaks ties within the same semver.
         assert af._version_key("v1.14.3-eksbuild.3") < af._version_key("v1.14.3-eksbuild.14")

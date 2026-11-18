@@ -163,7 +163,7 @@ def _delete_model_row(model_id: str) -> bool:
     list a row another replica (or an earlier pass) has just removed. LiteLLM
     then answers HTTP 400 "Model with id=... not found in db". Treating that as
     a failure kept the finalizer on a deleted CR until a later reconcile, so
-    deregistration stalled for minutes (found by the E2E gate on LiteLLM
+    deregistration stalled for minutes (found in testing on LiteLLM
     v1.83.14). Any other error still returns False and is retried.
     """
     url = f"{LITELLM_BASE_URL}/model/delete"
@@ -316,7 +316,7 @@ def _restart_litellm(reason: str) -> bool:
     removals when the DB holds zero models (`_delete_deployment` returns early
     on `len(db_models) == 0`). So after the LAST DB model is deleted, every
     replica that did not serve the /model/delete call keeps listing and routing
-    it until it restarts (seen in E2E: still served 20+ minutes later). Only
+    it until it restarts (seen in testing: still served 20+ minutes later). Only
     called when a deregistration empties the DB, which is rare outside tests.
     """
     stamp = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())

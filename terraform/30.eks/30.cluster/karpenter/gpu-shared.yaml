@@ -93,7 +93,7 @@ spec:
         # g7/g7e (Blackwell RTX PRO): the Bottlerocket NVIDIA variants ship the
         # proprietary driver, which rejects these GPUs (they need the open kernel
         # modules, bottlerocket-os/bottlerocket#4889). The node boots but never
-        # joins; Karpenter retires it after 15 min. Seen in E2E: two g7.4xlarge
+        # joins; Karpenter retires it after 15 min. Seen in testing: two g7.4xlarge
         # launches for one smoke model, then a timeout. Re-enable once the AMI
         # supports them.
         - key: karpenter.k8s.aws/instance-family

@@ -1,10 +1,5 @@
 # Platform Health Agent
 
-> Internal Kubernetes resources keep the name `platform-health-agent` for backwards
-> compatibility. The public-facing display name was changed to avoid a clash
-> with AWS's "Platform Health Agent" service. The ServiceAccounts, ClusterRoles,
-> and the postgres database are all still named `platform-health-agent` / `platform_health_agent`.
-
 > **Packaging:** the agent ships as a **component of the cluster-dashboard app**,
 > not as a standalone service. Its manifests live alongside the dashboard's
 > (`platform/services/cluster-dashboard/pha-*.yaml`, wired via that directory's
@@ -23,10 +18,6 @@ serves a healthy endpoint, and watches nothing (no investigations, no Jobs), so 
 default cluster stays green. Creating the key Secret (one `kubectl` command,
 below) activates it — no Terraform, no GitOps change.
 
-> See [`docs/platform-health-agent-architecture-design.md`](../../../docs/platform-health-agent-architecture-design.md)
-> and [`docs/platform-health-agent-implementation-plan.md`](../../../docs/platform-health-agent-implementation-plan.md)
-> for the full design.
-
 ---
 
 ## Approvals UX
@@ -37,9 +28,10 @@ the dashboard's topbar shows a `🔔 N pending` badge. Click it to open a panel
 listing each proposed fix with its severity, root cause, fix commands, and
 `[Approve]` / `[Dismiss]` buttons.
 
-**No external messaging system required** — no Slack app, no email, no domain
-or HTTPS setup. Same security model as the dashboard (ALB inbound CIDR
-allowlist).
+**No external messaging system required** — no Slack app, no email. Approving
+or dismissing a fix runs commands against the cluster, so it requires a
+signed-in admin (see [SECURITY.md](../../../SECURITY.md)); everyone else sees
+the proposals read-only.
 
 ---
 
@@ -259,19 +251,15 @@ kubectl logs -n ai-platform job/investigator-<8-char-hex>
 
 ## Cost notes
 
-The agent uses Kiro CLI hosted models:
-- Investigations: `claude-sonnet-4.6` (1.30x credits) — typically 5-30K tokens per run
-- Remediations: `claude-opus-4.6` (2.20x credits) — typically 5-15K tokens per run
-
-With the default budgets, upper bound ~2.6M weighted tokens/day. Adjust `KIRO_MODEL_*` to switch models (e.g. `claude-haiku-4.5` for cheaper investigations).
+The agent uses Kiro CLI hosted models. `KIRO_MODEL_*` in `pha-config.yaml` selects
+them (default `auto`); the daily budgets in the same file bound the spend. Typical
+use is 5-30K tokens per investigation and 5-15K per remediation.
 
 ---
 
 ## Future work
 
 - ESO-backed secret rotation
-- `awslabs.eks-mcp-server` MCP wiring (V1 uses raw kubectl)
-- Stronger approver auth on the dashboard (basic auth / OIDC)
 - Webhook-style remediation that opens a PR instead of applying imperatively
 - ARM64 image variants
 - Prometheus metrics + Grafana dashboard

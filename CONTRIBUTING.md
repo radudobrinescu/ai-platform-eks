@@ -72,3 +72,9 @@ Please do **not** create a public GitHub issue.
 
 See the [LICENSE](LICENSE) file for our project's licensing. We will ask you to confirm
 the licensing of your contribution.
+
+## Checking a change locally
+
+`make check` runs the offline checks (Python compile and unit tests, Terraform
+formatting, YAML parsing, shell syntax). It needs no AWS credentials. CI runs the
+same kinds of checks on every pull request.

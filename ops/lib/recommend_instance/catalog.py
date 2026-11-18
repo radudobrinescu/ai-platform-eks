@@ -107,11 +107,6 @@ class Instance:
     def total_vram_gb(self) -> int:
         return self.vram_gb * self.num_gpus
 
-    @property
-    def total_hbm_tb_s(self) -> float:
-        """Aggregate HBM bandwidth across all GPUs on the instance."""
-        return self.hbm_bandwidth_tb_s * self.num_gpus
-
 
 # HBM bandwidth values are per-GPU, taken from NVIDIA datasheets:
 #   T4   320 GB/s   (Turing,  cc 7.5,  fp16 tensor cores only — no native bf16/fp8/int4-Marlin)

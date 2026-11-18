@@ -114,7 +114,7 @@ gitops_revision = "main"
 # gitops_workloads_repo_url = "https://github.com/YOUR-ORG/ai-platform-workloads.git"
 
 # GPU cold-start optimization (optional) — pre-pulled container images on EBS snapshot.
-# Created by: ./ops/create-data-volume-snapshot.sh <ecr-image-uri>
+# Created by: ./ops/image/create-data-volume-snapshot.sh <ecr-image-uri>
 # When set, GPU nodes boot with the vLLM serving image already on disk (~0s image pull).
 # When empty (default), nodes fall back to SOCI lazy-loading or full image pull.
 # gpu_data_volume_snapshot_id = "snap-0123456789abcdef0"
