@@ -10,29 +10,35 @@ Ported from v1 (`feat/upgrade-lifecycle`, COMPATIBILITY.md). v1 ran Renovate
 against its own branch; v2 targets `main` and ships releases (see "Releases"
 below).
 
-## Anchors, and what needs a tick
+## Anchors, and what waits
 
 Nearly every coupling collapses onto two anchors; everything else derives from
-them. The rule for a Dependency Dashboard tick is narrower than "anchor": a
-tick is required only where the E2E gate cannot judge the change, because it
-affects what users run or cannot be undone:
+them. Nobody is assigned to tick a dashboard, so only one kind of update waits
+for a person. The others that E2E cannot fully judge (they affect what users
+run, or cannot be undone) get their own branch and wait for time instead:
 
-| Needs a tick | Why E2E is not enough | Branch |
-|---|---|---|
-| every **major** | breaking changes by definition; often code changes | `renovate/major-<group>` |
-| **EKS Kubernetes version** | one-way; replaces every node; gates the components below | `renovate/eks-kubernetes` |
-| every **vLLM** change | it runs every user's model; under 0.x a minor can drop architectures or flags users pass in `extraArgs`; E2E serves one small model | `renovate/vllm` |
-| **kro** and **llm-d router** minors | 0.x APIs users write manifests against (`VLLMEndpoint`, `LLMDEndpoint`) or route through | `renovate/kro-minor`, `renovate/llm-d-router-minor` |
+| Update | Why E2E alone is not enough | How it gets in | Branch |
+|---|---|---|---|
+| every **major** | breaking changes by definition; often code changes or a data migration | a tick on the Dependency Dashboard (the only one left) | `renovate/major-<group>` |
+| **EKS Kubernetes version** | one-way; replaces every node; gates the components below | by itself, 60 days after the minor's release | `renovate/eks-kubernetes` |
+| every **vLLM** change | it runs every user's model; under 0.x a minor can drop architectures or flags users pass in `extraArgs`; E2E serves one small model | by itself, when the version is 14 days old | `renovate/vllm` |
+| **LiteLLM** minors | the gateway for every request, key and budget; minors change the database schema | by itself, when the version is 14 days old | `renovate/litellm-minor` |
+| **kro** and **llm-d router** minors | 0.x APIs users write manifests against (`VLLMEndpoint`, `LLMDEndpoint`) or route through | by itself, at once: their registries (registry.k8s.io, ghcr.io) give Renovate no release dates, and an age without a date would hold them forever | `renovate/kro-minor`, `renovate/llm-d-router-minor` |
+
+The age is Renovate's `minimumReleaseAge` on those rules only (Docker Hub and
+endoflife.date give release dates; a version without a date is held, never
+proposed early). On top of it: the factory takes at most one of vLLM and the
+EKS version per cycle; every update is tested in every weekly cycle after it
+went in; and forkers get it only with the next published release, weeks later.
+The label `hold` keeps any PR out.
 
 Everything else, including Karpenter, Argo CD, Prometheus, the GPU operator and
 kro/router patches, flows with its group: E2E exercises each of them on real
 clusters (Karpenter provisions GPU nodes and drains them; Argo CD converges on
 both profiles and upgrades in place; KEDA scales on Prometheus; DCGM metrics
-flow). Each ticked update has its own branch, so a pending tick never holds
-back the rest of its group, and closing its PR means "not now"
-(`recreateWhen: always`). The Kubernetes version is read from endoflife.date
-(`amazon-eks`); take it one minor per release, in a release with nothing else
-major, after the components it gates already support the new minor (see
+flow). Each update in the table has its own branch, so it never holds
+back the rest of its group, and a failure blames it alone. The Kubernetes
+version is read from endoflife.date (`amazon-eks`), one minor per release (see
 "Kubernetes upgrade" below).
 
 | Anchor | Where it is set on `main` | What it gates |
@@ -45,7 +51,7 @@ major, after the components it gates already support the new minor (see
 1. Check the gated components on `main` against the target minor: Karpenter,
    AWS LB Controller, KEDA, the EKS Terraform module, `alpine/k8s`, the
    `kubernetes` Python client. The validated 1.37 set below is the reference.
-2. Tick `amazon-eks` on the dashboard. Renovate changes `kubernetes_version`
+2. Sixty days after the minor's release Renovate opens `renovate/eks-kubernetes`: it changes `kubernetes_version`
    in `example.tfvars` and `example-esc.tfvars` (the default for new clusters).
 3. On the `lifecycle` branch, raise the `alpine/k8s` and `kubernetes`
    `allowedVersions` ceilings to the new minor + 1
@@ -175,11 +181,11 @@ profiles) pending (Unit 1b). Pins: see the left column above, plus kro chart
    does not contain the newest release tag (Renovate did not run, or someone
    pushed to the branch). Their PRs are never merged, and never closed: the
    release branch takes them in.
-2. Updates that need a tick (see "Anchors, and what needs a tick") exist as
-   PRs only after a tick on the Dependency Dashboard; read the coupling notes
-   above first. An open PR therefore means "approved for the next release".
-   To take that back, close the PR: Renovate offers it again on the dashboard.
-   The label `hold` keeps any PR out of the next release without closing it.
+2. Majors exist as PRs only after a tick on the Dependency Dashboard (see
+   "Anchors, and what waits"); read the coupling notes above first. An open
+   major PR therefore means "approved for the next cycle". To take that back,
+   close the PR: Renovate offers it again on the dashboard. The label `hold`
+   keeps any PR out of the cycles without closing it.
 3. Cut a release: `python3 tools/release.py --repo <product checkout> cut vYYYY.MM.N renovate/infra renovate/inference ...`;
    cherry-pick coupled fixes by hand onto `release/<version>`.
 4. `python3 tools/release.py --repo <checkout> notes vYYYY.MM.N --base <previous tag or main>`
@@ -209,39 +215,28 @@ profiles) pending (Unit 1b). Pins: see the left column above, plus kro chart
    `git merge vYYYY.MM.N`, `./platformctl upgrade dev --plan-only`, then
    `--yes`, then `make -C terraform plan-all ENVIRONMENT=dev` (expect no changes).
 
-### Scheduled release candidate
+### The factory (scheduled)
 
-`.github/workflows/release-candidate.yaml` runs on Mondays and Tuesdays at 07:41
-and 13:41 UTC, after Renovate's window, and acts only in release weeks (every
-second Monday from `vars.RELEASE_ANCHOR`, default 2026-11-09; `force` ignores
-the calendar; `dry_run` only plans). GitHub delays scheduled runs by hours and
-drops some, mostly at the start of an hour (on 2026-11-02 the 07:00 and 08:00
-runs never fired), hence the odd minute and the catch-up runs.
-`tools/release_candidate.py plan` decides:
+`.github/workflows/release-candidate.yaml` runs every day at 07:41 and 13:41
+UTC (GitHub delays scheduled runs by hours and drops some, mostly at the start
+of an hour; on 2026-11-02 the 07:00 and 08:00 runs never fired, hence the odd
+minute and the second run) and does one step per run. README.md, "The factory:
+cycles and releases", is the description; `tools/release_candidate.py` holds
+the rules. In short:
 
-- groups: every open Renovate PR on `renovate/<group>` (majors and anchors
-  exist as PRs only after a dashboard tick, which is the approval); any PR
-  labelled `hold` is left out;
-- a branch that does not contain the newest release tag is left out as stale
-  (warning in the run; it means Renovate has not rebased it), as is a branch
-  with no change against `main`;
-- no release when nothing is left and `main` has no commits since the tag;
-- one release per week: nothing happens while a `release/<v>` newer than the
-  newest tag exists (even with `force`), or when the newest tag was created
-  this week (Monday 00:00 UTC on; `force` overrides);
-- resume: a `release/<v>` that was cut but never got a PR (for example the
-  token could not open one) is finished on the next run: PR and E2E, no new
-  cut. To abandon a release, close its PR and delete the branch;
-- version: `vYYYY.MM.N` for today's month (or the newest tag's, if later), N
-  counting up within the month.
+- a cycle every `CYCLE_DAYS`: steps 3 to 5 above without coupled fixes (a group
+  that conflicts is left out); its E2E upgrades from the newest tag, the last
+  published release;
+- green: `release-finish.yaml` does steps 6 and 7. Only a cycle with the PR
+  label `publish` is tagged (newest tag `PUBLISH_DAYS` old, a `security` PR in
+  it, or asked for); the others are merged and stop there;
+- red: one retry of the failed jobs, then the candidate is abandoned and its
+  suspects are tested one at a time in the next cycles; an unapproved candidate
+  is abandoned after `WAIT_DAYS` and cut again;
+- one anchor update (vLLM, EKS Kubernetes version) per cycle;
+- the version, `vYYYY.MM.N` for today's month (or the newest tag's, if later),
+  is reused until a cycle is published.
 
-It then does steps 3 to 5 (cut without coupled fixes, notes, push, release PR,
-one E2E dispatch that waits for the `e2e` approval). A merge conflict or any
-other failure opens or comments on the issue "Release candidate needs
-attention"; resolve conflicts by hand on `release/<version>` (or delete the
-branch and rerun with `force`). So does a release week with no release because
-every group branch is stale. Steps 6 and 7 are done by `release-finish.yaml`,
-which the last job of every green E2E run dispatches, and which finishes the release in flight when
-all four statuses are green (`finish --if-green`); a failure there opens or
-comments on the same issue, and a rerun resumes. Step 8 (the canary) stays
-manual, as does the approval of the `e2e` environment.
+Step 8 (the canary) and the approval of the `e2e` environment stay manual. A
+cherry-picked coupled fix goes onto `release/<version>` by hand, before E2E is
+approved (any push after E2E needs a rerun).

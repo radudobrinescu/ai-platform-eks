@@ -136,6 +136,29 @@ class TestNotes:
         with pytest.raises(release.ReleaseError, match="not newer"):
             release.notes(str(repo), "v2026.10.0", "v2026.11.0", commit=False)
 
+    def test_notes_of_a_version_that_was_never_tagged_are_replaced(self, repo):
+        """Integration cycles are not tagged. The next cycle writes the release in
+        the making again, under today's version name, and keeps hand edits."""
+        release.notes(str(repo), "v2026.11.0", "base", date="2026-11-02")
+        git(repo, "tag", "v2026.11.0")                                      # published
+        release.notes(str(repo), "v2026.11.1", "v2026.11.0", date="2026-11-16")           # a cycle, merged, not tagged
+        man = json.loads((repo / "releases/v2026.11.1.json").read_text())
+        man["manual_steps"] = ["Export your traces first."]
+        (repo / "releases/v2026.11.1.json").write_text(json.dumps(man))
+        git(repo, "commit", "-qam", "manual step, written by hand")
+        tree(repo, "v0.34.0", "1.15.0", "v1.83.14-stable", "1.36")
+        git(repo, "commit", "-qam", "next cycle, next month")
+        m = release.notes(str(repo), "v2026.12.0", "v2026.11.0", date="2026-12-07")
+        assert m["previous"] == "v2026.11.0" and m["manual_steps"] == ["Export your traces first."]
+        assert sorted(x.name for x in (repo / "releases").iterdir()) == ["v2026.11.0.json", "v2026.12.0.json"]
+        assert sorted(x.name for x in (repo / "docs/releases").iterdir()) == ["v2026.11.0.md", "v2026.12.0.md"]
+        rows = [ln for ln in (repo / "docs/validated-versions.md").read_text().splitlines() if ln.startswith("| [v")]
+        assert [r[len("| ["):r.index("]")] for r in rows] == ["v2026.12.0", "v2026.11.0"]
+        notes = (repo / "docs/releases/v2026.12.0.md").read_text()
+        assert "| vllm | `v0.32.0` | `v0.34.0` |" in notes and "Export your traces first." in notes   # since the last tag
+        assert not git(repo, "status", "--porcelain").strip()
+        assert "v2026.11.1" not in git(repo, "ls-files")
+
     def test_output_is_product_safe(self, repo):
         release.notes(str(repo), "v2026.11.0", "base", date="2026-11-02", commit=False)
         for rel in ("docs/releases/v2026.11.0.md", "releases/v2026.11.0.json", "docs/validated-versions.md"):
@@ -199,6 +222,40 @@ class TestCut:
             release.cut(str(clone), "v2026.11.2", ["update/stale", "update/fresh"], push=False)
         assert git(clone, "rev-parse", "--abbrev-ref", "HEAD").strip() == "main"
         assert release.cut(str(clone), "v2026.11.2", ["update/fresh"], push=False) == "release/v2026.11.2"
+
+    def test_cut_can_leave_out_a_branch_that_conflicts(self, tmp_path, capsys):
+        origin = tmp_path / "origin"
+        origin.mkdir()
+        git(origin, "init", "-q", "-b", "main")
+        write(origin, "a.txt", "a\n")
+        git(origin, "add", "-A")
+        git(origin, "commit", "-qm", "a")
+        for name, text in (("update/one", "one\n"), ("update/two", "two\n")):   # both change the same line
+            git(origin, "switch", "-q", "-c", name, "main")
+            write(origin, "a.txt", text)
+            git(origin, "commit", "-qam", name)
+        git(origin, "switch", "-q", "-c", "update/three", "main")
+        write(origin, "c.txt", "c\n")
+        git(origin, "add", "-A")
+        git(origin, "commit", "-qm", "three")
+        git(origin, "switch", "-q", "main")
+        clone = tmp_path / "clone"
+        subprocess.run(["git", "clone", "-q", str(origin), str(clone)], check=True, env=GIT_ENV)
+        with pytest.raises(release.ReleaseError, match="conflicts"):
+            release.cut(str(clone), "v2026.11.0", ["update/one", "update/two", "update/three"], push=False)
+        git(clone, "switch", "-q", "main")
+        git(clone, "branch", "-D", "release/v2026.11.0")
+        left_out = []
+        release.cut(str(clone), "v2026.11.0", ["update/one", "update/two", "update/three"], push=False,
+                    conflicts=left_out)
+        assert left_out == ["update/two"]
+        assert (clone / "a.txt").read_text() == "one\n" and (clone / "c.txt").exists()     # the rest went in
+        assert not git(clone, "status", "--porcelain").strip()
+        git(clone, "switch", "-q", "main")
+        git(clone, "branch", "-D", "release/v2026.11.0")
+        assert release.main(["--repo", str(clone), "cut", "v2026.11.0", "update/one", "update/two",
+                             "--no-push", "--skip-conflicts"]) == 0
+        assert capsys.readouterr().out.splitlines() == ["release/v2026.11.0", "conflict: update/two"]
 
     def test_cut_refuses_bad_version(self, tmp_path):
         with pytest.raises(release.ReleaseError):

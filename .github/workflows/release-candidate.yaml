@@ -1,39 +1,59 @@
-# Release candidate: every second Monday, cut the next release and start its E2E.
+# The release factory, one step per run.
 #
-# Runs after Renovate's Monday window, at :41 past the hour (GitHub drops
-# scheduled runs at the start of an hour under load) on Monday and Tuesday,
-# 07:41 and 13:41 UTC: the later runs catch up when an earlier one was delayed
-# or dropped, and do nothing once this week's release is cut or tagged. In a
-# release week (every second Monday
-# from vars.RELEASE_ANCHOR, default 2026-11-09) it plans with
-# tools/release_candidate.py, then:
-#   1. cuts release/<version> from main with the fresh Renovate group branches
-#      (every open Renovate PR; majors exist only after a dashboard tick; label hold excludes),
-#   2. writes the notes and manifest (tools/release.py notes),
-#   3. pushes and opens the release PR into main,
-#   4. dispatches e2e (fresh,upgrade from the previous tag, both profiles),
-#      which waits for the e2e environment's required reviewer.
-# Recording the results, merging, tagging and the canary stay manual.
-# A merge conflict or any failure, or a release week skipped because every
-# group branch is stale, opens (or comments on) an issue.
+# Runs twice a day (off the hour: GitHub drops scheduled runs at the start of an
+# hour under load; the second run catches up when the first was dropped) and by
+# hand. tools/release_candidate.py decides what to do from the state of the
+# repository, and this workflow does it:
+#
+#   cut      start a cycle: release/<version> = main + the eligible Renovate
+#            group branches (a branch that conflicts is left out) + the notes
+#            and manifest; push; open the PR; dispatch E2E (fresh,upgrade from
+#            the last published release, both profiles), which waits for the
+#            e2e environment's reviewer. A cycle that is a release gets the
+#            label `publish`.
+#   wait     a cycle is in flight and its E2E is not decided. (If no E2E run
+#            exists for it, because the dispatch failed, it is dispatched now.)
+#   retry    its E2E failed for the first time: dispatch the failed jobs again.
+#   finish   its E2E is green: dispatch release-finish (merge; tag and publish
+#            only with the label `publish`).
+#   abandon  its E2E failed twice; or nobody approved it for vars.WAIT_DAYS; or
+#            main moved since the cut; or it is green and still unmerged after
+#            WAIT_DAYS; or its PR was closed: mark the suspects (commit
+#            statuses, so the next cycles test them one at a time), close the
+#            PR, delete the branch.
+#   none     nothing to do.
+#
+# So a cycle never blocks the next one. The only thing a person does is approve
+# the e2e environment. The issue "Release candidate needs attention" is opened
+# (or commented on) when a step fails, when a candidate is abandoned, and when
+# main itself fails E2E; release-finish closes it when a cycle is merged.
+#
+# Settings (repository variables, all optional): CYCLE_DAYS (7: days between
+# cycles), PUBLISH_DAYS (90: a cycle becomes a release when the newest tag is
+# this old), WAIT_DAYS (5: an undecided cycle is abandoned and cut again),
+# MARK_DAYS (14: a suspect that failed is tried again after this long).
+# Inputs: force (start a cycle now), publish (make it a release), dry_run.
 #
 # Needs: secret E2E_PUSH_TOKEN (fine-grained PAT with Contents, Workflows and
-# Pull requests write; the release PR is opened as that user, so main's CI runs
-# on it). A release branch that was cut but never got a PR is resumed.
+# Pull requests write; the PR is opened as that user, so main's CI runs on it).
 name: release-candidate
-run-name: release candidate${{ inputs.force && ' (forced)' || '' }}${{ inputs.dry_run && ' (dry run)' || '' }}
+run-name: factory${{ inputs.force && ' (forced)' || '' }}${{ inputs.publish && ' (publish)' || '' }}${{ inputs.dry_run && ' (dry run)' || '' }}
 
 on:
   schedule:
-    - cron: "41 7,13 * * 1,2"
+    - cron: "41 7,13 * * *"
   workflow_dispatch:
     inputs:
       force:
-        description: "Ignore the two-week calendar"
+        description: "Start a cycle now (ignore the days between cycles)"
+        type: boolean
+        default: false
+      publish:
+        description: "Make the cycle a release (tag and publish when E2E is green)"
         type: boolean
         default: false
       dry_run:
-        description: "Plan only: no branch, PR, E2E run or issue"
+        description: "Plan only: change nothing"
         type: boolean
         default: false
 
@@ -46,7 +66,7 @@ concurrency:
 
 jobs:
   candidate:
-    name: plan, cut, notes, PR, dispatch E2E
+    name: plan and act
     runs-on: ubuntu-latest
     timeout-minutes: 30
     permissions:
@@ -54,12 +74,18 @@ jobs:
       pull-requests: write
       issues: write
       actions: write
+      statuses: write
     env:
       GH_TOKEN: ${{ github.token }}
       REPO: ${{ github.repository }}
       FORCE: ${{ inputs.force }}
+      PUBLISH: ${{ inputs.publish }}
       DRY_RUN: ${{ inputs.dry_run }}
-      ANCHOR: ${{ vars.RELEASE_ANCHOR || '2026-11-09' }}
+      CYCLE_DAYS: ${{ vars.CYCLE_DAYS || '7' }}
+      PUBLISH_DAYS: ${{ vars.PUBLISH_DAYS || '90' }}
+      WAIT_DAYS: ${{ vars.WAIT_DAYS || '5' }}
+      MARK_DAYS: ${{ vars.MARK_DAYS || '14' }}
+      RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
       HAS_PUSH_TOKEN: ${{ secrets.E2E_PUSH_TOKEN != '' }}
     steps:
       - name: Check configuration
@@ -85,37 +111,53 @@ jobs:
         id: plan
         run: |
           set -euo pipefail
-          git -C subject fetch --quiet origin '+refs/heads/renovate/*:refs/remotes/origin/renovate/*' \
+          git -C subject fetch --quiet --prune origin '+refs/heads/renovate/*:refs/remotes/origin/renovate/*' \
             '+refs/heads/release/*:refs/remotes/origin/release/*'
-          gh pr list --repo "$REPO" --state open --limit 100 --json headRefName,labels > prs.json
-          gh pr list --repo "$REPO" --state all --limit 200 --json headRefName > all-prs.json
-          args=(--repo subject --prs prs.json --release-prs all-prs.json --today "$(date -u +%F)" --anchor "$ANCHOR")
+          gh pr list --repo "$REPO" --state open --limit 100 --json headRefName,labels,headRefOid > prs.json
+          gh pr list --repo "$REPO" --state all --limit 300 --json headRefName,headRefOid,state,number,createdAt > all-prs.json
+          args=(--repo subject --prs prs.json --release-prs all-prs.json --github "$REPO" --today "$(date -u +%F)"
+                --cycle-days "$CYCLE_DAYS" --publish-days "$PUBLISH_DAYS" --wait-days "$WAIT_DAYS"
+                --mark-days "$MARK_DAYS")
           if [ "$FORCE" = true ]; then args+=(--force); fi
+          if [ "$PUBLISH" = true ]; then args+=(--publish); fi
           python3 tools/release_candidate.py plan "${args[@]}" > plan.json
           cat plan.json
-          stale="$(jq -r '.stale | join(", ")' plan.json)"
-          if [ -n "$stale" ]; then
-            echo "::warning::left out, not rebased onto the last release yet: $stale"
+          action="$(jq -r .action plan.json)"
+          if [ "$DRY_RUN" = true ] && [ "$action" != none ] && [ "$action" != wait ]; then
+            echo "::notice::dry run: would ${action}: $(jq -r '.reason // ""' plan.json)"
+            action=none
           fi
-          echo "::notice::$(jq -r 'if .release then "release \(.version) from \(.base)" else .reason end' plan.json)"
+          echo "::notice::${action}: $(jq -r 'if .action == "cut" then "\(.version) from \(.base) (\(.kind // "resume")\(if .publish then ", release" else "" end))" else .reason end' plan.json)"
+          head=""
+          version="$(jq -r '.version // ""' plan.json)"
+          if [ -n "$version" ] && git -C subject rev-parse -q --verify "origin/release/$version" >/dev/null; then
+            head="$(git -C subject rev-parse "origin/release/$version")"
+          fi
           {
-            echo "release=$(jq -r .release plan.json)"
+            echo "action=$action"
             echo "resume=$(jq -r .resume plan.json)"
-            echo "version=$(jq -r '.version // ""' plan.json)"
+            echo "publish=$(jq -r .publish plan.json)"
+            echo "attention=$(jq -r .attention plan.json)"
+            echo "version=$version"
             echo "base=$(jq -r '.base // ""' plan.json)"
-            echo "stale=$stale"
-            echo "dry_run=$([ "$DRY_RUN" = true ] && echo true || echo false)"
+            echo "pr=$(jq -r '.pr // ""' plan.json)"
+            echo "why=$(jq -r '.why // ""' plan.json)"
+            echo "pr_created=$(jq -r '.pr_created // ""' plan.json)"
+            echo "leftover=$(jq -r .leftover plan.json)"
+            echo "head=$head"
           } >> "$GITHUB_OUTPUT"
           {
-            echo "## Release candidate plan"
+            echo "## Factory plan"
             echo
             echo '```json'
             cat plan.json
             echo '```'
           } >> "$GITHUB_STEP_SUMMARY"
 
+      # ------------------------------------------------------------------ cut
       - name: Cut, notes, push
-        if: steps.plan.outputs.release == 'true' && steps.plan.outputs.resume != 'true' && steps.plan.outputs.dry_run != 'true'
+        id: cut
+        if: steps.plan.outputs.action == 'cut' && steps.plan.outputs.resume != 'true'
         env:
           VERSION: ${{ steps.plan.outputs.version }}
           BASE: ${{ steps.plan.outputs.base }}
@@ -124,28 +166,49 @@ jobs:
           git -C subject config user.name "github-actions[bot]"
           git -C subject config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           mapfile -t branches < <(jq -r '.branches[]' plan.json)
-          python3 tools/release.py --repo subject cut "$VERSION" "${branches[@]}" --no-push
+          # A group that does not merge cleanly (with main, or with a group merged
+          # before it) is left out; Renovate rebases it and it returns next cycle.
+          python3 tools/release.py --repo subject cut "$VERSION" "${branches[@]}" --no-push --skip-conflicts | tee cut.log
+          conflicts="$(sed -n 's/^conflict: //p' cut.log | jq -R . | jq -cs .)"
+          jq --argjson c "$conflicts" '.conflicts += $c | .branches -= $c' plan.json > plan.new && mv plan.new plan.json
+          if git -C subject diff --quiet origin/main "release/$VERSION"; then
+            # Every group conflicted and main has nothing new: the candidate is
+            # main. Nothing to test; the next run plans again.
+            echo "::notice::nothing left to test in release/$VERSION (every group conflicts); no candidate"
+            git -C subject switch --quiet --detach origin/main
+            git -C subject branch --quiet -D "release/$VERSION"
+            echo "empty=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
           python3 tools/release.py --repo subject notes "$VERSION" --base "$BASE"
           git -C subject push --quiet -u origin "release/$VERSION:refs/heads/release/$VERSION"
 
       - name: Open the release PR
-        if: steps.plan.outputs.release == 'true' && steps.plan.outputs.dry_run != 'true'
+        if: steps.plan.outputs.action == 'cut' && steps.cut.outputs.empty != 'true'
         env:
           VERSION: ${{ steps.plan.outputs.version }}
+          IS_RELEASE: ${{ steps.plan.outputs.publish }}
           PUSH_TOKEN: ${{ secrets.E2E_PUSH_TOKEN }}
         run: |
           set -euo pipefail
           git -C subject fetch --quiet origin "release/$VERSION"
           git -C subject show "FETCH_HEAD:docs/releases/$VERSION.md" > notes.md
           python3 tools/release_candidate.py pr-body --plan plan.json --notes notes.md > body.md
+          args=(--repo "$REPO" --base main --head "release/$VERSION" --body-file body.md)
+          if [ "$IS_RELEASE" = true ]; then
+            gh label create publish --repo "$REPO" --color 0e8a16 \
+              --description "Release: tag and publish this candidate when E2E is green" 2>/dev/null || true
+            args+=(--title "release: $VERSION" --label publish)
+          else
+            args+=(--title "cycle: $VERSION")
+          fi
           # As the token's user, so main's required CI runs on the PR. GITHUB_TOKEN cannot
           # (repo setting: Actions may not create PRs), so there is no fallback; if this
           # fails, the next run resumes from here.
-          GH_TOKEN="$PUSH_TOKEN" gh pr create --repo "$REPO" --base main --head "release/$VERSION" \
-            --title "release: $VERSION" --body-file body.md
+          GH_TOKEN="$PUSH_TOKEN" gh pr create "${args[@]}"
 
       - name: Dispatch E2E (fresh + upgrade, both profiles; waits for approval)
-        if: steps.plan.outputs.release == 'true' && steps.plan.outputs.dry_run != 'true'
+        if: steps.plan.outputs.action == 'cut' && steps.cut.outputs.empty != 'true'
         env:
           VERSION: ${{ steps.plan.outputs.version }}
           BASE: ${{ steps.plan.outputs.base }}
@@ -155,19 +218,94 @@ jobs:
             -f subject="release/$VERSION" -f base="$BASE" -f profiles=default,managed
           echo "E2E dispatched for release/$VERSION (from $BASE); approve it in Actions." >> "$GITHUB_STEP_SUMMARY"
 
-      - name: Open or update an issue on failure or a skipped release
-        if: (!inputs.dry_run) && (failure() || (steps.plan.outputs.release == 'false' && steps.plan.outputs.stale != ''))
+      # ----------------------------------------------------------------- wait
+      - name: Dispatch E2E if the candidate has none (an earlier dispatch failed)
+        if: steps.plan.outputs.action == 'wait' && steps.plan.outputs.pr_created != ''
         env:
-          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+          VERSION: ${{ steps.plan.outputs.version }}
+          BASE: ${{ steps.plan.outputs.base }}
+          PR_CREATED: ${{ steps.plan.outputs.pr_created }}
+        run: |
+          set -euo pipefail
+          runs="$(gh run list --repo "$REPO" --workflow e2e.yaml --limit 100 --json displayTitle,createdAt \
+            --jq "[.[] | select(.displayTitle | contains(\"release/${VERSION} \")) | select(.createdAt >= \"${PR_CREATED}\")] | length")"
+          if [ "$runs" = 0 ]; then
+            gh workflow run e2e.yaml --repo "$REPO" --ref lifecycle -f modes=fresh,upgrade \
+              -f subject="release/$VERSION" -f base="$BASE" -f profiles=default,managed
+            echo "No E2E run existed for release/$VERSION; dispatched. Approve it in Actions." >> "$GITHUB_STEP_SUMMARY"
+          fi
+
+      # ---------------------------------------------------------------- retry
+      - name: Retry the failed E2E jobs once
+        if: steps.plan.outputs.action == 'retry'
+        env:
+          VERSION: ${{ steps.plan.outputs.version }}
+          BASE: ${{ steps.plan.outputs.base }}
+          HEAD_SHA: ${{ steps.plan.outputs.head }}
+        run: |
+          set -euo pipefail
+          modes="$(jq -r .retry.modes plan.json)"
+          profiles="$(jq -r .retry.profiles plan.json)"
+          # The mark that a retry exists, posted BEFORE the dispatch: the next runs
+          # wait for it instead of dispatching again, and a failure after it means
+          # "failed twice". If the dispatch below fails, the candidate is abandoned
+          # as undecided after WAIT_DAYS; it is never retried twice.
+          # State success, so it never holds the PR's merge state.
+          gh api -X POST "repos/${REPO}/statuses/${HEAD_SHA}" -f state=success -f context=candidate/retry \
+            -f target_url="$RUN_URL" -f description="failed E2E jobs dispatched again (${modes}; ${profiles})" >/dev/null
+          gh workflow run e2e.yaml --repo "$REPO" --ref lifecycle -f modes="$modes" \
+            -f subject="release/$VERSION" -f base="$BASE" -f profiles="$profiles"
+          echo "E2E retry dispatched for release/$VERSION (${modes}; ${profiles}); approve it in Actions." >> "$GITHUB_STEP_SUMMARY"
+
+      # --------------------------------------------------------------- finish
+      - name: Start release-finish
+        if: steps.plan.outputs.action == 'finish' || steps.plan.outputs.leftover == 'true'
+        run: gh workflow run release-finish.yaml --repo "$REPO" --ref lifecycle
+
+      # -------------------------------------------------------------- abandon
+      - name: Abandon the candidate
+        if: steps.plan.outputs.action == 'abandon'
+        env:
+          VERSION: ${{ steps.plan.outputs.version }}
+          PR: ${{ steps.plan.outputs.pr }}
+          WHY: ${{ steps.plan.outputs.why }}
+        run: |
+          set -euo pipefail
+          python3 tools/release_candidate.py abandon-comment --plan plan.json > comment.md
+          printf '\nRun: %s\n' "$RUN_URL" >> comment.md
+          # Order matters: every step can be repeated, and the next run finishes
+          # what this one did not. The marks go first: once the branch is gone,
+          # nothing else says which commits were suspects.
+          jq -c '.marks[]' plan.json > marks.jsonl
+          while read -r mark; do
+            sha="$(jq -r .sha <<<"$mark")"; context="$(jq -r .context <<<"$mark")"; what="$(jq -r .what <<<"$mark")"
+            gh api -X POST "repos/${REPO}/statuses/${sha}" -f state=failure -f context="$context" \
+              -f target_url="$RUN_URL" -f description="E2E failed twice with ${what} in the candidate ${VERSION}" >/dev/null
+          done < marks.jsonl
+          if [ -n "$PR" ] && [ "$WHY" != closed ]; then
+            gh pr close "$PR" --repo "$REPO" --comment "$(cat comment.md)"
+          fi
+          # E2E runs of this candidate that still wait for approval would test a
+          # branch that is gone. Running ones are left alone: they tear down.
+          gh run list --repo "$REPO" --workflow e2e.yaml --status waiting --limit 50 --json databaseId,displayTitle \
+            --jq ".[] | select(.displayTitle | contains(\"release/${VERSION} \")) | .databaseId" > waiting.txt
+          while read -r id; do gh run cancel "$id" --repo "$REPO" || true; done < waiting.txt
+          git -C subject push --quiet origin --delete "release/$VERSION"
+          cat comment.md >> "$GITHUB_STEP_SUMMARY"
+
+      # ---------------------------------------------------------------- issue
+      - name: Open or update the issue when something needs a person
+        if: (!inputs.dry_run) && (failure() || steps.plan.outputs.attention == 'true')
+        env:
           FAILED: ${{ job.status == 'failure' }}
-          STALE: ${{ steps.plan.outputs.stale }}
         run: |
           set -euo pipefail
           title="Release candidate needs attention"
           if [ "$FAILED" = true ]; then
-            printf 'The scheduled release candidate failed: %s\n\nSee the failed step. A merge conflict between group branches is resolved by hand on the release branch (COMPATIBILITY.md, Releases). If the branch was cut but the PR could not be opened, fix the cause and rerun the workflow: it resumes (opens the PR, dispatches E2E).\n' "$RUN_URL" > body.md
+            printf 'A step of the release factory failed: %s\n\nThe next run tries again from the state it finds. If the branch was cut but the PR could not be opened, it resumes (opens the PR, dispatches E2E).\n' "$RUN_URL" > body.md
           else
-            printf 'No release this week: %s\n\nLeft out because they do not contain the last release (Renovate has not rebased them): %s. Tick "rebase" for them on the Dependency Dashboard, then rerun with force.\n' "$RUN_URL" "$STALE" > body.md
+            printf '%s\n\nRun: %s\n' "$(jq -r .reason plan.json)" "$RUN_URL" > body.md
+            if [ -f comment.md ]; then printf '\n' >> body.md; cat comment.md >> body.md; fi
           fi
           num="$(gh issue list --repo "$REPO" --state open --search "in:title \"${title}\"" --json number --jq '.[0].number // empty')"
           if [ -n "$num" ]; then gh issue comment "$num" --repo "$REPO" --body-file body.md

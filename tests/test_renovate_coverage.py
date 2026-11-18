@@ -150,49 +150,62 @@ class TestPolicy:
         assert groups == {"infra", "inference", "gateway", "gitops", "tooling", "eks-kubernetes",
                           "vllm", "kro minor", "llm-d router minor", "litellm minor"}, groups
 
-    def test_targets_main_without_a_release_age(self):
-        """No minimumReleaseAge: the E2E gate judges every version on real clusters,
-        and a release age only produced stale group branches (branches frozen while
-        an update was 'pending') and Docker Hub re-push delays (postgres, python)."""
+    def test_targets_main_and_only_three_updates_wait_for_an_age(self):
+        """No general minimumReleaseAge: the E2E gate judges every version on real
+        clusters, and an age on the groups only produced stale branches (frozen
+        while one update was 'pending') and Docker Hub re-push delays (postgres,
+        python). Three updates soak instead of waiting for a tick: vLLM, LiteLLM
+        minors and the EKS version. Each has its own branch (nothing else is held
+        back) and a registry that gives Renovate release dates (Docker Hub,
+        endoflife.date). kro and the llm-d router come from registries without
+        dates (registry.k8s.io, ghcr.io): an age there would hold them forever,
+        because a version without a date is never 'old enough'."""
         cfg = _renovate()
         assert cfg["baseBranchPatterns"] == ["main"]
         assert cfg["forkProcessing"] == "enabled"
-        assert "minimumReleaseAge" not in cfg
-        assert not any("minimumReleaseAge" in r or "minimumReleaseAgeBehaviour" in r for r in cfg["packageRules"])
+        assert "minimumReleaseAge" not in cfg and "minimumReleaseAgeBehaviour" not in cfg
+        aged = {tuple(r.get("matchDepNames") or ()): r for r in cfg["packageRules"] if "minimumReleaseAge" in r}
+        assert {k: r["minimumReleaseAge"] for k, r in aged.items()} == {
+            ("vllm/vllm-openai",): "14 days", ("litellm/litellm",): "14 days", ("amazon-eks",): "60 days"}
+        for r in aged.values():
+            assert r.get("groupSlug") and "minimumReleaseAgeBehaviour" not in r   # default: no date = held
+        hub = {"vllm/vllm-openai", "litellm/litellm"}                               # must stay on Docker Hub
+        for m in cfg["customManagers"]:
+            if m.get("depNameTemplate") in hub:
+                assert m["datasourceTemplate"] == "docker" and "packageNameTemplate" not in m
         assert "security" in cfg["vulnerabilityAlerts"]["labels"]
 
-    def test_ticks_only_where_e2e_cannot_judge(self):
-        """A dashboard tick is required for: every major; the EKS version (one-way);
-        every vLLM change (it runs users' models); kro and llm-d router minors
-        (0.x APIs users write against); LiteLLM minors (the gateway for every
-        request, key and budget). Nothing else: E2E judges Karpenter, Argo CD,
-        Prometheus, the GPU operator and the rest. Each ticked update gets its own
-        branch, so it never holds back the group it would otherwise sit in, and
-        closing its PR means 'not now' (recreateWhen: always)."""
+    def test_only_majors_wait_for_a_person(self):
+        """Nobody is assigned to tick, so a dashboard tick is required for majors
+        only (they usually need code or a data migration). The updates that used
+        to need one keep their own branch, so a failure blames them alone: every
+        vLLM change, kro and llm-d router minors, LiteLLM minors, the EKS
+        version. Everything else flows with its group."""
         rules = _renovate()["packageRules"]
         gated = [r for r in rules if r.get("dependencyDashboardApproval")]
         got = {(tuple(r.get("matchDepNames") or ()), tuple(r.get("matchUpdateTypes") or ())) for r in gated}
-        assert got == {((), ("major",)), (("vllm/vllm-openai",), ()), (("kro",), ("minor",)),
-                       (("llm-d-router-standalone",), ("minor",)), (("litellm/litellm",), ("minor",)),
-                       (("amazon-eks",), ())}, got
-        for r in gated:
-            assert r["recreateWhen"] == "always", r["description"][:60]
-            if r.get("matchDepNames"):
-                assert r.get("groupSlug"), f"{r['matchDepNames']}: a ticked update needs its own branch"
+        assert got == {((), ("major",))}, got
+        assert gated[0]["recreateWhen"] == "always"
+        own = {(tuple(r.get("matchDepNames") or ()), tuple(r.get("matchUpdateTypes") or ())): r["groupSlug"]
+               for r in rules if r.get("groupSlug") in ("vllm", "kro-minor", "llm-d-router-minor", "litellm-minor",
+                                                        "eks-kubernetes")}
+        assert own == {(("vllm/vllm-openai",), ()): "vllm", (("kro",), ("minor",)): "kro-minor",
+                       (("llm-d-router-standalone",), ("minor",)): "llm-d-router-minor",
+                       (("litellm/litellm",), ("minor",)): "litellm-minor", (("amazon-eks",), ()): "eks-kubernetes"}
         for dep in ("karpenter", "argo-cd", "prom/prometheus", "gpu-operator", "keda"):
             assert not any(dep in (r.get("matchDepNames") or []) for r in gated), f"{dep} should flow without a tick"
 
-    def test_eks_kubernetes_anchor_is_watched_but_never_proposed_unasked(self):
-        """The EKS version follows endoflife.date, so a new minor shows up on the
-        dashboard, but a PR exists only after a tick, on its own branch."""
+    def test_eks_kubernetes_anchor_is_proposed_after_a_soak_one_minor_at_a_time(self):
+        """The EKS version follows endoflife.date. A new minor gets a PR, on its
+        own branch, 60 days after its release."""
         cfg = _renovate()
         rules = [r for r in cfg["packageRules"] if r.get("matchDepNames") == ["amazon-eks"]]
         assert len(rules) == 1
         r = rules[0]
         assert r["matchDatasources"] == ["endoflife-date"]
-        assert r["dependencyDashboardApproval"] is True and r["recreateWhen"] == "always"
+        assert "dependencyDashboardApproval" not in r and r["minimumReleaseAge"] == "60 days"
         assert r["groupName"] == "eks-kubernetes" and r["automerge"] is False
-        assert r["separateMultipleMinor"] is True  # 1.37 and 1.38 as two ticks, never a two-minor jump
+        assert r["separateMultipleMinor"] is True  # 1.37 and 1.38 as two PRs, never a two-minor jump
         rx = r["extractVersion"].replace("(?<", "(?P<")  # Renovate uses JS named groups
         assert re.match(rx, "1.37-eks-4").group("version") == "1.37"
         managers = [m for m in cfg["customManagers"] if m.get("depNameTemplate") == "amazon-eks"]
