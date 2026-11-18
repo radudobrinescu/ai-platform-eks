@@ -42,7 +42,7 @@ class TestAllWorkflows:
             assert "pull_request_target" not in text, path
 
     def test_top_level_permissions_are_read_only(self):
-        for name in ("ci.yaml", "e2e.yaml", "main-schedules.yaml", "release-finish.yaml"):
+        for name in ("ci.yaml", "e2e.yaml", "main-schedules.yaml", "release-finish.yaml", "watchdog.yaml"):
             wf, _ = _load(name)
             assert wf["permissions"] == {"contents": "read"}, name
 
@@ -53,6 +53,40 @@ class TestAllWorkflows:
             for job in wf["jobs"].values():
                 for s in _steps(job):
                     assert "inputs." not in (s.get("run") or ""), (path, s.get("name"))
+
+
+class TestWatchdogWorkflow:
+    def test_weekly_off_the_hour_github_only(self):
+        wf, text = _load("watchdog.yaml")
+        on = _on(wf)
+        assert on["schedule"] == [{"cron": "23 6 * * 1"}] and "workflow_dispatch" in on
+        job = wf["jobs"]["check"]
+        assert job["permissions"] == {"contents": "read", "issues": "write", "actions": "read", "pull-requests": "read"}
+        assert "environment" not in job and "aws" not in text.lower()
+        check = _step(job, "Check tokens")
+        assert "--token-env E2E_PUSH_TOKEN=E2E_PUSH_TOKEN" in check["run"]
+        assert check["env"]["E2E_PUSH_TOKEN"] == "${{ secrets.E2E_PUSH_TOKEN }}"
+        for s in _steps(job):
+            assert "${{" not in (s.get("run") or ""), s.get("name")
+
+    def test_it_watches_every_factory_workflow_by_its_real_name(self):
+        import watchdog
+        names = set()
+        for path in glob.glob(os.path.join(WF_DIR, "*.yaml")):
+            wf, _ = _load(os.path.basename(path))
+            names.add(wf["name"])
+        assert set(watchdog.FACTORY_WORKFLOWS) <= names, set(watchdog.FACTORY_WORKFLOWS) - names
+        scheduled = set()
+        for path in glob.glob(os.path.join(WF_DIR, "*.yaml")):
+            wf, _ = _load(os.path.basename(path))
+            if "schedule" in _on(wf):
+                scheduled.add(wf["name"])
+        assert scheduled <= set(watchdog.FACTORY_WORKFLOWS), scheduled - set(watchdog.FACTORY_WORKFLOWS)
+
+    def test_issue_titles_match_the_tool(self):
+        import watchdog
+        _, text = _load("watchdog.yaml")
+        assert f'title="{watchdog.STATUS_TITLE}"' in text and f'title="{watchdog.ATTENTION_TITLE}"' in text
 
 
 class TestReleaseFinishWorkflow:
@@ -265,6 +299,41 @@ class TestE2EWorkflow:
         assert desc == release.status_description(mode, profile, "passed" if passed else "failed", base=base, llmd=llmd)
         fields = release.status_fields(desc)
         assert fields.get("llmd") == llmd and fields.get("base") == (base if mode == "upgrade" else None)
+
+    def test_preflight_runs_before_the_harness_and_a_full_account_is_not_a_failed_candidate(self, tmp_path):
+        wf, _ = _load("e2e.yaml")
+        job = wf["jobs"]["e2e"]
+        names = [s.get("name", "") for s in _steps(job)]
+        pre = "Preflight (leftover environments, Elastic IP headroom)"
+        assert names.index("Configure AWS credentials (OIDC -> E2E provisioning role)") < names.index(pre) \
+            < names.index("Run the harness")
+        step = _step(job, pre)
+        assert step["id"] == "preflight" and 'harness/leftovers.py --env "$ENV_NAME" --region "$E2E_REGION"' in step["run"]
+        assert job["outputs"] == {"leaked": "${{ steps.preflight.outputs.leaked }}"}
+        result = _step(job, "Commit status result")
+        assert result["env"]["BLOCKED"] == "${{ steps.preflight.outputs.blocked }}"
+        # Run the status step as it would after a blocked preflight: the harness never ran (no rc).
+        out = tmp_path / "args"
+        fake = tmp_path / "gh"
+        fake.write_text(f'#!/bin/sh\nfor a in "$@"; do printf \'%s\\n\' "$a"; done > "{out}"\n')
+        fake.chmod(0o755)
+        env = {"PATH": f"{tmp_path}:{os.environ['PATH']}", "MODE": "upgrade", "PROFILE": "default", "RC": "",
+               "BLOCKED": "true", "BASE_REF": "v2026.11.7", "WITH_LLMD": "true", "GITHUB_REPOSITORY": "o/r",
+               "STATUS_SHA": "abc", "CONTEXT": "e2e/upgrade-default", "RUN_URL": "https://ci/run/1"}
+        subprocess.run(["bash", "-euo", "pipefail", "-c", result["run"]], check=True, env=env)
+        args = out.read_text().splitlines()
+        assert "state=pending" in args and "state=failure" not in args          # nothing ran, nothing failed
+        assert any(a.startswith("description=E2E upgrade (default) not run (no free Elastic IPs)") for a in args)
+        subprocess.run(["bash", "-euo", "pipefail", "-c", result["run"]], check=True, env={**env, "BLOCKED": "false"})
+        assert "state=failure" in out.read_text().splitlines()                  # a killed harness is still a failure
+
+    def test_leftover_environments_are_reported_in_an_issue(self):
+        wf, _ = _load("e2e.yaml")
+        job = wf["jobs"]["leftovers"]
+        assert job["needs"] == "e2e" and job["if"] == "always() && needs.e2e.outputs.leaked != ''"
+        assert job["permissions"] == {"issues": "write"} and "environment" not in job
+        run = _steps(job)[0]["run"]
+        assert 'title="E2E environments left behind"' in run and "for c in $LEAKED" in run and "${{" not in run
 
     def test_teardown_safety_net(self):
         wf, _ = _load("e2e.yaml")

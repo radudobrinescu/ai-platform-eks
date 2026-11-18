@@ -1,0 +1,74 @@
+# Watchdog: what would stop the factory without anyone noticing.
+#
+# Weekly (and by hand). Nobody watches the factory, so this looks for its quiet
+# failures (tools/watchdog.py) and says so where it is seen:
+#   * the push tokens are valid and do not expire within 30 days;
+#   * no factory workflow is disabled (GitHub disables scheduled workflows of a
+#     repository without activity for 60 days);
+#   * the factory's scheduled run happened in the last 3 days;
+#   * a cycle was merged in the last 21 days;
+#   * the issue "Release candidate needs attention" is not open for over 7 days.
+# It keeps the issue "Factory status" up to date with all of it, and comments
+# on (or opens) "Release candidate needs attention" when something is wrong.
+# GitHub only: no cloud credentials, no environment.
+name: watchdog
+
+on:
+  schedule:
+    - cron: "23 6 * * 1"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: watchdog
+  cancel-in-progress: false
+
+jobs:
+  check:
+    name: look for quiet failures
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+      issues: write
+      actions: read
+      pull-requests: read
+    env:
+      GH_TOKEN: ${{ github.token }}
+      REPO: ${{ github.repository }}
+      RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.12"
+
+      - name: Check tokens, workflows, schedule and progress
+        env:
+          E2E_PUSH_TOKEN: ${{ secrets.E2E_PUSH_TOKEN }}
+          PUBLIC_PUSH_TOKEN: ${{ secrets.PUBLIC_PUSH_TOKEN }}
+        run: |
+          set -euo pipefail
+          python3 tools/watchdog.py --github "$REPO" \
+            --token-env E2E_PUSH_TOKEN=E2E_PUSH_TOKEN --token-env PUBLIC_PUSH_TOKEN=PUBLIC_PUSH_TOKEN \
+            | tee -a "$GITHUB_STEP_SUMMARY"
+
+      - name: Keep the issue "Factory status" up to date
+        run: |
+          set -euo pipefail
+          title="Factory status"
+          num="$(gh issue list --repo "$REPO" --state open --search "in:title \"${title}\"" --json number --jq '.[0].number // empty')"
+          if [ -n "$num" ]; then gh issue edit "$num" --repo "$REPO" --body-file status.md >/dev/null
+          else gh issue create --repo "$REPO" --title "$title" --body-file status.md; fi
+
+      - name: Say what needs attention
+        run: |
+          set -euo pipefail
+          [ -s problems.md ] || { echo "nothing needs attention"; exit 0; }
+          title="Release candidate needs attention"
+          { echo "The weekly watchdog found:"; echo; cat problems.md; echo; echo "Run: ${RUN_URL}"; } > body.md
+          num="$(gh issue list --repo "$REPO" --state open --search "in:title \"${title}\"" --json number --jq '.[0].number // empty')"
+          if [ -n "$num" ]; then gh issue comment "$num" --repo "$REPO" --body-file body.md
+          else gh issue create --repo "$REPO" --title "$title" --body-file body.md; fi
