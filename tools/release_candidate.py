@@ -283,7 +283,7 @@ def _blank() -> dict:
     return {"action": "none", "release": False, "resume": False, "version": None, "base": None, "branches": [],
             "kind": None, "publish": False, "stale": [], "held": [], "unchanged": [], "failed_alone": [],
             "deferred": [], "conflicts": [], "product_commits": [], "reason": "", "pr": None, "pr_created": None,
-            "why": None, "retry": None, "marks": [], "attention": False, "leftover": False}
+            "why": None, "retry": None, "marks": [], "attention": False, "leftover": False, "security": []}
 
 
 def plan(repo: str, prs: list[dict], today: date, *, force: bool = False, publish: bool = False,
@@ -444,7 +444,8 @@ def _plan_cut(repo, out, prs, tag, today, force, publish, cycle_days, publish_da
         return out
     branches = [e[0] for e in chosen]
     out.update(action="cut", release=True, kind=kind, branches=branches, version=next_version(tag, today),
-               publish=is_release(prs, branches, repo, tag, today, publish, publish_days))
+               publish=is_release(prs, branches, repo, tag, today, publish, publish_days),
+               security=[e[0] for e in chosen if SECURITY_LABEL in e[2]])
     return out
 
 
@@ -456,17 +457,85 @@ KIND_TEXT = {"combined": "every eligible group", "solo": "one suspect alone (a c
              "product": "main alone (a candidate on top of it failed)"}
 
 
-def pr_body(p: dict, notes_md: str) -> str:
+ANCHOR_COMPONENTS = ("vllm", "kubernetes (default)")
+
+
+def _short(component: str) -> str:
+    """'image/ghcr.io/open-webui/open-webui' -> 'open-webui'; 'kubernetes (default)' -> 'kubernetes'."""
+    return component.split(" (")[0].rsplit("/", 1)[-1]
+
+
+def _ordered(changes: dict) -> list[list[str]]:
+    """Changed components, the ones a person cares about first: the anchors, then
+    majors, then the rest; CI-only tools last."""
+    majors = set(changes.get("majors") or [])
+
+    def rank(row):
+        c = row[0]
+        return (0 if c in ANCHOR_COMPONENTS else 1 if c in majors else 3 if c.startswith("ci/") else 2, c)
+    return sorted(changes.get("rows") or [], key=rank)
+
+
+def headline(p: dict, changes: dict | None, limit: int = 100) -> str:
+    """One line for the E2E run's name: what is waiting for approval."""
+    kind = "release" if p.get("publish") else "cycle" if p.get("action") == "cut" else "candidate"
+    head = f"{kind} {p.get('version') or '?'}"
+    rows = _ordered(changes or {})
+    if not rows:
+        n = len(p.get("product_commits") or [])
+        return f"{head}: no version changes" + (f", {n} commit(s) on main" if n else "")
+    parts = [f"{_short(c)} {new}" for c, _old, new in rows]
+    text = f"{head}: {len(rows)} update{'s' if len(rows) != 1 else ''}: "
+    shown: list[str] = []
+    for i, part in enumerate(parts):
+        rest = len(parts) - i - 1
+        tail = f", +{rest} more" if rest else ""
+        if len(text + ", ".join(shown + [part]) + tail) > limit:
+            break
+        shown.append(part)
+    rest = len(parts) - len(shown)
+    return text + ", ".join(shown) + (f"{', ' if shown else ''}+{rest} more" if rest else "")
+
+
+def approval_block(p: dict, changes: dict | None, wait_days: int = 5) -> list[str]:
+    """The top of the candidate's PR: what approving its E2E run means, in a few lines."""
+    rows = _ordered(changes or {})
+    majors = set((changes or {}).get("majors") or [])
+    lines = ["### What you are approving", ""]
+    if p.get("publish"):
+        lines.append(f"- **A release.** `{p['version']}` is tagged and published when E2E is green "
+                     f"(label `{PUBLISH_LABEL}`).")
+    else:
+        lines.append("- **An integration cycle.** When E2E is green it is merged into `main`; nothing is "
+                     "tagged or published.")
+    if p.get("kind") and p["kind"] != "combined":
+        lines.append(f"- **A recovery cycle**: {KIND_TEXT[p['kind']]}.")
+    if rows:
+        lines.append(f"- **{len(rows)} component version{'s' if len(rows) != 1 else ''} change** on top of `main`:")
+        lines += ["", "  | Component | Now on `main` | In this candidate | |", "  |---|---|---|---|"]
+        for c, old, new in rows:
+            flag = "anchor" if c in ANCHOR_COMPONENTS else "major" if c in majors else "CI only" if c.startswith("ci/") else ""
+            lines.append(f"  | {c} | `{old}` | `{new}` | {flag} |")
+        lines.append("")
+    else:
+        lines.append("- **No component version changes** on top of `main`.")
+    if p.get("product_commits"):
+        lines.append(f"- **{len(p['product_commits'])} commit(s) on `main`** that no cycle has tested yet (listed below).")
+    security = p.get("security")
+    if security:
+        lines.append("- **Includes a security update** (" + ", ".join(f"`{b}`" for b in security) + "): do not let it wait.")
+    lines += [f"- **If you do not approve**, nothing changes: after {wait_days} days this candidate is replaced by a "
+              "fresh one with whatever is newest then. Rejecting the run has the same effect.",
+              "- **Cost of approving**: four clusters for about 95 minutes, roughly $5-10.", ""]
+    return lines
+
+
+def pr_body(p: dict, notes_md: str, changes: dict | None = None, wait_days: int = 5) -> str:
     what = "Release" if p.get("publish") else "Integration cycle"
     lines = [f"{what}: `{p['version']}` (upgrades from `{p['base']}`).", ""]
-    if p.get("publish"):
-        lines += [f"Label `{PUBLISH_LABEL}`: when E2E is green this is merged, tagged and published. Remove the label "
-                  "to merge it without a release.", ""]
-    else:
-        lines += [f"When E2E is green this is merged into `main` and not tagged. Add the label `{PUBLISH_LABEL}` "
-                  "to make it a release.", ""]
-    if p.get("kind") and p["kind"] != "combined":
-        lines += [f"Recovery cycle: {KIND_TEXT[p['kind']]}.", ""]
+    lines += approval_block(p, changes, wait_days)
+    lines += [f"Remove the label `{PUBLISH_LABEL}` to merge it without a release." if p.get("publish")
+              else f"Add the label `{PUBLISH_LABEL}` to this pull request to make it a release.", ""]
     lines.append("Groups: " + (", ".join(f"`{b}`" for b in p["branches"]) or "none (product changes only)"))
     if p["product_commits"]:
         lines += ["", "Commits on `main` that no cycle has tested yet:", ""]
@@ -563,11 +632,16 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--publish-days", type=int, default=90)
     p.add_argument("--wait-days", type=int, default=5)
     p.add_argument("--mark-days", type=int, default=14)
-    for name in ("pr-body", "abandon-comment"):
+    for name in ("pr-body", "abandon-comment", "headline"):
         b = sub.add_parser(name)
         b.add_argument("--plan", required=True)
         if name == "pr-body":
             b.add_argument("--notes", required=True)
+            b.add_argument("--wait-days", type=int, default=5)
+        if name in ("pr-body", "headline"):
+            b.add_argument("--changes", help="JSON from `release.py changes origin/main`")
+        if name == "headline":
+            b.add_argument("--prefix", default="", help="e.g. 'retry of ' for a second E2E run")
     f = sub.add_parser("finishable", help="print the release in flight (for release-finish.yaml), or nothing")
     f.add_argument("--repo", required=True)
     n = sub.add_parser("newest-tag", help="print the newest release tag on main, or nothing")
@@ -598,8 +672,12 @@ def main(argv: list[str] | None = None) -> int:
     if a.cmd == "abandon-comment":
         print(abandon_comment(pl))
         return 0
+    changes = _load(a.changes) if a.changes else None
+    if a.cmd == "headline":
+        print(a.prefix + headline(pl, changes))
+        return 0
     with open(a.notes, encoding="utf-8") as fh:
-        print(pr_body(pl, fh.read()))
+        print(pr_body(pl, fh.read(), changes, a.wait_days))
     return 0
 
 

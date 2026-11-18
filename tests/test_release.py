@@ -172,6 +172,24 @@ class TestNotes:
             release.notes(str(repo), "v2026.11.0", "base", manual_steps=["Renovate did it"], commit=False)
 
 
+class TestCycleChanges:
+    """What a candidate changes on top of main (the notes compare with the last release)."""
+
+    def test_between_two_refs_and_against_the_working_tree(self, repo):
+        ch = release.cycle_changes(str(repo), "base", "release/v2026.11.0")
+        assert ["vllm", "v0.24.0", "v0.32.0"] in ch["rows"] and ["karpenter", "1.14.0", "1.15.0"] in ch["rows"]
+        assert ch["majors"] == []
+        tree(repo, "v1.0.0", "1.15.0", "v1.83.14-stable", "1.36")              # uncommitted: the working tree counts
+        ch = release.cycle_changes(str(repo), "release/v2026.11.0")
+        assert ch == {"rows": [["vllm", "v0.32.0", "v1.0.0"]], "majors": ["vllm"]}
+        assert release.cycle_changes(str(repo), "base", "base") == {"rows": [], "majors": []}
+
+    def test_cli_prints_json(self, repo, capsys):
+        assert release.main(["--repo", str(repo), "changes", "base", "release/v2026.11.0"]) == 0
+        out = json.loads(capsys.readouterr().out)
+        assert ["vllm", "v0.24.0", "v0.32.0"] in out["rows"]
+
+
 class TestCut:
     def test_cut_merges_branches_onto_main(self, tmp_path):
         origin = tmp_path / "origin"

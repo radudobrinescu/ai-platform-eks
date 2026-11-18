@@ -447,11 +447,69 @@ def test_pr_body_says_what_kind_of_cycle_and_what_was_left_out(repo):
     clone, _ = repo
     p = rc.plan(str(clone), PRS, TODAY)
     body = rc.pr_body({**p, "conflicts": ["renovate/infra"]}, "# Release v2026.11.2\n")
-    assert body.startswith("Integration cycle: `v2026.11.2`") and "not tagged" in body
+    assert body.startswith("Integration cycle: `v2026.11.2`") and "nothing is tagged or published" in body
+    assert "Add the label `publish`" in body
     assert "`renovate/stale`" in body and "`renovate/held`" in body and "# Release v2026.11.2" in body
     assert "merge conflict" in body and "`renovate/infra`" in body
     body = rc.pr_body({**p, "publish": True, "kind": "solo"}, "# notes\n")
-    assert body.startswith("Release: `v2026.11.2`") and "Label `publish`" in body and "Recovery cycle" in body
+    assert body.startswith("Release: `v2026.11.2`") and "**A release.**" in body and "**A recovery cycle**" in body
+    assert "Remove the label `publish`" in body
+
+
+CHANGES = {"rows": [["ci/ruff", "0.17.5", "0.17.6"], ["image/ghcr.io/open-webui/open-webui", "v0.13.4", "v0.13.5"],
+                    ["vllm", "v0.33.0", "v0.34.1"], ["chart/langfuse", "2.2.5", "3.0.0"],
+                    ["image/postgres", "16.16-alpine", "16.17-alpine"]], "majors": ["chart/langfuse"]}
+
+
+def test_the_candidate_pr_starts_with_what_approving_it_means(repo):
+    """The approver decides from this: what changes on top of main, how risky,
+    and what happens if it waits."""
+    clone, _ = repo
+    prs = [dict(pr) for pr in PRS]
+    prs[0] = {**prs[0], "labels": [{"name": "security"}]}
+    p = rc.plan(str(clone), prs, TODAY)
+    assert p["security"] == ["renovate/gateway"]
+    body = rc.pr_body(p, "# Release v2026.11.2\n", CHANGES, wait_days=5)
+    top = body[:body.index("Groups:")]
+    assert "### What you are approving" in top and "**A release.**" in top            # a security update publishes
+    assert "**5 component versions change** on top of `main`" in top
+    rows = [ln.strip() for ln in top.splitlines() if ln.strip().startswith("| ") and "| Component" not in ln]
+    assert rows[0] == "| vllm | `v0.33.0` | `v0.34.1` | anchor |"                       # what matters first
+    assert rows[1] == "| chart/langfuse | `2.2.5` | `3.0.0` | major |"
+    assert rows[-1] == "| ci/ruff | `0.17.5` | `0.17.6` | CI only |"
+    assert "**Includes a security update** (`renovate/gateway`): do not let it wait." in top
+    assert "after 5 days this candidate is replaced by a fresh one" in top and "roughly $5-10" in top
+    plain = rc.pr_body({**p, "publish": False, "security": []}, "# notes\n", {"rows": [], "majors": []})
+    assert "**An integration cycle.**" in plain and "**No component version changes**" in plain
+    assert "security update" not in plain
+
+
+def test_the_headline_names_the_important_updates_and_fits_a_run_name():
+    p = {"action": "cut", "version": "v2026.11.8", "publish": False, "product_commits": ["abc fix: x"]}
+    line = rc.headline(p, CHANGES)
+    assert line == "cycle v2026.11.8: 5 updates: vllm v0.34.1, langfuse 3.0.0, open-webui v0.13.5, +2 more"
+    assert len(line) <= 100
+    assert rc.headline({**p, "publish": True}, {"rows": [["vllm", "a", "b"]], "majors": []}) == \
+        "release v2026.11.8: 1 update: vllm b"
+    assert rc.headline(p, {"rows": [], "majors": []}) == "cycle v2026.11.8: no version changes, 1 commit(s) on main"
+    assert rc.headline({"action": "retry", "version": "v2026.11.8"}, None) == "candidate v2026.11.8: no version changes"
+    many = {"rows": [[f"image/some/very-long-component-name-{i}", "1", "2.0.0-with-a-long-suffix"] for i in range(30)],
+            "majors": []}
+    assert len(rc.headline(p, many)) <= 100 and rc.headline(p, many).endswith("more")
+
+
+def test_headline_and_pr_body_cli(repo, tmp_path, capsys):
+    import json
+    clone, _ = repo
+    (tmp_path / "plan.json").write_text(json.dumps(rc.plan(str(clone), PRS, TODAY)))
+    (tmp_path / "changes.json").write_text(json.dumps(CHANGES))
+    (tmp_path / "notes.md").write_text("# Release v2026.11.2\n")
+    base = ["--plan", str(tmp_path / "plan.json"), "--changes", str(tmp_path / "changes.json")]
+    assert rc.main(["headline", *base, "--prefix", "retry of "]) == 0
+    assert capsys.readouterr().out.strip().startswith("retry of cycle v2026.11.2: 5 updates: vllm v0.34.1")
+    assert rc.main(["pr-body", *base, "--notes", str(tmp_path / "notes.md"), "--wait-days", "9"]) == 0
+    out = capsys.readouterr().out
+    assert "### What you are approving" in out and "after 9 days" in out and "# Release v2026.11.2" in out
 
 
 def test_plan_cli_reads_the_marks_and_statuses_through_gh(repo, tmp_path, monkeypatch, capsys):
@@ -566,6 +624,16 @@ class TestWorkflow:
         pr = steps["Open the release PR"]["run"]
         assert pr.count("gh pr create") == 1 and 'GH_TOKEN="$PUSH_TOKEN" gh pr create' in pr
         assert "--label publish" in pr and '"cycle: $VERSION"' in pr and '"release: $VERSION"' in pr
+        # The approver sees what the candidate changes on top of main: in the PR and in the E2E run's name.
+        assert "tools/release.py --repo subject changes origin/main > changes.json" in cut
+        assert "--changes changes.json" in pr and '--wait-days "$WAIT_DAYS"' in pr
+        assert "changes origin/main FETCH_HEAD > changes.json" in pr                 # a resumed cut
+        dispatch = steps["Dispatch E2E (fresh + upgrade, both profiles; waits for approval)"]["run"]
+        assert "headline --plan plan.json --changes changes.json" in dispatch and '-f note="$note"' in dispatch
+        for name in ("Retry the failed E2E jobs once",
+                     "Dispatch E2E if the candidate has none (an earlier dispatch failed)"):
+            assert '-f note="$note"' in steps[name]["run"], name
+        assert "--prefix 'retry of '" in steps["Retry the failed E2E jobs once"]["run"]
 
     def test_retry_marks_the_head_so_it_is_dispatched_once(self):
         retry = self._steps()["Retry the failed E2E jobs once"]["run"]

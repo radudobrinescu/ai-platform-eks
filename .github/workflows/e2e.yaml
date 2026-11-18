@@ -32,10 +32,15 @@
 #                                 Identity Center for profile `managed`
 #   environment e2e               with a required reviewer
 name: e2e
-# Shown in the run list and on the approval screen, so each pending run says
-# what it tests, e.g. "e2e fresh,upgrade · release/v2026.11.0 (from main) · default,managed".
+# Shown in the run list, in the approval request and on the approval screen, so
+# each pending run says what it tests. The factory adds what the candidate
+# changes (input `note`), e.g.
+# "cycle v2026.11.8: 2 updates: vllm v0.34.1, open-webui v0.13.5 · e2e fresh,upgrade · release/v2026.11.8 (from v2026.11.7) · default,managed".
+# The job "what this run tests" writes the details to the run's summary page,
+# next to the approval button: the candidate's pull request with the table of
+# changed components, and what happens if the run is not approved.
 run-name: >-
-  e2e ${{ inputs.modes }} · ${{ inputs.subject }}${{ contains(inputs.modes, 'upgrade') && format(' (from {0})', inputs.base) || '' }}
+  ${{ inputs.note && format('{0} · ', inputs.note) || '' }}e2e ${{ inputs.modes }} · ${{ inputs.subject }}${{ contains(inputs.modes, 'upgrade') && format(' (from {0})', inputs.base) || '' }}
   · ${{ inputs.profiles }}${{ inputs.keep && ' · keep' || '' }}
 
 on:
@@ -67,6 +72,10 @@ on:
         description: "Exercise the llm-d tier and KEDA autoscaling (adds GPU nodes, ~20 min per job)"
         type: boolean
         default: true
+      note:
+        description: "Shown first in the run's name: what is being tested, in a few words (the factory fills it in)"
+        type: string
+        default: ""
 
 permissions:
   contents: read
@@ -76,6 +85,44 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
+  # Runs before anything waits for approval and needs no environment: it only
+  # reads the candidate's pull request and writes it to the run's summary.
+  about:
+    name: what this run tests
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pull-requests: read
+    env:
+      GH_TOKEN: ${{ github.token }}
+      SUBJECT_REF: ${{ inputs.subject }}
+      BASE_REF: ${{ inputs.base }}
+      MODES: ${{ inputs.modes }}
+      PROFILES: ${{ inputs.profiles }}
+      WAIT_DAYS: ${{ vars.WAIT_DAYS || '5' }}
+    steps:
+      - name: Write what is waiting for approval to the run summary
+        run: |
+          set -euo pipefail
+          gh pr list --repo "$GITHUB_REPOSITORY" --head "$SUBJECT_REF" --state open --limit 1 \
+            --json number,title,url,body > pr.json || echo '[]' > pr.json
+          {
+            echo "## What this run tests"
+            echo
+            if [ "$(jq length pr.json)" = 1 ]; then
+              jq -r '.[0] | "Candidate: [#\(.number) \(.title)](\(.url))\n\n\(.body)"' pr.json
+            else
+              printf 'Ref `%s`' "$SUBJECT_REF"
+              case "$MODES" in *upgrade*) printf ', upgraded from `%s`' "$BASE_REF" ;; esac
+              printf ' (modes %s; profiles %s). There is no open pull request from this ref: the run was started by hand, not by the factory.\n' "$MODES" "$PROFILES"
+            fi
+            echo
+            echo "---"
+            echo
+            echo "**Approving** starts one cluster per job (mode x profile): about 95 minutes and \$5-10 for all four."
+            echo "**Not approving** changes nothing. A candidate of the factory is replaced by a fresh one after ${WAIT_DAYS} days; rejecting the run has the same effect."
+          } >> "$GITHUB_STEP_SUMMARY"
+
   plan:
     name: check configuration and inputs
     runs-on: ubuntu-latest
