@@ -38,7 +38,7 @@ resource "helm_release" "argocd_selfmanaged" {
   # Argo CD's Redis (a cache only) is pinned by the chart to a fixed tag, whose
   # Alpine packages are never refreshed: 8.6.4-alpine carried Critical CVEs in
   # musl, util-linux, zlib and openssl. Pin a current tag by digest instead, so
-  # Renovate also proposes the image's rebuilds with Alpine security fixes.
+  # a rebuild of the same tag with Alpine security fixes is a visible version change.
   values = [yamlencode({
     redis = { image = { tag = local.argocd_redis_image } }
   })]

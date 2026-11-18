@@ -168,8 +168,8 @@ redis:
     existingSecret: langfuse-valkey-auth
     existingSecretPasswordKey: default
     usersExistingSecret: langfuse-valkey-auth
-  # The sub-chart's default is the floating tag "8.0". Pinned by digest so
-  # Renovate proposes rebuilds with OS security fixes.
+  # The sub-chart's default is the floating tag "8.0". Pinned by digest, so a
+  # rebuild of the same tag with OS security fixes is a visible version change.
   image:
     registry: docker.io
     repository: valkey/valkey
