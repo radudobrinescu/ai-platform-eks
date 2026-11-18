@@ -171,9 +171,12 @@ jobs:
           python3 tools/release.py --repo subject cut "$VERSION" "${branches[@]}" --no-push --skip-conflicts | tee cut.log
           conflicts="$(sed -n 's/^conflict: //p' cut.log | jq -R . | jq -cs .)"
           jq --argjson c "$conflicts" '.conflicts += $c | .branches -= $c' plan.json > plan.new && mv plan.new plan.json
-          if git -C subject diff --quiet origin/main "release/$VERSION"; then
+          untested="$(jq '.product_commits | length' plan.json)"
+          if [ "$untested" = 0 ] && git -C subject diff --quiet origin/main "release/$VERSION"; then
             # Every group conflicted and main has nothing new: the candidate is
-            # main. Nothing to test; the next run plans again.
+            # main, which the last cycle already tested. Nothing to test; the next
+            # run plans again. (With untested commits on main the candidate is
+            # also equal to main at this point, and that is the thing to test.)
             echo "::notice::nothing left to test in release/$VERSION (every group conflicts); no candidate"
             git -C subject switch --quiet --detach origin/main
             git -C subject branch --quiet -D "release/$VERSION"
