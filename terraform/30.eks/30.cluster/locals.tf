@@ -19,7 +19,8 @@ locals {
   # from here on pod startup — falling back to a live HF download on cache miss.
   # S3 bucket names are global, so "<cluster>-model-cache" collides with any other
   # account using the same prefix/env (BucketAlreadyExists, 409). The account ID
-  # makes the name unique per account.
+  # makes the name unique per account. Used for a new bucket only: an existing
+  # bucket keeps the name it was created with (see aws_s3_bucket.model_cache).
   model_cache_bucket            = "${local.cluster_name}-${data.aws_caller_identity.current.account_id}-model-cache"
   inference_worker_sa_namespace = "inference"
   inference_worker_sa_name      = "inference-worker"
