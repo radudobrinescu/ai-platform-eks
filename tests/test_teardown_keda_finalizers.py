@@ -1,7 +1,7 @@
 """`down` clears KEDA's finalizer on ScaledObjects/ScaledJobs, like the other
 controller finalizers that hang namespace deletes.
 
-Seen in E2E: an llm-d model's ScaledObject was deleted during teardown, after
+Seen in testing: an llm-d model's ScaledObject was deleted during teardown, after
 the Karpenter drain had removed the node running the KEDA operator. Nothing
 could remove finalizer.keda.sh, the inference namespace stayed Terminating,
 Terraform's namespace destroy timed out, and the cluster was left ACTIVE.

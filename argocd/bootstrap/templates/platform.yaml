@@ -9,7 +9,7 @@
 #
 # The Platform Health Agent is NOT a separate app — it ships as a component of
 # cluster-dashboard (see the note by that element below). It's always synced but
-# idles unless a Kiro API key is provisioned (Terraform, opt-in).
+# idles until its Kiro API key Secret exists (created with kubectl, opt-in).
 #
 # FORKING THE PLATFORM — set the repo URL in ONE place: var.gitops_repo_url
 # (+ var.gitops_revision) in your tfvars. This directory is a Helm chart; the
@@ -82,9 +82,9 @@ spec:
           # cluster-dashboard ALSO ships the Platform Health Agent as a component
           # (platform/services/cluster-dashboard/pha-*.yaml) — no separate app or
           # namespace. The agent is always synced but idles gracefully unless a
-          # Kiro API key Secret is present (Terraform provisions it only when
-          # platform_health_agent_enabled=true). Enable = set the tfvar (+
-          # TF_VAR_kiro_api_key), apply, restart the event-watcher Deployment.
+          # Kiro API key Secret (platform-health-agent-secrets) is present. It is
+          # created with kubectl, not by Terraform. Enable = create the Secret,
+          # then restart the event-watcher Deployment.
           # See platform/services/cluster-dashboard/PLATFORM-HEALTH-AGENT.md.
           - name: cluster-dashboard
             namespace: ai-platform

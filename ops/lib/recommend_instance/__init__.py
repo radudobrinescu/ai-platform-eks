@@ -33,41 +33,41 @@ Throughput model (per https://blog.vllm.ai/2025/09/05/anatomy-of-vllm.html):
 Examples:
 
   # Quick check — what GPU fits a 4B model?
-  ./ops/recommend-instance.py google/gemma-3-4b-it
+  ./platformctl new-model google/gemma-3-4b-it
 
   # 8B model with 16K context, 8 concurrent users per instance
-  ./ops/recommend-instance.py meta-llama/Llama-3.1-8B-Instruct --seq 16384 --users 8
+  ./platformctl new-model meta-llama/Llama-3.1-8B-Instruct --seq 16384 --users 8
 
   # Quantised 32B model — int4 cuts VRAM in half
-  ./ops/recommend-instance.py Qwen/Qwen2.5-32B-Instruct --quant int4
+  ./platformctl new-model Qwen/Qwen2.5-32B-Instruct --quant int4
 
   # 50 concurrent users — auto-scales to fleet if one instance can't handle it
-  ./ops/recommend-instance.py meta-llama/Llama-3.1-8B-Instruct --users 50
+  ./platformctl new-model meta-llama/Llama-3.1-8B-Instruct --users 50
 
   # 100 users with latency SLO — forces faster GPUs and more replicas
-  ./ops/recommend-instance.py Qwen/Qwen2.5-7B-Instruct --users 100 --target-tok-s 25
+  ./platformctl new-model Qwen/Qwen2.5-7B-Instruct --users 100 --target-tok-s 25
 
   # Pin to TP=4, only show in-cluster options, machine-readable output
-  ./ops/recommend-instance.py meta-llama/Llama-3.1-70B-Instruct --tp 4 --in-cluster-only --json
+  ./platformctl new-model meta-llama/Llama-3.1-70B-Instruct --tp 4 --in-cluster-only --json
 
   # Gated model (needs HuggingFace token)
-  HF_TOKEN=hf_... ./ops/recommend-instance.py google/gemma-3-27b-it
+  HF_TOKEN=hf_... ./platformctl new-model google/gemma-3-27b-it
 
   # Budget-conscious: cap at $5/hr per instance
-  ./ops/recommend-instance.py Qwen/Qwen2.5-32B-Instruct --quant int4 --max-price 5
+  ./platformctl new-model Qwen/Qwen2.5-32B-Instruct --quant int4 --max-price 5
 
   # Recommend AND deploy: write the YAML, commit, and push (ArgoCD picks it up)
-  ./ops/recommend-instance.py Qwen/Qwen2.5-3B-Instruct --deploy
+  ./platformctl new-model Qwen/Qwen2.5-3B-Instruct --deploy
 
   # Choose the serving tier (default auto: a fleet -> LLMDEndpoint, a single
   # replica -> VLLMEndpoint). The llm-d scale tier bakes
   # in KV/prefix/load-aware routing, with the routingProfile picked from the
   # workload (chat/rag/code/agentic -> prefix; batch/summarization -> throughput):
-  ./ops/recommend-instance.py Qwen/Qwen2.5-32B-Instruct --workload agentic --users 100 --tier llm-d
+  ./platformctl new-model Qwen/Qwen2.5-32B-Instruct --workload agentic --users 100 --tier llm-d
 
   # Remove a deployed model: delete its YAML, commit, push (ArgoCD prunes it,
   # LiteLLM deregisters it). No model lookup — just the name.
-  ./ops/recommend-instance.py --undeploy qwen2-5-3b-instruct"""
+  ./platformctl new-model --undeploy qwen2-5-3b-instruct"""
 
 from .cli import main
 

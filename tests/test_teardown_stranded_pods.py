@@ -1,6 +1,6 @@
 """`down` force-deletes only pods that are terminating on an unreachable node.
 
-Seen in E2E (managed profile): destroy removed Karpenter's NodePool and its
+Seen in testing (EKS Managed Capabilities): destroy removed Karpenter's NodePool and its
 controller together, the nodes' instances went away, their Node objects stayed,
 and two terminating Langfuse pods held the ai-platform namespace until
 Terraform's namespace destroy timed out.

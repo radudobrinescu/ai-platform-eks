@@ -152,7 +152,7 @@ cmd_up() {
   local env; env=$(need_env "${1:-}" "up")
   need terraform; need aws; need make; require_tfvars "$env"; check_tfvars_filled "$env"; check_env_name_length "$env"; pin_region "$env"
   log "Provisioning '${env}' — EKS + capabilities + Karpenter (takes a while)"
-  # Explicit checks: when cmd_up is invoked in a `||` context (platformctl e2e)
+  # Explicit checks: when cmd_up is invoked in a `||` context
   # bash suppresses errexit inside the function, so a failed make would
   # otherwise fall through to the "Done" banner and return 0.
   make -C "$TF_DIR" bootstrap ENVIRONMENT="$env" || { warn "state backend bootstrap failed"; return 1; }
@@ -243,11 +243,11 @@ _delete_cluster_albs() {
 #   - finalizer.keda.sh on ScaledObjects/ScaledJobs (KEDA). KEDA runs on
 #     Karpenter nodes, so once the drain removes them nothing can release a
 #     ScaledObject deleted later, and the llm-d model's namespace never
-#     finishes deleting (seen in E2E: cluster left ACTIVE, `down` exit 1).
+#     finishes deleting (seen in testing: cluster left ACTIVE, `down` exit 1).
 #   - argocd.argoproj.io/hook-finalizer on Argo CD hook objects (PreSync and
 #     PostSync Jobs, Secrets, Pods). Argo CD removes it when the hook finishes;
 #     a hook still running when `down` removes Argo CD keeps it forever, and its
-#     namespace never finishes deleting (seen in E2E: the litellm-enduser-budget
+#     namespace never finishes deleting (seen in testing: the litellm-enduser-budget
 #     PostSync Job held ai-platform Terminating, cluster left ACTIVE).
 # Safe: every one of these objects is being destroyed anyway.
 # Pods already being deleted on a node whose kubelet is gone never finish:
@@ -310,7 +310,7 @@ _teardown_watchdog() {
   # `set -euo pipefail` script: one failing call (kubectl against a cluster that
   # is being deleted) would otherwise kill it silently, and then nothing
   # terminates the Karpenter nodes, so the subnet delete waits out its 20-minute
-  # timeout (seen in E2E). Errors here never stop the loop.
+  # timeout (seen in testing). Errors here never stop the loop.
   set +e +o pipefail
   local env="$1" cluster="$2" vpc="$3" region="${AWS_REGION:-$(aws configure get region 2>/dev/null)}"
   while aws eks describe-cluster --name "$cluster" --region "$region" >/dev/null 2>&1; do
@@ -322,7 +322,7 @@ _teardown_watchdog() {
   # Cluster is gone. Karpenter's controller went with it, so nothing will ever
   # terminate the nodes it launched, and they pin the subnets: the networking
   # destroy would otherwise wait out Terraform's 20-minute DeleteSubnet timeout
-  # before the post-failure sweep runs (seen on both E2E teardowns).
+  # before the post-failure sweep runs (seen on both test teardowns).
   _terminate_karpenter_orphans "$vpc" "$region"
   _delete_cluster_security_groups "$cluster" "$vpc" "$region"
 }
@@ -373,7 +373,7 @@ _delete_cluster_security_groups() {
 
 # ENIs left "available" (detached, never deleted) in this VPC that still carry
 # one of the given security groups. They pin the SG, and through it the VPC.
-# Seen in E2E: during the node drain the VPC CNI's delete of a node's secondary
+# Seen in testing: during the node drain the VPC CNI's delete of a node's secondary
 # ENI failed with "currently in use" and was never retried, so the ENI outlived
 # the node with the EKS cluster SG on it. Scoped to the VPC, the status and the
 # SGs, so an attached ENI or one without these SGs is never touched.
@@ -411,7 +411,7 @@ _terminate_karpenter_orphans() {
 # Poll a probe until it reports done, gives up at a hard cap, or stops making
 # progress. The probe prints a short state signature (for example "3:41" for
 # 3 apps and 41 pods left) or nothing when done. A wait that keeps running
-# after the state stopped changing only costs time: in E2E both teardown waits
+# after the state stopped changing only costs time: in testing both teardown waits
 # below ran to their full 300 s cap in most runs, holding on objects that the
 # steps after them (finalizer stripping, the watchdog, forced termination)
 # clear anyway. Returns 0 when done, 1 on stall or cap; sets _WAIT_STATE to the
@@ -487,7 +487,7 @@ _drain_karpenter_nodes() {
   fi
   # Drain stuck. With every NodePool gone there is nowhere to reschedule, so a
   # PodDisruptionBudget whose other replica sits on another draining node can
-  # never be satisfied (seen in E2E: one NodeClaim left after 600 s, both
+  # never be satisfied (seen in testing: one NodeClaim left after 600 s, both
   # profiles). The cluster is being destroyed: terminate the instances behind
   # the remaining NodeClaims; Karpenter, still running, sees them gone and
   # removes the NodeClaims and Nodes itself.
@@ -755,7 +755,7 @@ _status_check() {
   else
     warn "No models registered in /v1/models yet — expected before you enroll one (not a failure). Add a self-hosted model with ./platformctl new-model, or a Bedrock model with ./platformctl new-model --source bedrock. Skipping the chat test."
   fi
-  if kubectl run pfcheck-langfuse --rm -i --restart=Never --image=curlimages/curl:8.11.0 -n "$NS_PLATFORM" --quiet -- \
+  if kubectl run pfcheck-langfuse --rm -i --restart=Never --image=curlimages/curl:8.23.0 -n "$NS_PLATFORM" --quiet -- \
        -fsS http://langfuse-web.ai-platform.svc.cluster.local:3000/api/public/health >/dev/null 2>&1; then
     ok "Langfuse tracing reachable"
   else
@@ -998,7 +998,9 @@ so edit + commit + push in your fork — there is no Terraform toggle:
        alb.ingress.kubernetes.io/scheme: internet-facing
        alb.ingress.kubernetes.io/listen-ports: '[{"HTTPS": <port>}]'
        alb.ingress.kubernetes.io/certificate-arn: <your ACM cert ARN, in this region>
-     and set inbound-cidrs to your own IP/CIDR ranges (never 0.0.0.0/0).
+     and limit the ALB's inbound security group (ai-platform-alb-inbound, in
+     terraform/30.eks/30.cluster/alb-security-group.tf) to your own IP/CIDR
+     ranges (never 0.0.0.0/0).
   2. Point your DNS (Route53 alias / CNAME) at the ALB hostname.
   3. Put your domain URLs in sso_public_urls in your tfvars and re-apply the
      cluster stage to wire the Cognito callbacks (a normal 'up' does this).

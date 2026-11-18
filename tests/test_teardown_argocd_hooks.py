@@ -1,6 +1,6 @@
 """`down` clears Argo CD's hook finalizer on hook objects left behind.
 
-Seen in E2E (upgrade/default, test of the next release): the litellm-enduser-budget
+Seen in upgrade testing: the litellm-enduser-budget
 PostSync Job was still running when `down` removed Argo CD. Nothing could remove
 argocd.argoproj.io/hook-finalizer, the ai-platform namespace stayed Terminating,
 Terraform's namespace destroy timed out, and the cluster was left ACTIVE.

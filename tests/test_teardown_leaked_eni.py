@@ -1,5 +1,5 @@
 """A network interface the VPC CNI failed to delete outlives its node, keeps the
-EKS cluster security group, and through it pins the VPC (E2E run 42770328926:
+EKS cluster security group, and through it pins the VPC (seen in testing:
 two 20-minute Terraform timeouts, then a leftover VPC while `down` exited 0).
 
 `down` must delete such ENIs before the security groups (watchdog and sweep),

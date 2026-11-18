@@ -94,7 +94,7 @@ module "karpenter" {
   # Inline controller policy. From module v21.29 the controller policy renders
   # to ~6.2K characters, over the 6,144 limit for a managed IAM policy
   # (CreatePolicy: "LimitExceeded: Cannot exceed quota for PolicySize: 6144",
-  # found by the E2E gate). An inline role policy allows 10,240; this is the
+  # found in testing). An inline role policy allows 10,240; this is the
   # module's documented remedy. On a LIVE cluster the apply swaps the managed
   # policy for an inline one in the same run (see COMPATIBILITY.md).
   enable_inline_policy = true

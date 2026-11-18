@@ -126,7 +126,7 @@ jobs:
         run: |
           set -euo pipefail
           # Validate raw K8s manifests against upstream schemas. -ignore-missing-schemas
-          # lets custom kinds (kro.run, ray.io, keda, GIE) through without a schema.
+          # lets custom kinds (kro.run, keda, GIE) through without a schema.
           kubeconform -strict -ignore-missing-schemas -summary \
             -skip 'ResourceGraphDefinition,LLMDEndpoint,LLMDDisaggEndpoint,VLLMEndpoint,AITeam' \
             platform/config platform/services || true

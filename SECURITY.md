@@ -23,9 +23,10 @@ following for your environment:
   tunnel access as privileged) or expose them publicly via the opt-in **CloudFront
   VPC-origin edge** (`./platformctl edge cloudfront`, built in Terraform), which
   fronts the private ALB with HTTPS + SSO. If you instead switch the ALB to
-  `internet-facing` (all four ingress `scheme` values), you **must** set the
-  `inbound-cidrs` allowlist to your own IP ranges — **never leave it open to
-  `0.0.0.0/0`**.
+  `internet-facing` (all four ingress `scheme` values), you **must** limit the
+  ALB's inbound security group (`ai-platform-alb-inbound`, defined in
+  `terraform/30.eks/30.cluster/alb-security-group.tf`) to your own IP ranges —
+  **never leave it open to `0.0.0.0/0`**.
 - **Dashboard remediation approvals require a verified admin.** Approving (or
   dismissing/deleting) a Platform Health Agent remediation spawns a cluster-mutating
   Job, so the dashboard backend cryptographically verifies the Cognito OIDC token

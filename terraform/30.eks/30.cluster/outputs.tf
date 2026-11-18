@@ -38,8 +38,10 @@ output "next_steps" {
          user: ${var.langfuse_init_user_email}
          pass: terraform output -raw langfuse_admin_password
 
-    6. Try the frontier model with zero GPUs (Bedrock Claude Opus 4.8):
-       requires Bedrock model access enabled in-account; see ./platformctl status --check
+    6. Enroll a model (none ships by default):
+         ./platformctl new-model <huggingface-model-id>     # self-hosted, on GPU nodes
+         ./platformctl new-model --source bedrock           # Amazon Bedrock, no GPUs
+                                                            # (needs Bedrock model access in the account)
   EOT
 }
 

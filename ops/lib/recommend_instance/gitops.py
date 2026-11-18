@@ -134,7 +134,7 @@ def _refresh_models_appset(root: str) -> bool:
     Its git directory generator otherwise polls every ~3 minutes (and through
     the repo server's revision cache), so a namespace's FIRST model, whose
     models-<ns> app does not exist yet, could take ~5 minutes to appear (seen in
-    E2E). Removing a namespace's LAST model has the mirror-image delay before
+    testing). Removing a namespace's LAST model has the mirror-image delay before
     models-<ns> is deleted. The annotation bypasses the cache and the
     controller removes it after reconciling."""
     r = _run(["kubectl", "annotate", "applicationset", ARGOCD_MODELS_APPSET,

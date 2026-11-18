@@ -3,7 +3,7 @@
 LiteLLM runs two replicas; /model/info from one can still list a row that was
 just deleted, and LiteLLM then answers HTTP 400 "Model with id=... not found in
 db". That must count as deleted, or the CR's finalizer is held and
-deregistration stalls (found by the E2E gate). Real failures must still return
+deregistration stalls (found in testing). Real failures must still return
 False so the reconcile loop retries.
 
 The kubernetes client is stubbed: the suite runs with only pytest/pyyaml/boto3.

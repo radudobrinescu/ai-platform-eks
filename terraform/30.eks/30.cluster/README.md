@@ -1,5 +1,5 @@
 
-# Observing Amazon EKS Cluster with AWS services for OSS tooling
+# Amazon EKS cluster, Karpenter and platform capabilities
 
 This part of this pattern creates the Amazon EKS Cluster and its minimal configuration to be able to run the simplest application on it. That means that the following resources and configurations are provisioned in this part:
 
@@ -75,7 +75,7 @@ Enables automatic provisioning and management of node pools using EKS Auto mode 
 
 See the [`auto-mode/default.yaml`](./auto-mode/default.yaml) for detailed configuration.
 
-When enabling EKS Auto Mode [`cluster_config.eks_auto_mode = true`](../../00.global/vars/example-automode.tfvars) the self-managed capabilities (kube-proxy, VPC CNI, CoreDNS, LB Controller, Pod Identity, Karpenter, EBS Driver) will be disabled by default and will be managed by EKS Auto Mode.
+When enabling EKS Auto Mode [`cluster_config.eks_auto_mode = true`](../../00.global/vars/example.tfvars) the self-managed capabilities (kube-proxy, VPC CNI, CoreDNS, LB Controller, Pod Identity, Karpenter, EBS Driver) will be disabled by default and will be managed by EKS Auto Mode.
 
 ## Deploy it
 

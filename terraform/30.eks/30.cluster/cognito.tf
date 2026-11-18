@@ -203,14 +203,14 @@ resource "aws_cognito_user" "seed" {
   # the example.com addresses bounce, and every AdminCreateUser would draw on
   # Cognito's default daily email limit for the account and region. Once that
   # is used up, AdminCreateUser fails with LimitExceededException and the
-  # provider retries for over an hour (seen in E2E after a day of runs).
+  # provider retries for over an hour (seen in testing after a day of runs).
   message_action = "SUPPRESS"
 
   # Custom attributes WITHOUT the "custom:" prefix: the provider adds it when
   # writing and strips it when reading. Written as "custom:role", state holds
   # "role", so every later apply planned "+custom:role, -role" and the delete
   # removed the attribute in Cognito: an upgrade left every seed user without a
-  # role (found by the upgrade E2E). With "role" the plan is stable, including
+  # role (found by an upgrade test). With "role" the plan is stable, including
   # for users created the old way (verified on providers 6.28 and 6.70).
   attributes = {
     email          = each.key

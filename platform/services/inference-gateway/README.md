@@ -3,7 +3,7 @@
 The minimal cluster substrate the **llm-d scale tier** (`LLMDEndpoint`) needs:
 
 - **`kustomization.yaml`** — installs the Gateway API Inference Extension CRDs
-  (notably `InferencePool`), pulled from upstream at a **pinned tag** (`v1.5.0`).
+  (notably `InferencePool`), pulled from upstream at a **pinned tag** (see `kustomization.yaml`).
   The llm-d router chart creates an `InferencePool` per model. ArgoCD
   auto-detects this kustomization and runs `kustomize build` at sync time to
   fetch the CRDs; to upgrade, bump the `?ref=` tag.
@@ -23,7 +23,7 @@ there is no Envoy front door either. The earlier Envoy Gateway / Envoy AI Gatewa
 ## How it's delivered
 
 A default ArgoCD platform component, delivered by the `platform` ApplicationSet
-(`argocd/bootstrap/platform.yaml`, the `inference-gateway` element, infra tier) —
+(`argocd/bootstrap/templates/platform.yaml`, the `inference-gateway` element, infra tier) —
 exactly like `gpu-operator`. It ships on every cluster: the footprint
 is minimal (CRDs + a repo Secret, no running pods), and shipping it by default
 means teams can use `LLMDEndpoint` without a separate cluster toggle. Terraform is

@@ -1,4 +1,4 @@
-# Observing Amazon EKS Cluster with AWS services for OSS tooling
+# Kubernetes add-ons for the EKS cluster
 
 This part of this pattern deploys and configure the relevant Kubernetes addons. It uses the [Amazon EKS Blueprints addons](https://aws-ia.github.io/terraform-aws-eks-blueprints-addons/main/) to deploy relevant addons. A subset of the addons deployed in this folder are :
 

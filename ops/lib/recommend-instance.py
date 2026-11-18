@@ -14,7 +14,7 @@ Invoked via `./platformctl new-model <model> [flags]`; also runnable directly as
 import os
 import sys
 
-# Allow running as a standalone script (python3 ops/recommend-instance.py ...)
+# Allow running as a standalone script (python3 ops/lib/recommend-instance.py ...)
 # by making the package importable regardless of CWD.
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
