@@ -20,6 +20,15 @@
 # attention". So the only human action in a release is the approval of the e2e
 # environment; `workflow_dispatch` (optionally with dry_run) is the manual way.
 #
+# Public repository (optional). With the variables PUBLIC_REPO (OWNER/REPO) and
+# PUBLIC_SINCE (the first version to publish, vYYYY.MM.N) and the secret
+# PUBLIC_PUSH_TOKEN (contents write there), every run also makes sure the newest
+# release is in the public repository: one commit with the release's tree on
+# top of its main, the tag, the GitHub Release (`release.py publish-public`).
+# Releases older than PUBLIC_SINCE are never published. It does nothing when the
+# release is already there, so a failed publication is repaired by the next run
+# (the factory starts one every day while the newest release is not public).
+#
 # It never runs code from the product: tools/release.py only reads git objects
 # of the checkout in subject/. Needs secret E2E_PUSH_TOKEN (the release may
 # change .github/workflows/*, which GITHUB_TOKEN cannot merge).
@@ -58,6 +67,8 @@ jobs:
       VERSION_INPUT: ${{ inputs.version }}
       DRY_RUN: ${{ inputs.dry_run }}
       HAS_PUSH_TOKEN: ${{ secrets.E2E_PUSH_TOKEN != '' }}
+      PUBLIC_REPO: ${{ vars.PUBLIC_REPO }}
+      PUBLIC_SINCE: ${{ vars.PUBLIC_SINCE }}
     steps:
       - name: Check configuration (skip cleanly if unset)
         id: cfg
@@ -116,6 +127,28 @@ jobs:
             cat finish.log
             echo '```'
           } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Publish the newest release to the public repository (one commit; only if configured)
+        if: steps.cfg.outputs.configured == 'true' && (!inputs.dry_run) && vars.PUBLIC_REPO != '' && vars.PUBLIC_SINCE != ''
+        env:
+          PUBLIC_TOKEN: ${{ secrets.PUBLIC_PUSH_TOKEN }}
+          # The checkout in subject/ sends this repository's token to github.com
+          # with every request (actions/checkout). An empty value resets that
+          # header for these commands, so the public token in the URL is used.
+          GIT_CONFIG_COUNT: "1"
+          GIT_CONFIG_KEY_0: http.https://github.com/.extraheader
+          GIT_CONFIG_VALUE_0: ""
+        run: |
+          set -euo pipefail
+          git -C subject fetch --quiet --tags origin '+refs/heads/main:refs/remotes/origin/main'
+          tag="$(python3 tools/release_candidate.py newest-tag --repo subject --since "$PUBLIC_SINCE")"
+          if [ -z "$tag" ]; then echo "::notice::no release at or after ${PUBLIC_SINCE} yet; nothing to publish"; exit 0; fi
+          [ -n "$PUBLIC_TOKEN" ] || { echo "::error::variable PUBLIC_REPO is set but secret PUBLIC_PUSH_TOKEN is not"; exit 1; }
+          git -C subject config user.name "github-actions[bot]"
+          git -C subject config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          export PUBLIC_URL="https://x-access-token:${PUBLIC_TOKEN}@github.com/${PUBLIC_REPO}.git"
+          GH_TOKEN="$PUBLIC_TOKEN" python3 tools/release.py --repo subject publish-public "$tag" \
+            --url-env PUBLIC_URL --github "$PUBLIC_REPO" | tee -a "$GITHUB_STEP_SUMMARY"
 
       - name: Close the attention issue when the cycle was merged
         if: steps.cfg.outputs.configured == 'true' && steps.find.outputs.version != '' && (!inputs.dry_run)

@@ -178,6 +178,46 @@ gh workflow run release-candidate.yaml -f force=true -f publish=true   # start a
 python3 tools/release.py --repo subject finish v2026.11.3 --github OWNER/REPO [--dry-run] [--publish|--no-publish]
 ```
 
+### Publishing to the public repository
+
+A release reaches the public repository as **one commit**: the release's tree on top of the public `main`,
+the tag, and the GitHub Release (titled with the Kubernetes version). None of this repository's history goes
+with it. `release-finish.yaml` does it for the newest release when these are set, and does nothing otherwise:
+
+- variable `PUBLIC_REPO` (`OWNER/REPO`), variable `PUBLIC_SINCE` (the first version to publish; older, internal
+  releases are never published), secret `PUBLIC_PUSH_TOKEN` (contents write on the public repository).
+
+It refuses when the public `main` is not where the previous release left it (something was merged there
+directly: bring it into `main` here, so it ships with a release). A publication that failed is repeated: the
+factory starts `release-finish` every day while the newest release is not public. By hand:
+
+```bash
+export PUBLIC_URL=https://github.com/OWNER/PUBLIC-REPO.git      # with a credential helper, or a token in the URL
+python3 tools/release.py --repo subject publish-public v2027.01.0 --url-env PUBLIC_URL --github OWNER/PUBLIC-REPO [--dry-run]
+```
+
+**The first public release** is cut by hand, once, because it does not upgrade from a release of this
+repository but from what the public repository holds today:
+
+```bash
+git -C subject fetch https://github.com/OWNER/PUBLIC-REPO.git main      # FETCH_HEAD = the public main; note its SHA
+python3 tools/release.py --repo subject cut v2027.01.0                  # from main; add group branches if wanted
+python3 tools/release.py --repo subject notes v2027.01.0 --base <public main SHA> \
+    --kubernetes-supported <what public forks may run>,<today's default> --kubernetes-recommended <today's default>
+#   -> one manifest, `previous: baseline`; the manifests and notes of the internal releases are removed
+#   Add --manual-step "..." for every manual step of the internal releases that still applies to someone
+#   coming from the public state (read their manifests first: only the newest one is carried over).
+git -C subject push -u origin release/v2027.01.0
+gh pr create --base main --head release/v2027.01.0 --title "release: v2027.01.0" --label publish --body "First public release"
+gh workflow run e2e.yaml --ref lifecycle -f modes=fresh,upgrade -f subject=release/v2027.01.0 \
+    -f base=<public main SHA> -f profiles=default,managed
+```
+
+From there it is an ordinary cycle (the factory sees `release/v2027.01.0` in flight): approve E2E, and when it is
+green `release-finish` merges, tags and, with the three settings above and `PUBLIC_SINCE=v2027.01.0`, publishes.
+The upgrade jobs of that run are the test of the jump existing public forks will make. The long-lived dev
+environment sits on the internal releases and cannot take this one with `upgrade`; recreate it from the tag.
+
 `finish` commits nothing after E2E: what was tested is what is merged and tagged. It
 
 1. refuses unless the four statuses on the release head are green **and** come from the release's own run:

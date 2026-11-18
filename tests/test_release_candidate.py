@@ -496,6 +496,14 @@ def test_finishable_is_the_release_in_flight_or_one_tagged_but_not_cleaned_up(re
     assert rc.main(["finishable", "--repo", str(c)]) == 0 and capsys.readouterr().out.strip() == "v2026.11.2"
 
 
+def test_newest_tag_cli_can_ignore_releases_before_the_first_public_one(repo, capsys):
+    clone, _ = repo
+    for since, expected in ((None, "v2026.11.1"), ("v2026.11.1", "v2026.11.1"), ("v2026.11.0", "v2026.11.1"),
+                            ("v2027.01.0", ""), ("nonsense", "")):
+        args = ["newest-tag", "--repo", str(clone)] + (["--since", since] if since else [])
+        assert rc.main(args) == 0 and capsys.readouterr().out.strip() == expected, since
+
+
 class TestWorkflow:
     def _wf(self):
         with open(os.path.join(ROOT, ".github/workflows/release-candidate.yaml"), encoding="utf-8") as fh:

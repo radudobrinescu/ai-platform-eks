@@ -101,6 +101,28 @@ class TestReleaseFinishWorkflow:
         issue = _step(job, "Open or update an issue")
         assert issue["if"].startswith("failure()") and issue["env"]["GH_TOKEN"] == "${{ github.token }}"
 
+    def test_publishes_the_newest_release_to_the_public_repository_only_when_configured(self):
+        wf, _ = _load("release-finish.yaml")
+        step = _step(wf["jobs"]["finish"], "Publish the newest release to the public repository")
+        assert "vars.PUBLIC_REPO != ''" in step["if"] and "vars.PUBLIC_SINCE != ''" in step["if"]
+        assert "(!inputs.dry_run)" in step["if"]
+        run = step["run"]
+        assert 'newest-tag --repo subject --since "$PUBLIC_SINCE"' in run          # never an older, internal release
+        assert 'publish-public "$tag"' in run and "--url-env PUBLIC_URL" in run and '--github "$PUBLIC_REPO"' in run
+        assert "${{" not in run and "PUBLIC_URL" not in step["env"]                 # the token never sits in the YAML
+        # actions/checkout makes git send this repository's token to github.com; it must not win.
+        assert step["env"]["GIT_CONFIG_KEY_0"] == "http.https://github.com/.extraheader"
+        assert step["env"]["GIT_CONFIG_VALUE_0"] == "" and step["env"]["GIT_CONFIG_COUNT"] == "1"
+        names = [s.get("name", "") for s in _steps(wf["jobs"]["finish"])]
+        assert names.index("Finish the release (merge, tag, publish) if E2E is green") < names.index(step["name"])
+
+    def test_the_factory_restarts_a_publication_that_did_not_happen(self):
+        wf, _ = _load("release-candidate.yaml")
+        step = _step(wf["jobs"]["candidate"], "Hand a release that is not public yet to release-finish")
+        assert "vars.PUBLIC_REPO != ''" in step["if"] and "vars.PUBLIC_SINCE != ''" in step["if"]
+        assert 'git ls-remote "https://github.com/${PUBLIC_REPO}.git" "refs/tags/${tag}"' in step["run"]
+        assert "gh workflow run release-finish.yaml" in step["run"]
+
     def test_unconfigured_repo_skips_green(self):
         wf, _ = _load("release-finish.yaml")
         steps = _steps(wf["jobs"]["finish"])

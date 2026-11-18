@@ -570,7 +570,15 @@ def main(argv: list[str] | None = None) -> int:
             b.add_argument("--notes", required=True)
     f = sub.add_parser("finishable", help="print the release in flight (for release-finish.yaml), or nothing")
     f.add_argument("--repo", required=True)
+    n = sub.add_parser("newest-tag", help="print the newest release tag on main, or nothing")
+    n.add_argument("--repo", required=True)
+    n.add_argument("--since", metavar="vYYYY.MM.N", help="print it only if it is this version or a later one")
     a = ap.parse_args(argv)
+    if a.cmd == "newest-tag":
+        tag = newest_tag(a.repo, "origin/main")
+        if tag and (not a.since or (TAG_RX.match(a.since) and _key(tag) >= _key(a.since))):
+            print(tag)
+        return 0
     if a.cmd == "finishable":
         version = finishable(a.repo)
         if version:

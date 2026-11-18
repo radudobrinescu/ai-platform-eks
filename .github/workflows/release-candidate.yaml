@@ -262,6 +262,22 @@ jobs:
         if: steps.plan.outputs.action == 'finish' || steps.plan.outputs.leftover == 'true'
         run: gh workflow run release-finish.yaml --repo "$REPO" --ref lifecycle
 
+      # A release that is tagged here and not (yet) in the public repository:
+      # release-finish publishes it. Daily, so a failed publication repairs itself.
+      - name: Hand a release that is not public yet to release-finish
+        if: (!inputs.dry_run) && vars.PUBLIC_REPO != '' && vars.PUBLIC_SINCE != ''
+        env:
+          PUBLIC_REPO: ${{ vars.PUBLIC_REPO }}
+          PUBLIC_SINCE: ${{ vars.PUBLIC_SINCE }}
+        run: |
+          set -euo pipefail
+          tag="$(python3 tools/release_candidate.py newest-tag --repo subject --since "$PUBLIC_SINCE")"
+          [ -n "$tag" ] || exit 0
+          if [ -z "$(git ls-remote "https://github.com/${PUBLIC_REPO}.git" "refs/tags/${tag}")" ]; then
+            echo "::notice::${tag} is not in ${PUBLIC_REPO} yet; starting release-finish"
+            gh workflow run release-finish.yaml --repo "$REPO" --ref lifecycle
+          fi
+
       # -------------------------------------------------------------- abandon
       - name: Abandon the candidate
         if: steps.plan.outputs.action == 'abandon'

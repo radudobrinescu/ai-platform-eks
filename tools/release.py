@@ -5,6 +5,7 @@
   release.py notes  <vYYYY.MM.N> --base <ref>   [--repo DIR] [options] [--no-commit]
   release.py finish <vYYYY.MM.N> --github OWNER/REPO [--repo DIR] [--dry-run]
   release.py publish <vYYYY.MM.N> --github OWNER/REPO [--repo DIR]
+  release.py publish-public <vYYYY.MM.N> --url-env VAR --github OWNER/REPO [--repo DIR] [--dry-run]
 
 `cut` creates release/<version> from origin/main, merges the listed branches
 (update branches, fixes) with --no-ff, and pushes it. Coupled fixes that need
@@ -54,6 +55,14 @@ next run continues from there. --dry-run shows the steps and changes nothing.
 
 `publish` creates the GitHub Release for an existing tag from the notes at that
 tag (idempotent; used for releases tagged before `finish` did it).
+
+`publish-public` gives a tagged release to the public repository as ONE commit:
+the release's tree on top of the public main, tagged with the same name, plus
+the GitHub Release there. Nothing of this repository's history (candidate
+branches, update branches, their commit messages) goes with it; forkers see one
+commit per release and merge its tag. It refuses when the public main is not
+where the previous release left it (something was merged there directly: bring
+it into main here first), and it resumes when the tag is already there.
 
 Kubernetes rule (enforced here): a release supports every Kubernetes version
 of the previous release plus at most one newer minor, which must be exactly one
@@ -680,6 +689,68 @@ def publish(repo: str, version: str, repo_slug: str) -> bool:
     return True
 
 
+# --------------------------------------------------------------------------- #
+# publish-public: one commit per release in the public repository
+# --------------------------------------------------------------------------- #
+
+def _remote_ref(repo: str, url: str, ref: str) -> str | None:
+    """Commit that `ref` (a branch, or a tag: peeled) points at in the repository at `url`, or None."""
+    out = git(repo, "ls-remote", url, ref, f"{ref}^{{}}")
+    found = {line.split("\t")[1]: line.split("\t")[0] for line in out.splitlines() if "\t" in line}
+    return found.get(f"{ref}^{{}}") or found.get(ref)
+
+
+def publish_public(repo: str, version: str, url: str, *, branch: str = "main", dry_run: bool = False) -> dict:
+    """Publish the tagged release `version` to the public repository at `url` as
+    one commit on `branch`, with the tag `version` on it. Returns {commit, parent,
+    pushed}. `url` may carry a credential: it is never put into a message."""
+    try:
+        return _publish_public(repo, version, url, branch, dry_run)
+    except ReleaseError as e:
+        raise ReleaseError(str(e).replace(url, "<public repository>")) from None
+
+
+def _publish_public(repo: str, version: str, url: str, branch: str, dry_run: bool) -> dict:
+    validate_version(version)
+    if not git(repo, "tag", "--list", version).strip():
+        raise ReleaseError(f"there is no tag {version} here; only a finished release can be published")
+    tree = git(repo, "rev-parse", f"{version}^{{tree}}").strip()
+    previous = json.loads(git(repo, "show", f"{version}:releases/{version}.json")).get("previous", "")
+    parent = _remote_ref(repo, url, f"refs/heads/{branch}")
+    if not parent:
+        raise ReleaseError(f"the public repository has no branch {branch}")
+    there = _remote_ref(repo, url, f"refs/tags/{version}")
+    if there:
+        return {"commit": there, "parent": None, "pushed": False}        # an earlier run got this far
+    if previous and previous != "baseline":
+        # The public main must be exactly where the previous release left it.
+        before = _remote_ref(repo, url, f"refs/tags/{previous}")
+        if not before:
+            raise ReleaseError(f"{version} upgrades from {previous}, which is not published in the public "
+                               "repository; publish that one first")
+        if parent != before:
+            raise ReleaseError(
+                f"the public {branch} ({parent[:12]}) is not the release {previous} ({before[:12]}): something was "
+                "merged there directly. Bring those changes into main here (they then ship with a release), "
+                f"reset the public {branch} to {previous}, and rerun.")
+    git(repo, "fetch", "--quiet", url, parent)
+    message = f"Release {version}\n\nNotes: docs/releases/{version}.md. To upgrade: UPGRADING.md.\n"
+    assert_product_safe(message)
+    commit = git(repo, "commit-tree", tree, "-p", parent, "-m", message).strip()
+    if dry_run:
+        return {"commit": commit, "parent": parent, "pushed": False}
+    # The same tag name points at another commit here (this repository's merge
+    # commit), so the public tag is made under a private name and pushed as <version>.
+    local = f"public-release/{version}"
+    git(repo, "tag", "-f", "-a", local, "-m", f"Release {version}", commit)
+    try:
+        git(repo, "push", "--quiet", "--atomic", url, f"{commit}:refs/heads/{branch}",
+            f"refs/tags/{local}:refs/tags/{version}")
+    finally:
+        git(repo, "tag", "-d", local, check=False)
+    return {"commit": commit, "parent": parent, "pushed": True}
+
+
 def canary_hint(version: str) -> str:
     return ("Canary (in the long-lived environment's checkout, branch env/<env>):\n"
             f"  git fetch origin --tags && git merge {version}\n"
@@ -709,6 +780,13 @@ def main(argv: list[str] | None = None) -> int:
     pb = sub.add_parser("publish", help="create the GitHub Release of an existing tag from its notes")
     pb.add_argument("version")
     pb.add_argument("--github", required=True, metavar="OWNER/REPO")
+    pp = sub.add_parser("publish-public", help="give a tagged release to the public repository as one commit")
+    pp.add_argument("version")
+    pp.add_argument("--url-env", required=True, metavar="VAR",
+                    help="environment variable holding the public repository's git URL (it may carry a credential)")
+    pp.add_argument("--github", metavar="OWNER/REPO", help="also create the GitHub Release there")
+    pp.add_argument("--branch", default="main")
+    pp.add_argument("--dry-run", action="store_true", help="build the commit, push nothing")
     f = sub.add_parser("finish", help="after 4 green E2E runs: merge the release PR, tag, publish, delete the "
                                       "branch (resumes a finish that stopped half way)")
     f.add_argument("version")
@@ -723,6 +801,21 @@ def main(argv: list[str] | None = None) -> int:
                         "that runs after every E2E run)")
     a = ap.parse_args(argv)
     try:
+        if a.cmd == "publish-public":
+            url = os.environ.get(a.url_env, "")
+            if not url:
+                raise ReleaseError(f"environment variable {a.url_env} is not set")
+            res = publish_public(a.repo, a.version, url, branch=a.branch, dry_run=a.dry_run)
+            if a.dry_run:
+                print(f"would publish {a.version} as one commit on top of {res['parent'][:12]}" if res["parent"]
+                      else f"{a.version} is already published ({res['commit'][:12]})")
+                return 0
+            print(f"published {a.version} as {res['commit'][:12]}" if res["pushed"]
+                  else f"{a.version} was already published ({res['commit'][:12]})")
+            if a.github:
+                made = publish(a.repo, a.version, a.github)
+                print(f"{'created' if made else 'already exists:'} GitHub Release {a.version} in {a.github}")
+            return 0
         if a.cmd == "publish":
             made = publish(a.repo, a.version, a.github)
             print(f"{'created' if made else 'already exists:'} GitHub Release {a.version}")
