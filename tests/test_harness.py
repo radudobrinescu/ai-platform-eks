@@ -680,3 +680,73 @@ def test_the_harness_may_upgrade_to_an_untagged_candidate():
     under test gets its tag only after E2E, so the harness opts out."""
     from subject import Subject
     assert Subject(".", "e2eud1", "eu-central-1", dry_run=True)._env()["UPGRADE_ALLOW_UNTAGGED"] == "1"
+
+
+class TestOldBase:
+    """An upgrade test whose base predates the first release (the public
+    repository's state before any release reached it)."""
+
+    def _seed(self, monkeypatch, fail):
+        import survival
+        calls = []
+        monkeypatch.setattr(survival, "wait_for", lambda *a, **k: "sk-team")
+        monkeypatch.setattr(survival.checks, "deploy_bedrock", lambda c: ("nova-lite", None))
+        monkeypatch.setattr(survival.checks, "wait_alias", lambda c, alias, t: calls.append(("alias", alias)))
+        monkeypatch.setattr(survival.checks, "deploy_model", lambda c, *a: calls.append(("deploy", a[0])))
+
+        def ready(c, kind, name):
+            if fail:
+                raise TimeoutError("timed out after 1500s waiting for vllmendpoint")
+        monkeypatch.setattr(survival.checks, "wait_endpoint_ready", ready)
+        monkeypatch.setattr(survival.checks, "chat", lambda pf, key, model: (calls.append(("chat", model)) or (200, "ok")))
+        monkeypatch.setattr(survival, "openwebui_ids", lambda c: {})
+
+        class PF:
+            def __init__(self, *a): pass
+            def __enter__(self): return self
+            def __exit__(self, *a): return False
+        monkeypatch.setattr(survival, "PortForward", PF)
+
+        class Ctx:
+            timeouts = {"bedrock": 1}
+            class subject:
+                @staticmethod
+                def platformctl(*a, **k): return 0
+        return survival, Ctx, calls
+
+    def test_a_base_that_cannot_bring_up_a_model_is_still_seeded_with_the_rest(self, monkeypatch):
+        survival, Ctx, calls = self._seed(monkeypatch, fail=True)
+        s = survival.seed(Ctx, gpu_optional=True)
+        assert s.models == ["nova-lite"] and "TimeoutError" in s.gpu_skipped
+        chats = [m for kind, m in calls if kind == "chat"]
+        assert chats and set(chats) == {"nova-lite"}                 # no chat on the model that is not there
+
+    def test_on_a_released_base_the_same_failure_fails_the_seed(self, monkeypatch):
+        survival, Ctx, _ = self._seed(monkeypatch, fail=True)
+        with pytest.raises(TimeoutError):
+            survival.seed(Ctx)
+
+    def test_when_the_model_comes_up_nothing_is_skipped(self, monkeypatch):
+        survival, Ctx, calls = self._seed(monkeypatch, fail=False)
+        s = survival.seed(Ctx, gpu_optional=True)
+        assert len(s.models) == 2 and s.gpu_skipped is None and ("chat", s.models[1]) in calls
+
+    def test_a_run_that_stopped_before_the_merge_tears_down_with_the_candidate_s_code(self):
+        r = e2e.Runner.__new__(e2e.Runner)
+        steps = []
+
+        class A:
+            keep, mode, region, remote = False, "upgrade", "eu-central-1", "origin"
+        r.a, r.dry, r.env, r.cluster, r.branch = A, False, "e2eud1", "ai-platform-e2eud1", "e2e/e2eud1"
+        r.provisioned, r.branch_pushed, r.candidate_merged = True, False, False
+        r.step = lambda name, fn: steps.append(name) or True
+        r.teardown()
+        assert steps == ["teardown-code", "teardown", "orphan-sweep", "teardown-verify"]
+        steps.clear()
+        r.candidate_merged = True                                     # the usual case: already on the candidate
+        r.teardown()
+        assert steps == ["teardown", "orphan-sweep", "teardown-verify"]
+        steps.clear()
+        A.mode, r.candidate_merged = "fresh", False
+        r.teardown()
+        assert steps == ["teardown", "orphan-sweep", "teardown-verify"]

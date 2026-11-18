@@ -178,6 +178,7 @@ class Runner:
         self.report = Report(a.mode, a.profile, self.env, refs)
         self.provisioned = False
         self.branch_pushed = False
+        self.candidate_merged = False
         self.cluster = ""
         self.ctx: checks.Ctx | None = None
 
@@ -270,6 +271,16 @@ class Runner:
             log(f"--keep: env {self.env} (cluster {self.cluster}) and branch {self.branch} are left running. "
                 f"Tear down later with: ./platformctl down {self.env}")
             return
+        if self.provisioned and self.a.mode == "upgrade" and not self.candidate_merged and not self.dry:
+            # The run stopped before the candidate was merged, so the checkout is
+            # still the base. Tear down with the candidate's code instead: it is the
+            # newer `down` and sweep, and the base's may be broken (2026-11-18: the
+            # public repository's September `down` left the cluster running, said it
+            # had succeeded, and its sweep put the live cluster's key up for deletion).
+            def teardown_code():
+                ok, detail = self.merge_candidate()
+                return True, detail if ok else f"kept the base's code ({detail})"
+            self.step("teardown-code", teardown_code)
         if self.provisioned:
             self.step("teardown", lambda: self._platformctl_ok("down", self.env, input_=f"{self.env}\n"))
             self.step("orphan-sweep", lambda: self.subject.run(
@@ -349,10 +360,14 @@ class Runner:
             print("- step snapshot (team, key, spend, spend logs, models, Langfuse traces, Open WebUI ids, Cognito)")
         else:
             def do_seed():
-                state["seed"] = survival.seed(self.make_ctx())
+                # A base without a release manifest is from before the first release.
+                old_base = versions.current_release(self.subject.root)[0] == "baseline"
+                state["seed"] = survival.seed(self.make_ctx(), gpu_optional=old_base)
                 state["before"] = survival.snapshot(self.make_ctx(), state["seed"])
                 self.report.survival["before"] = state["before"]
-                return True, "seeded and snapshotted"
+                skipped = state["seed"].gpu_skipped
+                return True, "seeded and snapshotted" + (
+                    f"; NO self-hosted model on this base (it predates the first release): {skipped}" if skipped else "")
             if not self.step("seed", do_seed):
                 return
         if not self.step("merge-candidate", self.merge_candidate):
@@ -385,6 +400,7 @@ class Runner:
         if r.returncode != 0:
             g("merge", "--abort", check=False)
             return False, f"git merge of {self.a.candidate} failed: {redact(r.stdout + r.stderr)[-300:]}"
+        self.candidate_merged = True
         rel, _ = versions.current_release(self.subject.root)
         return True, f"merged {self.a.candidate} locally (not pushed); target release {rel}"
 
