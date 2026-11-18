@@ -620,7 +620,7 @@ class TestWorkflow:
         assert steps["Cut, notes, push"]["id"] == "cut" and 'echo "empty=true" >> "$GITHUB_OUTPUT"' in cut
         # ...but a candidate that tests new commits on main is equal to main too, and is the point
         # (2026-11-18: the first product-only cycle was thrown away by this guard).
-        assert """untested="$(jq '.product_commits | length' plan.json)"""" in cut
+        assert "untested=\"$(jq '.product_commits | length' plan.json)\"" in cut
         assert 'if [ "$untested" = 0 ] && git -C subject diff --quiet origin/main "release/$VERSION"; then' in cut
         assert cut.index("diff --quiet origin/main") < cut.index("release.py --repo subject notes")
         for name in ("Open the release PR", "Dispatch E2E (fresh + upgrade, both profiles; waits for approval)"):
