@@ -2,6 +2,7 @@
 provisioning role against a real account, so these properties must not regress."""
 
 import glob
+import json
 import os
 import re
 import subprocess
@@ -136,7 +137,10 @@ class TestE2EWorkflow:
         wf, _ = _load("e2e.yaml")
         on = _on(wf)
         assert list(on) == ["workflow_dispatch"]
-        assert set(on["workflow_dispatch"]["inputs"]) == {"modes", "subject", "base", "profiles", "keep", "with_llmd"}
+        assert set(on["workflow_dispatch"]["inputs"]) == {"modes", "subject", "base", "profiles", "keep", "with_llmd",
+                                                          "note"}
+        note = on["workflow_dispatch"]["inputs"]["note"]
+        assert note["type"] == "string" and note["default"] == "" and not note.get("required")
         assert on["workflow_dispatch"]["inputs"]["modes"]["options"] == ["fresh", "upgrade", "fresh,upgrade"]
 
     def test_run_name_says_what_is_tested(self):
@@ -144,6 +148,36 @@ class TestE2EWorkflow:
         rn = wf["run-name"]
         for needle in ("inputs.modes", "inputs.subject", "inputs.base", "inputs.profiles", "inputs.keep"):
             assert needle in rn, needle
+        assert rn.startswith("${{ inputs.note && format('{0} · ', inputs.note) || '' }}e2e ")   # what changes, first
+
+    def test_the_run_page_says_what_is_waiting_for_approval(self, tmp_path):
+        """A job without the environment, so it runs before the approval: it puts
+        the candidate's pull request (what changes, what waiting means) on the
+        run's summary page. Run for real with a fake gh."""
+        wf, _ = _load("e2e.yaml")
+        job = wf["jobs"]["about"]
+        assert "environment" not in job and "needs" not in job
+        assert job["permissions"] == {"contents": "read", "pull-requests": "read"}
+        assert not any("aws" in str(s.get("uses", "")) for s in _steps(job))
+        script = _steps(job)[0]["run"]
+        fake = tmp_path / "gh"
+        fake.write_text('#!/bin/sh\nprintf \'%s\' "$FAKE_PRS"\n')
+        fake.chmod(0o755)
+        summary = tmp_path / "summary.md"
+        env = {"PATH": f"{tmp_path}:{os.environ['PATH']}", "GITHUB_REPOSITORY": "o/r", "GITHUB_STEP_SUMMARY": str(summary),
+               "SUBJECT_REF": "release/v2026.11.8", "BASE_REF": "v2026.11.7", "MODES": "fresh,upgrade",
+               "PROFILES": "default,managed", "WAIT_DAYS": "5"}
+        pr = [{"number": 80, "title": "cycle: v2026.11.8", "url": "https://x/pull/80",
+               "body": "### What you are approving\n\n- **An integration cycle.**\n| vllm | `a` | `b` | anchor |"}]
+        subprocess.run(["bash", "-c", script], check=True, cwd=tmp_path, env={**env, "FAKE_PRS": json.dumps(pr)})
+        text = summary.read_text()
+        assert text.startswith("## What this run tests") and "[#80 cycle: v2026.11.8](https://x/pull/80)" in text
+        assert "### What you are approving" in text and "| vllm | `a` | `b` | anchor |" in text
+        assert "**Not approving** changes nothing" in text and "after 5 days" in text and "$5-10" in text
+        summary.write_text("")
+        subprocess.run(["bash", "-c", script], check=True, cwd=tmp_path, env={**env, "FAKE_PRS": "[]"})
+        text = summary.read_text()
+        assert "Ref `release/v2026.11.8`, upgraded from `v2026.11.7`" in text and "started by hand" in text
 
     def test_one_run_one_approval_for_every_mode_and_profile(self):
         wf, _ = _load("e2e.yaml")

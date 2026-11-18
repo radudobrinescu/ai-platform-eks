@@ -5,6 +5,7 @@
   release.py notes  <vYYYY.MM.N> --base <ref>   [--repo DIR] [options] [--no-commit]
   release.py finish <vYYYY.MM.N> --github OWNER/REPO [--repo DIR] [--dry-run]
   release.py publish <vYYYY.MM.N> --github OWNER/REPO [--repo DIR]
+  release.py changes <base-ref> [<head-ref>]    [--repo DIR]     (JSON: what the head changes against the base)
   release.py publish-public <vYYYY.MM.N> --url-env VAR --github OWNER/REPO [--repo DIR] [--dry-run]
 
 `cut` creates release/<version> from origin/main, merges the listed branches
@@ -225,6 +226,21 @@ def version_table(old: dict, new: dict) -> tuple[list[tuple[str, str, str]], lis
         if o != "-" and n != "-" and _major(o) != _major(n) and not k.startswith(_MAJOR_IGNORE_PREFIXES):
             majors.append(k)
     return rows, majors
+
+
+def cycle_changes(repo: str, base: str, head: str | None = None) -> dict:
+    """Component versions that differ between two trees: {"rows": [[component,
+    before, after]], "majors": [component]}. `head` None = the working tree.
+    With base = main and head = a candidate, this is what the candidate adds on
+    top of main (the notes compare with the last published release instead)."""
+    def read(ref: str | None) -> dict:
+        if ref is None:
+            return versions.read_versions(repo)
+        with tempfile.TemporaryDirectory() as tmp:
+            export_tree(repo, ref, tmp)
+            return versions.read_versions(tmp)
+    rows, majors = version_table(read(base), read(head))
+    return {"rows": [list(r) for r in rows], "majors": majors}
 
 
 def check_kubernetes(prev: dict | None, supported: list[str], recommended: str) -> None:
@@ -777,6 +793,9 @@ def main(argv: list[str] | None = None) -> int:
     n.add_argument("--required-tfvar", action="append", default=[])
     n.add_argument("--manual-step", action="append", default=[])
     n.add_argument("--no-commit", action="store_true")
+    ch = sub.add_parser("changes", help="print as JSON what a ref (default: the working tree) changes against a base")
+    ch.add_argument("base")
+    ch.add_argument("head", nargs="?")
     pb = sub.add_parser("publish", help="create the GitHub Release of an existing tag from its notes")
     pb.add_argument("version")
     pb.add_argument("--github", required=True, metavar="OWNER/REPO")
@@ -801,6 +820,9 @@ def main(argv: list[str] | None = None) -> int:
                         "that runs after every E2E run)")
     a = ap.parse_args(argv)
     try:
+        if a.cmd == "changes":
+            print(json.dumps(cycle_changes(a.repo, a.base, a.head), indent=2))
+            return 0
         if a.cmd == "publish-public":
             url = os.environ.get(a.url_env, "")
             if not url:

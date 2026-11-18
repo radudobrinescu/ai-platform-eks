@@ -166,6 +166,13 @@ for `WAIT_DAYS` (default 5) is abandoned without marks and cut again, so an appr
 one. A group that does not merge cleanly is left out of that cycle. At most one of the anchor updates (vLLM,
 the EKS Kubernetes version) goes into a cycle.
 
+**What you are approving.** The E2E run's name starts with what the candidate changes on top of `main`
+(for example `cycle v2026.11.8: 2 updates: vllm v0.34.1, open-webui v0.13.5 · e2e fresh,upgrade · ...`), so the
+approval request says it. The run's summary page, where the approval button is, shows the candidate's pull
+request: a table of the changed components (anchor, major and CI-only ones marked), whether it is a release,
+whether it includes a security update, and what happens if you do not approve (nothing: after `WAIT_DAYS` the
+candidate is replaced by a fresh one, so letting an unimportant cycle wait is safe).
+
 The issue "Release candidate needs attention" is opened or commented on when a step fails, when a candidate
 is abandoned and when `main` fails alone; `release-finish.yaml` closes it when a cycle is merged.
 

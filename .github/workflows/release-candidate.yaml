@@ -181,6 +181,8 @@ jobs:
             exit 0
           fi
           python3 tools/release.py --repo subject notes "$VERSION" --base "$BASE"
+          # What the candidate changes on top of main: for the PR and for the E2E run's name.
+          python3 tools/release.py --repo subject changes origin/main > changes.json
           git -C subject push --quiet -u origin "release/$VERSION:refs/heads/release/$VERSION"
 
       - name: Open the release PR
@@ -193,7 +195,10 @@ jobs:
           set -euo pipefail
           git -C subject fetch --quiet origin "release/$VERSION"
           git -C subject show "FETCH_HEAD:docs/releases/$VERSION.md" > notes.md
-          python3 tools/release_candidate.py pr-body --plan plan.json --notes notes.md > body.md
+          # (resumed cut: this run did not write changes.json)
+          [ -f changes.json ] || python3 tools/release.py --repo subject changes origin/main FETCH_HEAD > changes.json
+          python3 tools/release_candidate.py pr-body --plan plan.json --notes notes.md --changes changes.json \
+            --wait-days "$WAIT_DAYS" > body.md
           args=(--repo "$REPO" --base main --head "release/$VERSION" --body-file body.md)
           if [ "$IS_RELEASE" = true ]; then
             gh label create publish --repo "$REPO" --color 0e8a16 \
@@ -214,9 +219,11 @@ jobs:
           BASE: ${{ steps.plan.outputs.base }}
         run: |
           set -euo pipefail
+          # The run's name starts with what the candidate changes, so the approval request says it.
+          note="$(python3 tools/release_candidate.py headline --plan plan.json --changes changes.json)"
           gh workflow run e2e.yaml --repo "$REPO" --ref lifecycle -f modes=fresh,upgrade \
-            -f subject="release/$VERSION" -f base="$BASE" -f profiles=default,managed
-          echo "E2E dispatched for release/$VERSION (from $BASE); approve it in Actions." >> "$GITHUB_STEP_SUMMARY"
+            -f subject="release/$VERSION" -f base="$BASE" -f profiles=default,managed -f note="$note"
+          echo "E2E dispatched for release/$VERSION (from $BASE): ${note}. Approve it in Actions." >> "$GITHUB_STEP_SUMMARY"
 
       # ----------------------------------------------------------------- wait
       - name: Dispatch E2E if the candidate has none (an earlier dispatch failed)
@@ -230,8 +237,10 @@ jobs:
           runs="$(gh run list --repo "$REPO" --workflow e2e.yaml --limit 100 --json displayTitle,createdAt \
             --jq "[.[] | select(.displayTitle | contains(\"release/${VERSION} \")) | select(.createdAt >= \"${PR_CREATED}\")] | length")"
           if [ "$runs" = 0 ]; then
+            python3 tools/release.py --repo subject changes origin/main "origin/release/$VERSION" > changes.json
+            note="$(python3 tools/release_candidate.py headline --plan plan.json --changes changes.json)"
             gh workflow run e2e.yaml --repo "$REPO" --ref lifecycle -f modes=fresh,upgrade \
-              -f subject="release/$VERSION" -f base="$BASE" -f profiles=default,managed
+              -f subject="release/$VERSION" -f base="$BASE" -f profiles=default,managed -f note="$note"
             echo "No E2E run existed for release/$VERSION; dispatched. Approve it in Actions." >> "$GITHUB_STEP_SUMMARY"
           fi
 
@@ -253,8 +262,10 @@ jobs:
           # State success, so it never holds the PR's merge state.
           gh api -X POST "repos/${REPO}/statuses/${HEAD_SHA}" -f state=success -f context=candidate/retry \
             -f target_url="$RUN_URL" -f description="failed E2E jobs dispatched again (${modes}; ${profiles})" >/dev/null
+          python3 tools/release.py --repo subject changes origin/main "origin/release/$VERSION" > changes.json
+          note="$(python3 tools/release_candidate.py headline --plan plan.json --changes changes.json --prefix 'retry of ')"
           gh workflow run e2e.yaml --repo "$REPO" --ref lifecycle -f modes="$modes" \
-            -f subject="release/$VERSION" -f base="$BASE" -f profiles="$profiles"
+            -f subject="release/$VERSION" -f base="$BASE" -f profiles="$profiles" -f note="$note"
           echo "E2E retry dispatched for release/$VERSION (${modes}; ${profiles}); approve it in Actions." >> "$GITHUB_STEP_SUMMARY"
 
       # --------------------------------------------------------------- finish
