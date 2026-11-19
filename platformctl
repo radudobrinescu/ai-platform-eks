@@ -1246,6 +1246,23 @@ _upgrade_plan_and_guard() {
   return "$rc"
 }
 
+# A node that its pool no longer allows (drifted) and that never became ready is
+# not replaced by Karpenter: it disrupts a node only after it initialized, and
+# it counts the node's capacity for the pods that wait. Seen with a GPU instance
+# family the node image cannot drive: the release excludes the family, the node
+# stays, and the model waits for ever. Deleting the NodeClaim makes Karpenter
+# start a node the pool allows now. Nothing runs on such a node but daemons.
+_upgrade_retire_stuck_nodes() {
+  local env="$1" name kind pool
+  kubectl --context "$env" get nodeclaims.karpenter.sh -o json 2>/dev/null \
+    | python3 "${LIB_DIR}/stuck_nodes.py" 2>/dev/null \
+    | while read -r name kind pool; do
+        [ -n "$name" ] || continue
+        warn "node ${name} (${kind}, pool ${pool}) is no longer allowed by its pool and never became ready; removing it so Karpenter starts a replacement"
+        kubectl --context "$env" delete nodeclaims.karpenter.sh "$name" --wait=false >/dev/null 2>&1 || true
+      done || true
+}
+
 # Wait until every Argo CD Application is Synced + Healthy and every app that
 # tracks the GitOps repo has compared the pushed commit (so the old revision
 # being healthy does not count).
@@ -1274,6 +1291,7 @@ _upgrade_wait_converged() {
 ${pending:-    (no Applications found in namespace argocd)}"
       return 1
     fi
+    _upgrade_retire_stuck_nodes "$env"
     sleep 15
   done
 }

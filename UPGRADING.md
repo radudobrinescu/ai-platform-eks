@@ -92,7 +92,11 @@ For each release:
 8. **Push.** Pushes HEAD to the upstream branch and asks Argo CD to refresh
    the `bootstrap` application.
 9. **Converge.** Waits up to 30 minutes until every Argo CD Application is
-   Synced and Healthy on the pushed commit.
+   Synced and Healthy on the pushed commit. While it waits it removes nodes
+   that the new release no longer allows and that never became ready (for
+   example a GPU instance type the node image cannot drive): Karpenter does
+   not replace such a node itself, and a model waiting for it would wait for
+   ever. A warning names each node removed.
 10. **Check.** Runs `./platformctl status <env> --check`.
 11. **Kubernetes hint.** If the release recommends a newer Kubernetes
     version than yours, prints how to move to it.
