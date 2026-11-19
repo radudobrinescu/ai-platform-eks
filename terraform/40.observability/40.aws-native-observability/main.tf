@@ -10,7 +10,7 @@ data "aws_partition" "current" {}
 module "aws_cloudwatch_observability_irsa" {
 
   source  = "terraform-aws-modules/iam/aws//modules/iam-role-for-service-accounts-eks"
-  version = "~> 5.44"
+  version = "~> 6.0"
   count   = var.observability_configuration.aws_native_tooling ? 1 : 0
 
   role_name = "${data.terraform_remote_state.eks.outputs.cluster_name}-cw-ci"
