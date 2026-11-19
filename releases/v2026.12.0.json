@@ -1,6 +1,6 @@
 {
-  "version": "v2026.11.6",
-  "previous": "v2026.11.5",
+  "version": "v2026.12.0",
+  "previous": "baseline",
   "kubernetes": {
     "supported": [
       "1.36",
