@@ -11,6 +11,7 @@ import re
 import socket
 import subprocess
 import sys
+import tempfile
 import time
 import urllib.error
 import urllib.request
@@ -109,20 +110,53 @@ def free_port() -> int:
 
 
 class PortForward:
-    """kubectl port-forward as a context manager; waits for the local port."""
+    """kubectl port-forward as a context manager; waits for the local port.
+
+    kubectl exits at once when the service has no running pod at that moment (a
+    rollout right after an upgrade), and then nothing will ever open the port.
+    So while the port is not open, a kubectl that exited is started again."""
+
+    OPEN_TIMEOUT = 120     # seconds until the local port must accept connections
+    RESTART_PAUSE = 3      # seconds before a kubectl that gave up is started again
 
     def __init__(self, ns: str, target: str, remote_port: int):
         self.ns, self.target, self.remote = ns, target, remote_port
         self.local = free_port()
         self.proc: subprocess.Popen | None = None
+        self._err = None
 
-    def __enter__(self):
+    def _start(self) -> None:
+        self._err = tempfile.TemporaryFile(mode="w+")   # a file, not a pipe: nobody drains it while kubectl runs
         self.proc = subprocess.Popen(
             ["kubectl", "port-forward", "-n", self.ns, self.target, f"{self.local}:{self.remote}"],
-            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+            stdout=subprocess.DEVNULL, stderr=self._err,
         )
-        wait_for(f"port-forward {self.target}", self._open, timeout=60, interval=1)
-        return self
+
+    def _said(self) -> str:
+        if not self._err:
+            return ""
+        self._err.seek(0)
+        text = " ".join(self._err.read().split())[-200:]
+        self._err.close()
+        self._err = None
+        return text
+
+    def __enter__(self):
+        deadline = time.time() + self.OPEN_TIMEOUT
+        said = ""
+        while time.time() < deadline:
+            self._start()
+            while time.time() < deadline and self.proc.poll() is None:
+                if self._open():
+                    return self
+                time.sleep(0.5)
+            if self.proc.poll() is None:       # still running, and the port never opened
+                break
+            said = self._said() or said
+            time.sleep(self.RESTART_PAUSE)
+        self.__exit__(None, None, None)
+        raise TimeoutError(f"timed out after {self.OPEN_TIMEOUT:g}s waiting for port-forward {self.target}"
+                           + (f" (kubectl: {said})" if said else ""))
 
     def _open(self) -> bool:
         with socket.socket() as s:
@@ -130,12 +164,15 @@ class PortForward:
             return s.connect_ex(("127.0.0.1", self.local)) == 0
 
     def __exit__(self, *exc) -> None:
-        if self.proc:
+        if self.proc and self.proc.poll() is None:
             self.proc.terminate()
             try:
                 self.proc.wait(5)
             except subprocess.TimeoutExpired:
                 self.proc.kill()
+        if self._err:
+            self._err.close()
+            self._err = None
 
     @property
     def base(self) -> str:
