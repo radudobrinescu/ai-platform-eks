@@ -791,3 +791,53 @@ class TestOldBase:
         A.mode, r.candidate_merged = "fresh", False
         r.teardown()
         assert steps == ["teardown", "orphan-sweep", "teardown-verify"]
+
+
+# --------------------------------------------------------------------------- #
+# Port-forwards
+# --------------------------------------------------------------------------- #
+FAKE_PF_KUBECTL = r'''#!/usr/bin/env python3
+"""kubectl port-forward stand-in: gives up FAIL_TIMES times, then listens."""
+import os, socket, sys, time
+count = os.environ["PF_COUNT"]
+n = int(open(count).read() or 0) + 1
+open(count, "w").write(str(n))
+if n <= int(os.environ.get("FAIL_TIMES", "0")):
+    sys.stderr.write("error: unable to forward port because pod is not running. Current status=Pending\n")
+    sys.exit(1)
+local = int(sys.argv[-1].split(":")[0])
+s = socket.socket(); s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+s.bind(("127.0.0.1", local)); s.listen(5)
+time.sleep(60)
+'''
+
+
+def _fake_pf(tmp_path, monkeypatch, fail_times):
+    import common
+    fake = tmp_path / "kubectl"
+    fake.write_text(FAKE_PF_KUBECTL)
+    fake.chmod(0o755)
+    count = tmp_path / "count"
+    count.write_text("0")
+    monkeypatch.setenv("PATH", f"{tmp_path}:{os.environ['PATH']}")
+    monkeypatch.setenv("PF_COUNT", str(count))
+    monkeypatch.setenv("FAIL_TIMES", str(fail_times))
+    monkeypatch.setattr(common.PortForward, "RESTART_PAUSE", 0.1)
+    return common, count
+
+
+def test_a_port_forward_that_kubectl_gave_up_on_is_started_again(tmp_path, monkeypatch):
+    """Release v2026.12.0, upgrade/managed: minutes after the upgrade the service had
+    no running pod for a moment, kubectl exited at once, and the harness waited 60
+    seconds for a port that nothing would open. The job failed on that alone."""
+    common, count = _fake_pf(tmp_path, monkeypatch, fail_times=2)
+    with common.PortForward("ai-platform", "svc/langfuse-web", 3000) as pf:
+        assert pf._open() and count.read_text() == "3"
+
+
+def test_a_port_forward_that_never_opens_says_what_kubectl_said(tmp_path, monkeypatch):
+    common, _ = _fake_pf(tmp_path, monkeypatch, fail_times=1000)
+    monkeypatch.setattr(common.PortForward, "OPEN_TIMEOUT", 1.5)
+    with pytest.raises(TimeoutError) as e:
+        common.PortForward("ai-platform", "svc/langfuse-web", 3000).__enter__()
+    assert "port-forward svc/langfuse-web" in str(e.value) and "pod is not running" in str(e.value)
