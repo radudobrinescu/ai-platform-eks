@@ -9,13 +9,14 @@ data "aws_partition" "current" {}
 ################################################################################
 module "aws_cloudwatch_observability_irsa" {
 
-  source  = "terraform-aws-modules/iam/aws//modules/iam-role-for-service-accounts-eks"
-  version = "~> 5.44"
+  source  = "terraform-aws-modules/iam/aws//modules/iam-role-for-service-accounts"
+  version = "~> 6.0"
   count   = var.observability_configuration.aws_native_tooling ? 1 : 0
 
-  role_name = "${data.terraform_remote_state.eks.outputs.cluster_name}-cw-ci"
+  name            = "${data.terraform_remote_state.eks.outputs.cluster_name}-cw-ci"
+  use_name_prefix = false
 
-  role_policy_arns = {
+  policies = {
     policy = "arn:${data.aws_partition.current.partition}:iam::aws:policy/CloudWatchAgentServerPolicy"
   }
 
@@ -41,9 +42,14 @@ module "aws_cloudwatch_observability" {
   eks_addons = {
     amazon-cloudwatch-observability = {
       most_recent              = true
-      service_account_role_arn = module.aws_cloudwatch_observability_irsa[0].iam_role_arn
+      service_account_role_arn = module.aws_cloudwatch_observability_irsa[0].arn
     }
   }
 }
 
-
+# terraform-aws-modules/iam 6 renamed the policy attachment inside the module.
+# Without this an existing environment would detach and re-attach the policy.
+moved {
+  from = module.aws_cloudwatch_observability_irsa[0].aws_iam_role_policy_attachment.this["policy"]
+  to   = module.aws_cloudwatch_observability_irsa[0].aws_iam_role_policy_attachment.additional["policy"]
+}

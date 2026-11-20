@@ -125,7 +125,7 @@ module "eks" {
     } : {},
     local.capabilities.blockstorage ? {
       aws-ebs-csi-driver = {
-        service_account_role_arn = module.ebs_csi_driver_irsa[0].iam_role_arn
+        service_account_role_arn = module.ebs_csi_driver_irsa[0].arn
         most_recent              = true
         preserve                 = false
         # NOTE: the first-deploy hang was fixed by the two-phase targeted apply in
@@ -251,12 +251,13 @@ resource "null_resource" "update_kubeconfig" {
 ################################################################################
 module "ebs_csi_driver_irsa" {
   count   = local.capabilities.blockstorage ? 1 : 0
-  source  = "terraform-aws-modules/iam/aws//modules/iam-role-for-service-accounts-eks"
-  version = "~> 5.43"
+  source  = "terraform-aws-modules/iam/aws//modules/iam-role-for-service-accounts"
+  version = "~> 6.0"
 
-  role_name = "${local.cluster_name}-ebs-csi"
+  name            = "${local.cluster_name}-ebs-csi"
+  use_name_prefix = false
 
-  role_policy_arns = {
+  policies = {
     policy = "arn:${local.partition}:iam::aws:policy/service-role/AmazonEBSCSIDriverPolicy"
   }
 
@@ -434,4 +435,13 @@ resource "kubernetes_ingress_class_v1" "automode" {
   depends_on = [
     kubectl_manifest.automode_ingressclass_params
   ]
+}
+
+
+# terraform-aws-modules/iam 6 renamed the policy attachment inside the module.
+# Without this an existing environment would detach and re-attach the policy
+# of the EBS CSI driver's role (in either order: it could end up detached).
+moved {
+  from = module.ebs_csi_driver_irsa[0].aws_iam_role_policy_attachment.this["policy"]
+  to   = module.ebs_csi_driver_irsa[0].aws_iam_role_policy_attachment.additional["policy"]
 }
