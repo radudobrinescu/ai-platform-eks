@@ -182,7 +182,7 @@ candidate is replaced by a fresh one, so letting an unimportant cycle wait is sa
 environments older than 8 hours are reported in the issue "E2E environments left behind" (they bill until a
 person tears them down), and a job that would not get its 3 Elastic IPs is marked "not run" instead of
 "failed", so a full account is never blamed on the updates under test. A job whose own cluster or VPC is
-still there after its teardown says so in the same issue at once (`leftovers.py --own`). `watchdog.yaml` runs weekly without
+still there after its teardown says so in the same issue at once (`leftovers.py --own`). The autoscaling check waits as long as a GPU node may take, instead of ten minutes, when Karpenter recorded that the cloud had no GPU instance to give; it is still judged. `watchdog.yaml` runs weekly without
 any cloud credentials (`tools/watchdog.py`): it warns 30 days before a push token expires, when a factory
 workflow is disabled, when the scheduled run stopped, when no cycle was merged for 21 days, and when the
 attention issue stays open. It keeps the issue "Factory status" up to date.

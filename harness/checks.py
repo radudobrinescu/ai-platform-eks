@@ -621,6 +621,26 @@ class Load:
         self.stop_ev.set()
 
 
+CAPACITY_LOOKBACK = 900   # seconds before the check: the loaded replica may have asked for its node earlier
+
+
+def capacity_shortage(pod_prefix: str, since: float) -> str:
+    """The newest InsufficientCapacityError that Karpenter recorded since `since`
+    (epoch seconds) for a pod named `pod_prefix`*: the cloud had no GPU instance to
+    give at that moment. Empty when there was none, or when events cannot be read."""
+    try:
+        events = kubectl_json("get", "events", "-n", NS_INFERENCE, "--field-selector",
+                              "reason=InsufficientCapacityError").get("items", [])
+    except Exception:  # noqa: BLE001 - no evidence of a shortage is not a shortage
+        return ""
+    start = datetime.fromtimestamp(since, timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+    hits = sorted((e.get("lastTimestamp") or e.get("eventTime") or "", (e.get("message") or "")[:160])
+                  for e in events
+                  if ((e.get("involvedObject") or {}).get("name") or "").startswith(pod_prefix)
+                  and (e.get("lastTimestamp") or e.get("eventTime") or "") >= start)
+    return hits[-1][1] if hits else ""
+
+
 def _keda_scale(c: Ctx, name: str, so_name: str) -> tuple[bool, str]:
     def so_ready():
         so = kubectl_json("get", "scaledobject", "-n", NS_INFERENCE, so_name)
@@ -637,7 +657,22 @@ def _keda_scale(c: Ctx, name: str, so_name: str) -> tuple[bool, str]:
         def scaled():
             d = llmd_deployment(name)
             return d if ((d.get("spec") or {}).get("replicas") or 0) >= KEDA_MAX_REPLICAS else None
-        wait_for(f"KEDA scales {so_name} to {KEDA_MAX_REPLICAS}", scaled, SCALE_DECISION_TIMEOUT, 15)
+        what = f"KEDA scales {so_name} to {KEDA_MAX_REPLICAS}"
+        short = ""
+        try:
+            wait_for(what, scaled, SCALE_DECISION_TIMEOUT, 15)
+        except TimeoutError:
+            # KEDA can only decide once the loaded replica serves. When that replica
+            # waits for a GPU node the cloud could not give, the candidate is not the
+            # cause: wait as long as a GPU node may take, then judge as usual.
+            short = capacity_shortage(so_name, t0 - CAPACITY_LOOKBACK)
+            if not short:
+                raise
+            log(f"[inference] no GPU capacity in the cloud ({short}); waiting up to {c.timeouts['gpu']}s more")
+            try:
+                wait_for(f"{what} (after a cloud capacity error)", scaled, c.timeouts["gpu"], 15)
+            except TimeoutError as e:
+                raise TimeoutError(f"{e}; the cloud had no GPU capacity: {short}") from None
         t_scale = time.time() - t0
         metric = ""
         for m in (kubectl_json("get", "hpa", "-n", NS_INFERENCE, hpa).get("status") or {}).get("currentMetrics") or []:
@@ -651,7 +686,8 @@ def _keda_scale(c: Ctx, name: str, so_name: str) -> tuple[bool, str]:
         t_ready = time.time() - t0
     return True, (f"{so_name}: replicas {before} -> {KEDA_MAX_REPLICAS} after {t_scale:.0f}s of load "
                   f"(queue metric per pod {metric or 'n/a'}); {KEDA_MAX_REPLICAS}/{KEDA_MAX_REPLICAS} Ready after "
-                  f"{t_ready:.0f}s (Karpenter added GPU capacity); {load.ok}/{load.sent} requests 200")
+                  f"{t_ready:.0f}s (Karpenter added GPU capacity); {load.ok}/{load.sent} requests 200"
+                  + (f"; waited for GPU capacity ({short})" if short else ""))
 
 
 def chk_keda_autoscaling(c: Ctx):
