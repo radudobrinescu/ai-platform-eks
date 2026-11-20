@@ -841,3 +841,79 @@ def test_a_port_forward_that_never_opens_says_what_kubectl_said(tmp_path, monkey
     with pytest.raises(TimeoutError) as e:
         common.PortForward("ai-platform", "svc/langfuse-web", 3000).__enter__()
     assert "port-forward svc/langfuse-web" in str(e.value) and "pod is not running" in str(e.value)
+
+
+# --------------------------------------------------------------------------- #
+# KEDA check and a cloud without GPU capacity
+# --------------------------------------------------------------------------- #
+def _keda_fakes(monkeypatch, capacity_events, scales_after_extension=True):
+    import checks
+    waits = []
+    monkeypatch.setattr(checks, "log", lambda *_: None)
+
+    def kj(*args):
+        if args[1] == "scaledobject":
+            return {"spec": {"maxReplicaCount": checks.KEDA_MAX_REPLICAS},
+                    "status": {"conditions": [{"type": "Ready", "status": "True"}], "hpaName": "hpa"}}
+        if args[1] == "events":
+            return {"items": capacity_events}
+        return {"status": {"currentMetrics": []}}
+    monkeypatch.setattr(checks, "kubectl_json", kj)
+    monkeypatch.setattr(checks, "llmd_deployment", lambda name: {"spec": {"replicas": 1}, "status": {"readyReplicas": 2}})
+
+    class FakeLoad:
+        ok, sent = 9, 10
+        def __init__(self, *a): pass
+        def __enter__(self): return self
+        def __exit__(self, *a): return False
+    monkeypatch.setattr(checks, "Load", FakeLoad)
+
+    def wait_for(desc, fn, timeout, interval=15):
+        waits.append((desc, timeout))
+        if desc.startswith("KEDA scales"):
+            first = sum(1 for d, _ in waits if d.startswith("KEDA scales")) == 1
+            if first or not scales_after_extension:
+                raise TimeoutError(f"timed out after {timeout}s waiting for {desc}")
+            return {"spec": {"replicas": 2}}
+        return fn()
+    monkeypatch.setattr(checks, "wait_for", wait_for)
+
+    class Ctx:
+        timeouts = {"gpu": 1500}
+        @staticmethod
+        def litellm_key(): return "sk"
+    return checks, Ctx, waits
+
+
+CAPACITY_EVENT = {"involvedObject": {"name": "qwen-llmd-8545df8955-52kgd"}, "reason": "InsufficientCapacityError",
+                  "lastTimestamp": "2099-01-01T00:00:00Z",
+                  "message": "NodeClaim gpu-inference-hp572 nominated for this pod failed to launch: creating instance, insufficient capacity"}
+
+
+def test_keda_check_waits_longer_when_the_cloud_had_no_gpu_to_give(monkeypatch):
+    """Release v2026.12.0 (recut), upgrade/managed: the replica the test loads needed a
+    new GPU node, EC2 answered "insufficient capacity", and the replacement node was
+    still starting when the 10 minutes for KEDA's decision ran out. The check failed
+    the job; forty minutes later, in the same job, it passed in two."""
+    checks, Ctx, waits = _keda_fakes(monkeypatch, [CAPACITY_EVENT])
+    ok, detail = checks._keda_scale(Ctx, "qwen", "qwen-llmd")
+    assert ok and "waited for GPU capacity" in detail and "gpu-inference-hp572" in detail
+    keda = [(d, t) for d, t in waits if d.startswith("KEDA scales")]
+    assert [t for _, t in keda] == [checks.SCALE_DECISION_TIMEOUT, 1500] and "capacity" in keda[1][0]
+
+
+def test_keda_check_still_fails_when_nothing_says_the_cloud_was_short(monkeypatch):
+    other_pod = {**CAPACITY_EVENT, "involvedObject": {"name": "some-other-model-llmd-abc"}}
+    old = {**CAPACITY_EVENT, "lastTimestamp": "2020-01-01T00:00:00Z"}
+    for events in ([], [other_pod], [old]):
+        checks, Ctx, waits = _keda_fakes(monkeypatch, events)
+        with pytest.raises(TimeoutError) as e:
+            checks._keda_scale(Ctx, "qwen", "qwen-llmd")
+        assert "capacity" not in str(e.value) and len([d for d, _ in waits if d.startswith("KEDA scales")]) == 1
+
+
+def test_keda_check_fails_and_says_so_when_capacity_never_came(monkeypatch):
+    checks, Ctx, _ = _keda_fakes(monkeypatch, [CAPACITY_EVENT], scales_after_extension=False)
+    with pytest.raises(TimeoutError) as e:
+        checks._keda_scale(Ctx, "qwen", "qwen-llmd")
+    assert "the cloud had no GPU capacity" in str(e.value) and "gpu-inference-hp572" in str(e.value)
