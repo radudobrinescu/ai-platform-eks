@@ -295,3 +295,41 @@ def test_log_tails_take_turns_when_more_models_deploy_than_the_budget():
     for _ in range(2):
         run(app, "diagnostics")
     assert "m0-vllm-1" not in app.inputs()["logs"], "a tail that can no longer be read is dropped"
+
+
+# --- pre-rebuild `sources` flags (/data.json) -----------------------------------
+
+def _legacy(app):
+    app.derive_once()
+    return app.store.data_json()["sources"]
+
+
+def test_legacy_argocd_and_bedrock_flags_ignore_unrelated_watches():
+    """The Argo CD panel is hidden when `sources.argocd` is false. One other
+    watch failing (here: HPAs forbidden) must not hide it."""
+    from dash_testlib import fixture_app
+    app = fixture_app()
+    assert (_legacy(app)["argocd"], _legacy(app)["bedrock"]) == (True, True)
+    app.caches["hpas"].error = "hpas: HTTP 403: forbidden"
+    assert {s.name: s.state for s in app.statuses()}["kubernetes"] == "error"
+    assert (_legacy(app)["argocd"], _legacy(app)["bedrock"]) == (True, True)
+
+
+def test_legacy_argocd_flag_follows_the_argocd_watch():
+    from dash_testlib import fixture_app
+    app = fixture_app()
+    app.caches["argocd"].error = "argocd: HTTP 403: forbidden"
+    assert (_legacy(app)["argocd"], _legacy(app)["bedrock"]) == (False, True)
+    app.caches["argocd"]._not_installed()                    # no Argo CD on this cluster
+    assert _legacy(app)["argocd"] is False
+    app, _ = make_app(listed=False)                          # nothing listed yet
+    assert _legacy(app)["argocd"] is False
+
+
+def test_legacy_bedrock_flag_follows_the_bedrockmodels_watch():
+    from dash_testlib import fixture_app
+    app = fixture_app()
+    app.caches["bedrockmodels"].error = "bedrockmodels: HTTP 500: boom"
+    assert (_legacy(app)["bedrock"], _legacy(app)["argocd"]) == (False, True)
+    app.caches["bedrockmodels"]._not_installed()             # no CRD: Bedrock models can still come from litellm-config
+    assert _legacy(app)["bedrock"] is True

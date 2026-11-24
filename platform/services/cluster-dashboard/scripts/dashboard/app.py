@@ -279,6 +279,12 @@ class App:
         return SourceStatus("kubernetes", state, oldest, "; ".join(errors)[:300] or None, detail, 0,
                             KUBE_STALE_AFTER)
 
+    def _cache_readable(self, name: str) -> bool:
+        """The watch `name` has listed and is not failing now (a kind that is
+        not installed counts: its list is known to be empty)."""
+        cache = self.caches[name]
+        return cache.synced and cache.error is None
+
     def statuses(self) -> list[SourceStatus]:
         return [self.kube_status()] + [s.tracker.status() for s in self.sources]
 
@@ -313,15 +319,19 @@ class App:
             self._logged_notes = notes
         statuses = self.statuses()
         by = {st.name: st.state for st in statuses}
-        kube_ok = by["kubernetes"] in ("ok", "stale")
         sections["status"] = {
             "sources": [st.to_dict() for st in statuses],
             "degraded": self.deps.degraded(),
             "notes": notes,
             # Pre-rebuild `sources` booleans, kept for /data.json readers.
-            "legacy": {"litellm": by["litellm-api"] in ("ok", "stale"), "bedrock": kube_ok,
+            # The Kubernetes-backed ones follow their own watch, not the
+            # combined Kubernetes status: one unrelated failing watch must not
+            # hide the Argo CD panel. Without the BedrockModel CRD, Bedrock
+            # models still come from litellm-config.
+            "legacy": {"litellm": by["litellm-api"] in ("ok", "stale"),
+                       "bedrock": self._cache_readable("bedrockmodels"),
                        "dcgm": by["dcgm"] in ("ok", "stale"),
-                       "argocd": kube_ok and self.caches["argocd"].installed,
+                       "argocd": self._cache_readable("argocd") and self.caches["argocd"].installed,
                        "autoscaling": by["autoscaling"] in ("ok", "stale")},
         }
         for name, data in sections.items():
