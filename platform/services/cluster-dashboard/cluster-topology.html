@@ -416,11 +416,16 @@ function relTime(iso) {
 }
 const hist = { rpm: [], tok: [], cost: [], gpu: [] };
 const $ = (id) => document.getElementById(id);
+// The one escaping helper: every value interpolated into HTML goes through
+// esc() or a number formatter below. Values never go into inline JavaScript:
+// handlers read them from data-* attributes (this.dataset).
 const esc = (s) =>
   String(s == null ? '' : s).replace(
-    /[&<>"]/g,
-    (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' })[c],
+    /[&<>"']/g,
+    (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[c],
   );
+// Links from the backend: only http(s), anything else becomes '#'.
+const safeUrl = (u) => (/^https?:\/\//i.test(String(u || '')) ? String(u) : '#');
 const num = (n) =>
   n == null || n === '—'
     ? '—'
@@ -430,8 +435,8 @@ const num = (n) =>
         : Number.isInteger(n)
           ? n
           : n.toFixed(1)
-      : n;
-const ms = (v) => (v == null ? '—' : v + 'ms');
+      : esc(n);
+const ms = (v) => (v == null ? '—' : esc(v) + 'ms');
 const tierLabel = (t) => (TIERS[t] || ['?'])[0];
 const tierBadge = (t) => {
   const x = TIERS[t] || ['?', 'b-ray'];
@@ -453,13 +458,16 @@ const push = (a, v, n = 32) => {
   while (a.length > n) a.shift();
 };
 
+function setData(d) {
+  D = d;
+  diffActivity();
+  pushHist();
+}
 async function poll() {
   try {
     const r = await fetch('/data.json');
     if (!r.ok) throw 0;
-    D = await r.json();
-    diffActivity();
-    pushHist();
+    setData(await r.json());
     try {
       const ri = await fetch('/investigations');
       if (ri.ok) invs = (await ri.json()).items || [];
@@ -710,7 +718,7 @@ function ovModels() {
     ? rows
         .map(
           (m) =>
-            `<tr onclick="openModel('${esc(m.name)}')"><td><span class="dot ${m.status === 'running' ? 'ok' : m.status === 'error' ? 'bad' : 'warn'}"></span><span class="m-name">${esc(m.name)}</span></td><td>${tierBadge(m.tier)}</td><td class="num">${num(m.rpm)}</td><td class="num">${ms(m.p95)}</td><td class="num">$${(m.costHr || 0).toFixed(2)}</td></tr>`,
+            `<tr data-model="${esc(m.name)}" onclick="openModel(this.dataset.model)"><td><span class="dot ${m.status === 'running' ? 'ok' : m.status === 'error' ? 'bad' : 'warn'}"></span><span class="m-name">${esc(m.name)}</span></td><td>${tierBadge(m.tier)}</td><td class="num">${num(m.rpm)}</td><td class="num">${ms(m.p95)}</td><td class="num">$${(m.costHr || 0).toFixed(2)}</td></tr>`,
         )
         .join('')
     : '<tr><td colspan=5 class="muted" style="padding:16px">No models deployed</td></tr>';
@@ -760,17 +768,15 @@ function gpuBars() {
     .join('');
 }
 
-function alertAction(o) {
-  if (!o) return '';
-  if (o[0] === 'model') return `openModel('${o[1]}')`;
-  if (o[0] === 'node') return `openNode('${o[1]}')`;
-  if (o[0] === 'link') return `openLink('${o[1]}')`;
-  if (o[0] === 'view') return `go('${o[1]}')`;
-  return '';
+function alertOpen(kind, arg) {
+  if (kind === 'model') openModel(arg);
+  else if (kind === 'node') openNode(arg);
+  else if (kind === 'link') openLink(arg);
+  else if (kind === 'view') go(arg);
 }
 function alertRow(a) {
-  const act = alertAction(a.open);
-  return `<div class="alert${a.sev === 'crit' ? ' crit' : ''}${act ? ' clickable' : ''}"${act ? ` onclick="${act}" role="button" tabindex="0" onkeydown="if(event.key==='Enter'||event.key===' '){event.preventDefault();this.click();}"` : ''}><span class="ai">${a.icon}</span><div><div class="at">${esc(a.t)}</div><div class="ad">${esc(a.d)}</div></div></div>`;
+  const act = a.open && ['model', 'node', 'link', 'view'].includes(a.open[0]);
+  return `<div class="alert${a.sev === 'crit' ? ' crit' : ''}${act ? ' clickable' : ''}"${act ? ` data-kind="${esc(a.open[0])}" data-arg="${esc(a.open[1])}" onclick="alertOpen(this.dataset.kind,this.dataset.arg)" role="button" tabindex="0" onkeydown="if(event.key==='Enter'||event.key===' '){event.preventDefault();this.click();}"` : ''}><span class="ai">${esc(a.icon)}</span><div><div class="at">${esc(a.t)}</div><div class="ad">${esc(a.d)}</div></div></div>`;
 }
 function ovHealth() {
   const al = alertList();
@@ -780,7 +786,7 @@ function ovHealth() {
 }
 function ovFeed() {
   $('ov-feed').innerHTML = activity
-    .map((f) => `<div class="fr"><span class="ft">${f[0]}</span><span>${esc(f[1])}</span></div>`)
+    .map((f) => `<div class="fr"><span class="ft">${esc(f[0])}</span><span>${esc(f[1])}</span></div>`)
     .join('');
 }
 
@@ -788,8 +794,13 @@ function modelTabs() {
   const m = D.models || [];
   $('model-tabs').innerHTML = MTABS.map((t) => {
     const n = t[0] === 'all' ? m.length : m.filter((x) => x.tier === t[0]).length;
-    return `<div class="tab ${t[0] === mtab ? 'active' : ''}" onclick="mtab='${t[0]}';modelTabs();modelsBody()">${t[1]}<span class="cnt">${n}</span></div>`;
+    return `<div class="tab ${t[0] === mtab ? 'active' : ''}" data-tab="${esc(t[0])}" onclick="setTab(this.dataset.tab)">${esc(t[1])}<span class="cnt">${n}</span></div>`;
   }).join('');
+}
+function setTab(t) {
+  mtab = t;
+  modelTabs();
+  modelsBody();
 }
 function modelsBody() {
   const rows = (D.models || []).filter((m) => mtab === 'all' || m.tier === mtab);
@@ -798,7 +809,7 @@ function modelsBody() {
     ? rows
         .map(
           (m) =>
-            `<tr onclick="openModel('${esc(m.name)}')"><td><div class="m-name">${esc(m.name)}</div><div class="m-id">${esc(m.model)}</div></td><td>${tierBadge(m.tier)}</td><td>${m.status === 'running' ? '<span class="st ok">running</span>' : m.status === 'error' ? '<span class="st bad">error</span>' : '<span class="st warn">deploying</span>'}${scaleBadge(m)}</td><td class="num">${esc(m.gpu)}</td><td class="num">${mu ? num(m.rpm) : '—'}</td><td class="num">${mu ? (m.p50 == null ? '—' : m.p50 + ' / ' + m.p95 + 'ms') : '—'}</td><td class="num">${mu ? num(m.tps) : '—'}</td><td class="num">${mu && m.errPct != null ? m.errPct + '%' : '—'}</td><td class="num">$${(m.costHr || 0).toFixed(2)}</td><td><div class="act"><button title="Copy a ready-to-run curl for this model" onclick="event.stopPropagation();copyCurl('${esc(m.name)}',event)">⧉ curl</button><button title="Langfuse" onclick="event.stopPropagation();openLink('langfuse')">📊</button><button title="WebUI" onclick="event.stopPropagation();openLink('webui')">💬</button></div></td></tr>`,
+            `<tr data-model="${esc(m.name)}" onclick="openModel(this.dataset.model)"><td><div class="m-name">${esc(m.name)}</div><div class="m-id">${esc(m.model)}</div></td><td>${tierBadge(m.tier)}</td><td>${m.status === 'running' ? '<span class="st ok">running</span>' : m.status === 'error' ? '<span class="st bad">error</span>' : '<span class="st warn">deploying</span>'}${scaleBadge(m)}</td><td class="num">${esc(m.gpu)}</td><td class="num">${mu ? num(m.rpm) : '—'}</td><td class="num">${mu ? (m.p50 == null ? '—' : m.p50 + ' / ' + m.p95 + 'ms') : '—'}</td><td class="num">${mu ? num(m.tps) : '—'}</td><td class="num">${mu && m.errPct != null ? m.errPct + '%' : '—'}</td><td class="num">$${(m.costHr || 0).toFixed(2)}</td><td><div class="act"><button title="Copy a ready-to-run curl for this model" onclick="event.stopPropagation();copyCurl(this.closest('tr').dataset.model,event)">⧉ curl</button><button title="Langfuse" onclick="event.stopPropagation();openLink('langfuse')">📊</button><button title="WebUI" onclick="event.stopPropagation();openLink('webui')">💬</button></div></td></tr>`,
         )
         .join('')
     : '<tr><td colspan=10 class="muted" style="padding:20px">No models in this tier</td></tr>';
@@ -818,7 +829,7 @@ function teamsView() {
           const bl = x.limit
             ? `$${x.budget.toFixed(2)} / $${x.limit.toFixed(0)} · ${pct}%`
             : `$${x.budget.toFixed(2)} · no cap`;
-          return `<div class="card" style="cursor:pointer" onclick="openTeam('${esc(x.name)}')"><div class="card-h"><h3>${esc(x.name)}</h3><span class="m-id">${x.failed ? x.failed + ' failed today' : ''}</span></div><div class="bar-lbl"><span>budget</span><span>${bl}</span></div><div class="bar"><i style="width:${x.limit ? pct : 4}%;background:${c}"></i></div><div class="mini-kpi"><div class="mk"><div class="mkv">${num(x.reqsToday)}</div><div class="mkl">req today</div></div><div class="mk"><div class="mkv">$${(x.spendToday || 0).toFixed(2)}</div><div class="mkl">spend today</div></div><div class="mk"><div class="mkv">${x.keys || 0}</div><div class="mkl">API keys</div></div></div></div>`;
+          return `<div class="card" style="cursor:pointer" data-team="${esc(x.name)}" onclick="openTeam(this.dataset.team)"><div class="card-h"><h3>${esc(x.name)}</h3><span class="m-id">${x.failed ? num(x.failed) + ' failed today' : ''}</span></div><div class="bar-lbl"><span>budget</span><span>${bl}</span></div><div class="bar"><i style="width:${x.limit ? pct : 4}%;background:${c}"></i></div><div class="mini-kpi"><div class="mk"><div class="mkv">${num(x.reqsToday)}</div><div class="mkl">req today</div></div><div class="mk"><div class="mkv">$${(x.spendToday || 0).toFixed(2)}</div><div class="mkl">spend today</div></div><div class="mk"><div class="mkv">${num(x.keys || 0)}</div><div class="mkl">API keys</div></div></div></div>`;
         })
         .join('')
     : '<div class="muted">No teams onboarded yet (create an AITeam)</div>';
@@ -985,7 +996,7 @@ function infra() {
           n.gpu > 0
             ? `<div class="gpuslots">${((g && g.util) || Array(n.gpu).fill(0)).map((u) => (u === 0 && !mdl ? '<div class="gs free">free</div>' : `<div class="gs used">${u}%</div>`)).join('')}</div>`
             : '';
-        return `<div class="card" style="cursor:pointer" onclick="openNode('${esc(n.name)}')"><div class="card-h"><h3>${esc(n.instance)} <span class="badge2 b-ray" style="background:var(--accent-soft);color:#c7d2fe">${esc(n.capacity || '')}</span></h3><span class="util">$${(n.hourly || 0).toFixed(2)}/hr</span></div>${slots}<div class="util" style="margin-top:8px">${mdl ? 'serving ' + esc(mdl) : n.gpu > 0 ? 'idle' : esc(n.zone || '')}${usg}</div></div>`;
+        return `<div class="card" style="cursor:pointer" data-node="${esc(n.name)}" onclick="openNode(this.dataset.node)"><div class="card-h"><h3>${esc(n.instance)} <span class="badge2 b-ray" style="background:var(--accent-soft);color:#c7d2fe">${esc(n.capacity || '')}</span></h3><span class="util">$${(n.hourly || 0).toFixed(2)}/hr</span></div>${slots}<div class="util" style="margin-top:8px">${mdl ? 'serving ' + esc(mdl) : n.gpu > 0 ? 'idle' : esc(n.zone || '')}${usg}</div></div>`;
       })
       .join('');
     h += '</div>';
@@ -1009,14 +1020,20 @@ function invCard(iv) {
     : '';
   const did = 'invd-' + iv.id;
   const detail =
-    `<div id="${did}" class="inv-detail" style="display:none">` +
+    `<div id="${esc(did)}" class="inv-detail" style="display:none">` +
     (risk ? `<div class="inv-k">Risk assessment</div><div class="inv-v">${esc(risk)}</div>` : '') +
     `<div class="inv-k">Proposed fix commands</div>` +
     (cmds.length
       ? `<pre class="inv-cmds">${esc(cmds.join('\n'))}</pre>`
       : '<div class="inv-v muted">No commands proposed — nothing to apply (informational).</div>') +
     `</div>`;
-  return `<div class="alert"><span class="ai">🔧</span><div style="flex:1"><div class="at">${esc(iv.resource_kind || '')} ${esc(iv.resource_name || '')} — fix ready ${sevB}</div><div class="ad">${esc(summary.slice(0, 240))}</div><a class="inv-more" onclick="var e=document.getElementById('${did}');var o=e.style.display==='none';e.style.display=o?'block':'none';this.textContent=o?'hide details ▾':'details ▸'">details ▸</a>${detail}</div><div class="ax"><button class="btn approve" onclick="approve('${iv.id}',this)">Approve fix</button><button class="btn dismiss" onclick="dismiss('${iv.id}',this)">Dismiss</button></div></div>`;
+  return `<div class="alert"><span class="ai">🔧</span><div style="flex:1"><div class="at">${esc(iv.resource_kind || '')} ${esc(iv.resource_name || '')} — fix ready ${sevB}</div><div class="ad">${esc(summary.slice(0, 240))}</div><a class="inv-more" data-target="${esc(did)}" onclick="toggleDetail(this)">details ▸</a>${detail}</div><div class="ax"><button class="btn approve" data-id="${esc(iv.id)}" onclick="approve(this.dataset.id,this)">Approve fix</button><button class="btn dismiss" data-id="${esc(iv.id)}" onclick="dismiss(this.dataset.id,this)">Dismiss</button></div></div>`;
+}
+function toggleDetail(a) {
+  const e = document.getElementById(a.dataset.target);
+  const o = e.style.display === 'none';
+  e.style.display = o ? 'block' : 'none';
+  a.textContent = o ? 'hide details ▾' : 'details ▸';
 }
 function healthView() {
   const al = alertList();
@@ -1091,14 +1108,14 @@ function resolveLinkUrl(x) {
     if (lbl.includes('litellm')) return TUNNEL_URLS.litellm;
     if (lbl.includes('langfuse')) return TUNNEL_URLS.langfuse;
   }
-  return x.url;
+  return safeUrl(x.url);
 }
 function links() {
   const l = D.links || [];
   $('nav-links').innerHTML = l
     .map(
       (x) =>
-        `<a class="nav-link" href="${esc(resolveLinkUrl(x))}" target="_blank" rel="noopener" title="${esc(x.desc || '')}">${x.icon || '🔗'} ${esc(x.label)} ↗</a>`,
+        `<a class="nav-link" href="${esc(resolveLinkUrl(x))}" target="_blank" rel="noopener" title="${esc(x.desc || '')}">${esc(x.icon || '🔗')} ${esc(x.label)} ↗</a>`,
     )
     .join('');
 }
@@ -1393,7 +1410,7 @@ function doSearch(q) {
     ? lastSearch
         .map(
           (it, i) =>
-            `<div class="q-item${i === 0 ? ' sel' : ''}" onmousedown="pickSearch(${i})"><b>${esc(it.label)}</b> <span class="muted" style="font-size:11px">${esc(it.sub)}</span><span class="q-type">${it.type}</span></div>`,
+            `<div class="q-item${i === 0 ? ' sel' : ''}" data-i="${i}" onmousedown="pickSearch(+this.dataset.i)"><b>${esc(it.label)}</b> <span class="muted" style="font-size:11px">${esc(it.sub)}</span><span class="q-type">${esc(it.type)}</span></div>`,
         )
         .join('')
     : '<div class="q-item muted">No matches</div>';
