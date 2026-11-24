@@ -19,7 +19,7 @@ from dashboard.config import Settings
 from dashboard.deps import Deps
 from dashboard.k8s import (ApiError, KubeClient, WatchCache, project_argo, project_configmap, project_cr,
                            project_event, project_ingress, project_node, project_pod)
-from dashboard.models import SERVING_KINDS, node_records
+from dashboard.models import SERVING_KINDS, endpoint_records, log_tail_targets, node_records, pod_records
 from dashboard.snapshot import Store
 from dashboard.sources import PolledSource, Scheduler, SourceStatus, SourceUnavailable
 
@@ -79,6 +79,7 @@ class App:
         self._yaml_load = yaml_load
         self._derive_tick = clock()
         self._logged_notes: list[str] = []
+        self._log_turn = 0           # where the next log-tail run starts in the list of shown pods
         self.caches = {name: WatchCache(name, path, proj, query=q, on_change=lambda _k: self.dirty.set(),
                                         retention_s=ret, max_items=mx, clock=clock)
                        for name, path, proj, q, ret, mx in cache_specs(settings)}
@@ -222,24 +223,43 @@ class App:
         self.set_input("approvals", (True, self.approvals.pending_count()))
 
     def _run_log_tails(self):
-        """Log tails for serving pods that are Running but not Ready (model
-        still loading), at most LOG_TAILS_PER_RUN per run."""
-        not_running = {ep["metadata"]["name"] for _p, mode in SERVING_KINDS for ep in self.caches[mode].items()
-                       if str((ep.get("status") or {}).get("ready", "False")) != "True"}
-        logs, fetched = {}, 0
-        for p in self.caches["pods"].items():
-            meta, st = p["metadata"], p["status"]
-            if meta.get("namespace") != "inference" or st.get("phase") != "Running":
-                continue
-            if not any(meta["name"].startswith(n + "-") for n in not_running) or "-register" in meta["name"]:
-                continue
-            cs = st.get("containerStatuses") or []
-            if not cs or any(c.get("ready") for c in cs) or fetched >= LOG_TAILS_PER_RUN:
-                continue
-            logs[meta["name"]] = self.kube.get_text(f"/api/v1/namespaces/inference/pods/{meta['name']}/log",
-                                                    {"tailLines": "14", "container": cs[0]["name"]})
-            fetched += 1
-        self.set_input("logs", logs)
+        """Log tails for the pods the deploy diagnostics show while their
+        model loads (models.log_tail_targets). At most LOG_TAILS_PER_RUN are
+        fetched per run, the shown pods taking turns when there are more; a
+        tail fetched earlier is kept while its pod is still shown."""
+        raw = {p["metadata"]["name"]: p for p in self.caches["pods"].items()
+               if p["metadata"].get("namespace") == "inference"}
+        endpoints = endpoint_records({mode: self.caches[mode].items() for _p, mode in SERVING_KINDS})
+        targets = log_tail_targets(endpoints, pod_records(list(raw.values())),
+                                   lambda name: (raw.get(name) or {}).get("status"))
+        start = self._log_turn % len(targets) if targets else 0
+        chosen = (targets[start:] + targets[:start])[:LOG_TAILS_PER_RUN]
+        self._log_turn = start + len(chosen)
+        fetched, no_log, errors = self._fetch_log_tails(chosen)
+        shown = {pod for pod, _container in targets}
+        kept = {pod: text for pod, text in (self.inputs().get("logs") or {}).items()
+                if pod in shown and pod not in no_log}
+        self.set_input("logs", {**kept, **fetched})
+        if errors and not fetched:
+            raise RuntimeError("; ".join(errors)[:300])
+        return ("some log tails failed: " + "; ".join(errors))[:300] if errors else None
+
+    def _fetch_log_tails(self, targets: list[tuple[str, str]]) -> tuple[dict[str, str], set[str], list[str]]:
+        """({pod: tail}, pods that have no log to read, errors). One pod's
+        failure never stops the others."""
+        fetched, no_log, errors = {}, set(), []
+        for pod, container in targets:
+            try:
+                fetched[pod] = self.kube.get_text(f"/api/v1/namespaces/inference/pods/{pod}/log",
+                                                  {"tailLines": "14", "container": container})
+            except ApiError as e:
+                if e.status in (400, 404):       # container still waiting to start, or the pod is gone
+                    no_log.add(pod)
+                else:
+                    errors.append(f"{pod}: {e}")
+            except Exception as e:  # connection error or timeout for this pod; reported in the source status
+                errors.append(f"{pod}: {e}")
+        return fetched, no_log, errors
 
     # -- status and health -----------------------------------------------------------
     def kube_status(self) -> SourceStatus:

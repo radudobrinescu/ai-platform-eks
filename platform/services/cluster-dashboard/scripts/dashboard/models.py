@@ -251,6 +251,13 @@ def merge_bedrock(static: list[dict], crs: list[dict]) -> list[dict]:
 EMPTY_LITELLM = {"perModel": {}, "teams": [], "trend": [], "health": {}, "byTeam": [], "byUser": []}
 
 
+def model_status(ep: dict) -> str:
+    """error / running / deploying, from a normalized endpoint."""
+    if ep.get("kroState") == "ERROR":
+        return "error"
+    return "running" if ep["ready"] == "True" else "deploying"
+
+
 def build_models(endpoints: list[dict], bedrock: list[dict], litellm: dict,
                  pods: list[dict], nodes: list[dict]) -> list[dict]:
     """One record per served model (self-hosted and Bedrock) with traffic,
@@ -260,7 +267,7 @@ def build_models(endpoints: list[dict], bedrock: list[dict], litellm: dict,
     for ep in endpoints:
         models.append({
             "name": ep["name"], "model": ep["model"], "tier": ep["mode"],
-            "status": "error" if ep.get("kroState") == "ERROR" else ("running" if ep["ready"] == "True" else "deploying"),
+            "status": model_status(ep),
             "gpu": "shared" if ep.get("shared") else f'{ep["gpuCount"]}×GPU',
             "replicas": ep.get("replicas"), "availableReplicas": ep.get("availableReplicas"),
             "router": ep.get("routerHealth", ""), "costHr": model_cost(ep["name"], pods, by_node),
@@ -449,6 +456,39 @@ def provisioning_warnings(nodeclaim_events: list[dict]) -> list[dict]:
     return out[:5]
 
 
+def deploy_pod(name: str, pods: list[dict]) -> dict | None:
+    """The pod the diagnostics show for self-hosted model `name`: its newest
+    GPU pod, else its newest pod. The transient LiteLLM register Job pod is
+    never it."""
+    cand = [p for p in pods if p.get("namespace") == "inference"
+            and p["name"].startswith(name + "-") and "-register" not in p["name"]]
+    return max(cand, key=lambda p: ((p.get("gpu", 0) or 0) > 0, p.get("created", "")), default=None)
+
+
+def log_container(pod_status: dict | None) -> str:
+    """The container whose log tail the diagnostics show: the pod's first
+    one, while the pod is Running with no container ready (the model is
+    loading). "" when no log is shown."""
+    st = pod_status or {}
+    cstats = st.get("containerStatuses", []) or []
+    if st.get("phase") != "Running" or not cstats or any(c.get("ready") for c in cstats):
+        return ""
+    return cstats[0].get("name") or ""
+
+
+def log_tail_targets(endpoints: list[dict], pods: list[dict],
+                     pod_status: Callable[[str], dict | None]) -> list[tuple[str, str]]:
+    """(pod, container) of every log tail deploy_diagnostics shows: for each
+    endpoint that is not running, its displayed pod while the model loads."""
+    out = []
+    for ep in endpoints:
+        pod = deploy_pod(ep["name"], pods) if model_status(ep) != "running" else None
+        container = log_container(pod_status(pod["name"])) if pod else ""
+        if container:
+            out.append((pod["name"], container))
+    return out
+
+
 def deploy_diagnostics(models: list[dict], pods: list[dict], pod_events: list[dict],
                        provisioning: list[dict], pod_status: Callable[[str], dict | None],
                        log_tail: Callable[[str, str], str]) -> None:
@@ -463,14 +503,9 @@ def deploy_diagnostics(models: list[dict], pods: list[dict], pod_events: list[di
     for m in models:
         if m.get("status") == "running" or m.get("tier") == "bedrock":
             continue
-        name = m["name"]
-        # Serving pods, skipping the transient LiteLLM register Job pod.
-        cand = [p for p in pods if p.get("namespace") == "inference"
-                and p["name"].startswith(name + "-") and "-register" not in p["name"]]
-        cand.sort(key=lambda p: ((p.get("gpu", 0) or 0) > 0, p.get("created", "")), reverse=True)
+        pod = deploy_pod(m["name"], pods)
         dep = {"phase": "NoPod", "pod": "", "waiting": None, "events": [], "provisioning": [], "log": []}
-        if cand:
-            pod = cand[0]
+        if pod:
             dep["pod"], dep["phase"] = pod["name"], pod.get("phase", "")
             evs = ev_index.get(pod["name"], [])
             unschedulable = any(e["reason"] == "FailedScheduling" for e in evs)
@@ -490,16 +525,13 @@ def deploy_diagnostics(models: list[dict], pods: list[dict], pod_events: list[di
                 dep["provisioning"] = provisioning
             st = pod_status(pod["name"])
             if st:
-                cstats = st.get("containerStatuses", []) or []
-                ready = False
-                cname = cstats[0].get("name") if cstats else ""
-                for c in cstats:
+                for c in st.get("containerStatuses", []) or []:
                     w = (c.get("state", {}) or {}).get("waiting")
                     if w and not dep["waiting"]:
                         dep["waiting"] = {"reason": w.get("reason", ""),
                                           "message": " ".join((w.get("message", "") or "").split())[:200]}
-                    ready = ready or bool(c.get("ready"))
-                if st.get("phase") == "Running" and not ready and cname:
+                cname = log_container(st)
+                if cname:
                     txt = log_tail(pod["name"], cname)
                     if txt:
                         dep["log"] = [ln for ln in txt.splitlines() if ln.strip()][-14:]
