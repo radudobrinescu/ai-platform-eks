@@ -87,17 +87,8 @@ def test_rules_from_environment():
 
 
 # ---------------------------------------------------------------------------
-# Through the event watcher
+# Through the kubernetes client (typed objects, as the watch loops get them)
 # ---------------------------------------------------------------------------
-
-def test_event_watcher_uses_the_rules(event_watcher, monkeypatch):
-    p = pod(containers=[cs(restarts=4, waiting=("CrashLoopBackOff", "back-off"))])
-    assert event_watcher.detect_pod_trigger(p)[0] == "CrashLoopBackOff"
-    assert event_watcher.detect_event_trigger(event("FailedMount"))[0] == "FailedMount"
-    assert event_watcher.detect_node_trigger(node([("Ready", "False", "r", "m")]))[0] == "NodeNotReady"
-    monkeypatch.setattr(event_watcher, "RULES", triggers.Rules(enabled=frozenset()))
-    assert event_watcher.detect_pod_trigger(p) is None
-
 
 @pytest.fixture
 def real_client(monkeypatch):

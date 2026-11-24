@@ -214,9 +214,12 @@ spec:
             items:
               - { key: pha____init__.py, path: pha/__init__.py }
               - { key: pha__db.py, path: pha/db.py }
+              - { key: pha__health.py, path: pha/health.py }
               - { key: pha__jobs.py, path: pha/jobs.py }
               - { key: pha__log.py, path: pha/log.py }
+              - { key: pha__rbac.py, path: pha/rbac.py }
               - { key: pha__triggers.py, path: pha/triggers.py }
+              - { key: pha__watch.py, path: pha/watch.py }
         - name: pydeps
           emptyDir: {}
         - name: tmp

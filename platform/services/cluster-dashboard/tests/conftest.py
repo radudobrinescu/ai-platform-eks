@@ -94,6 +94,18 @@ def event_watcher(stub_modules, monkeypatch):
 
 
 @pytest.fixture
+def pha_watch(stub_modules, monkeypatch):
+    """Freshly imported pha.watch and pha.rbac on the kubernetes stubs."""
+    for name in [m for m in sys.modules if m in ("pha.watch", "pha.rbac")]:
+        monkeypatch.delitem(sys.modules, name, raising=False)
+    watch = importlib.import_module("pha.watch")
+    rbac = importlib.import_module("pha.rbac")
+    yield watch, rbac
+    for name in ("pha.watch", "pha.rbac"):
+        sys.modules.pop(name, None)
+
+
+@pytest.fixture
 def backend():
     import backend as mod
     return mod

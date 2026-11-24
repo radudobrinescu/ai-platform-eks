@@ -92,6 +92,9 @@ configMapGenerator:
       # fails if one is missed.
       - pha____init__.py=scripts/pha/__init__.py
       - pha__db.py=scripts/pha/db.py
+      - pha__health.py=scripts/pha/health.py
       - pha__jobs.py=scripts/pha/jobs.py
       - pha__log.py=scripts/pha/log.py
+      - pha__rbac.py=scripts/pha/rbac.py
       - pha__triggers.py=scripts/pha/triggers.py
+      - pha__watch.py=scripts/pha/watch.py
