@@ -1,6 +1,10 @@
 """HTTP API and static files (standard library server, one thread per request
 or open stream). Every read is served from the store; no request waits on an
 upstream except the approval mutations and investigation reads (agent DB).
+Connections are kept alive (HTTP/1.1); no route uses a request body, so a
+declared body is read and dropped before the request is handled, and one that
+cannot be (over MAX_BODY_BYTES, or no Content-Length) is refused and the
+connection closed.
 
 Routes (R4, R5 in the U2 functional design):
   GET  /api/v1/snapshot          versioned sections, ETag, 304
@@ -34,6 +38,7 @@ log = logging.getLogger("dashboard.api")
 HEARTBEAT_S = 15
 MIN_SECTION_GAP_S = 1.0
 MAX_STREAMS = 8
+MAX_BODY_BYTES = 64 * 1024   # no route uses a request body; one up to this size is read and dropped
 _INV = re.compile(r"^/api/v1/investigations(?:/([^/]+))?(?:/(approve|dismiss))?/?$")
 _QUIET = ("/api/v1/health/", "/api/v1/stream")
 
@@ -80,6 +85,22 @@ def load_fonts(fonts_dir: str | None) -> dict[str, tuple[str, bytes]]:
     return out
 
 
+def body_length(headers) -> tuple[int, tuple[int, str] | None]:
+    """(request body bytes to read, None), or (0, (status, error)) when the
+    declared body will not be read: no usable length, or one over MAX_BODY_BYTES."""
+    if headers.get("Transfer-Encoding"):
+        return 0, (411, "Content-Length required")
+    declared = headers.get_all("Content-Length") or []
+    if not declared:
+        return 0, None
+    raw = declared[0].strip()
+    if len(declared) > 1 or not (raw.isascii() and raw.isdigit()):
+        return 0, (400, "invalid Content-Length")
+    if int(raw) > MAX_BODY_BYTES:
+        return 0, (413, f"request body larger than {MAX_BODY_BYTES} bytes")
+    return int(raw), None
+
+
 def make_handler(app, html_dir: str, fonts_dir: str | None = None):
     verifier = Verifier(app.s)
     streams = _Streams()
@@ -102,6 +123,25 @@ def make_handler(app, html_dir: str, fonts_dir: str | None = None):
         def send_response(self, code, message=None):
             self._status = code
             super().send_response(code, message)
+
+        def parse_request(self) -> bool:
+            return super().parse_request() and self._consume_body()
+
+        def _consume_body(self) -> bool:
+            """Read and drop the request body (no route uses one). Connections
+            are kept alive, so body bytes left unread would be parsed as the
+            start of the next request on the connection. False when the
+            request must not be handled: refused (and the connection closed,
+            the body being unread), or the client left mid-body."""
+            length, refusal = body_length(self.headers)
+            if refusal is not None:
+                status, error = refusal
+                self._json(status, {"error": error}, {"Connection": "close"})
+                return False
+            if len(self.rfile.read(length)) != length:
+                self.close_connection = True
+                return False
+            return True
 
         def handle_one_request(self):
             self._t0, self._status = time.monotonic(), 0
