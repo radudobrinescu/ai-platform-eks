@@ -6,7 +6,9 @@ ConfigMap keys cannot contain "/", so `scripts/pha/db.py` ships under the key
 only fail at pod start (ImportError), so it is checked here.
 """
 import os
+import subprocess
 
+import pytest
 import yaml
 
 DASH = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -70,3 +72,36 @@ def test_every_package_file_is_shipped():
         on_disk = {f"scripts/{pkg}/{f}" for f in os.listdir(os.path.join(DASH, "scripts", pkg))
                    if f.endswith(".py")}
         assert on_disk <= shipped, f"not in kustomization.yaml: {sorted(on_disk - shipped)}"
+
+
+# ---------------------------------------------------------------------------
+# Package install (init container)
+# ---------------------------------------------------------------------------
+
+def _install_script():
+    dep = next(d for d in _load("manifests.yaml")
+               if d.get("kind") == "Deployment" and d["metadata"]["name"] == "cluster-dashboard")
+    (init,) = dep["spec"]["template"]["spec"]["initContainers"]
+    assert init["command"] == ["/bin/sh", "-c"]
+    (script,) = init["args"]
+    return script
+
+
+@pytest.mark.parametrize("pip_exit", [0, 1])
+def test_install_container_exits_with_pips_status(tmp_path, pip_exit):
+    """All Kubernetes data depends on the installed packages. A failed install
+    must fail the init container (the kubelet then retries it with backoff
+    and the pod is not Ready), not start a backend that stays empty."""
+    bin_dir, pydeps = tmp_path / "bin", tmp_path / "pydeps"
+    bin_dir.mkdir()
+    pydeps.mkdir()
+    pip = bin_dir / "pip"
+    pip.write_text(f"#!/bin/sh\necho 'ERROR: no route to PyPI' >&2\nexit {pip_exit}\n")
+    pip.chmod(0o755)
+    script = _install_script().replace("/pydeps", str(pydeps)).replace("/tmp/", f"{tmp_path}/")
+    done = subprocess.run(["/bin/sh", "-c", script], env={"PATH": f"{bin_dir}:/usr/bin:/bin"},
+                          capture_output=True, text=True, timeout=30, check=False)
+    assert done.returncode == pip_exit
+    if pip_exit:
+        assert "ERROR: no route to PyPI" in done.stderr, "pip's error must reach the container log"
+    assert list(pydeps.iterdir()) == [], "no failure marker: the exit status is the signal"

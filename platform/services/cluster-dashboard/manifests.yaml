@@ -148,17 +148,14 @@ spec:
           command: ["/bin/sh", "-c"]
           args:
             - |
-              set -u
-              # The dashboard must start even when this fails (no PyPI access,
-              # for example). The error goes to /pydeps/INSTALL_FAILED; the
-              # backend reads it, runs degraded and names what is missing in
-              # the UI, the logs and its health response. Exact pins only,
-              # kept on this line for automated dependency updates.
-              if ! pip install --no-cache-dir --target=/pydeps kubernetes==37.0.3 psycopg[binary]==3.3.9 pyyaml==6.0.3 boto3==1.44.10 'pyjwt[crypto]==2.15.1' 2>/tmp/pip.err; then
-                tail -c 4000 /tmp/pip.err > /pydeps/INSTALL_FAILED
-                echo "pip install failed, starting degraded:" >&2
-                cat /pydeps/INSTALL_FAILED >&2
-              fi
+              set -eu
+              # All Kubernetes data needs these packages, so a failed install
+              # (no PyPI access, for example) fails this init container: the
+              # kubelet retries it with backoff, the pod is not Ready until
+              # it succeeds, and during a rollout the previous pod keeps
+              # serving. pip's error is in this container's log. Exact pins
+              # only, kept on this line for automated dependency updates.
+              pip install --no-cache-dir --target=/pydeps kubernetes==37.0.3 psycopg[binary]==3.3.9 pyyaml==6.0.3 boto3==1.44.10 'pyjwt[crypto]==2.15.1'
           volumeMounts:
             - name: pydeps
               mountPath: /pydeps

@@ -80,7 +80,7 @@ def _bedrock_models() -> list:
 def main() -> int:
     pha_log.setup("cluster-dashboard")
     settings = config.load()
-    found = deps.check(settings.pydeps_dir)
+    found = deps.check()
 
     from dashboard.app import App
     from dashboard.api import serve

@@ -1,14 +1,15 @@
 """Optional Python packages and what the dashboard loses without each.
 
-The init container installs the packages at pod start and writes
-<pydeps>/INSTALL_FAILED with pip's error when that fails. The dashboard then
-starts anyway (degraded) and says what is missing instead of failing silently.
+The init container installs the packages at pod start; a failed install
+fails that container (the kubelet retries it), so in the cluster they are all
+present. Where one still cannot be imported (a local run, a broken package)
+the dashboard starts anyway (degraded) and says what is missing instead of
+failing silently.
 """
 from __future__ import annotations
 
 import importlib
 import logging
-import os
 from dataclasses import dataclass, field
 
 log = logging.getLogger("dashboard.deps")
@@ -26,31 +27,22 @@ EFFECTS = {
 @dataclass(frozen=True)
 class Deps:
     missing: frozenset = field(default_factory=frozenset)
-    install_error: str | None = None
 
     def has(self, name: str) -> bool:
         return name not in self.missing
 
     def degraded(self) -> list[dict]:
-        out = [{"package": EFFECTS[m][0], "effect": EFFECTS[m][1]} for m in sorted(self.missing)]
-        if self.install_error and not out:
-            out.append({"package": "(install)", "effect": "the package install reported an error; all imports work"})
-        return out
+        return [{"package": EFFECTS[m][0], "effect": EFFECTS[m][1]} for m in sorted(self.missing)]
 
 
-def check(pydeps_dir: str, importer=importlib.import_module) -> Deps:
+def check(importer=importlib.import_module) -> Deps:
     missing = set()
     for name in EFFECTS:
         try:
             importer(name)
         except ImportError:
             missing.add(name)
-    error = None
-    marker = os.path.join(pydeps_dir, "INSTALL_FAILED")
-    if os.path.exists(marker):
-        with open(marker, encoding="utf-8", errors="replace") as f:
-            error = f.read(2000).strip() or "unknown error"
-    deps = Deps(frozenset(missing), error)
+    deps = Deps(frozenset(missing))
     if deps.degraded():
-        log.warning("degraded", extra={"degraded": deps.degraded(), "install_error": error})
+        log.warning("degraded", extra={"degraded": deps.degraded()})
     return deps
