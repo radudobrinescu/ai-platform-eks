@@ -192,6 +192,42 @@ tbody tr:hover{background:var(--surface-2)}
 .gs.used{background:linear-gradient(135deg,#7c3aed,#6366f1);color:#fff}
 .gs.free{background:rgba(167,139,250,.06);border:1px dashed rgba(167,139,250,.25);color:var(--text-muted)}
 .util{font-size:10px;color:var(--text-muted);font-family:var(--mono)}
+/* Infrastructure view */
+.infra-tools{display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin:22px 0 -6px}
+.infra-q{flex:1;min-width:220px;max-width:460px;background:var(--surface);border:1px solid var(--border);border-radius:var(--r-sm);padding:8px 11px;color:var(--text);font-family:var(--font);font-size:12px;outline:none}
+.infra-q:focus{border-color:var(--accent)}
+.infra-card{padding:4px 6px}
+.infra-card table td,.infra-card table th{padding-left:10px;padding-right:10px}
+.infra-card th{padding-top:11px}
+.infra-card th.sort{cursor:pointer}.infra-card th.sort.on{color:var(--text)}
+.infra-card tr.grp td{background:var(--surface-2);font-size:11.5px;color:var(--text-2);padding-top:8px;padding-bottom:8px;cursor:default}
+.infra-card tr.grp:hover{background:none}
+.infra-card tr.exp td{background:var(--bg);cursor:default;padding:12px 14px 14px}
+.infra-card tr.exp:hover{background:none}
+.infra-card tr.hot td:first-child{box-shadow:inset 3px 0 0 var(--amber)}
+.infra-card .nolink{cursor:default}
+.infra-empty{padding:12px 10px;color:var(--text-2);font-size:12.5px}
+.nlink{background:none;border:none;padding:0;color:var(--text);font-family:var(--mono);font-size:12px;font-weight:700;cursor:pointer}
+.nlink:hover{color:var(--accent)}
+.mslots{display:inline-flex;gap:3px;vertical-align:middle}
+.mslots i{width:14px;height:14px;border-radius:3px;display:block}
+.mslots i.u{background:linear-gradient(135deg,#7c3aed,#6366f1)}
+.mslots i.f{border:1px dashed var(--border-light)}
+.mslots i.o{background:var(--border-light)}
+.gpuslots.big{margin-top:0}
+.gpuslots.big .gs{height:auto;min-height:50px;min-width:0;flex-direction:column;align-items:flex-start;justify-content:center;padding:8px 11px;font-size:11.5px;gap:2px}
+.gpuslots.big .gs.free{align-items:center}
+.gpuslots.big .gs b{max-width:100%;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.gpuslots.big .gs small{font-family:var(--font);font-weight:500;font-size:10.5px;opacity:.9;max-width:100%;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.gs.none{background:var(--surface-2);color:var(--text-muted);border:1px dashed var(--border-light)}
+.infra-note{font-size:12px;color:var(--text-2);margin-top:9px}
+.infra-note b{color:var(--text)}
+.ubar{display:flex;align-items:center;gap:9px;min-width:120px}
+.ubar .bar{flex:1;position:relative;overflow:visible}
+.ubar .bar>u{position:absolute;top:-2px;bottom:-2px;width:2px;background:var(--text);opacity:.7}
+.ubar span{font-family:var(--mono);font-size:11.5px;min-width:34px;text-align:right}
+.stag.info{background:var(--accent-soft);color:var(--accent)}
+.alert .stag{margin-left:0;align-self:flex-start;white-space:nowrap}
 .mock-tag{position:fixed;bottom:12px;right:16px;background:var(--amber-soft);color:var(--amber);border:1px solid rgba(251,191,36,.35);font-size:10px;font-weight:700;padding:4px 10px;border-radius:20px;letter-spacing:.5px;z-index:60}
 /* Responsive: collapse the sidebar to a horizontal nav, wrap KPIs, stack columns.
    Placed at the end so these rules win over the base layout when the query matches
@@ -348,8 +384,20 @@ tbody tr:hover{background:var(--surface-2)}
 
     <!-- INFRASTRUCTURE -->
     <div class="view" id="v-infra">
-      <div class="vhead"><div class="vtitle">Infrastructure</div><div class="vsub">Karpenter GPU pools scale to zero · real GPU utilization (DCGM)</div></div>
-      <div id="infra-pools"></div>
+      <div class="vhead"><div class="vtitle">Infrastructure</div><div class="vsub" id="infra-sub"></div></div>
+      <div class="sec-title">Needs attention</div>
+      <div class="card" id="infra-attn"></div>
+      <div class="infra-tools">
+        <input id="infra-q" class="infra-q" type="search" autocomplete="off" aria-label="Filter nodes" placeholder="Filter nodes by name, type, pool, zone or model…" oninput="infraRefresh()">
+        <div class="tab" id="infra-free" role="button" tabindex="0" aria-pressed="false" onclick="infraToggleFree()">Free GPU slots only</div>
+        <div class="tab" id="infra-expand" role="button" tabindex="0" onclick="infraExpandAll()">Expand all</div>
+      </div>
+      <div class="sec-title">GPU nodes</div>
+      <div class="card infra-card" id="infra-gpu"></div>
+      <div class="sec-title">Platform nodes</div>
+      <div class="card infra-card" id="infra-platform"></div>
+      <div class="sec-title">Node pools</div>
+      <div class="card infra-card" id="infra-nodepools"></div>
     </div>
 
     <!-- HEALTH -->
@@ -1173,44 +1221,369 @@ function costViews() {
 const POOLMAP = {
   'gpu-inference': 'GPU · dedicated',
   'gpu-shared': 'GPU · time-sliced',
+  'gpu-prefill': 'GPU · split serving, prefill',
+  'gpu-decode': 'GPU · split serving, decode',
   'default': 'platform services',
   '__mng__': 'critical addons',
 };
-function infra() {
-  const nodes = D.nodes || [],
-    pods = D.pods || [],
-    gpu = D.gpu || [];
-  const utilByHost = {};
-  gpu.forEach((g) => (utilByHost[g.node] = g));
-  const pools = {};
-  nodes.forEach((n) => {
-    (pools[n.pool || '__mng__'] = pools[n.pool || '__mng__'] || []).push(n);
-  });
-  let h = '';
-  for (const p of Object.keys(pools)) {
-    const pl = p === '__mng__' ? 'Managed node group' : 'Karpenter NodePool · ' + p;
-    const pd = POOLMAP[p] || '';
-    h += `<div class="sec-title">${esc(pl)}${pd ? ' · ' + esc(pd) : ''} · ${pools[p].length} node(s)</div><div class="cols">`;
-    h += pools[p]
-      .map((n) => {
-        const host = n.name.split('.')[0];
-        const g = utilByHost[host];
-        const mdl = g && g.model;
-        const cnp = n.cpuAllocM ? Math.round(((n.cpuUsedM || 0) / n.cpuAllocM) * 100) : null;
-        const mnp = n.memAllocMi ? Math.round(((n.memUsedMi || 0) / n.memAllocMi) * 100) : null;
-        const usg = cnp != null ? ` · <span class="muted">cpu ${cnp}% · mem ${mnp}%</span>` : '';
-        const slots =
-          n.gpu > 0
-            ? `<div class="gpuslots">${((g && g.util) || Array(n.gpu).fill(0)).map((u) => (u === 0 && !mdl ? '<div class="gs free">free</div>' : `<div class="gs used">${u}%</div>`)).join('')}</div>`
-            : '';
-        return `<div class="card" style="cursor:pointer" data-node="${esc(n.name)}" onclick="openNode(this.dataset.node)"><div class="card-h"><h3>${esc(n.instance)} <span class="badge2 b-ray" style="background:var(--accent-soft);color:#c7d2fe">${esc(n.capacity || '')}</span></h3><span class="util">$${(n.hourly || 0).toFixed(2)}/hr</span></div>${slots}<div class="util" style="margin-top:8px">${mdl ? 'serving ' + esc(mdl) : n.gpu > 0 ? 'idle' : esc(n.zone || '')}${usg}</div></div>`;
-      })
-      .join('');
-    h += '</div>';
-  }
-  $('infra-pools').innerHTML = h || '<div class="muted">No nodes</div>';
+// ---------------------------------------------------------------------------
+// Infrastructure view. Node pools and node claims come from the sections
+// `nodePools` and `nodeClaims` (read from S: they are not part of /data.json).
+// ---------------------------------------------------------------------------
+const INFRA = { memWarn: 80, memBad: 92, cpuWarn: 85, stuckMin: 5, pendingMin: 2, expandUpTo: 4 };
+const POOL_ORDER = ['gpu-shared', 'gpu-inference', 'gpu-prefill', 'gpu-decode', 'default', '__mng__'];
+const infraUi = { free: false, allOpen: null, toggled: new Set(), sort: 'pool', dir: 1 };
+const poolName = (p) => (p === '__mng__' ? 'managed node group' : p);
+const poolRank = (p) => (POOL_ORDER.indexOf(p) + 99) % 99;
+const minsSince = (iso) => {
+  const t = new Date(iso).getTime();
+  return isNaN(t) ? 0 : Math.max(0, (Date.now() - t) / 60000);
+};
+const usd = (v) => '$' + (Number(v) || 0).toFixed(2);
+const pctOf = (a, b) => (b ? Math.round((100 * (a || 0)) / b) : 0);
+// Write a panel only when its content changed, so selection and scroll survive
+// the stream's updates.
+function put(id, html) {
+  const el = $(id);
+  if (el._last === html) return;
+  el._last = html;
+  el.innerHTML = html;
 }
-
+function ubar(value, reserved, warnAt, badAt) {
+  const col = value >= (badAt || 101) ? 'var(--red)' : value >= (warnAt || 101) ? 'var(--amber)' : 'var(--accent)';
+  const mark = reserved == null ? '' : `<u style="left:${Math.min(100, reserved)}%" title="reserved ${reserved}%"></u>`;
+  return `<div class="ubar"><div class="bar"><i style="width:${Math.min(100, value)}%;background:${col}"></i>${mark}</div><span>${value}%</span></div>`;
+}
+function infraModel() {
+  const pools = S.nodePools || [],
+    claims = S.nodeClaims || [];
+  const gpuPools = new Set(pools.filter((p) => p.isGpu).map((p) => p.name));
+  const names = [...new Set([...(D.endpoints || []), ...(D.models || [])].map((m) => m.name))].sort(
+    (a, b) => b.length - a.length,
+  );
+  const modelOf = (pod) => names.find((n) => pod.startsWith(n + '-')) || null;
+  const rpm = {};
+  (D.models || []).forEach((m) => (rpm[m.name] = m.rpm));
+  const byNode = {};
+  (D.pods || []).forEach((p) => (byNode[p.node] = byNode[p.node] || []).push(p));
+  const nodes = (D.nodes || []).map((n) => {
+    const pods = byNode[n.name] || [];
+    const gpuPods = pods.filter((p) => p.gpu > 0).map((p) => Object.assign({}, p, { model: modelOf(p.name) }));
+    const taken = gpuPods.reduce((a, p) => a + p.gpu, 0);
+    const host = n.name.split('.')[0];
+    return Object.assign({}, n, {
+      host,
+      pods,
+      gpuPods,
+      taken,
+      free: Math.max(0, (n.gpu || 0) - taken),
+      isGpu: n.gpu > 0 || gpuPools.has(n.pool),
+      cpuPct: pctOf(n.cpuUsedM, n.cpuAllocM),
+      memPct: pctOf(n.memUsedMi, n.memAllocMi),
+      cpuReq: pctOf(pods.reduce((a, p) => a + (p.cpuReqM || 0), 0), n.cpuAllocM),
+      memReq: pctOf(pods.reduce((a, p) => a + (p.memReqMi || 0), 0), n.memAllocMi),
+      stats: (D.gpu || []).find((g) => g.node === host),
+      hay: [n.name, n.instance, poolName(n.pool), n.zone, n.capacity, n.gpuProduct]
+        .concat(gpuPods.map((p) => p.model || p.name))
+        .join(' ')
+        .toLowerCase(),
+    });
+  });
+  return { nodes, pools, claims, rpm };
+}
+function infraIssues(m) {
+  const out = [];
+  for (const c of m.claims) {
+    if (c.ready || c.deleting) continue;
+    const type = c.instance ? `<span class="m-id">${esc(c.instance)}</span>` : 'a node';
+    if (c.registered && !c.initialized && minsSince(c.created) >= INFRA.stuckMin) {
+      out.push({
+        lvl: 'crit',
+        what: `${esc(c.pool)}: ${type} joined ${relTime(c.created)} ago and never became ready`,
+        why: esc(c.message || 'The node is in the cluster but does not report what it was started for.'),
+        todo: 'Karpenter does not replace it, and models keep waiting for it. Delete its NodeClaim and a new node starts in its place.',
+        cmd: 'kubectl delete nodeclaim ' + c.name,
+      });
+    } else {
+      const stage = !c.launched
+        ? 'asking the cloud for it'
+        : !c.registered
+          ? 'instance started, joining the cluster'
+          : 'joined, starting its GPU software';
+      out.push({
+        lvl: 'info',
+        what: `${esc(c.pool)}: ${type} is on its way`,
+        why: `${relTime(c.created)} so far · ${stage}${c.message ? ' · ' + esc(c.message) : ''}`,
+      });
+    }
+  }
+  for (const e of D.provisioning || [])
+    out.push({
+      lvl: 'warn',
+      what: `The cloud had no capacity for a node${e.obj ? ' (' + esc(e.obj) + ')' : ''}`,
+      why: `${esc(e.message)}${e.ts ? ' · ' + relTime(e.ts) + ' ago' : ''}${e.count > 1 ? ' · ' + num(e.count) + ' times' : ''}`,
+      todo: 'Nothing to do yet: Karpenter tries other instance types and zones. If it stays, the pool allows too few instance types.',
+    });
+  for (const c of m.claims)
+    if (c.ready && c.drifted && !c.deleting)
+      out.push({
+        lvl: 'info',
+        what: `${esc(c.pool)}: <span class="m-id">${esc((c.node || c.name).split('.')[0])}</span> will be replaced`,
+        why: "Its pool's settings changed since it started. Karpenter starts a replacement first, then drains it.",
+      });
+  for (const a of D.nodeAlerts || [])
+    out.push({
+      lvl: a.sev === 'crit' ? 'crit' : 'warn',
+      what: `<span class="m-id">${esc(String(a.node).split('.')[0])}</span>: ${esc(a.issue)}`,
+      why: 'Reported by the node itself.',
+    });
+  for (const n of m.nodes) {
+    if (n.memPct >= INFRA.memWarn)
+      out.push({
+        lvl: n.memPct >= INFRA.memBad ? 'crit' : 'warn',
+        what: `<span class="m-id">${esc(n.host)}</span> is at ${n.memPct}% memory`,
+        why: `${esc(n.instance)} in ${esc(poolName(n.pool))} · ${n.pods.length} pods · ${n.memReq}% reserved`,
+        todo: 'The next pod placed here may not fit. Karpenter adds a node when a pod cannot be scheduled, not when a node is nearly full.',
+      });
+    else if (n.cpuPct >= INFRA.cpuWarn)
+      out.push({
+        lvl: 'warn',
+        what: `<span class="m-id">${esc(n.host)}</span> is at ${n.cpuPct}% CPU`,
+        why: `${esc(n.instance)} in ${esc(poolName(n.pool))} · ${n.pods.length} pods`,
+      });
+  }
+  for (const p of D.pods || [])
+    if (p.phase === 'Pending' && !p.node && minsSince(p.created) >= INFRA.pendingMin)
+      out.push({
+        lvl: 'warn',
+        what: `<span class="m-id">${esc(p.name)}</span> has waited ${relTime(p.created)} for a node`,
+        why: `namespace ${esc(p.namespace)}${p.gpu ? ' · needs a GPU' : ''}`,
+      });
+  const rank = { crit: 0, warn: 1, info: 2 };
+  return out.sort((a, b) => rank[a.lvl] - rank[b.lvl]);
+}
+function infraAttn(m) {
+  const label = { crit: 'Problem', warn: 'Warning', info: 'In progress' };
+  const issues = infraIssues(m);
+  if (!issues.length)
+    return '<div class="infra-empty"><span class="dot ok"></span>Nothing needs attention. Every node is ready and none is close to full.</div>';
+  return issues
+    .map(
+      (i) =>
+        `<div class="alert"><span class="stag ${i.lvl}">${label[i.lvl]}</span><div style="min-width:0"><div class="at">${i.what}</div>` +
+        (i.why ? `<div class="ad">${i.why}</div>` : '') +
+        (i.todo ? `<div class="ad">${i.todo}</div>` : '') +
+        (i.cmd ? `<div class="code" style="margin-top:7px">${esc(i.cmd)}</div>` : '') +
+        `</div>` +
+        (i.cmd
+          ? `<div class="ax"><button class="btn dismiss" data-copy="${esc(i.cmd)}" onclick="infraCopy(this)">Copy command</button></div>`
+          : '') +
+        `</div>`,
+    )
+    .join('');
+}
+function infraSlots(n, m) {
+  if (!n.gpu) return '<div class="gs none">no GPU reported by this node</div>';
+  const share = (n.hourly || 0) / n.gpu;
+  const used = n.gpuPods.map((p) => {
+    const rate = m.rpm[p.model];
+    const load = rate == null ? 'load unknown' : rate > 0 ? num(rate) + ' req/min' : 'no requests right now';
+    return (
+      `<div class="gs ${p.model ? 'used' : 'none'}" style="flex:${Math.max(1, p.gpu)}" title="${esc(p.name)}"><b>${esc(p.model || p.name)}</b>` +
+      `<small>${p.model ? load : 'not a platform model'}${p.gpu > 1 ? ' · ' + num(p.gpu) + ' GPUs' : ''} · ${usd(share * p.gpu)}/hr</small></div>`
+    );
+  });
+  return used.concat(Array.from({ length: n.free }, () => '<div class="gs free">free</div>')).join('');
+}
+function infraGpuDetail(n, m) {
+  const shared = n.pool === 'gpu-shared',
+    unit = shared ? 'slice' : 'GPU',
+    share = n.gpu ? (n.hourly || 0) / n.gpu : 0;
+  const util = n.stats && n.stats.util && n.stats.util.length ? Math.round(Math.max.apply(null, n.stats.util.map((x) => x || 0))) : null;
+  const mems = ((n.stats && n.stats.mem) || []).filter((x) => x != null);
+  const mem = mems.length ? Math.round(Math.max.apply(null, mems)) : null;
+  const unused = n.free ? ` ${usd(share * n.free)}/hr is unused.` : '';
+  const note = !n.gpu
+    ? 'This node belongs to a GPU pool but reports no GPU. See Needs attention.'
+    : n.taken === 0
+      ? 'Nothing is running here. Karpenter removes an empty GPU node after a few minutes.'
+      : n.free && shared
+        ? `<b>${n.free} more small model${n.free === 1 ? ' fits' : 's fit'}</b> here at no extra cost.${unused}`
+        : n.free
+          ? `${n.free} GPU${n.free === 1 ? ' is' : 's are'} unused on this node.${unused}`
+          : 'Full.';
+  return (
+    `<div style="display:flex;gap:16px;align-items:stretch;flex-wrap:wrap"><div class="gpuslots big" style="flex:3;min-width:260px">${infraSlots(n, m)}</div>` +
+    `<div style="flex:1;min-width:190px"><div class="bar-lbl"><span>GPU use</span><span>${util == null ? '—' : util + '%'}</span></div><div class="bar"><i style="width:${Math.min(100, util || 0)}%;background:${(util || 0) > 85 ? 'var(--amber)' : 'var(--green)'}"></i></div>` +
+    `<div class="bar-lbl" style="margin-top:9px"><span>GPU memory</span><span>${mem == null ? (shared ? 'not reported for shared GPUs' : '—') : mem + '%'}</span></div><div class="bar"><i style="width:${Math.min(100, mem || 0)}%;background:var(--purple)"></i></div></div></div>` +
+    `<div class="infra-note">${n.gpu ? `${n.taken} of ${n.gpu} ${unit}s in use. ` : ''}${note}</div>`
+  );
+}
+const infraDefaultOpen = (total) => (infraUi.allOpen == null ? total <= INFRA.expandUpTo : infraUi.allOpen);
+const infraIsOpen = (name, total) => (infraUi.toggled.has(name) ? !infraDefaultOpen(total) : infraDefaultOpen(total));
+function infraGpu(m, shown) {
+  const all = m.nodes.filter((n) => n.isGpu);
+  if (!all.length)
+    return '<div class="infra-empty">No GPU nodes are running, which costs nothing. Deploying a model starts one; expect a few minutes for the node and its GPU software.</div>';
+  const list = shown.filter((n) => n.isGpu && (!infraUi.free || n.free > 0));
+  if (!list.length) return `<div class="infra-empty">No GPU node matches the filter. ${all.length} running.</div>`;
+  const pools = [...new Set(list.map((n) => n.pool))].sort((a, b) => poolRank(a) - poolRank(b) || (a < b ? -1 : 1));
+  let rows = '';
+  for (const pool of pools) {
+    const mine = list.filter((n) => n.pool === pool).sort((a, b) => b.free - a.free || (a.host < b.host ? -1 : 1));
+    const unit = pool === 'gpu-shared' ? 'slices' : 'GPUs';
+    const slots = mine.reduce((a, n) => a + (n.gpu || 0), 0),
+      taken = mine.reduce((a, n) => a + n.taken, 0);
+    rows += `<tr class="grp"><td colspan="8"><b class="m-id" style="color:var(--text)">${esc(pool)}</b> · ${mine.length} node${mine.length === 1 ? '' : 's'} · ${taken} of ${slots} ${unit} in use · ${slots - taken ? slots - taken + ' free' : 'none free'}<span style="float:right">${usd(mine.reduce((a, n) => a + (n.hourly || 0), 0))}/hr</span></td></tr>`;
+    for (const n of mine) {
+      const open = infraIsOpen(n.name, all.length);
+      const mini =
+        n.gpuPods.map((p) => `<i class="${p.model ? 'u' : 'o'}"></i>`.repeat(Math.max(1, p.gpu))).join('') +
+        '<i class="f"></i>'.repeat(n.free);
+      const names = [...new Set(n.gpuPods.map((p) => p.model || p.name))];
+      const util = n.stats && n.stats.util && n.stats.util.length ? Math.round(Math.max.apply(null, n.stats.util.map((x) => x || 0))) + '%' : '—';
+      rows +=
+        `<tr data-toggle="${esc(n.name)}" onclick="infraToggle(this.dataset.toggle)" aria-expanded="${open}"><td><span class="dot ${n.gpu ? 'ok' : 'bad'}"></span><button class="nlink" data-node="${esc(n.name)}" onclick="event.stopPropagation();openNode(this.dataset.node)">${esc(n.host)}</button></td>` +
+        `<td><span class="m-id">${esc(n.instance)}</span>${n.gpuProduct ? ' <span class="muted">' + esc(n.gpuProduct) + '</span>' : ''}</td><td>${esc(String(n.zone).slice(-2))}</td><td>${esc(n.capacity || '')}</td>` +
+        `<td><span class="mslots" title="${n.taken} of ${n.gpu || 0} in use">${mini || '<span class="muted">—</span>'}</span></td><td>${names.length ? esc(names.join(', ')) : '<span class="muted">empty</span>'}</td>` +
+        `<td class="num">${util}</td><td class="num">${usd(n.hourly)}</td></tr>`;
+      if (open) rows += `<tr class="exp"><td colspan="8">${infraGpuDetail(n, m)}</td></tr>`;
+    }
+  }
+  return `<table><thead><tr><th>Node</th><th>Type</th><th>Zone</th><th>Capacity</th><th>Slots</th><th>Models</th><th class="num">GPU use</th><th class="num">$/hr</th></tr></thead><tbody>${rows}</tbody></table>`;
+}
+const INFRA_COLS = [
+  ['name', 'Node', (n) => n.host],
+  ['instance', 'Type', (n) => n.instance],
+  ['pool', 'Pool', (n) => String(poolRank(n.pool)).padStart(3, '0') + n.pool],
+  ['zone', 'Zone', (n) => n.zone],
+  ['cpuPct', 'CPU', (n) => n.cpuPct],
+  ['memPct', 'Memory', (n) => n.memPct],
+  ['pods', 'Pods', (n) => n.pods.length, 1],
+  ['created', 'Up', (n) => -new Date(n.created).getTime() || 0],
+  ['hourly', '$/hr', (n) => n.hourly || 0, 1],
+];
+function infraPlatform(m, shown) {
+  const col = INFRA_COLS.find((c) => c[0] === infraUi.sort) || INFRA_COLS[2];
+  const rows = shown
+    .filter((n) => !n.isGpu)
+    .sort((a, b) => {
+      const x = col[2](a),
+        y = col[2](b);
+      return (x > y ? 1 : x < y ? -1 : a.host < b.host ? -1 : 1) * infraUi.dir;
+    });
+  const head = INFRA_COLS.map(
+    (c) =>
+      `<th class="sort${c[3] ? ' num' : ''}${c[0] === infraUi.sort ? ' on' : ''}" data-k="${c[0]}" onclick="infraSort(this.dataset.k)">${c[1]}${c[0] === infraUi.sort ? (infraUi.dir > 0 ? ' ↑' : ' ↓') : ''}</th>`,
+  ).join('');
+  const body = rows.length
+    ? rows
+        .map(
+          (n) =>
+            `<tr class="${n.memPct >= INFRA.memWarn || n.cpuPct >= INFRA.cpuWarn ? 'hot' : ''}" data-node="${esc(n.name)}" onclick="openNode(this.dataset.node)"><td><span class="m-id" style="color:var(--text);font-weight:700">${esc(n.host)}</span></td>` +
+            `<td><span class="m-id">${esc(n.instance)}</span> <span class="muted">${esc(n.capacity || '')}</span></td><td>${esc(poolName(n.pool))}</td><td>${esc(String(n.zone).slice(-2))}</td>` +
+            `<td>${ubar(n.cpuPct, n.cpuReq, INFRA.cpuWarn)}</td><td>${ubar(n.memPct, n.memReq, INFRA.memWarn, INFRA.memBad)}</td>` +
+            `<td class="num">${n.pods.length}</td><td>${relTime(n.created)}</td><td class="num">${usd(n.hourly)}</td></tr>`,
+        )
+        .join('')
+    : `<tr class="nolink"><td colspan="${INFRA_COLS.length}" class="muted">No platform node matches the filter.</td></tr>`;
+  return `<table><thead><tr>${head}</tr></thead><tbody>${body}</tbody></table>`;
+}
+function infraPools(m) {
+  const known = {};
+  m.pools.forEach((p) => (known[p.name] = p));
+  const names = [...new Set(m.pools.map((p) => p.name).concat(m.nodes.map((n) => n.pool)))].sort(
+    (a, b) => poolRank(a) - poolRank(b) || (a < b ? -1 : 1),
+  );
+  const sum = (list, f) => list.reduce((a, n) => a + (f(n) || 0), 0);
+  let total = 0;
+  const rows = names
+    .map((name) => {
+      const mine = m.nodes.filter((n) => n.pool === name),
+        p = known[name] || {};
+      const slots = sum(mine, (n) => n.gpu),
+        used = sum(mine, (n) => n.taken),
+        hourly = sum(mine, (n) => n.hourly);
+      const isGpu = !!p.isGpu || slots > 0,
+        unit = name === 'gpu-shared' ? 'slices' : 'GPUs';
+      total += hourly;
+      const use =
+        isGpu && !mine.length
+          ? '<span class="muted">No nodes. Starts one when a model needs it.</span>'
+          : isGpu
+            ? `<b>${used} of ${slots}</b> ${unit} in use${slots - used ? ` <span class="muted">· ${slots - used} free</span>` : ''}`
+            : `<div style="display:grid;grid-template-columns:auto minmax(110px,190px);gap:4px 10px;align-items:center"><span class="muted">CPU</span>${ubar(pctOf(sum(mine, (n) => n.cpuUsedM), sum(mine, (n) => n.cpuAllocM)))}<span class="muted">Memory</span>${ubar(pctOf(sum(mine, (n) => n.memUsedMi), sum(mine, (n) => n.memAllocMi)), null, INFRA.memWarn, INFRA.memBad)}</div>`;
+      const limit =
+        isGpu && p.gpuLimit != null
+          ? `${ubar(pctOf(slots, p.gpuLimit))}<div class="m-id" style="margin-top:3px">${slots} of ${num(p.gpuLimit)} ${unit} started</div>`
+          : '<span class="muted">no limit set</span>';
+      const zones = {};
+      mine.forEach((n) => (zones[String(n.zone).slice(-2)] = (zones[String(n.zone).slice(-2)] || 0) + 1));
+      const zoneText = Object.keys(zones).sort().map((z) => `${esc(z)}: ${zones[z]}`).join(', ');
+      const kinds = name === '__mng__' ? 'on-demand' : (p.capacityTypes || [...new Set(mine.map((n) => n.capacity))]).join(' or ');
+      const refuses = (p.excludedFamilies || []).join(', ');
+      return (
+        `<tr class="nolink"><td><span class="dot ${mine.length ? 'ok' : ''}" style="${mine.length ? '' : 'background:var(--border-light)'}"></span><span class="m-name">${esc(poolName(name))}</span><div class="m-id" style="margin-left:15px">${esc(POOLMAP[name] || p.workload || '')}</div></td>` +
+        `<td class="num">${mine.length}</td><td>${use}</td><td>${limit}</td><td>${zoneText || '<span class="muted">—</span>'}</td><td>${esc(kinds)}</td>` +
+        `<td>${refuses ? '<span class="m-id">' + esc(refuses) + '</span>' : '<span class="muted">—</span>'}</td><td class="num">${hourly ? usd(hourly) : '<span class="muted">$0</span>'}</td></tr>`
+      );
+    })
+    .join('');
+  return `<table><thead><tr><th>Pool</th><th class="num">Nodes</th><th>In use</th><th>Against its limit</th><th>Nodes by zone</th><th>Spot or on-demand</th><th>Refuses</th><th class="num">$/hr</th></tr></thead><tbody>${rows}<tr class="nolink"><td colspan="7" class="muted">Whole cluster, nodes only</td><td class="num"><b>${usd(total)}</b></td></tr></tbody></table>`;
+}
+function infra() {
+  const m = infraModel();
+  const words = String(($('infra-q') || {}).value || '')
+    .toLowerCase()
+    .split(/\s+/)
+    .filter(Boolean);
+  const shown = m.nodes.filter((n) => words.every((w) => n.hay.includes(w)));
+  const gpuNodes = m.nodes.filter((n) => n.isGpu);
+  const free = gpuNodes.reduce((a, n) => a + n.free, 0);
+  put(
+    'infra-sub',
+    `${m.nodes.length} node${m.nodes.length === 1 ? '' : 's'} · ${gpuNodes.length} with GPUs · ${free} free GPU slot${free === 1 ? '' : 's'}`,
+  );
+  put('infra-attn', infraAttn(m));
+  put('infra-gpu', infraGpu(m, shown));
+  put('infra-platform', infraPlatform(m, shown));
+  put('infra-nodepools', infraPools(m));
+  $('infra-expand').textContent = infraDefaultOpen(gpuNodes.length) ? 'Collapse all' : 'Expand all';
+  $('infra-expand').dataset.count = gpuNodes.length;
+}
+function infraRefresh() {
+  infra();
+}
+function infraToggle(name) {
+  if (infraUi.toggled.has(name)) infraUi.toggled.delete(name);
+  else infraUi.toggled.add(name);
+  infra();
+}
+function infraExpandAll() {
+  infraUi.allOpen = !infraDefaultOpen(Number($('infra-expand').dataset.count || 0));
+  infraUi.toggled.clear();
+  infra();
+}
+function infraToggleFree() {
+  infraUi.free = !infraUi.free;
+  const el = $('infra-free');
+  el.classList.toggle('active', infraUi.free);
+  el.setAttribute('aria-pressed', String(infraUi.free));
+  infra();
+}
+function infraSort(key) {
+  infraUi.dir = infraUi.sort === key ? -infraUi.dir : 1;
+  infraUi.sort = key;
+  infra();
+}
+function infraCopy(btn) {
+  const done = (ok) => {
+    btn.textContent = ok ? 'Copied' : 'Select the command and copy it';
+    setTimeout(() => (btn.textContent = 'Copy command'), 1800);
+  };
+  if (!navigator.clipboard) return done(false);
+  navigator.clipboard.writeText(btn.dataset.copy).then(() => done(true), () => done(false));
+}
 function fSev(s) {
   s = (s || '').toUpperCase();
   return { LOW: '#34d399', MEDIUM: '#fbbf24', HIGH: '#fb923c', CRITICAL: '#f87171' }[s] || '#8b93a7';
