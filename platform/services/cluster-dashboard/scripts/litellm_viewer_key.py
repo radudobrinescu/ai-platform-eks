@@ -6,6 +6,8 @@ Runs as CronJob `cluster-dashboard-litellm-key` every 15 minutes:
 1. Wait for LiteLLM (`/health/liveliness`, up to WAIT_SECONDS).
 2. If Secret `cluster-dashboard-litellm-key` holds a key that LiteLLM reports
    as active and owned by user `cluster-dashboard`, stop (the normal case).
+   LiteLLM is asked with that key as the bearer token (`/key/info` then
+   describes the calling key), so the key is never part of a URL.
 3. Otherwise make sure user `cluster-dashboard` exists with role
    `proxy_admin_viewer`, delete any key with alias `cluster-dashboard`
    (LiteLLM requires unique aliases, so an orphan would block the next step),
@@ -52,6 +54,10 @@ class Http:
 
     def __init__(self, base: str, token: str, context: ssl.SSLContext | None = None):
         self.base, self._token, self._ctx = base.rstrip("/"), token, context
+
+    def with_token(self, token: str) -> Http:
+        """The same server and TLS settings, authenticating with `token`."""
+        return Http(self.base, token, self._ctx)
 
     def call(self, method: str, path: str, body: dict | None = None, query: dict | None = None,
              content_type: str = "application/json", parse: bool = True) -> dict:
@@ -125,13 +131,29 @@ class LiteLLM:
                 sleep(5)
 
     def key_valid(self, key: str) -> bool:
+        """True when `key` is an active key of the viewer user. The key is
+        the bearer token of the request and /key/info, without a `key`
+        parameter, describes the calling key: a key in the query string
+        could end up in access logs."""
         try:
-            info = self.call("GET", "/key/info", query={"key": key}).get("info") or {}
+            info = self.http.with_token(key).call("GET", "/key/info").get("info") or {}
         except HttpError as e:
-            if e.status in (400, 404):  # unknown or malformed key
+            # LiteLLM does not accept the key: unknown or malformed (400, 404),
+            # or deleted, revoked or expired, which fail authentication (401, 403).
+            if e.status in (400, 401, 403, 404):
                 return False
             raise
         return info.get("status") == "active" and info.get("user_id") == self.user_id
+
+    def check_master_key(self) -> None:
+        """Raise MasterKeyRejected unless LiteLLM accepts the master key.
+        key_valid() no longer uses it, and a run with a rejected master key
+        must keep failing even when the stored key is still valid."""
+        try:
+            self.call("GET", "/user/info", query={"user_id": self.user_id})
+        except HttpError as e:
+            if e.status != 404:  # 404: the master key was accepted, the user does not exist
+                raise
 
     def ensure_user(self) -> None:
         try:
@@ -170,6 +192,7 @@ def run(kube: Kube, litellm: LiteLLM, wait_seconds: float, sleep=time.sleep) -> 
     try:
         exists, key = kube.read_key()
         if key and litellm.key_valid(key):
+            litellm.check_master_key()
             log("viewer key valid, nothing to do")
             return 0
         log("viewer key missing or invalid, creating one", secretExists=exists)
