@@ -60,7 +60,11 @@ tracing apply uniformly - including the optional **llm-d** scale tier
 
 ### Custom Dashboard
 
-![Cluster dashboard - live topology of nodes, GPU slots, and deployed models](docs/img/cluster-dashboard.png)
+![Cluster dashboard, Infrastructure view - GPU nodes with their slots and the models on them, platform nodes, node pools](docs/img/cluster-dashboard.png)
+
+A live console with six views (Overview, Models, Teams, Cost, Infrastructure, Health).
+It updates as the cluster changes and shows the state of each data source it reads, so
+a missing number is never mistaken for a zero.
 
 ## Prerequisites
 
