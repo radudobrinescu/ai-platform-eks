@@ -163,8 +163,9 @@ spec:
             - name: http
               containerPort: 8080
           env:
+            # /opt/lib holds the shared `pha` package (agent DB and Job specs).
             - name: PYTHONPATH
-              value: /pydeps
+              value: /pydeps:/opt/lib
             - name: PYTHONUNBUFFERED
               value: "1"
             # platform-health-agent integration. These are SAFE to set even when the
@@ -272,6 +273,9 @@ spec:
             - name: pydeps
               mountPath: /pydeps
               readOnly: true
+            - name: pha-lib
+              mountPath: /opt/lib
+              readOnly: true
             - name: tmp
               mountPath: /tmp
           resources:
@@ -305,6 +309,16 @@ spec:
             name: cluster-dashboard-html
         - name: pydeps
           emptyDir: {}
+        # Shared `pha` package from the agent ConfigMap (no hash suffix: a
+        # pha-only change does not restart this pod; restart it by hand).
+        - name: pha-lib
+          configMap:
+            name: platform-health-agent-scripts
+            items:
+              - { key: pha____init__.py, path: pha/__init__.py }
+              - { key: pha__db.py, path: pha/db.py }
+              - { key: pha__jobs.py, path: pha/jobs.py }
+              - { key: pha__log.py, path: pha/log.py }
         - name: tmp
           emptyDir: {}
 ---

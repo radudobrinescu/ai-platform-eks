@@ -51,3 +51,12 @@ configMapGenerator:
       - scripts/fix_command_policy.py
       - scripts/db_init.sh
       - scripts/ddl.sql
+      # Shared Python package `pha`: ConfigMap keys cannot contain "/", so each
+      # file is stored as <package>__<file> and the volumes that import it
+      # project the keys back to pha/<file> (see `pha-lib` volumes). Add new
+      # pha modules here AND to those volumes; tests/test_dash_packaging.py
+      # fails if one is missed.
+      - pha____init__.py=scripts/pha/__init__.py
+      - pha__db.py=scripts/pha/db.py
+      - pha__jobs.py=scripts/pha/jobs.py
+      - pha__log.py=scripts/pha/log.py

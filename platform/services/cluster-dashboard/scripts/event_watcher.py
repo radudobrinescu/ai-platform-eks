@@ -20,8 +20,6 @@ All env vars are documented in configmap.yaml + the README.
 
 from __future__ import annotations
 
-import json
-import logging
 import os
 import re
 import signal
@@ -32,15 +30,14 @@ import uuid
 from datetime import datetime, timezone
 
 import psycopg
-from datetime import datetime, timezone
 from kubernetes import client, config, watch  # type: ignore[import-untyped]
 from kubernetes.client.exceptions import ApiException  # type: ignore[import-untyped]
 
-logging.basicConfig(
-    level=logging.INFO,
-    format="%(asctime)s %(levelname)s %(name)s %(message)s",
-)
-log = logging.getLogger("event-watcher")
+from pha import db as pha_db
+from pha import jobs as pha_jobs
+from pha import log as pha_log
+
+log = pha_log.setup("event-watcher")
 
 # ---------------------------------------------------------------------------
 # Config
@@ -159,265 +156,51 @@ def _owner_root(pod) -> tuple[str, str]:
 
 
 # ---------------------------------------------------------------------------
-# Database
+# Database and throttling (SQL in pha/db.py)
 # ---------------------------------------------------------------------------
 
 def db_connect() -> psycopg.Connection:
-    return psycopg.connect(
+    return pha_db.connect(
         host=os.environ["DB_HOST"],
         port=int(os.environ.get("DB_PORT", "5432")),
         dbname=os.environ["DB_NAME"],
         user=os.environ["DB_USER"],
         password=os.environ["DB_PASSWORD"],
-        autocommit=True,
-        connect_timeout=10,
     )
 
 
 def db_with_retry() -> psycopg.Connection:
     """Reconnect with exponential backoff."""
-    backoff = 1
-    while True:
-        try:
-            conn = db_connect()
-            log.info("postgres connected")
-            return conn
-        except Exception as e:
-            log.warning("postgres connect failed: %s — retry in %ds", e, backoff)
-            time.sleep(backoff)
-            backoff = min(backoff * 2, 60)
+    return pha_db.connect_with_retry(db_connect)
 
-
-# ---------------------------------------------------------------------------
-# Debounce / capacity checks
-# ---------------------------------------------------------------------------
 
 def should_throttle(conn: psycopg.Connection, kind: str, namespace: str, name: str) -> str | None:
-    """Return reason string if event should be skipped, else None."""
-    with conn.cursor() as cur:
-        # 0. In-flight dedup: refuse to spawn a duplicate for the same resource.
-        # This guards against debounce expiry or restart-induced gaps.
-        cur.execute(
-            """SELECT id FROM investigations
-                WHERE resource_kind=%s AND resource_namespace=%s AND resource_name=%s
-                  AND status IN ('running','awaiting_approval','remediating')
-                LIMIT 1""",
-            (kind, namespace, name),
-        )
-        active = cur.fetchone()
-        if active:
-            return f"already_in_flight({active[0]})"
-
-        # 0b. Out-of-scope cooldown: if we recently concluded this resource is
-        # out-of-scope (can't auto-remediate), don't keep re-investigating it —
-        # the verdict won't change and it would drain the daily budget.
-        cur.execute(
-            """SELECT 1 FROM investigations
-                WHERE resource_kind=%s AND resource_namespace=%s AND resource_name=%s
-                  AND out_of_scope = true
-                  AND created_at > now() - make_interval(secs => %s)
-                LIMIT 1""",
-            (kind, namespace, name, OUT_OF_SCOPE_COOLDOWN_SEC),
-        )
-        if cur.fetchone():
-            return "out_of_scope_cooldown"
-
-        # 1. Per-resource debounce.
-        cur.execute(
-            "SELECT last_seen FROM debounce WHERE resource_kind=%s AND resource_namespace=%s AND resource_name=%s",
-            (kind, namespace, name),
-        )
-        row = cur.fetchone()
-        if row:
-            last_seen: datetime = row[0]
-            if (datetime.now(timezone.utc) - last_seen).total_seconds() < DEBOUNCE_WINDOW_SEC:
-                return "debounce"
-
-        # 2. Concurrency cap.
-        cur.execute("SELECT n FROM active_investigation_count")
-        active = cur.fetchone()[0] or 0  # type: ignore[index]
-        if active >= MAX_CONCURRENT:
-            return f"concurrency_cap({active}/{MAX_CONCURRENT})"
-
-        # 3. Daily budget.
-        cur.execute("SELECT investigations FROM today_counters")
-        today = cur.fetchone()[0] or 0  # type: ignore[index]
-        if today >= MAX_PER_DAY:
-            return f"daily_budget({today}/{MAX_PER_DAY})"
-
-    return None
+    """Return the reason to skip this incident, or None to investigate it."""
+    return pha_db.throttle_reason(
+        conn, kind, namespace, name, debounce_sec=DEBOUNCE_WINDOW_SEC,
+        max_concurrent=MAX_CONCURRENT, max_per_day=MAX_PER_DAY,
+        out_of_scope_cooldown_sec=OUT_OF_SCOPE_COOLDOWN_SEC)
 
 
 def record_trigger(conn: psycopg.Connection, kind: str, namespace: str, name: str) -> None:
-    with conn.cursor() as cur:
-        cur.execute(
-            """INSERT INTO debounce (resource_kind, resource_namespace, resource_name, last_seen)
-               VALUES (%s, %s, %s, now())
-               ON CONFLICT (resource_kind, resource_namespace, resource_name)
-               DO UPDATE SET last_seen = EXCLUDED.last_seen""",
-            (kind, namespace, name),
-        )
-        cur.execute(
-            """INSERT INTO daily_counters (day, investigations) VALUES (CURRENT_DATE, 1)
-               ON CONFLICT (day) DO UPDATE SET investigations = daily_counters.investigations + 1""",
-        )
+    pha_db.record_trigger(conn, kind, namespace, name)
 
 
 # ---------------------------------------------------------------------------
-# Investigator Job spec
+# Investigator Job spec (shape shared with the Remediator: pha/jobs.py)
 # ---------------------------------------------------------------------------
+
+# Python packages for the Investigator Job: psycopg for the result write,
+# awslabs.eks-mcp-server for kiro-cli's read-only Kubernetes tools. The exact
+# `name==version` pins stay in this file: automated dependency updates look for
+# them here.
+INVESTIGATOR_PIP_PACKAGES = "psycopg[binary]==3.3.9 awslabs.eks-mcp-server"
+
 
 def build_investigator_job(investigation_id: str, event_payload: dict) -> dict:
-    """Construct the batch/v1 Job for an Investigator run.
-
-    Returns a dict ready to pass to BatchV1Api.create_namespaced_job(body=…).
-
-    Design notes:
-    - serviceAccountName: platform-health-agent-reader → cluster-wide read only.
-    - Two initContainers:
-        a) install-tools  → downloads kubectl + kiro-cli into /tools (emptyDir)
-        b) install-pydeps → pip-installs psycopg into /pydeps (emptyDir)
-      Why two? They run in parallel via initContainers? No — initContainers
-      run sequentially. But each is small and fast (~10–15s combined). Trading
-      a bit of cold-start time for zero custom image ops.
-    - main container: python:3.12-slim, runs investigate.sh.
-    - activeDeadlineSeconds: 600 (10 min hard ceiling).
-    - ttlSecondsAfterFinished: 3600 (Job + Pod garbage-collected after 1h).
-    """
-    job_name = f"investigator-{investigation_id[:8]}"
-    return {
-        "apiVersion": "batch/v1",
-        "kind": "Job",
-        "metadata": {
-            "name": job_name,
-            "namespace": NAMESPACE,
-            "labels": {
-                "app.kubernetes.io/name": "platform-health-agent-investigator",
-                "app.kubernetes.io/part-of": "platform-health-agent",
-                "investigation-id": investigation_id,
-            },
-        },
-        "spec": {
-            "ttlSecondsAfterFinished": 3600,
-            "activeDeadlineSeconds": 600,
-            "backoffLimit": 0,                  # don't retry — surface the failure in the dashboard
-            "template": {
-                "metadata": {
-                    "labels": {
-                        "app.kubernetes.io/name": "platform-health-agent-investigator",
-                        "investigation-id": investigation_id,
-                    },
-                },
-                "spec": {
-                    "restartPolicy": "Never",
-                    "serviceAccountName": "platform-health-agent-reader",
-                    "automountServiceAccountToken": True,
-                    "nodeSelector": {"kubernetes.io/arch": "amd64"},
-                    "initContainers": _bootstrap_init_containers(),
-                    "containers": [{
-                        "name": "investigator",
-                        "image": PYTHON_IMAGE,
-                        "command": ["/bin/sh", "/scripts/investigate.sh"],
-                        "env": _agent_env(investigation_id, event_payload),
-                        "volumeMounts": _agent_volume_mounts(),
-                        "resources": {
-                            "requests": {"cpu": "200m", "memory": "256Mi"},
-                            "limits":   {"cpu": "1000m", "memory": "1Gi"},
-                        },
-                        "securityContext": {
-                            "allowPrivilegeEscalation": False,
-                            "runAsNonRoot": True,
-                            "runAsUser": 65532,
-                            "capabilities": {"drop": ["ALL"]},
-                        },
-                    }],
-                    "volumes": _agent_volumes(),
-                },
-            },
-        },
-    }
-
-
-def _bootstrap_init_containers() -> list[dict]:
-    return [
-        {
-            "name": "install-tools",
-            "image": "alpine:3.20",
-            "command": ["/bin/sh", "-c"],
-            "args": [
-                f"set -eu; cd /tools; "
-                f"echo 'fetching kubectl {KUBECTL_VERSION}…'; "
-                f"wget -qO kubectl https://dl.k8s.io/release/{KUBECTL_VERSION}/bin/linux/amd64/kubectl && chmod +x kubectl; "
-                f"echo 'fetching kiro-cli installer…'; "
-                f"apk add -q curl bash; "
-                f"export HOME=/tools; "
-                f"curl -fsSL https://cli.kiro.dev/install | bash; "
-                # The installer drops THREE binaries (kiro-cli, kiro-cli-chat,
-                # kiro-cli-term) at $HOME/.local/bin/. The launcher (kiro-cli)
-                # forks to kiro-cli-chat which must also be on PATH.
-                f"mv /tools/.local/bin/* /tools/ 2>/dev/null || true; "
-                f"chmod +x /tools/kiro-cli /tools/kiro-cli-chat /tools/kiro-cli-term 2>/dev/null || true; "
-                f"ls -la /tools/",
-            ],
-            "volumeMounts": [{"name": "tools", "mountPath": "/tools"}],
-            "securityContext": {"runAsUser": 0, "allowPrivilegeEscalation": False, "capabilities": {"drop": ["ALL"]}},
-        },
-        {
-            "name": "install-pydeps",
-            "image": PYTHON_IMAGE,
-            "command": ["/bin/sh", "-c"],
-            "args": [
-                "set -eu; "
-                # psycopg for the wrapper's DB writes; awslabs.eks-mcp-server
-                # for kiro-cli's MCP tool surface (replaces raw kubectl).
-                "pip install --no-cache-dir --target=/pydeps "
-                "  psycopg[binary]==3.3.9 "
-                "  awslabs.eks-mcp-server",
-            ],
-            "volumeMounts": [{"name": "pydeps", "mountPath": "/pydeps"}],
-            "securityContext": {"runAsNonRoot": True, "runAsUser": 65532, "allowPrivilegeEscalation": False, "capabilities": {"drop": ["ALL"]}},
-        },
-    ]
-
-
-def _agent_env(investigation_id: str, event_payload: dict) -> list[dict]:
-    """Env vars common to Investigator and Remediator containers."""
-    return [
-        {"name": "INVESTIGATION_ID", "value": investigation_id},
-        {"name": "EVENT_PAYLOAD", "value": json.dumps(event_payload)},
-        {"name": "PATH", "value": "/tools:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"},
-        {"name": "PYTHONPATH", "value": "/pydeps"},
-        {"name": "HOME", "value": "/tmp"},
-        # From config ConfigMap.
-        *[{"name": k, "valueFrom": {"configMapKeyRef": {"name": "platform-health-agent-config", "key": k}}}
-          for k in ["CLUSTER_NAME", "AWS_REGION", "DB_HOST", "DB_PORT", "DB_NAME",
-                    "KIRO_MODEL_INVESTIGATE", "KIRO_MODEL_REMEDIATE"]],
-        # DB credentials reuse the existing platform Postgres credentials.
-        {"name": "DB_USER",      "valueFrom": {"secretKeyRef": {"name": "platform-db-credentials", "key": "username"}}},
-        {"name": "DB_PASSWORD",  "valueFrom": {"secretKeyRef": {"name": "platform-db-credentials", "key": "password"}}},
-        # Only secret needed: kiro-cli API key. Approvals UX is in the cluster-dashboard.
-        {"name": "KIRO_API_KEY", "valueFrom": {"secretKeyRef": {"name": "platform-health-agent-secrets",   "key": "KIRO_API_KEY"}}},
-    ]
-
-
-def _agent_volume_mounts() -> list[dict]:
-    return [
-        {"name": "scripts", "mountPath": "/scripts", "readOnly": True},
-        {"name": "tools",   "mountPath": "/tools",   "readOnly": True},
-        {"name": "pydeps",  "mountPath": "/pydeps",  "readOnly": True},
-        {"name": "results", "mountPath": "/results"},
-        {"name": "tmp",     "mountPath": "/tmp"},
-    ]
-
-
-def _agent_volumes() -> list[dict]:
-    return [
-        {"name": "scripts", "configMap": {"name": "platform-health-agent-scripts", "defaultMode": 0o755}},
-        {"name": "tools",   "emptyDir": {}},
-        {"name": "pydeps",  "emptyDir": {}},
-        {"name": "results", "emptyDir": {}},
-        {"name": "tmp",     "emptyDir": {}},
-    ]
+    return pha_jobs.investigator_job(
+        investigation_id, event_payload, namespace=NAMESPACE, python_image=PYTHON_IMAGE,
+        kubectl_version=KUBECTL_VERSION, pip_packages=INVESTIGATOR_PIP_PACKAGES)
 
 
 # ---------------------------------------------------------------------------
@@ -639,27 +422,19 @@ def spawn_investigation(conn: psycopg.Connection, batch_v1: client.BatchV1Api,
         return
 
     investigation_id = str(uuid.uuid4())
-    with conn.cursor() as cur:
-        cur.execute(
-            """INSERT INTO investigations
-                  (id, status, trigger_kind, resource_kind, resource_namespace, resource_name, event_payload)
-               VALUES (%s, 'pending', %s, %s, %s, %s, %s)""",
-            (investigation_id, trigger_kind, resource_kind, namespace, name, json.dumps(payload)),
-        )
+    pha_db.insert_investigation(conn, investigation_id, trigger_kind, resource_kind,
+                                namespace, name, payload)
 
     job = build_investigator_job(investigation_id, {"trigger_kind": trigger_kind, **payload})
     try:
         batch_v1.create_namespaced_job(namespace=NAMESPACE, body=job)
     except ApiException as e:
         log.error("Job create failed for %s: %s", investigation_id, e)
-        with conn.cursor() as cur:
-            cur.execute("UPDATE investigations SET status='failed', error_message=%s WHERE id=%s",
-                        (f"Job create failed: {e}", investigation_id))
+        pha_db.mark_failed(conn, investigation_id, f"Job create failed: {e}")
         return
 
     record_trigger(conn, resource_kind, namespace, name)
-    with conn.cursor() as cur:
-        cur.execute("UPDATE investigations SET status='running' WHERE id=%s", (investigation_id,))
+    pha_db.mark_running(conn, investigation_id)
     log.info("spawned investigator %s for %s/%s/%s (kind=%s)",
              investigation_id, resource_kind, namespace or "-", name, trigger_kind)
 

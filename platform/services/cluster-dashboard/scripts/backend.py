@@ -41,6 +41,9 @@ import time
 import uuid
 from urllib.parse import urlparse
 
+from pha import db as pha_db
+from pha import jobs as pha_jobs
+
 
 def _json_default(o):
     """psycopg returns NUMERIC columns as Decimal, which json can't serialize."""
@@ -282,120 +285,19 @@ class DB:
 
 
 # ---------------------------------------------------------------------------
-# Remediator Job spec (duplicated from event_watcher.py — small, stable)
+# Remediator Job spec (shape shared with the Investigator: pha/jobs.py)
 # ---------------------------------------------------------------------------
 
+# Python packages for the Remediator Job. The exact `name==version` pins stay
+# in this file: automated dependency updates look for them here.
+REMEDIATOR_PIP_PACKAGES = "psycopg[binary]==3.3.9 awslabs.eks-mcp-server"
+
+
 def build_remediator_job(investigation_id: str) -> dict:
-    job_name = f"remediator-{investigation_id[:8]}"
-    return {
-        "apiVersion": "batch/v1",
-        "kind": "Job",
-        "metadata": {
-            "name": job_name,
-            "namespace": PLATFORM_HEALTH_AGENT_NAMESPACE,
-            "labels": {
-                "app.kubernetes.io/name": "platform-health-agent-remediator",
-                "app.kubernetes.io/part-of": "platform-health-agent",
-                "investigation-id": investigation_id,
-            },
-        },
-        "spec": {
-            "ttlSecondsAfterFinished": 3600,
-            "activeDeadlineSeconds": 600,
-            "backoffLimit": 0,
-            "template": {
-                "metadata": {
-                    "labels": {
-                        "app.kubernetes.io/name": "platform-health-agent-remediator",
-                        "investigation-id": investigation_id,
-                    },
-                },
-                "spec": {
-                    "restartPolicy": "Never",
-                    "serviceAccountName": "platform-health-agent-writer",
-                    "automountServiceAccountToken": True,
-                    "nodeSelector": {"kubernetes.io/arch": "amd64"},
-                    "initContainers": [
-                        {
-                            "name": "install-tools",
-                            "image": "alpine:3.20",
-                            "command": ["/bin/sh", "-c"],
-                            "args": [
-                                f"set -eu; cd /tools; "
-                                f"echo 'fetching kubectl {KUBECTL_VERSION}'; "
-                                f"wget -qO kubectl https://dl.k8s.io/release/{KUBECTL_VERSION}/bin/linux/amd64/kubectl && chmod +x kubectl; "
-                                f"apk add -q curl bash; "
-                                f"export HOME=/tools; "
-                                f"curl -fsSL https://cli.kiro.dev/install | bash; "
-                                # Move ALL three binaries (kiro-cli, kiro-cli-chat,
-                                # kiro-cli-term). The launcher forks to kiro-cli-chat.
-                                f"mv /tools/.local/bin/* /tools/ 2>/dev/null || true; "
-                                f"chmod +x /tools/kiro-cli /tools/kiro-cli-chat /tools/kiro-cli-term 2>/dev/null || true; "
-                                f"ls -la /tools/",
-                            ],
-                            "volumeMounts": [{"name": "tools", "mountPath": "/tools"}],
-                            "securityContext": {"runAsUser": 0, "allowPrivilegeEscalation": False,
-                                                "capabilities": {"drop": ["ALL"]}},
-                        },
-                        {
-                            "name": "install-pydeps",
-                            "image": PYTHON_IMAGE,
-                            "command": ["/bin/sh", "-c"],
-                            "args": [
-                                "set -eu; pip install --no-cache-dir --target=/pydeps "
-                                "psycopg[binary]==3.3.9 awslabs.eks-mcp-server",
-                            ],
-                            "volumeMounts": [{"name": "pydeps", "mountPath": "/pydeps"}],
-                            "securityContext": {"runAsNonRoot": True, "runAsUser": 65532,
-                                                "allowPrivilegeEscalation": False,
-                                                "capabilities": {"drop": ["ALL"]}},
-                        },
-                    ],
-                    "containers": [{
-                        "name": "remediator",
-                        "image": PYTHON_IMAGE,
-                        "command": ["/bin/sh", "/scripts/remediate.sh"],
-                        "env": [
-                            {"name": "INVESTIGATION_ID", "value": investigation_id},
-                            {"name": "PATH", "value": "/tools:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"},
-                            {"name": "PYTHONPATH", "value": "/pydeps"},
-                            {"name": "HOME", "value": "/tmp"},
-                            *[{"name": k, "valueFrom": {"configMapKeyRef": {"name": "platform-health-agent-config", "key": k}}}
-                              for k in ["CLUSTER_NAME", "AWS_REGION", "DB_HOST", "DB_PORT", "DB_NAME",
-                                        "KIRO_MODEL_REMEDIATE"]],
-                            {"name": "DB_USER",      "valueFrom": {"secretKeyRef": {"name": "platform-db-credentials", "key": "username"}}},
-                            {"name": "DB_PASSWORD",  "valueFrom": {"secretKeyRef": {"name": "platform-db-credentials", "key": "password"}}},
-                            {"name": "KIRO_API_KEY", "valueFrom": {"secretKeyRef": {"name": "platform-health-agent-secrets",   "key": "KIRO_API_KEY"}}},
-                        ],
-                        "volumeMounts": [
-                            {"name": "scripts", "mountPath": "/scripts", "readOnly": True},
-                            {"name": "tools",   "mountPath": "/tools",   "readOnly": True},
-                            {"name": "pydeps",  "mountPath": "/pydeps",  "readOnly": True},
-                            {"name": "results", "mountPath": "/results"},
-                            {"name": "tmp",     "mountPath": "/tmp"},
-                        ],
-                        "resources": {
-                            "requests": {"cpu": "200m", "memory": "256Mi"},
-                            "limits":   {"cpu": "1000m", "memory": "1Gi"},
-                        },
-                        "securityContext": {
-                            "allowPrivilegeEscalation": False,
-                            "runAsNonRoot": True,
-                            "runAsUser": 65532,
-                            "capabilities": {"drop": ["ALL"]},
-                        },
-                    }],
-                    "volumes": [
-                        {"name": "scripts", "configMap": {"name": "platform-health-agent-scripts", "defaultMode": 0o755}},
-                        {"name": "tools",   "emptyDir": {}},
-                        {"name": "pydeps",  "emptyDir": {}},
-                        {"name": "results", "emptyDir": {}},
-                        {"name": "tmp",     "emptyDir": {}},
-                    ],
-                },
-            },
-        },
-    }
+    return pha_jobs.remediator_job(
+        investigation_id, namespace=PLATFORM_HEALTH_AGENT_NAMESPACE,
+        python_image=PYTHON_IMAGE, kubectl_version=KUBECTL_VERSION,
+        pip_packages=REMEDIATOR_PIP_PACKAGES)
 
 
 # ---------------------------------------------------------------------------
@@ -831,9 +733,8 @@ def _build_k8s_snapshot() -> dict:
     approvals_pending = 0
     if HAVE_PSYCOPG and DB_USER and DB_PASSWORD:
         try:
-            with DB.connect() as conn, conn.cursor() as cur:
-                cur.execute("SELECT count(*) FROM investigations WHERE status='awaiting_approval'")
-                approvals_pending = int(cur.fetchone()[0] or 0)  # type: ignore[index]
+            with DB.connect() as conn:
+                approvals_pending = pha_db.pending_count(conn)
                 approvals_available = True
         except Exception:
             approvals_available = False
@@ -1461,192 +1362,104 @@ def poll_loop() -> None:
 # Approvals API
 # ---------------------------------------------------------------------------
 
+def _db_configured() -> bool:
+    return bool(HAVE_PSYCOPG and DB_USER and DB_PASSWORD)
+
+
 def list_pending_investigations() -> list[dict]:
-    """Return investigations awaiting approval (newest first)."""
-    if not (HAVE_PSYCOPG and DB_USER and DB_PASSWORD):
+    """Investigations awaiting approval (newest first)."""
+    if not _db_configured():
         return []
     try:
-        with DB.connect() as conn, conn.cursor(row_factory=psycopg.rows.dict_row) as cur:  # type: ignore[arg-type]
-            cur.execute(
-                """SELECT id, created_at, trigger_kind, resource_kind,
-                          resource_namespace, resource_name,
-                          findings, fix_commands
-                     FROM investigations
-                    WHERE status = 'awaiting_approval'
-                    ORDER BY created_at DESC LIMIT 50""",
-            )
-            rows = cur.fetchall() or []
-        out = []
-        for r in rows:
-            r["id"] = str(r["id"])
-            r["created_at"] = r["created_at"].isoformat() if r["created_at"] else None
-            out.append(r)
-        return out
+        with DB.connect() as conn:
+            return pha_db.pending_investigations(conn)
     except Exception:
         return []
 
 
 def list_all_investigations(limit: int = 20) -> list[dict]:
-    """Return recent investigations (any status), newest first.
-    Used by the History tab in the dashboard."""
-    if not (HAVE_PSYCOPG and DB_USER and DB_PASSWORD):
+    """Recent investigations (any status), newest first, for the History tab."""
+    if not _db_configured():
         return []
     try:
-        with DB.connect() as conn, conn.cursor(row_factory=psycopg.rows.dict_row) as cur:  # type: ignore[arg-type]
-            cur.execute(
-                """SELECT id, created_at, completed_at, approved_at, status,
-                          trigger_kind, resource_kind, resource_namespace, resource_name,
-                          findings, fix_commands, remediation_result,
-                          approved_by, error_message, out_of_scope
-                     FROM investigations
-                    ORDER BY created_at DESC LIMIT %s""",
-                (limit,),
-            )
-            rows = cur.fetchall() or []
-        out = []
-        stale_cutoff = time.time() - STALE_INVESTIGATION_MINUTES * 60
-        for r in rows:
-            r["id"] = str(r["id"])
-            # An in-flight row whose Job should long since have finished is stuck —
-            # flag it so the UI can offer a Dismiss action (see dismiss_investigation).
-            in_flight = r["status"] in ("pending", "running", "remediating")
-            created = r.get("created_at")
-            r["stale"] = bool(in_flight and created and created.timestamp() < stale_cutoff)
-            for k in ("created_at", "completed_at", "approved_at"):
-                if r.get(k):
-                    r[k] = r[k].isoformat()
-            out.append(r)
-        return out
+        with DB.connect() as conn:
+            return pha_db.recent_investigations(conn, limit, STALE_INVESTIGATION_MINUTES)
     except Exception:
         return []
 
 
 def get_investigation_detail(investigation_id: str) -> dict | None:
-    """Return full row for a single investigation. Used for post-approve polling."""
-    if not (HAVE_PSYCOPG and DB_USER and DB_PASSWORD):
+    """Full row for one investigation (post-approve polling)."""
+    if not _db_configured():
         return None
     try:
-        with DB.connect() as conn, conn.cursor(row_factory=psycopg.rows.dict_row) as cur:  # type: ignore[arg-type]
-            cur.execute("SELECT * FROM investigations WHERE id = %s", (investigation_id,))
-            r = cur.fetchone()
-        if not r:
-            return None
-        r["id"] = str(r["id"])
-        for k in ("created_at", "completed_at", "approved_at"):
-            if r.get(k):
-                r[k] = r[k].isoformat()
-        return r
+        with DB.connect() as conn:
+            return pha_db.get_investigation(conn, investigation_id)
     except Exception:
         return None
 
 
 def approve_investigation(investigation_id: str, approver: str) -> tuple[int, dict]:
-    """Spawn the Remediator Job for the given investigation. Returns
-    (HTTP status, response body)."""
-    if not (HAVE_PSYCOPG and DB_USER and DB_PASSWORD):
+    """Start the Remediator Job for an investigation awaiting approval.
+    Returns (HTTP status, response body)."""
+    if not _db_configured():
         return 503, {"error": "approvals db unavailable"}
-
     try:
-        with DB.connect() as conn:
-            with conn.cursor(row_factory=psycopg.rows.dict_row) as cur:  # type: ignore[arg-type]
-                cur.execute("SELECT * FROM investigations WHERE id=%s", (investigation_id,))
-                inv = cur.fetchone()
-                if not inv:
-                    return 404, {"error": "not found"}
-                if inv["status"] != "awaiting_approval":
-                    return 409, {"error": f"status is {inv['status']}, cannot approve"}
-                # Expiry check.
-                age_hrs = (time.time() - inv["created_at"].timestamp()) / 3600
-                if age_hrs > APPROVAL_EXPIRY_HOURS:
-                    cur.execute("UPDATE investigations SET status='expired', completed_at=now() WHERE id=%s",
-                                (investigation_id,))
-                    return 409, {"error": "expired"}
-                # Daily cap.
-                cur.execute("SELECT remediations FROM today_counters")
-                today = (cur.fetchone() or {}).get("remediations", 0) or 0
-                if today >= MAX_REMEDIATIONS_PER_DAY:
-                    return 429, {"error": f"daily remediation budget exceeded ({today}/{MAX_REMEDIATIONS_PER_DAY})"}
-
-                # Spawn the Job.
-                job = build_remediator_job(investigation_id)
-                status, body = k8s_post(
-                    f"/apis/batch/v1/namespaces/{PLATFORM_HEALTH_AGENT_NAMESPACE}/jobs", job)
-                if status not in (200, 201, 202):
-                    return 502, {"error": "job create failed",
-                                 "status": status,
-                                 "body": (body or {}).get("message") or str(body)[:500]}
-
-                # Update DB.
-                cur.execute(
-                    """UPDATE investigations
-                          SET status='remediating',
-                              approved_by=%s,
-                              approved_at=now()
-                        WHERE id=%s""",
-                    (approver, investigation_id),
-                )
-                cur.execute(
-                    """INSERT INTO daily_counters (day, remediations) VALUES (CURRENT_DATE, 1)
-                       ON CONFLICT (day) DO UPDATE SET remediations = daily_counters.remediations + 1""",
-                )
+        with DB.connect() as conn, conn.cursor(row_factory=pha_db.dict_rows()) as cur:
+            inv = pha_db.load_for_approval(cur, investigation_id)
+            if not inv:
+                return 404, {"error": "not found"}
+            if inv["status"] != "awaiting_approval":
+                return 409, {"error": f"status is {inv['status']}, cannot approve"}
+            if (time.time() - inv["created_at"].timestamp()) / 3600 > APPROVAL_EXPIRY_HOURS:
+                pha_db.expire(cur, investigation_id)
+                return 409, {"error": "expired"}
+            today = pha_db.remediations_today(cur)
+            if today >= MAX_REMEDIATIONS_PER_DAY:
+                return 429, {"error": f"daily remediation budget exceeded ({today}/{MAX_REMEDIATIONS_PER_DAY})"}
+            status, body = k8s_post(
+                f"/apis/batch/v1/namespaces/{PLATFORM_HEALTH_AGENT_NAMESPACE}/jobs",
+                build_remediator_job(investigation_id))
+            if status not in (200, 201, 202):
+                return 502, {"error": "job create failed", "status": status,
+                             "body": (body or {}).get("message") or str(body)[:500]}
+            pha_db.mark_remediating(cur, investigation_id, approver)
         return 200, {"ok": True, "investigation_id": investigation_id, "status": "remediating"}
     except Exception as e:
         return 500, {"error": str(e)}
 
 
 def dismiss_investigation(investigation_id: str, approver: str) -> tuple[int, dict]:
-    """Mark an investigation dismissed. Two paths:
-      - 'awaiting_approval' rows: the user declined the proposed fix (normal case).
-      - stale in-flight rows ('pending'/'running'/'remediating' older than
-        STALE_INVESTIGATION_MINUTES): the Job died without writing a result, so
-        the row is stuck — let the user clear it. Fresh in-flight rows are kept,
-        so we never dismiss a genuinely active investigation."""
-    if not (HAVE_PSYCOPG and DB_USER and DB_PASSWORD):
+    """Mark an investigation dismissed. Allowed for rows awaiting approval (the
+    user declined the fix) and for in-flight rows older than
+    STALE_INVESTIGATION_MINUTES (their Job died without a result). A fresh
+    in-flight row is never dismissed."""
+    if not _db_configured():
         return 503, {"error": "approvals db unavailable"}
     try:
-        with DB.connect() as conn, conn.cursor(row_factory=psycopg.rows.dict_row) as cur:  # type: ignore[arg-type]
-            cur.execute("SELECT status, created_at FROM investigations WHERE id=%s", (investigation_id,))
-            inv = cur.fetchone()
+        with DB.connect() as conn, conn.cursor(row_factory=pha_db.dict_rows()) as cur:
+            inv = pha_db.load_for_dismiss(cur, investigation_id)
             if not inv:
                 return 404, {"error": "not found"}
             status = inv["status"]
-            if status == "awaiting_approval":
-                pass  # always dismissable
-            elif status in ("pending", "running", "remediating"):
-                age_min = (time.time() - inv["created_at"].timestamp()) / 60
-                if age_min < STALE_INVESTIGATION_MINUTES:
+            if status in pha_db.IN_FLIGHT:
+                if (time.time() - inv["created_at"].timestamp()) / 60 < STALE_INVESTIGATION_MINUTES:
                     return 409, {"error": "investigation still in progress"}
-            else:
+            elif status != "awaiting_approval":
                 return 409, {"error": f"status is {status}, cannot dismiss"}
-            cur.execute(
-                """UPDATE investigations
-                      SET status='dismissed',
-                          approved_by=%s,
-                          approved_at=now(),
-                          completed_at=now()
-                    WHERE id=%s""",
-                (approver, investigation_id),
-            )
+            pha_db.mark_dismissed(cur, investigation_id, approver)
         return 200, {"ok": True, "investigation_id": investigation_id, "status": "dismissed"}
     except Exception as e:
         return 500, {"error": str(e)}
 
 
 def delete_investigation(investigation_id: str) -> tuple[int, dict]:
-    """Permanent removal — drops the row from postgres. Used by the History
-    tab's X button to clear UI noise. Won't delete an in-flight investigation
-    (status='running' or 'remediating') because doing so would orphan the
-    spawned Job + leave it without a place to write its result."""
-    if not (HAVE_PSYCOPG and DB_USER and DB_PASSWORD):
+    """Permanently delete one terminal investigation (History tab)."""
+    if not _db_configured():
         return 503, {"error": "approvals db unavailable"}
     try:
-        with DB.connect() as conn, conn.cursor() as cur:
-            cur.execute(
-                "DELETE FROM investigations WHERE id=%s AND status NOT IN ('running','remediating','awaiting_approval')",
-                (investigation_id,),
-            )
-            if cur.rowcount == 0:
-                # Either not found, or in a non-deletable state.
+        with DB.connect() as conn:
+            if not pha_db.delete_investigation(conn, investigation_id):
                 return 409, {"error": "not deletable (in-flight or not found)"}
         return 200, {"ok": True, "investigation_id": investigation_id, "deleted": True}
     except Exception as e:
@@ -1654,19 +1467,12 @@ def delete_investigation(investigation_id: str) -> tuple[int, dict]:
 
 
 def delete_all_investigations() -> tuple[int, dict]:
-    """Bulk removal — drops every terminal investigation from postgres. Used by
-    the History tab's 'Dismiss all' button. In-flight rows (running / remediating
-    / awaiting_approval) are preserved so we never orphan a spawned Job or drop a
-    pending approval. NOT recoverable."""
-    if not (HAVE_PSYCOPG and DB_USER and DB_PASSWORD):
+    """Permanently delete every terminal investigation (History tab, Dismiss all)."""
+    if not _db_configured():
         return 503, {"error": "approvals db unavailable"}
     try:
-        with DB.connect() as conn, conn.cursor() as cur:
-            cur.execute(
-                "DELETE FROM investigations WHERE status NOT IN ('running','remediating','awaiting_approval')",
-            )
-            deleted = cur.rowcount
-        return 200, {"ok": True, "deleted": deleted}
+        with DB.connect() as conn:
+            return 200, {"ok": True, "deleted": pha_db.delete_terminal(conn)}
     except Exception as e:
         return 500, {"error": str(e)}
 

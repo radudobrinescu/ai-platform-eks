@@ -179,7 +179,7 @@
         "initContainers": [
           {
             "args": [
-              "set -eu; cd /tools; echo 'fetching kubectl v1.32.5'; wget -qO kubectl https://dl.k8s.io/release/v1.32.5/bin/linux/amd64/kubectl && chmod +x kubectl; apk add -q curl bash; export HOME=/tools; curl -fsSL https://cli.kiro.dev/install | bash; mv /tools/.local/bin/* /tools/ 2>/dev/null || true; chmod +x /tools/kiro-cli /tools/kiro-cli-chat /tools/kiro-cli-term 2>/dev/null || true; ls -la /tools/"
+              "set -eu; cd /tools; echo 'fetching kubectl v1.32.5\u2026'; wget -qO kubectl https://dl.k8s.io/release/v1.32.5/bin/linux/amd64/kubectl && chmod +x kubectl; echo 'fetching kiro-cli installer\u2026'; apk add -q curl bash; export HOME=/tools; curl -fsSL https://cli.kiro.dev/install | bash; mv /tools/.local/bin/* /tools/ 2>/dev/null || true; chmod +x /tools/kiro-cli /tools/kiro-cli-chat /tools/kiro-cli-term 2>/dev/null || true; ls -la /tools/"
             ],
             "command": [
               "/bin/sh",
