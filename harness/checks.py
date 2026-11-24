@@ -488,6 +488,85 @@ def chk_dashboard_health(c: Ctx):
     return ok, f"/data.json HTTP {code}" + ("" if ok else f": {body[:80]}")
 
 
+# The dashboard's LiteLLM key is made by a CronJob that runs every 15 minutes;
+# on a new cluster the LiteLLM sources report an error until its first run.
+DASHBOARD_SOURCES_TIMEOUT = 1200
+SCRAPE_TARGETS_TIMEOUT = 300
+WAKE_FROM_ZERO_JOB = "litellm"
+
+
+def dashboard_problems(ready_code: int, sources: list[dict], sections: dict) -> list[str]:
+    """What is wrong with the dashboard, as its own API reports it. /data.json
+    answering 200 (cluster-dashboard-healthz) says the backend is up; this says
+    every data source behind it works and the snapshot carries the cluster."""
+    problems = [] if ready_code == 200 else [f"/api/v1/health/ready answered HTTP {ready_code}"]
+    for s in sources:
+        if s.get("state") != "ok":
+            why = (s.get("lastError") or s.get("detail") or "")[:120]
+            problems.append(f"source {s.get('name')} is {s.get('state')}" + (f" ({why})" if why else ""))
+    for key, what in (("nodes", "nodes"), ("nodePools", "node pools")):
+        if not sections.get(key):
+            problems.append(f"the snapshot has no {what}")
+    return problems
+
+
+def chk_dashboard_sources(c: Ctx):
+    seen: dict = {"problems": ["never read"], "sources": 0, "nodes": 0, "pools": 0}
+
+    def healthy():
+        with PortForward(NS_PLATFORM, "svc/cluster-dashboard", 9090) as pf:
+            answers = {path: http("GET", f"{pf.base}{path}")
+                       for path in ("/api/v1/health/ready", "/api/v1/sources", "/api/v1/snapshot")}
+        failed = [f"{path} answered HTTP {code}" for path, (code, _b) in answers.items()
+                  if path != "/api/v1/health/ready" and code != 200]
+        if failed:
+            seen["problems"] = failed
+            return None
+        sources = json.loads(answers["/api/v1/sources"][1])
+        sections = json.loads(answers["/api/v1/snapshot"][1]).get("sections") or {}
+        seen.update(problems=dashboard_problems(answers["/api/v1/health/ready"][0], sources, sections),
+                    sources=len(sources), nodes=len(sections.get("nodes") or []), pools=len(sections.get("nodePools") or []))
+        return not seen["problems"] or None
+    try:
+        wait_for("every dashboard data source to report ok", healthy, DASHBOARD_SOURCES_TIMEOUT, 30)
+    except TimeoutError:
+        return False, "; ".join(seen["problems"])
+    return True, f"{seen['sources']} data sources ok; snapshot has {seen['nodes']} nodes and {seen['pools']} node pools"
+
+
+def scrape_problems(targets: list[dict]) -> list[str]:
+    """Scrape targets of the autoscaling Prometheus that are down. A target that
+    is down fails nothing by itself: LiteLLM's answered 401 for a month, and with
+    it the request rate that wakes an llm-d pool from zero never arrived."""
+    problems = [f"{(t.get('labels') or {}).get('job')} {t.get('scrapeUrl')} is {t.get('health')}"
+                + (f" ({(t.get('lastError') or '')[:120]})" if t.get("lastError") else "")
+                for t in targets if t.get("health") != "up"]
+    if not any((t.get("labels") or {}).get("job") == WAKE_FROM_ZERO_JOB for t in targets):
+        problems.append(f"no target for the job {WAKE_FROM_ZERO_JOB} (the request rate that wakes a pool from zero)")
+    return problems
+
+
+def chk_scrape_targets(c: Ctx):
+    seen: dict = {"problems": ["never read"], "jobs": []}
+
+    def all_up():
+        with PortForward(NS_INFERENCE, "deploy/autoscaling-prometheus", 9090) as pf:
+            code, body = http("GET", f"{pf.base}/api/v1/targets")
+        if code != 200:
+            seen["problems"] = [f"/api/v1/targets answered HTTP {code}"]
+            return None
+        targets = (json.loads(body).get("data") or {}).get("activeTargets") or []
+        seen.update(problems=scrape_problems(targets),
+                    jobs=[(t.get("labels") or {}).get("job") for t in targets])
+        return not seen["problems"] or None
+    try:
+        wait_for("every Prometheus scrape target to be up", all_up, SCRAPE_TARGETS_TIMEOUT, 15)
+    except TimeoutError:
+        return False, "; ".join(seen["problems"])
+    jobs = sorted(set(seen["jobs"]))
+    return True, f"{len(seen['jobs'])} scrape target{'' if len(seen['jobs']) == 1 else 's'} up ({', '.join(jobs)})"
+
+
 # KEDA autoscaling (see platform/config/kro/llmd-endpoint.yaml, ScaledObject):
 # the pool scales on sum(vllm:num_requests_waiting) / targetQueueDepth. A 0.5B
 # model on a GPU never queues under a light load, so the test edits the model
@@ -777,8 +856,11 @@ CHECKS: list[tuple[str, str, object, object]] = [
     ("inference", "vllmendpoint-gpu-chat",          chk_gpu_model_roundtrip, None),
     ("infra",     "karpenter-nodeclaim-ready",      chk_karpenter_nodeclaim, None),
     ("inference", "dcgm-gpu-metrics",               chk_dcgm_metrics,       None),
+    ("inference", "autoscaling-scrape-targets-up",  chk_scrape_targets,     None),
     ("inference", "llmdendpoint-routed-chat",       chk_llmd_roundtrip,     _only_llmd),
     ("inference", "keda-autoscales-llmd-on-queue-depth", chk_keda_autoscaling, _only_llmd),
+    # Last: on a new cluster its LiteLLM sources wait for the key job (see above).
+    ("gateway",   "cluster-dashboard-sources-ok",   chk_dashboard_sources,  None),
 ]
 
 DOMAINS = sorted({d for d, *_ in CHECKS})

@@ -9,7 +9,7 @@ here.
 |---|---|
 | `renovate.json` | Renovate config (read from the default branch), targets `main` only |
 | `COMPATIBILITY.md` | why the updates are grouped as they are: anchors, what waits, domains, how pins are found, coupling notes |
-| `harness/` | E2E harness: `e2e.py` (entry), `checks.py` (22 smoke checks; `e2e.py check` runs them alone against a running env), `sso.py`, `survival.py` (what an upgrade must not lose), `imagescan.py`, `leftovers.py` (preflight: leaked environments, Elastic IPs), `tfvars.py`, `versions.py`, `subject.py`, `common.py` |
+| `harness/` | E2E harness: `e2e.py` (entry), `checks.py` (24 smoke checks; `e2e.py check` runs them alone against a running env), `sso.py`, `survival.py` (what an upgrade must not lose), `imagescan.py`, `leftovers.py` (preflight: leaked environments, Elastic IPs), `tfvars.py`, `versions.py`, `subject.py`, `common.py` |
 | `tools/release.py` | the steps of a release: `cut` the branch, `notes` (release notes, manifest, validated-versions row), `finish` (merge, tag, GitHub Release), `publish-public` (one commit to the public repository) |
 | `tools/release_candidate.py` | decide what the factory does next: start a cycle, wait, retry, finish or abandon it (used by `release-candidate.yaml`) |
 | `tools/watchdog.py` | what goes wrong quietly: token expiry, disabled workflows, stalled cycles (used by `watchdog.yaml`) |
