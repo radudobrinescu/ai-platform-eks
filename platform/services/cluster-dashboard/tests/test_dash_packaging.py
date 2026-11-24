@@ -70,3 +70,32 @@ def test_every_package_file_is_shipped():
         on_disk = {f"scripts/{pkg}/{f}" for f in os.listdir(os.path.join(DASH, "scripts", pkg))
                    if f.endswith(".py")}
         assert on_disk <= shipped, f"not in kustomization.yaml: {sorted(on_disk - shipped)}"
+
+
+def test_every_watch_has_a_matching_rbac_rule():
+    """A watch the ClusterRole does not allow fails at run time, in the cluster,
+    with a 403 that no unit test sees. Cluster-scoped and all-namespace watches
+    need the ClusterRole; this checks those."""
+    import re
+
+    import yaml
+
+    from dashboard import config
+    from dashboard.app import cache_specs
+
+    here = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    with open(os.path.join(here, "manifests.yaml"), encoding="utf-8") as f:
+        docs = [d for d in yaml.safe_load_all(f) if d]
+    rules = next(d for d in docs if d["kind"] == "ClusterRole" and d["metadata"]["name"] == "cluster-dashboard")["rules"]
+    allowed = {(g, r) for rule in rules if {"list", "watch"} <= set(rule["verbs"])
+               for g in rule["apiGroups"] for r in rule["resources"]}
+    settings = config.load({"CLUSTER_NAME": "c", "AWS_REGION": "eu-central-1"})
+    missing = []
+    for name, path, *_ in cache_specs(settings):
+        m = re.fullmatch(r"/api(?:s/(?P<group>[^/]+))?/v[^/]+(?:/namespaces/[^/]+)?/(?P<resource>[^/]+)", path)
+        assert m, f"unexpected watch path for {name}: {path}"
+        if "/namespaces/" in path and (m.group("group") or "", m.group("resource")) not in allowed:
+            continue      # namespaced watches may be granted by a Role in that namespace
+        if (m.group("group") or "", m.group("resource")) not in allowed:
+            missing.append(f"{name}: {path}")
+    assert missing == []

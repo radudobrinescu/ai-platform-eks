@@ -107,3 +107,98 @@ def test_links_prefer_public_urls_and_skip_missing():
 ])
 def test_quantities(fn, raw, expected):
     assert fn(raw) == expected
+
+
+# ---------------------------------------------------------------------------
+# Karpenter node pools and node claims (Infrastructure view)
+# ---------------------------------------------------------------------------
+
+def _pool(name, *, limit=None, gpu=True, capacity=("spot", "on-demand"), not_in=(), workload="", gpu_in_use=None, nodes=None):
+    reqs = [{"key": "karpenter.sh/capacity-type", "operator": "In", "values": list(capacity)}]
+    if not_in:
+        reqs.append({"key": "karpenter.k8s.aws/instance-family", "operator": "NotIn", "values": list(not_in)})
+    spec = {"template": {"metadata": {"labels": {"workload-type": workload} if workload else {}},
+                         "spec": {"requirements": reqs,
+                                  "taints": [{"key": "nvidia.com/gpu", "effect": "NoSchedule"}] if gpu else []}}}
+    if limit is not None:
+        spec["limits"] = {"nvidia.com/gpu": str(limit)}
+    resources = {}
+    if gpu_in_use is not None:
+        resources["nvidia.com/gpu"] = str(gpu_in_use)
+    if nodes is not None:
+        resources["nodes"] = str(nodes)
+    return {"metadata": {"name": name}, "spec": spec, "status": {"resources": resources}}
+
+
+def test_nodepool_records_carry_limit_gpu_flag_and_what_the_pool_may_launch():
+    got = models.nodepool_records([
+        _pool("gpu-shared", limit=32, not_in=("g4dn", "g7", "g7e"), workload="gpu-shared", gpu_in_use=4, nodes=1),
+        _pool("default", gpu=False, capacity=("spot",)),
+        {"metadata": {"name": "bare"}},                       # no spec, no status: defaults, not a crash
+    ])
+    assert [p["name"] for p in got] == ["bare", "default", "gpu-shared"], "sorted by name"
+    shared = got[2]
+    assert shared == {"name": "gpu-shared", "isGpu": True, "gpuLimit": 32, "gpuStarted": 4, "nodes": 1,
+                      "capacityTypes": ["on-demand", "spot"], "excludedFamilies": ["g4dn", "g7", "g7e"],
+                      "workload": "gpu-shared"}
+    assert got[1]["isGpu"] is False and got[1]["gpuLimit"] is None and got[1]["capacityTypes"] == ["spot"]
+    assert got[0] == {"name": "bare", "isGpu": False, "gpuLimit": None, "gpuStarted": 0, "nodes": 0,
+                      "capacityTypes": [], "excludedFamilies": [], "workload": ""}
+
+
+def _claim(name, conditions, *, pool="gpu-shared", instance="g6.4xlarge", node="", deleting=False):
+    meta = {"name": name, "creationTimestamp": "2026-11-20T09:48:00Z",
+            "labels": {"karpenter.sh/nodepool": pool, "node.kubernetes.io/instance-type": instance,
+                       "topology.kubernetes.io/zone": "eu-central-1c", "karpenter.sh/capacity-type": "spot"}}
+    if deleting:
+        meta["deletionTimestamp"] = "2026-11-20T09:59:00Z"
+    return {"metadata": meta, "status": {"nodeName": node, "conditions": [
+        {"type": t, "status": s, **({"message": msg} if msg else {})} for t, s, msg in conditions]}}
+
+
+def test_nodeclaim_records_say_how_far_a_node_got_and_what_it_waits_for():
+    ready = _claim("ok", [("Launched", "True", ""), ("Registered", "True", ""), ("Initialized", "True", ""),
+                          ("Ready", "True", "")], node="ip-1")
+    stuck = _claim("stuck", [("Launched", "True", ""), ("Registered", "True", ""),
+                             ("Initialized", "Unknown", 'Resource "nvidia.com/gpu" was requested but not registered'),
+                             ("Drifted", "True", ""), ("Ready", "Unknown", "Initialized=Unknown")],
+                   instance="g7.2xlarge", node="ip-2")
+    refused = _claim("refused", [("Launched", "False", "creating instance, insufficient capacity")], instance="")
+    got = {c["name"]: c for c in models.nodeclaim_records([stuck, refused, ready, _claim("gone", [], deleting=True)])}
+    assert list(got) == ["gone", "ok", "refused", "stuck"]
+    assert got["ok"]["ready"] and got["ok"]["waitingOn"] == "" and got["ok"]["node"] == "ip-1"
+    s = got["stuck"]
+    assert (s["launched"], s["registered"], s["initialized"], s["ready"], s["drifted"]) == (True, True, False, False, True)
+    assert s["waitingOn"] == "Initialized" and "not registered" in s["message"]
+    assert (s["pool"], s["instance"], s["zone"], s["capacity"]) == ("gpu-shared", "g7.2xlarge", "eu-central-1c", "spot")
+    assert s["created"] == "2026-11-20T09:48:00Z"
+    r = got["refused"]
+    assert not r["launched"] and r["waitingOn"] == "Launched" and "insufficient capacity" in r["message"]
+    assert got["gone"]["deleting"] is True
+
+
+def test_the_karpenter_projection_keeps_what_the_records_need():
+    """The generic projection drops labels and deletionTimestamp; a node claim's
+    pool, instance type, zone and capacity type are labels."""
+    from dashboard import k8s
+    raw = _claim("stuck", [("Launched", "True", ""), ("Registered", "True", ""), ("Initialized", "Unknown", "no gpu")],
+                 instance="g7.2xlarge", deleting=True)
+    raw["metadata"]["managedFields"] = [{"manager": "karpenter"}]
+    projected = k8s.project_karpenter(raw)
+    assert "managedFields" not in projected["metadata"]
+    rec = models.nodeclaim_records([projected])[0]
+    assert (rec["pool"], rec["instance"], rec["deleting"], rec["waitingOn"]) == ("gpu-shared", "g7.2xlarge", True, "Initialized")
+    pool = models.nodepool_records([k8s.project_karpenter(_pool("gpu-shared", limit=32, workload="gpu-shared"))])[0]
+    assert (pool["gpuLimit"], pool["isGpu"], pool["workload"]) == (32, True, "gpu-shared")
+
+
+def test_compute_publishes_node_pools_and_claims_and_copes_without_karpenter():
+    from dashboard import config, derive
+    settings = config.load({"CLUSTER_NAME": "c", "AWS_REGION": "eu-central-1"})
+    view = {"nodepools": [_pool("gpu-shared", limit=32)],
+            "nodeclaims": [_claim("a", [("Ready", "True", "")])]}
+    sections, _ = derive.compute(view, {}, settings)
+    assert [p["name"] for p in sections["nodePools"]] == ["gpu-shared"]
+    assert [c["name"] for c in sections["nodeClaims"]] == ["a"]
+    sections, _ = derive.compute({}, {}, settings)            # Karpenter not installed: the caches stay empty
+    assert sections["nodePools"] == [] and sections["nodeClaims"] == []

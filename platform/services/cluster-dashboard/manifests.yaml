@@ -58,6 +58,11 @@ rules:
   # by name) — granted via the cluster-dashboard-config Role below, NOT here.
   # Keeping configmaps out of this ClusterRole stops the dashboard from reading
   # every ConfigMap in every namespace (kube-system's aws-auth, tenant config…).
+  # Read Karpenter NodePools (also the ones with no node, and their limits) and
+  # NodeClaims (how far a node got on its way in) for the Infrastructure view.
+  - apiGroups: ["karpenter.sh"]
+    resources: ["nodepools", "nodeclaims"]
+    verbs: ["list", "watch"]
   # Read ArgoCD Applications for the Health view's GitOps sync status.
   - apiGroups: ["argoproj.io"]
     resources: ["applications"]

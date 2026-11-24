@@ -109,8 +109,8 @@ def test_hostile_values_are_always_escaped():
     out = render(hostile_sections(), [hostile(INVESTIGATION)], search="x-pwn")
     written = out["written"]
     views = {w["id"] for w in written}
-    assert {"kpis", "models-body", "teams-grid", "cost-by-user", "infra-pools", "health-alerts", "drawer",
-            "q-res", "src-pop", "degraded-banner"} <= views
+    assert {"kpis", "models-body", "teams-grid", "cost-by-user", "infra-attn", "infra-gpu", "infra-platform",
+            "infra-nodepools", "health-alerts", "drawer", "q-res", "src-pop", "degraded-banner"} <= views
     for w in written:
         html = w["html"]
         assert "<x-pwn" not in html, f"unescaped value in #{w['id']}"
@@ -127,6 +127,62 @@ def test_plain_values_render_unchanged():
     out = render(store_sections()[1])
     models = next(w["html"] for w in out["written"] if w["id"] == "models-body")
     assert 'data-model="qwen2-5-3b-instruct"' in models and ">qwen2-5-3b-instruct<" in models
+
+
+# ---------------------------------------------------------------------------
+# Infrastructure view
+# ---------------------------------------------------------------------------
+
+def infra_panels(sections):
+    out = render(sections)
+    return {w["id"]: w["html"] for w in out["written"] if w["id"].startswith("infra-")}
+
+
+def test_infra_shows_who_holds_each_gpu_slot_and_what_is_free():
+    """The old view drew one bar per slot with the node's utilisation, so one
+    model on a shared GPU looked like four idle GPUs."""
+    _, sections = store_sections()
+    gpu = infra_panels(sections)["infra-gpu"]
+    assert '<b class="m-id" style="color:var(--text)">gpu-inference</b> · 1 node · 1 of 1 GPUs in use · none free' in gpu
+    assert 'class="gs used"' in gpu and "<b>qwen2-5-3b-instruct</b>" in gpu and "/hr</small>" in gpu
+    assert "1 of 1 GPUs in use. Full." in gpu
+
+    shared = dict(sections, nodes=[dict(n, pool="gpu-shared", gpu=4) if n["gpu"] else n for n in sections["nodes"]])
+    gpu = infra_panels(shared)["infra-gpu"]
+    assert gpu.count('class="gs free"') == 3 and gpu.count('class="gs used"') == 1
+    assert "1 of 4 slices in use" in gpu and "<b>3 more small models fit</b> here at no extra cost" in gpu
+
+
+def test_infra_lists_pools_that_have_no_node_with_their_limit():
+    _, sections = store_sections()
+    pools = infra_panels(sections)["infra-nodepools"]
+    row = pools[pools.index(">gpu-shared<"):]
+    row = row[:row.index("</tr>")]
+    assert "No nodes. Starts one when a model needs it." in row and "0 of 32 slices started" in row
+    assert "g4dn, g7, g7e" in row, "the instance families the pool refuses"
+    assert ">managed node group<" in pools and "Whole cluster, nodes only" in pools
+
+
+def test_infra_needs_attention_names_a_node_that_joined_without_its_gpu():
+    """The case the release tests hit: Karpenter does not replace such a node."""
+    _, sections = store_sections()
+    attn = infra_panels(sections)["infra-attn"]
+    assert '<span class="stag crit">Problem</span>' in attn and "never became ready" in attn
+    assert "kubectl delete nodeclaim gpu-shared-x2bfn" in attn and ">Copy command<" in attn
+    assert "The cloud had no capacity for a node" in attn, "Karpenter's capacity events"
+    assert "Show pool" not in attn and "Open node" not in attn
+    calm = infra_panels(dict(sections, nodeClaims=[], provisioning=[], nodeAlerts=[], pods=[], nodes=[]))
+    assert "Nothing needs attention" in calm["infra-attn"]
+    assert "No GPU nodes are running, which costs nothing" in calm["infra-gpu"]
+
+
+def test_infra_puts_a_gpu_pool_node_without_a_gpu_under_gpu_nodes():
+    _, sections = store_sections()
+    node = next(n for n in sections["nodes"] if n["gpu"])
+    broken = dict(sections, nodes=[dict(n, gpu=0) if n is node else n for n in sections["nodes"]])
+    panels = infra_panels(broken)
+    assert node["name"].split(".")[0] in panels["infra-gpu"] and "no GPU reported by this node" in panels["infra-gpu"]
+    assert node["name"].split(".")[0] not in panels["infra-platform"]
 
 
 def test_page_builds_the_same_document_as_data_json():

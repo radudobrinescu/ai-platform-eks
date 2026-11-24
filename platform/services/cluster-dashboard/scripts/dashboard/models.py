@@ -436,6 +436,80 @@ def attach_scale(models: list[dict], autoscaling: list[dict]) -> None:
             m["replicas"] = sum(x["desired"] for x in sc)
 
 
+GPU_RESOURCE = "nvidia.com/gpu"
+POOL_LABEL = "karpenter.sh/nodepool"
+CAPACITY_TYPE_KEY = "karpenter.sh/capacity-type"
+INSTANCE_FAMILY_KEY = "karpenter.k8s.aws/instance-family"
+LAUNCH_STAGES = ("Launched", "Registered", "Initialized")
+
+
+def _int_or(value, default):
+    try:
+        return int(str(value))
+    except (TypeError, ValueError):
+        return default
+
+
+def _requirement_values(requirements: list[dict], key: str, operator: str) -> list[str]:
+    return sorted({v for r in requirements if r.get("key") == key and r.get("operator") == operator
+                   for v in r.get("values") or []})
+
+
+def nodepool_records(items: list[dict]) -> list[dict]:
+    """Karpenter NodePools as the Infrastructure view shows them, including
+    pools that have no node right now: the GPU limit, how much of it is started,
+    what the pool may buy, and the instance families it refuses."""
+    out = []
+    for pool in items:
+        spec, status = pool.get("spec") or {}, pool.get("status") or {}
+        template = spec.get("template") or {}
+        tspec = template.get("spec") or {}
+        requirements = tspec.get("requirements") or []
+        used = status.get("resources") or {}
+        out.append({
+            "name": (pool.get("metadata") or {}).get("name", ""),
+            "isGpu": any(t.get("key") == GPU_RESOURCE for t in tspec.get("taints") or []),
+            "gpuLimit": _int_or((spec.get("limits") or {}).get(GPU_RESOURCE), None),
+            "gpuStarted": _int_or(used.get(GPU_RESOURCE), 0),
+            "nodes": _int_or(used.get("nodes"), 0),
+            "capacityTypes": _requirement_values(requirements, CAPACITY_TYPE_KEY, "In"),
+            "excludedFamilies": _requirement_values(requirements, INSTANCE_FAMILY_KEY, "NotIn"),
+            "workload": ((template.get("metadata") or {}).get("labels") or {}).get("workload-type", ""),
+        })
+    return sorted(out, key=lambda p: p["name"])
+
+
+def nodeclaim_records(items: list[dict]) -> list[dict]:
+    """Karpenter NodeClaims with how far each got (launched, registered,
+    initialized) and what it waits for. A claim that registered and never
+    initializes is a node that joined without what it was started for (a GPU
+    that is not reported): Karpenter does not replace it by itself."""
+    out = []
+    for claim in items:
+        meta, status = claim.get("metadata") or {}, claim.get("status") or {}
+        labels = meta.get("labels") or {}
+        conditions = {c.get("type"): c for c in status.get("conditions") or []}
+        done = {stage: (conditions.get(stage) or {}).get("status") == "True" for stage in LAUNCH_STAGES}
+        waiting = next((stage for stage in LAUNCH_STAGES if stage in conditions and not done[stage]), "")
+        blocker = conditions.get(waiting) or {}
+        out.append({
+            "name": meta.get("name", ""),
+            "pool": labels.get(POOL_LABEL, ""),
+            "instance": labels.get("node.kubernetes.io/instance-type", ""),
+            "zone": labels.get("topology.kubernetes.io/zone", ""),
+            "capacity": labels.get(CAPACITY_TYPE_KEY, ""),
+            "created": meta.get("creationTimestamp", ""),
+            "node": status.get("nodeName", ""),
+            "ready": (conditions.get("Ready") or {}).get("status") == "True",
+            "drifted": (conditions.get("Drifted") or {}).get("status") == "True",
+            "deleting": bool(meta.get("deletionTimestamp")),
+            "launched": done["Launched"], "registered": done["Registered"], "initialized": done["Initialized"],
+            "waitingOn": waiting,
+            "message": (blocker.get("message") or blocker.get("reason") or "")[:240],
+        })
+    return sorted(out, key=lambda c: c["name"])
+
+
 def provisioning_warnings(nodeclaim_events: list[dict]) -> list[dict]:
     """Up to 5 distinct Karpenter capacity warnings (GPU provisioning)."""
     out, seen = [], set()
