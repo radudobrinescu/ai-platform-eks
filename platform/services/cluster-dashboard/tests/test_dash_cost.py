@@ -47,6 +47,55 @@ def test_malformed_price_configmap_is_an_error_for_the_caller():
         cost.merge_prices("{not json")
 
 
+@pytest.mark.parametrize("table,problem", [
+    ("[]", "expected an object of regions, got list"),
+    ('"eu-west-1"', "expected an object of regions, got str"),
+    ('{"eu-west-1": 3}', "eu-west-1: expected an object of instance prices, got int"),
+    ('{"eu-west-1": ["g5.xlarge"]}', "eu-west-1: expected an object of instance prices, got list"),
+    ('{"eu-west-1": {"g5.xlarge": null}}', "eu-west-1/g5.xlarge: price must be a number"),
+    ('{"eu-west-1": {"g5.xlarge": {"usd": 1}}}', "eu-west-1/g5.xlarge: price must be a number"),
+    ('{"eu-west-1": {"g5.xlarge": true}}', "eu-west-1/g5.xlarge: price must be a number"),
+    ('{"eu-west-1": {"g5.xlarge": "cheap"}}', "eu-west-1/g5.xlarge: price must be a number"),
+    ('{"eu-west-1": {"g5.xlarge": NaN}}', "eu-west-1/g5.xlarge: price must be a finite number >= 0"),
+    ('{"eu-west-1": {"g5.xlarge": -1}}', "eu-west-1/g5.xlarge: price must be a finite number >= 0"),
+])
+def test_wrong_shape_price_configmap_is_an_error_for_the_caller(table, problem):
+    """Valid JSON of the wrong shape is reported like malformed JSON: with a
+    ValueError that says what is wrong, never an AttributeError or TypeError."""
+    with pytest.raises(cost.InvalidPriceTable, match=problem) as raised:
+        cost.merge_prices(table)
+    assert isinstance(raised.value, ValueError), "callers catch ValueError"
+
+
+def test_price_configmap_overrides_one_instance_and_keeps_the_rest():
+    merged = cost.merge_prices(json.dumps({"eu-central-1": {"m6g.large": "0.5", "x9.huge": 2}}))
+    assert merged["eu-central-1"]["m6g.large"] == 0.5 and merged["eu-central-1"]["x9.huge"] == 2.0
+    assert merged["eu-central-1"]["m5.large"] == cost.DEFAULT_PRICES_BY_REGION["eu-central-1"]["m5.large"]
+    assert "x9.huge" not in cost.DEFAULT_PRICES_BY_REGION["eu-central-1"], "the shipped table is not modified"
+    assert cost.merge_prices("") == cost.merge_prices(None) == cost.DEFAULT_PRICES_BY_REGION
+
+
+@pytest.mark.parametrize("table", ["{not json", "[]", '{"eu-central-1": 3}', '{"eu-central-1": {"m6g.large": null}}'])
+def test_invalid_price_configmap_falls_back_to_the_shipped_table(table, caplog):
+    """The dashboard keeps deriving every section; the problem is a note in
+    the status section and one log line, not a stopped derive loop."""
+    from dash_testlib import fixture_app
+    app = fixture_app()
+    app.derive_once()
+    _, good = app.store.get()
+    app.caches["cm-node-prices"]._items = {"ai-platform/cluster-dashboard-node-prices": {
+        "metadata": {"name": "cluster-dashboard-node-prices"}, "data": {"prices.json": table}}}
+    with caplog.at_level("WARNING", logger="dashboard.app"):
+        app.derive_once()
+        app.derive_once()
+    _, sections = app.store.get()
+    assert sections["cost"] == good["cost"] and sections["cost"]["priceSource"] == "table"
+    (note,) = sections["status"]["notes"]
+    assert note.startswith("cluster-dashboard-node-prices: invalid prices.json (")
+    logged = [r for r in caplog.records if r.getMessage() == "derive.notes"]
+    assert len(logged) == 1 and logged[0].notes == [note], "logged once, not on every recompute"
+
+
 def test_live_prices_win_and_are_reported():
     out = _cost([_node("m6g.large")], live={"m6g.large": 0.1})
     assert (out["hourly"], out["priceSource"]) == (0.1, "aws-price-list")

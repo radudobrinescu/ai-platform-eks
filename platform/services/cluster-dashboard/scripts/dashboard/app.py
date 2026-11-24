@@ -74,6 +74,7 @@ class App:
         self._inputs_lock = threading.Lock()
         self._yaml_load = yaml_load
         self._derive_tick = clock()
+        self._logged_notes: list[str] = []
         self.caches = {name: WatchCache(name, path, proj, query=q, on_change=lambda _k: self.dirty.set(),
                                         retention_s=ret, max_items=mx, clock=clock)
                        for name, path, proj, q, ret, mx in cache_specs(settings)}
@@ -276,6 +277,10 @@ class App:
     def derive_once(self) -> None:
         self._derive_tick = self._clock()
         sections, notes = derive.compute(self.view(), self.inputs(), self.s, self._yaml_load)
+        if notes != self._logged_notes:      # once per change, not on every recompute
+            if notes:
+                log.warning("derive.notes", extra={"notes": notes})
+            self._logged_notes = notes
         statuses = self.statuses()
         by = {st.name: st.state for st in statuses}
         kube_ok = by["kubernetes"] in ("ok", "stale")
