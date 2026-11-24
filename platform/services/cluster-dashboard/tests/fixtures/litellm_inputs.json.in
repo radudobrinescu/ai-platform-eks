@@ -1,0 +1,65 @@
+{
+ "_comment": "Inputs of the two LiteLLM sources as dashboard.litellm builds them: litellm_api from the REST API (fetch_api), litellm_traffic from the per-pod metrics (Traffic.figures).",
+ "litellm_api": {
+  "byTeam": [
+   [
+    "search",
+    0.12
+   ]
+  ],
+  "byUser": [
+   {
+    "requests": 7,
+    "spend": 0.0311,
+    "tokens": 5100,
+    "user": "developer@example.com"
+   }
+  ],
+  "health": {
+   "qwen2-5-3b-instruct": {
+    "status": "healthy"
+   }
+  },
+  "teams": [
+   {
+    "budget": 0.42,
+    "failed": 1,
+    "id": "t1",
+    "keys": 1,
+    "limit": 50.0,
+    "name": "search",
+    "reqsToday": 18,
+    "spendToday": 0.12,
+    "tokens": 9000
+   }
+  ],
+  "trend": [
+   [
+    "2026-11-19",
+    0.3
+   ],
+   [
+    "2026-11-20",
+    0.42
+   ]
+  ]
+ },
+ "litellm_traffic": {
+  "nova-lite": {
+   "errPct": 2.5,
+   "p50": 610,
+   "p95": 900,
+   "rpm": 3.0,
+   "spendHr": 0.15,
+   "tps": 40.0
+  },
+  "qwen2-5-3b-instruct": {
+   "errPct": 0.0,
+   "p50": 420,
+   "p95": 1300,
+   "rpm": 12.4,
+   "spendHr": 0.0,
+   "tps": 85.2
+  }
+ }
+}

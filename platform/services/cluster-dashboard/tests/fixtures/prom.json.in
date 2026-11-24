@@ -1,0 +1,26 @@
+{
+ "vllm:inter_token_latency_seconds": [
+  {
+   "metric": {
+    "pool": "gemma-12b",
+    "role": "decode"
+   },
+   "value": [
+    0,
+    "0.031"
+   ]
+  }
+ ],
+ "vllm:time_to_first_token_seconds": [
+  {
+   "metric": {
+    "pool": "gemma-12b",
+    "role": "decode"
+   },
+   "value": [
+    0,
+    "0.85"
+   ]
+  }
+ ]
+}

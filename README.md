@@ -60,7 +60,11 @@ tracing apply uniformly - including the optional **llm-d** scale tier
 
 ### Custom Dashboard
 
-![Cluster dashboard - live topology of nodes, GPU slots, and deployed models](docs/img/cluster-dashboard.png)
+![Cluster dashboard, Infrastructure view - GPU nodes with their slots and the models on them, platform nodes, node pools](docs/img/cluster-dashboard.png)
+
+A live console with six views (Overview, Models, Teams, Cost, Infrastructure, Health).
+It updates as the cluster changes and shows the state of each data source it reads, so
+a missing number is never mistaken for a zero.
 
 ## Prerequisites
 
@@ -399,8 +403,10 @@ GPU-optimized Karpenter NodePools, and the self-service AI platform layer.
 ## License
 
 This sample is licensed under **MIT-0** (see [LICENSE](LICENSE)). It does not
-vendor any third-party source; all third-party components are pulled at deploy
+vendor any third-party source code; third-party components are pulled at deploy
 time from their official registries/charts and remain under their own licenses.
+The one exception is two font files the cluster dashboard serves, redistributed
+under the SIL Open Font License 1.1.
 See [THIRD-PARTY-LICENSES](THIRD-PARTY-LICENSES) for attribution.
 
 > Although this repository is released under the MIT-0 license, its chat-UI

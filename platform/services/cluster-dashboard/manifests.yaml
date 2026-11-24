@@ -29,42 +29,48 @@ kind: ClusterRole
 metadata:
   name: cluster-dashboard
 rules:
+  # list + watch: the backend keeps watch caches of what it shows.
   - apiGroups: [""]
     resources: ["nodes", "pods"]
-    verbs: ["get", "list"]
+    verbs: ["get", "list", "watch"]
   # Deployment diagnostics: pod/NodeClaim events (scheduling + Karpenter
   # capacity failures) and pod log tails (model-loading progress).
   - apiGroups: [""]
     resources: ["events"]
-    verbs: ["get", "list"]
+    verbs: ["get", "list", "watch"]
   - apiGroups: [""]
     resources: ["pods/log"]
     verbs: ["get"]
   - apiGroups: ["kro.run"]
     resources: ["vllmendpoints", "llmdendpoints", "llmddisaggendpoints"]
-    verbs: ["list"]
+    verbs: ["list", "watch"]
   # Bedrock models enrolled via `platformctl new-model --source bedrock` are
   # BedrockModel CRs (not litellm-config entries) — list them for the model views.
   - apiGroups: ["bedrock.ai-platform"]
     resources: ["bedrockmodels"]
-    verbs: ["list"]
+    verbs: ["list", "watch"]
   # Autoscaling visibility: read the KEDA-managed HPAs (current/desired/min/max +
   # the driving metric value/target) so the dashboard shows per-pool scaling.
   - apiGroups: ["autoscaling"]
     resources: ["horizontalpodautoscalers"]
-    verbs: ["get", "list"]
+    verbs: ["get", "list", "watch"]
   # ConfigMap reads are namespaced (litellm-config / node-prices in ai-platform,
   # by name) — granted via the cluster-dashboard-config Role below, NOT here.
   # Keeping configmaps out of this ClusterRole stops the dashboard from reading
   # every ConfigMap in every namespace (kube-system's aws-auth, tenant config…).
+  # Read Karpenter NodePools (also the ones with no node, and their limits) and
+  # NodeClaims (how far a node got on its way in) for the Infrastructure view.
+  - apiGroups: ["karpenter.sh"]
+    resources: ["nodepools", "nodeclaims"]
+    verbs: ["list", "watch"]
   # Read ArgoCD Applications for the Health view's GitOps sync status.
   - apiGroups: ["argoproj.io"]
     resources: ["applications"]
-    verbs: ["get", "list"]
+    verbs: ["get", "list", "watch"]
   # Read the shared ALB ingress to discover its hostname for the Quick Links panel.
   - apiGroups: ["networking.k8s.io"]
     resources: ["ingresses"]
-    verbs: ["get", "list"]
+    verbs: ["get", "list", "watch"]
   # Actual node/pod usage from metrics-server for the Infrastructure usage view.
   - apiGroups: ["metrics.k8s.io"]
     resources: ["nodes", "pods"]
@@ -86,7 +92,8 @@ roleRef:
 # Namespaced ConfigMap read (ai-platform only): the dashboard fetches
 # litellm-config (Bedrock model_list) and node-prices by name from ai-platform.
 # Scoped to a Role here instead of the cluster-wide ClusterRole above so it can't
-# read ConfigMaps in other namespaces.
+# read ConfigMaps in other namespaces. The one Secret it reads is its own
+# read-only LiteLLM key, by name (written by the CronJob at the end of this file).
 apiVersion: rbac.authorization.k8s.io/v1
 kind: Role
 metadata:
@@ -95,7 +102,11 @@ metadata:
 rules:
   - apiGroups: [""]
     resources: ["configmaps"]
-    verbs: ["get", "list"]
+    verbs: ["get", "list", "watch"]
+  - apiGroups: [""]
+    resources: ["secrets"]
+    verbs: ["get"]
+    resourceNames: ["cluster-dashboard-litellm-key"]
 ---
 apiVersion: rbac.authorization.k8s.io/v1
 kind: RoleBinding
@@ -143,10 +154,13 @@ spec:
           args:
             - |
               set -eu
-              # psycopg is optional from the backend's POV — if pip fails
-              # (e.g. air-gapped), the dashboard still serves the topology
-              # view, just without approvals.
-              pip install --no-cache-dir --target=/pydeps psycopg[binary]==3.3.9 pyyaml==6.0.3 'boto3>=1.34,<2' 'pyjwt[crypto]==2.15.1' || true
+              # All Kubernetes data needs these packages, so a failed install
+              # (no PyPI access, for example) fails this init container: the
+              # kubelet retries it with backoff, the pod is not Ready until
+              # it succeeds, and during a rollout the previous pod keeps
+              # serving. pip's error is in this container's log. Exact pins
+              # only, kept on this line for automated dependency updates.
+              pip install --no-cache-dir --target=/pydeps kubernetes==37.0.3 psycopg[binary]==3.3.9 pyyaml==6.0.3 boto3==1.44.10 'pyjwt[crypto]==2.15.1'
           volumeMounts:
             - name: pydeps
               mountPath: /pydeps
@@ -163,8 +177,9 @@ spec:
             - name: http
               containerPort: 8080
           env:
+            # /opt/lib holds the shared `pha` package (agent DB and Job specs).
             - name: PYTHONPATH
-              value: /pydeps
+              value: /pydeps:/opt/lib
             - name: PYTHONUNBUFFERED
               value: "1"
             # platform-health-agent integration. These are SAFE to set even when the
@@ -269,8 +284,14 @@ spec:
             - name: html
               mountPath: /html
               readOnly: true
+            - name: fonts
+              mountPath: /fonts
+              readOnly: true
             - name: pydeps
               mountPath: /pydeps
+              readOnly: true
+            - name: pha-lib
+              mountPath: /opt/lib
               readOnly: true
             - name: tmp
               mountPath: /tmp
@@ -281,16 +302,26 @@ spec:
             limits:
               cpu: "300m"
               memory: "256Mi"
+          # live: fails when a data loop stopped or no Kubernetes data arrived
+          # for 10 min (a restart fixes both). The live-price loop is
+          # excepted: prices are optional, so a stuck lookup only shows in
+          # the source status. ready: first Kubernetes list done. Outages of
+          # LiteLLM, DCGM, Prometheus or the AWS Price List never fail a
+          # probe: they show as source status in the UI.
           livenessProbe:
             httpGet:
-              path: /data.json
+              path: /api/v1/health/live
               port: 8080
-            initialDelaySeconds: 10
+            initialDelaySeconds: 20
+            periodSeconds: 20
+            timeoutSeconds: 5
+            failureThreshold: 3
           readinessProbe:
             httpGet:
-              path: /data.json
+              path: /api/v1/health/ready
               port: 8080
             initialDelaySeconds: 5
+            periodSeconds: 5
           securityContext:
             allowPrivilegeEscalation: false
             runAsNonRoot: true
@@ -300,11 +331,44 @@ spec:
         - name: backend-script
           configMap:
             name: cluster-dashboard-backend
+            items:
+              - { key: backend.py, path: backend.py }
+              - { key: dashboard____init__.py, path: dashboard/__init__.py }
+              - { key: dashboard__api.py, path: dashboard/api.py }
+              - { key: dashboard__app.py, path: dashboard/app.py }
+              - { key: dashboard__approvals.py, path: dashboard/approvals.py }
+              - { key: dashboard__auth.py, path: dashboard/auth.py }
+              - { key: dashboard__config.py, path: dashboard/config.py }
+              - { key: dashboard__cost.py, path: dashboard/cost.py }
+              - { key: dashboard__dcgm.py, path: dashboard/dcgm.py }
+              - { key: dashboard__deps.py, path: dashboard/deps.py }
+              - { key: dashboard__derive.py, path: dashboard/derive.py }
+              - { key: dashboard__k8s.py, path: dashboard/k8s.py }
+              - { key: dashboard__litellm.py, path: dashboard/litellm.py }
+              - { key: dashboard__models.py, path: dashboard/models.py }
+              - { key: dashboard__pricing.py, path: dashboard/pricing.py }
+              - { key: dashboard__prom.py, path: dashboard/prom.py }
+              - { key: dashboard__snapshot.py, path: dashboard/snapshot.py }
+              - { key: dashboard__sources.py, path: dashboard/sources.py }
         - name: html
           configMap:
             name: cluster-dashboard-html
+        - name: fonts
+          configMap:
+            name: cluster-dashboard-fonts
         - name: pydeps
           emptyDir: {}
+        # The modules of the shared `pha` package that the dashboard imports,
+        # from the hashed backend ConfigMap (not the agent's fixed-name one),
+        # so a change to them restarts this pod.
+        - name: pha-lib
+          configMap:
+            name: cluster-dashboard-backend
+            items:
+              - { key: pha____init__.py, path: pha/__init__.py }
+              - { key: pha__db.py, path: pha/db.py }
+              - { key: pha__jobs.py, path: pha/jobs.py }
+              - { key: pha__log.py, path: pha/log.py }
         - name: tmp
           emptyDir: {}
 ---
@@ -359,3 +423,104 @@ spec:
                 name: oauth2-proxy
                 port:
                   number: 4180
+---
+# Read-only LiteLLM key for the dashboard. Every 15 minutes this CronJob checks
+# that Secret cluster-dashboard-litellm-key holds an active key of LiteLLM user
+# cluster-dashboard (role proxy_admin_viewer: GET routes only, no model calls)
+# and, if not, creates the user and a new key (scripts/litellm_viewer_key.py).
+# The master key comes in as an environment variable, so this ServiceAccount
+# needs no RBAC on litellm-secrets. Until the first run (up to 15 minutes after
+# install) the dashboard shows the LiteLLM sources as "viewer key not created yet".
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: cluster-dashboard-litellm-key
+  namespace: ai-platform
+automountServiceAccountToken: false
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: cluster-dashboard-litellm-key
+  namespace: ai-platform
+rules:
+  # create is not name-restrictable; get/patch are limited to the key Secret.
+  - apiGroups: [""]
+    resources: ["secrets"]
+    verbs: ["create"]
+  - apiGroups: [""]
+    resources: ["secrets"]
+    verbs: ["get", "patch"]
+    resourceNames: ["cluster-dashboard-litellm-key"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: cluster-dashboard-litellm-key
+  namespace: ai-platform
+subjects:
+  - kind: ServiceAccount
+    name: cluster-dashboard-litellm-key
+    namespace: ai-platform
+roleRef:
+  kind: Role
+  name: cluster-dashboard-litellm-key
+  apiGroup: rbac.authorization.k8s.io
+---
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: cluster-dashboard-litellm-key
+  namespace: ai-platform
+spec:
+  schedule: "*/15 * * * *"
+  concurrencyPolicy: Forbid
+  successfulJobsHistoryLimit: 1
+  failedJobsHistoryLimit: 1
+  jobTemplate:
+    spec:
+      backoffLimit: 2
+      activeDeadlineSeconds: 300
+      template:
+        metadata:
+          labels:
+            app: cluster-dashboard
+            ai-platform/job: litellm-viewer-key
+          annotations:
+            instrumentation.opentelemetry.io/inject-python: "false"
+        spec:
+          restartPolicy: Never
+          serviceAccountName: cluster-dashboard-litellm-key
+          automountServiceAccountToken: true
+          securityContext:
+            runAsNonRoot: true
+            runAsUser: 65532
+            seccompProfile: { type: RuntimeDefault }
+          containers:
+            - name: viewer-key
+              image: python:3.15-slim
+              command: ["python3", "/app/litellm_viewer_key.py"]
+              env:
+                - name: PYTHONDONTWRITEBYTECODE
+                  value: "1"
+                - name: LITELLM_MASTER_KEY
+                  valueFrom: { secretKeyRef: { name: litellm-secrets, key: master-key } }
+              volumeMounts:
+                - name: script
+                  mountPath: /app
+                  readOnly: true
+              resources:
+                requests:
+                  cpu: 10m
+                  memory: 32Mi
+                limits:
+                  cpu: 100m
+                  memory: 64Mi
+              securityContext:
+                allowPrivilegeEscalation: false
+                readOnlyRootFilesystem: true
+                capabilities: { drop: ["ALL"] }
+          volumes:
+            - name: script
+              configMap:
+                name: cluster-dashboard-litellm-key-script

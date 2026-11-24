@@ -4,8 +4,14 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>AI Platform — Console</title>
-<link rel="preconnect" href="https://fonts.googleapis.com">
-<link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;600;700&family=Manrope:wght@400;500;600;700;800&display=swap" rel="stylesheet">
+<link rel="icon" href="data:,">
+<style>
+/* Fonts are served by the dashboard (/fonts/, SIL Open Font License): the page
+   makes no request outside the dashboard's origin. Latin subsets of the
+   variable fonts; other characters use the fallbacks in font-family. */
+@font-face{font-family:'Manrope';font-style:normal;font-weight:400 800;font-display:swap;src:url(/fonts/manrope-latin.woff2) format('woff2')}
+@font-face{font-family:'JetBrains Mono';font-style:normal;font-weight:400 700;font-display:swap;src:url(/fonts/jetbrains-mono-latin.woff2) format('woff2')}
+</style>
 <style>
 :root{
   --bg:#0f1118; --surface:#171a26; --surface-2:#1e2130; --surface-hover:#242838;
@@ -186,6 +192,42 @@ tbody tr:hover{background:var(--surface-2)}
 .gs.used{background:linear-gradient(135deg,#7c3aed,#6366f1);color:#fff}
 .gs.free{background:rgba(167,139,250,.06);border:1px dashed rgba(167,139,250,.25);color:var(--text-muted)}
 .util{font-size:10px;color:var(--text-muted);font-family:var(--mono)}
+/* Infrastructure view */
+.infra-tools{display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin:22px 0 -6px}
+.infra-q{flex:1;min-width:220px;max-width:460px;background:var(--surface);border:1px solid var(--border);border-radius:var(--r-sm);padding:8px 11px;color:var(--text);font-family:var(--font);font-size:12px;outline:none}
+.infra-q:focus{border-color:var(--accent)}
+.infra-card{padding:4px 6px}
+.infra-card table td,.infra-card table th{padding-left:10px;padding-right:10px}
+.infra-card th{padding-top:11px}
+.infra-card th.sort{cursor:pointer}.infra-card th.sort.on{color:var(--text)}
+.infra-card tr.grp td{background:var(--surface-2);font-size:11.5px;color:var(--text-2);padding-top:8px;padding-bottom:8px;cursor:default}
+.infra-card tr.grp:hover{background:none}
+.infra-card tr.exp td{background:var(--bg);cursor:default;padding:12px 14px 14px}
+.infra-card tr.exp:hover{background:none}
+.infra-card tr.hot td:first-child{box-shadow:inset 3px 0 0 var(--amber)}
+.infra-card .nolink{cursor:default}
+.infra-empty{padding:12px 10px;color:var(--text-2);font-size:12.5px}
+.nlink{background:none;border:none;padding:0;color:var(--text);font-family:var(--mono);font-size:12px;font-weight:700;cursor:pointer}
+.nlink:hover{color:var(--accent)}
+.mslots{display:inline-flex;gap:3px;vertical-align:middle}
+.mslots i{width:14px;height:14px;border-radius:3px;display:block}
+.mslots i.u{background:linear-gradient(135deg,#7c3aed,#6366f1)}
+.mslots i.f{border:1px dashed var(--border-light)}
+.mslots i.o{background:var(--border-light)}
+.gpuslots.big{margin-top:0}
+.gpuslots.big .gs{height:auto;min-height:50px;min-width:0;flex-direction:column;align-items:flex-start;justify-content:center;padding:8px 11px;font-size:11.5px;gap:2px}
+.gpuslots.big .gs.free{align-items:center}
+.gpuslots.big .gs b{max-width:100%;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.gpuslots.big .gs small{font-family:var(--font);font-weight:500;font-size:10.5px;opacity:.9;max-width:100%;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.gs.none{background:var(--surface-2);color:var(--text-muted);border:1px dashed var(--border-light)}
+.infra-note{font-size:12px;color:var(--text-2);margin-top:9px}
+.infra-note b{color:var(--text)}
+.ubar{display:flex;align-items:center;gap:9px;min-width:120px}
+.ubar .bar{flex:1;position:relative;overflow:visible}
+.ubar .bar>u{position:absolute;top:-2px;bottom:-2px;width:2px;background:var(--text);opacity:.7}
+.ubar span{font-family:var(--mono);font-size:11.5px;min-width:34px;text-align:right}
+.stag.info{background:var(--accent-soft);color:var(--accent)}
+.alert .stag{margin-left:0;align-self:flex-start;white-space:nowrap}
 .mock-tag{position:fixed;bottom:12px;right:16px;background:var(--amber-soft);color:var(--amber);border:1px solid rgba(251,191,36,.35);font-size:10px;font-weight:700;padding:4px 10px;border-radius:20px;letter-spacing:.5px;z-index:60}
 /* Responsive: collapse the sidebar to a horizontal nav, wrap KPIs, stack columns.
    Placed at the end so these rules win over the base layout when the query matches
@@ -234,6 +276,19 @@ tbody tr:hover{background:var(--surface-2)}
 .inv-v{font-size:12px;margin-top:2px}
 .inv-cmds{font-family:ui-monospace,monospace;font-size:11px;background:var(--bg,#0b0e14);padding:8px 10px;border-radius:8px;white-space:pre-wrap;margin-top:4px;overflow-x:auto}
 .inv-more{font-size:11px;cursor:pointer;color:var(--accent,#818cf8);display:inline-block;margin-top:4px}
+/* Source status: header pill and list, degraded banner, per-panel notes. */
+.pill.bad{border-color:rgba(248,113,113,.4)} .pill.bad .cw{color:var(--red);font-weight:700}
+.src-wrap{position:relative}
+.src-pop{position:absolute;top:40px;right:0;z-index:60;display:none;width:600px;max-width:90vw;background:var(--surface);border:1px solid var(--border);border-radius:10px;box-shadow:0 14px 34px rgba(0,0,0,.45);padding:8px 0;font-size:12px}
+.src-pop.open{display:block}
+.src-row{display:grid;grid-template-columns:16px 120px 64px 1fr;gap:8px;padding:6px 14px;align-items:baseline}
+.src-row .src-age{color:var(--text-muted);font-family:var(--mono);font-size:11px}
+.src-row .src-why{color:var(--text-2);overflow-wrap:anywhere}
+.src-st{font-weight:700} .src-st.ok{color:var(--green)} .src-st.stale,.src-st.disabled{color:var(--amber)} .src-st.error{color:var(--red)}
+.banner{margin:0 0 16px;padding:10px 14px;border-radius:8px;background:var(--orange-soft);color:var(--orange);font-size:13px}
+.banner ul{margin:6px 0 0;padding-left:18px}
+.src-note{font-size:11px;margin:0 0 8px;color:var(--amber)} .src-note.bad{color:var(--red)}
+.live.off{color:var(--amber)} .live.off::before{background:var(--amber);box-shadow:0 0 8px var(--amber)}
 </style>
 </head>
 <body>
@@ -245,6 +300,7 @@ tbody tr:hover{background:var(--surface-2)}
     <div class="spacer"></div>
     <div class="pill" id="top-cost" title="Realtime cluster cost — estimate">💲 —</div>
     <div class="pill" id="top-health" title="Health — click for details" style="cursor:pointer" onclick="go('health',document.querySelectorAll('.nav-item')[5])"></div>
+    <div class="src-wrap"><div class="pill" id="top-sources" title="Data sources — click for details" style="cursor:pointer" role="button" tabindex="0" onclick="toggleSources()">sources</div><div class="src-pop" id="src-pop" role="dialog" aria-label="Data sources"></div></div>
     <button class="icon-btn" title="Theme" onclick="toggleTheme()">◐</button>
     <div class="live" id="live" aria-live="polite" role="status">connecting…</div>
   </div>
@@ -260,6 +316,7 @@ tbody tr:hover{background:var(--surface-2)}
   </div>
 
   <div class="main">
+    <div class="banner" id="degraded-banner" style="display:none" role="status"></div>
     <!-- OVERVIEW -->
     <div class="view active" id="v-overview">
       <div class="vhead"><div class="vtitle">Overview</div><div class="vsub" id="ov-sub">updated just now</div></div>
@@ -327,8 +384,20 @@ tbody tr:hover{background:var(--surface-2)}
 
     <!-- INFRASTRUCTURE -->
     <div class="view" id="v-infra">
-      <div class="vhead"><div class="vtitle">Infrastructure</div><div class="vsub">Karpenter GPU pools scale to zero · real GPU utilization (DCGM)</div></div>
-      <div id="infra-pools"></div>
+      <div class="vhead"><div class="vtitle">Infrastructure</div><div class="vsub" id="infra-sub"></div></div>
+      <div class="sec-title">Needs attention</div>
+      <div class="card" id="infra-attn"></div>
+      <div class="infra-tools">
+        <input id="infra-q" class="infra-q" type="search" autocomplete="off" aria-label="Filter nodes" placeholder="Filter nodes by name, type, pool, zone or model…" oninput="infraRefresh()">
+        <div class="tab" id="infra-free" role="button" tabindex="0" aria-pressed="false" onclick="infraToggleFree()">Free GPU slots only</div>
+        <div class="tab" id="infra-expand" role="button" tabindex="0" onclick="infraExpandAll()">Expand all</div>
+      </div>
+      <div class="sec-title">GPU nodes</div>
+      <div class="card infra-card" id="infra-gpu"></div>
+      <div class="sec-title">Platform nodes</div>
+      <div class="card infra-card" id="infra-platform"></div>
+      <div class="sec-title">Node pools</div>
+      <div class="card infra-card" id="infra-nodepools"></div>
     </div>
 
     <!-- HEALTH -->
@@ -348,129 +417,1263 @@ tbody tr:hover{background:var(--surface-2)}
 
 
 <script>
-const TIERS={bedrock:['Bedrock','b-bedrock'],vllm:['vLLM','b-vllm'],'llm-d':['llm-d','b-llmd'],'llm-d-disagg':['llm-d P/D','b-disagg'],ft:['fine-tuned','b-ft']};
-const MTABS=[['all','All'],['bedrock','Bedrock'],['vllm','vLLM'],['llm-d','llm-d'],['llm-d-disagg','llm-d P/D'],['ft','Fine-tuned']];
-let D={models:[],teams:[],gpu:[],argocd:[],nodes:[],pods:[],cost:{},costExt:{},sources:{},links:[]};
-let mtab='all', selected=null, selectedNode=null, selectedTeam=null, curV='overview', prevM={}, prevN=null, prevS={}, activity=[], invs=[], lastSearch=[];
-const NAVIX={overview:0,models:1,teams:2,cost:3,infra:4,health:5};
-let routed=false;
-const NS_COLORS=['#818cf8','#34d399','#fbbf24','#f472b6','#22d3ee','#a78bfa','#fb923c','#4ade80','#e879f9','#60a5fa','#f87171','#2dd4bf'];
-function nsColor(ns){let h=0;for(let i=0;i<(ns||'').length;i++)h=(h*31+ns.charCodeAt(i))>>>0;return NS_COLORS[h%NS_COLORS.length];}
-function relTime(iso){if(!iso)return'';const d=(Date.now()-new Date(iso).getTime())/1000;if(d<3600)return Math.max(1,Math.round(d/60))+'m';if(d<86400)return Math.round(d/3600)+'h';return Math.round(d/86400)+'d';}
-const hist={rpm:[],tok:[],cost:[],gpu:[]};
-const $=id=>document.getElementById(id);
-const esc=s=>String(s==null?'':s).replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
-const num=n=>(n==null||n==='—')?'—':(typeof n==='number'?(n>=1000?(n/1000).toFixed(n>=10000?0:1)+'k':(Number.isInteger(n)?n:n.toFixed(1))):n);
-const ms=v=>v==null?'—':v+'ms';
-const tierLabel=t=>(TIERS[t]||['?'])[0];
-const tierBadge=t=>{const x=TIERS[t]||['?','b-ray'];return `<span class="badge2 ${x[1]}">${x[0]}</span>`};
-const modeCls=t=>t==='ft'?'b-ft':(TIERS[t]||['','b-ray'])[1];
-const spark=(pts,c='var(--accent)',w=54,h=18)=>{const p=(pts||[]).filter(x=>x!=null);if(p.length<2)return '';const mx=Math.max(...p),mn=Math.min(...p);const pk=p.map((v,i)=>`${(i/(p.length-1))*w},${(h-((v-mn)/((mx-mn)||1))*h).toFixed(1)}`).join(' ');return `<svg class="spark" width="${w}" height="${h}"><polyline points="${pk}" fill="none" stroke="${c}" stroke-width="1.5"/></svg>`};
-const push=(a,v,n=32)=>{a.push(v);while(a.length>n)a.shift();};
-
-async function poll(){
-  try{
-    const r=await fetch('/data.json');if(!r.ok)throw 0;D=await r.json();
-    diffActivity();pushHist();
-    try{const ri=await fetch('/investigations');if(ri.ok)invs=(await ri.json()).items||[];}catch(e){}
-    renderAll();$('live').textContent='Live';if(!routed){routed=true;routeFromHash();}
-  }catch(e){$('live').textContent='reconnecting…';}
+const TIERS = {
+  bedrock: ['Bedrock', 'b-bedrock'],
+  vllm: ['vLLM', 'b-vllm'],
+  'llm-d': ['llm-d', 'b-llmd'],
+  'llm-d-disagg': ['llm-d P/D', 'b-disagg'],
+  ft: ['fine-tuned', 'b-ft'],
+};
+const MTABS = [
+  ['all', 'All'],
+  ['bedrock', 'Bedrock'],
+  ['vllm', 'vLLM'],
+  ['llm-d', 'llm-d'],
+  ['llm-d-disagg', 'llm-d P/D'],
+  ['ft', 'Fine-tuned'],
+];
+let D = {
+  models: [],
+  teams: [],
+  gpu: [],
+  argocd: [],
+  nodes: [],
+  pods: [],
+  cost: {},
+  costExt: {},
+  sources: {},
+  links: [],
+};
+let mtab = 'all',
+  selected = null,
+  selectedNode = null,
+  selectedTeam = null,
+  curV = 'overview',
+  prevM = {},
+  prevN = null,
+  prevS = {},
+  activity = [],
+  invs = [],
+  lastSearch = [];
+const NAVIX = { overview: 0, models: 1, teams: 2, cost: 3, infra: 4, health: 5 };
+let routed = false;
+const NS_COLORS = [
+  '#818cf8',
+  '#34d399',
+  '#fbbf24',
+  '#f472b6',
+  '#22d3ee',
+  '#a78bfa',
+  '#fb923c',
+  '#4ade80',
+  '#e879f9',
+  '#60a5fa',
+  '#f87171',
+  '#2dd4bf',
+];
+function nsColor(ns) {
+  let h = 0;
+  for (let i = 0; i < (ns || '').length; i++) h = (h * 31 + ns.charCodeAt(i)) >>> 0;
+  return NS_COLORS[h % NS_COLORS.length];
 }
-function pushHist(){const m=D.models||[];push(hist.rpm,m.reduce((s,x)=>s+(x.rpm||0),0));push(hist.tok,Math.round(m.reduce((s,x)=>s+(x.tps||0),0)*60));push(hist.cost,(D.cost||{}).hourly||0);const g=(D.gpu||[]).flatMap(x=>x.util||[]);push(hist.gpu,g.length?Math.round(g.reduce((a,b)=>a+b,0)/g.length):0);}
-function diffActivity(){const t=new Date().toLocaleTimeString('en-GB',{hour:'2-digit',minute:'2-digit',second:'2-digit'});const cur={};(D.models||[]).forEach(m=>cur[m.name]=m.status);for(const n in cur){if(!(n in prevM))activity.unshift([t,`Model "${n}" appeared → ${cur[n]}`]);else if(prevM[n]!==cur[n])activity.unshift([t,`Model "${n}" → ${cur[n]}`]);}for(const n in prevM){if(!(n in cur))activity.unshift([t,`Model "${n}" removed`]);}prevM=cur;const curN={};(D.nodes||[]).forEach(nd=>curN[nd.name]=nd.instance||'node');if(prevN!==null){for(const nm in curN){if(!(nm in prevN))activity.unshift([t,`Node ${nm.split('.')[0]} (${curN[nm]}) joined`]);}for(const nm in prevN){if(!(nm in curN))activity.unshift([t,`Node ${nm.split('.')[0]} removed`]);}}prevN=curN;const curS={};(D.autoscaling||[]).forEach(a=>{const k=a.pool+(a.role?' ('+a.role+')':'');curS[k]=a.current;});for(const k in curS){if(k in prevS&&prevS[k]!==curS[k])activity.unshift([t,`⇅ ${k} scaled ${prevS[k]} → ${curS[k]} replicas`]);}prevS=curS;while(activity.length>18)activity.pop();if(!activity.length)activity=[[t,'Connected to cluster']];}
+function relTime(iso) {
+  if (!iso) return '';
+  const d = (Date.now() - new Date(iso).getTime()) / 1000;
+  if (d < 3600) return Math.max(1, Math.round(d / 60)) + 'm';
+  if (d < 86400) return Math.round(d / 3600) + 'h';
+  return Math.round(d / 86400) + 'd';
+}
+const hist = { rpm: [], tok: [], cost: [], gpu: [] };
+const $ = (id) => document.getElementById(id);
+// The one escaping helper: every value interpolated into HTML goes through
+// esc() or a number formatter below. Values never go into inline JavaScript:
+// handlers read them from data-* attributes (this.dataset).
+const esc = (s) =>
+  String(s == null ? '' : s).replace(
+    /[&<>"']/g,
+    (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[c],
+  );
+// Links from the backend: only http(s), anything else becomes '#'.
+const safeUrl = (u) => (/^https?:\/\//i.test(String(u || '')) ? String(u) : '#');
+const num = (n) =>
+  n == null || n === '—'
+    ? '—'
+    : typeof n === 'number'
+      ? n >= 1000
+        ? (n / 1000).toFixed(n >= 10000 ? 0 : 1) + 'k'
+        : Number.isInteger(n)
+          ? n
+          : n.toFixed(1)
+      : esc(n);
+const ms = (v) => (v == null ? '—' : esc(v) + 'ms');
+const tierLabel = (t) => (TIERS[t] || ['?'])[0];
+const tierBadge = (t) => {
+  const x = TIERS[t] || ['?', 'b-ray'];
+  return `<span class="badge2 ${x[1]}">${x[0]}</span>`;
+};
+const modeCls = (t) => (t === 'ft' ? 'b-ft' : (TIERS[t] || ['', 'b-ray'])[1]);
+const spark = (pts, c = 'var(--accent)', w = 54, h = 18) => {
+  const p = (pts || []).filter((x) => x != null);
+  if (p.length < 2) return '';
+  const mx = Math.max(...p),
+    mn = Math.min(...p);
+  const pk = p
+    .map((v, i) => `${(i / (p.length - 1)) * w},${(h - ((v - mn) / (mx - mn || 1)) * h).toFixed(1)}`)
+    .join(' ');
+  return `<svg class="spark" width="${w}" height="${h}"><polyline points="${pk}" fill="none" stroke="${c}" stroke-width="1.5"/></svg>`;
+};
+const push = (a, v, n = 32) => {
+  a.push(v);
+  while (a.length > n) a.shift();
+};
 
-function alertList(){const out=[];(D.models||[]).forEach(m=>{if(m.status!=='running'){const d=m.deploy||{};let reason='';if(m.reconcileError)reason=m.reconcileError;else if(d.provisioning&&d.provisioning.length)reason='waiting for GPU node — '+d.provisioning[0].reason;else if(d.waiting&&d.waiting.reason)reason=d.waiting.reason;else if(d.events&&d.events.length){const w=d.events.find(e=>e.type==='Warning')||d.events[0];reason=w.reason;}const sev=(m.status==='error'||(d.provisioning&&d.provisioning.length))?'crit':'warn';out.push({icon:m.status==='error'?'✗':'⚠',sev,t:`${m.name} · ${m.status}`,d:reason?`${tierLabel(m.tier)} · ${reason}`:`${tierLabel(m.tier)} · ${m.availableReplicas||0}/${m.replicas||1} replicas ready`,open:['model',m.name]});}else if((m.tier==='llm-d'||m.tier==='llm-d-disagg')&&m.router&&m.router!=='Healthy')out.push({icon:'⚠',sev:'warn',t:`${m.name} · router ${m.router}`,d:'llm-d EPP/router not yet Healthy',open:['model',m.name]});else if(m.health&&m.health.toLowerCase()!=='healthy')out.push({icon:'⚠',sev:'warn',t:`${m.name} · ${m.health}`,d:'LiteLLM health check',open:['model',m.name]});});(D.provisioning||[]).slice(0,1).forEach(e=>out.push({icon:'☁',sev:'crit',t:`GPU capacity · ${e.reason}`,d:e.message,open:['view','infra']}));(D.argocd||[]).forEach(a=>{if(a.sync!=='Synced'||a.health!=='Healthy')out.push({icon:'🚢',sev:(a.health==='Degraded'||a.health==='Missing')?'crit':'warn',t:`ArgoCD · ${a.name}`,d:`${a.sync} · ${a.health}`,open:['link','argocd']});});(D.nodeAlerts||[]).forEach(a=>out.push({icon:'🖥',sev:(a.issue==='NotReady'?'crit':'warn'),t:`Node ${a.node} · ${a.issue}`,d:'EKS node condition',open:['node',a.node]}));return out;}
-
-function renderAll(){ovSub();kpis();topbar();ovModels();costMini();gpuBars();ovHealth();ovFeed();modelTabs();modelsBody();teamsView();costViews();infra();healthView();links();if(selected)openModel(selected,true);if(selectedNode)openNode(selectedNode,true);if(selectedTeam)openTeam(selectedTeam,true);}
-
-function ovSub(){const s=$('ov-sub');if(!s)return;const age=D.ts?Math.max(0,Math.round(Date.now()/1000-D.ts)):null;const when=age===null?'updated just now':(age<5?'updated just now':'updated '+age+'s ago');const parts=[D.cluster,D.region].filter(Boolean);parts.push(when);s.textContent=parts.join(' · ');}
-
-function topbar(){const c=D.cost||{};$('top-cost').innerHTML=`💲 <b class="cg">$${(c.hourly||0).toFixed(2)}</b>/hr · ~$${Math.round(c.monthly||0).toLocaleString()}/mo`;const al=alertList().length,ap=D.approvals_pending||0;const p=$('top-health');p.className='pill'+(al||ap?' warn':'');p.innerHTML=(al||ap)?`<span class="cw">⚠ ${al}</span> alerts · <b>${ap}</b> approval${ap===1?'':'s'}`:`✓ healthy`;const nm=$('nav-mcount');if(nm)nm.textContent=(D.models||[]).length||'';const hb=$('nav-hbadge');if(hb){const n=al+ap;hb.textContent=n||'';hb.style.display=n?'':'none';}}
-
-function kpis(){const m=D.models||[],c=D.cost||{},s=D.sources||{};const live=m.filter(x=>x.status==='running').length,dep=m.length-live;const al=alertList().length,ap=D.approvals_pending||0;
-  const cards=[
-   {l:'Models',v:m.length,s:`${live} live${dep?` · ${dep} deploying`:''}`,c:'var(--accent)'},
-   {l:'Requests',v:s.litellm?num(hist.rpm.at(-1)||0):'—',s:s.litellm?'/min':'metrics unavailable',sp:s.litellm?hist.rpm:null,c:'var(--green)'},
-   {l:'Tokens',v:s.litellm?num(hist.tok.at(-1)||0):'—',s:s.litellm?'/min':'',sp:s.litellm?hist.tok:null,c:'var(--cyan)'},
-   {l:'Cost',v:'$'+(c.hourly||0).toFixed(2),s:`/hr · ~$${Math.round(c.monthly||0).toLocaleString()}/mo`,sp:hist.cost,c:'var(--green)',cls:'good'},
-   {l:'GPU util',v:s.dcgm&&(D.gpu||[]).length?(hist.gpu.at(-1)||0)+'%':'—',s:s.dcgm&&(D.gpu||[]).length?`${(D.gpu||[]).length} GPU node(s)`:'no GPU nodes',sp:s.dcgm?hist.gpu:null,c:'var(--purple)'},
-   {l:'Health',v:al,s:ap?`<span class="down">${ap} fix ready</span>`:(al?'needs attention':'all clear'),c:'var(--amber)',cls:al?'warn':''},
-  ];
-  $('kpis').innerHTML=cards.map(k=>`<div class="kpi ${k.cls||''}"><div class="kpi-label">${k.l}</div><div class="kpi-val">${k.v}</div><div class="kpi-sub">${k.s}</div>${k.sp?spark(k.sp,k.c):''}</div>`).join('');}
-
-function ovModels(){const rows=(D.models||[]).slice(0,6);$('ov-models').innerHTML=rows.length?rows.map(m=>`<tr onclick="openModel('${esc(m.name)}')"><td><span class="dot ${m.status==='running'?'ok':m.status==='error'?'bad':'warn'}"></span><span class="m-name">${esc(m.name)}</span></td><td>${tierBadge(m.tier)}</td><td class="num">${num(m.rpm)}</td><td class="num">${ms(m.p95)}</td><td class="num">$${(m.costHr||0).toFixed(2)}</td></tr>`).join(''):'<tr><td colspan=5 class="muted" style="padding:16px">No models deployed</td></tr>';}
-
-function costMini(){const c=D.cost||{},bd=(D.models||[]).filter(m=>m.tier==='bedrock').reduce((s,m)=>s+(m.costHr||0),0);const segs=[['GPU',c.gpuHourly||0,'var(--purple)'],['Bedrock',bd,'var(--orange)'],['platform',c.platformHourly||0,'var(--accent)']].filter(x=>x[1]>0);const tot=segs.reduce((s,x)=>s+x[1],0)||1;$('cost-hr-mini').textContent='$'+(c.hourly||0).toFixed(2);$('cost-mo-mini').textContent='~$'+((c.monthly||0)).toLocaleString(undefined,{maximumFractionDigits:0})+'/mo if steady';$('cost-stack').innerHTML=segs.map(x=>`<i style="width:${x[1]/tot*100}%;background:${x[2]}"></i>`).join('');$('cost-legend').innerHTML=segs.map(x=>`<span><i style="background:${x[2]}"></i>${x[0]} $${x[1].toFixed(2)}</span>`).join('');}
-
-function gpuBars(){const g=D.gpu||[];if(!(D.sources||{}).dcgm){$('gpu-bars').innerHTML='<div class="muted" style="font-size:12px">GPU metrics unavailable (dcgm-exporter unreachable)</div>';return;}if(!g.length){$('gpu-bars').innerHTML='<div class="muted" style="font-size:12px">No GPU nodes — scales from zero on demand</div>';return;}$('gpu-bars').innerHTML=g.map(n=>{const u=n.util&&n.util.length?Math.round(n.util.reduce((a,b)=>a+b,0)/n.util.length):0;const mmA=(n.mem||[]).filter(x=>x!=null);const mm=mmA.length?Math.round(mmA.reduce((s,x)=>s+x,0)/mmA.length):null;const c=u===0?'var(--text-muted)':u>85?'var(--amber)':'var(--green)';const lbl=n.model?('· '+esc(n.model)):'<span class="muted">idle</span>';return `<div style="margin-bottom:9px"><div class="bar-lbl"><span>${esc(n.instance)} ${lbl}</span><span>${u}% util${mm!=null?' · '+mm+'% mem':''}</span></div><div class="bar"><i style="width:${u||2}%;background:${c}"></i></div></div>`}).join('');}
-
-function alertAction(o){if(!o)return'';if(o[0]==='model')return `openModel('${o[1]}')`;if(o[0]==='node')return `openNode('${o[1]}')`;if(o[0]==='link')return `openLink('${o[1]}')`;if(o[0]==='view')return `go('${o[1]}')`;return'';}
-function alertRow(a){const act=alertAction(a.open);return `<div class="alert${a.sev==='crit'?' crit':''}${act?' clickable':''}"${act?` onclick="${act}" role="button" tabindex="0" onkeydown="if(event.key==='Enter'||event.key===' '){event.preventDefault();this.click();}"`:''}><span class="ai">${a.icon}</span><div><div class="at">${esc(a.t)}</div><div class="ad">${esc(a.d)}</div></div></div>`}
-function ovHealth(){const al=alertList();$('ov-health').innerHTML=al.length?al.slice(0,4).map(alertRow).join(''):'<div class="muted" style="font-size:12px;padding:8px 0">✓ All models and apps healthy</div>';}
-function ovFeed(){$('ov-feed').innerHTML=activity.map(f=>`<div class="fr"><span class="ft">${f[0]}</span><span>${esc(f[1])}</span></div>`).join('');}
-
-function modelTabs(){const m=D.models||[];$('model-tabs').innerHTML=MTABS.map(t=>{const n=t[0]==='all'?m.length:m.filter(x=>x.tier===t[0]).length;return `<div class="tab ${t[0]===mtab?'active':''}" onclick="mtab='${t[0]}';modelTabs();modelsBody()">${t[1]}<span class="cnt">${n}</span></div>`}).join('');}
-function modelsBody(){const rows=(D.models||[]).filter(m=>mtab==='all'||m.tier===mtab);const mu=(D.sources||{}).litellm;$('models-body').innerHTML=rows.length?rows.map(m=>`<tr onclick="openModel('${esc(m.name)}')"><td><div class="m-name">${esc(m.name)}</div><div class="m-id">${esc(m.model)}</div></td><td>${tierBadge(m.tier)}</td><td>${m.status==='running'?'<span class="st ok">running</span>':m.status==='error'?'<span class="st bad">error</span>':'<span class="st warn">deploying</span>'}${scaleBadge(m)}</td><td class="num">${esc(m.gpu)}</td><td class="num">${mu?num(m.rpm):'—'}</td><td class="num">${mu?(m.p50==null?'—':m.p50+' / '+m.p95+'ms'):'—'}</td><td class="num">${mu?num(m.tps):'—'}</td><td class="num">${mu&&m.errPct!=null?m.errPct+'%':'—'}</td><td class="num">$${(m.costHr||0).toFixed(2)}</td><td><div class="act"><button title="Copy a ready-to-run curl for this model" onclick="event.stopPropagation();copyCurl('${esc(m.name)}',event)">⧉ curl</button><button title="Langfuse" onclick="event.stopPropagation();openLink('langfuse')">📊</button><button title="WebUI" onclick="event.stopPropagation();openLink('webui')">💬</button></div></td></tr>`).join(''):'<tr><td colspan=10 class="muted" style="padding:20px">No models in this tier</td></tr>';}
-
-function teamsView(){const t=D.teams||[];if(!(D.sources||{}).litellm){$('teams-grid').innerHTML='<div class="muted">Team metrics unavailable (LiteLLM DB unreachable)</div>';return;}$('teams-grid').innerHTML=t.length?t.map(x=>{const pct=x.limit?Math.min(100,Math.round(x.budget/x.limit*100)):0;const c=pct>80?'var(--amber)':'var(--green)';const bl=x.limit?`$${x.budget.toFixed(2)} / $${x.limit.toFixed(0)} · ${pct}%`:`$${x.budget.toFixed(2)} · no cap`;return `<div class="card" style="cursor:pointer" onclick="openTeam('${esc(x.name)}')"><div class="card-h"><h3>${esc(x.name)}</h3><span class="m-id">${x.failed?x.failed+' failed today':''}</span></div><div class="bar-lbl"><span>budget</span><span>${bl}</span></div><div class="bar"><i style="width:${x.limit?pct:4}%;background:${c}"></i></div><div class="mini-kpi"><div class="mk"><div class="mkv">${num(x.reqsToday)}</div><div class="mkl">req today</div></div><div class="mk"><div class="mkv">$${(x.spendToday||0).toFixed(2)}</div><div class="mkl">spend today</div></div><div class="mk"><div class="mkv">${x.keys||0}</div><div class="mkl">API keys</div></div></div></div>`}).join(''):'<div class="muted">No teams onboarded yet (create an AITeam)</div>';}
-
-function costViews(){const c=D.cost||{},ce=D.costExt||{};const src=c.priceSource==='aws-price-list'?'live AWS pricing':'on-demand estimate';const cs=$('cost-sub');if(cs)cs.textContent=(c.region?c.region+' ':'')+src+' · spot ≈0.35× · GPU is the driver'+(c.unpriced?' · '+c.unpriced+' node(s) unpriced':'');$('cost-kpis').innerHTML=[
-  {l:'Now',v:'$'+(c.hourly||0).toFixed(2)+'<span style="font-size:12px">/hr</span>',s:`GPU $${(c.gpuHourly||0).toFixed(2)} · platform $${(c.platformHourly||0).toFixed(2)}`,cls:'good'},
-  {l:'Monthly (24×7)',v:'$'+Math.round(c.monthly||0).toLocaleString(),s:'projected'},
-  {l:'Bedrock (tokens)',v:'$'+((D.models||[]).filter(m=>m.tier==='bedrock').reduce((s,m)=>s+(m.costHr||0),0)).toFixed(2)+'<span style="font-size:12px">/hr</span>',s:'pay-per-token, no GPU'},
-  {l:'Spend today',v:'$'+((ce.byTeam||[]).reduce((s,x)=>s+x[1],0)).toFixed(2),s:'across teams (LiteLLM)'},
- ].map(k=>`<div class="kpi ${k.cls||''}"><div class="kpi-label">${k.l}</div><div class="kpi-val">${k.v}</div><div class="kpi-sub">${k.s}</div></div>`).join('');
-  const bm=ce.byModel||[];const mx=Math.max(1,...bm.map(x=>x[1]));$('cost-by-model').innerHTML=bm.length?bm.map(x=>`<div style="margin-bottom:10px"><div class="bar-lbl"><span>${tierBadge(x[2])} ${esc(x[0])}</span><span>$${x[1].toFixed(2)}/hr</span></div><div class="bar"><i style="width:${x[1]/mx*100}%;background:var(--purple)"></i></div></div>`).join(''):'<div class="muted">No GPU-backed models running</div>';
-  const bt=ce.byTeam||[];const mt=Math.max(1,...bt.map(x=>x[1]));$('cost-by-team').innerHTML=bt.length?bt.map(x=>`<div style="margin-bottom:10px"><div class="bar-lbl"><span>${esc(x[0])}</span><span>$${x[1].toFixed(2)}</span></div><div class="bar"><i style="width:${x[1]/mt*100}%;background:var(--accent)"></i></div></div>`).join(''):'<div class="muted">No team spend today</div>';
-  const tr=ce.trend||[];$('cost-trend').innerHTML=tr.length>1?spark(tr.map(x=>x[1]),'var(--green)',360,60)+`<div class="muted" style="font-size:11px;margin-top:6px">last ${tr.length} days · spend/day</div>`:'<div class="muted">trend builds as usage accrues</div>';
-  const be=ce.byEfficiency||[];const cbe=$('cost-by-efficiency');
-  if(cbe){
-    const mxe=Math.max(1,...be.map(x=>x[1]||0));
-    cbe.innerHTML=be.length?be.map(x=>{const v=x[1]||0;const idle=v===0;const w=idle?100:Math.max(4,v/mxe*100);const col=idle?'var(--orange)':'var(--green)';const lbl=idle?'idle · billing':num(Math.round(v))+' tok/$';return `<div style="margin-bottom:10px"><div class="bar-lbl"><span>${tierBadge(x[2])} ${esc(x[0])}</span><span>${lbl}</span></div><div class="bar"><i style="width:${w}%;background:${col}"></i></div></div>`;}).join(''):'<div class="muted">No served models with a cost basis yet</div>';
+// ---------------------------------------------------------------------------
+// Data: the backend's sections arrive on the stream (/api/v1/stream: one
+// "snapshot" event, then one "section" event per change). After two failed
+// connects the page polls /api/v1/snapshot every 5 s with If-None-Match and
+// tries the stream again every 60 s. D is built from the sections with the
+// same mapping as the backend's /data.json (snapshot.Store.data_json).
+// ---------------------------------------------------------------------------
+const DATA_SECTIONS = [
+  ['nodes', []],
+  ['pods', []],
+  ['endpoints', []],
+  ['nodeAlerts', []],
+  ['cost', {}],
+  ['models', []],
+  ['teams', []],
+  ['gpu', []],
+  ['argocd', []],
+  ['autoscaling', []],
+  ['costExt', {}],
+  ['provisioning', []],
+];
+const K8S_SECTIONS = ['nodes', 'pods', 'endpoints', 'nodeAlerts', 'cost', 'approvals', 'meta'];
+let S = {},
+  k8sAt = 0,
+  conn = 'connecting',
+  es = null,
+  streamFailures = 0,
+  etag = null,
+  pollTimer = null,
+  retryTimer = null,
+  renderQueued = false,
+  started = false;
+function toD(sec) {
+  const d = {};
+  for (const [k, def] of DATA_SECTIONS) d[k] = sec[k] == null ? def : sec[k];
+  const a = sec.approvals || {},
+    meta = sec.meta || {},
+    st = sec.status || {};
+  return Object.assign(d, {
+    approvals_available: !!a.available,
+    approvals_pending: a.pending || 0,
+    cluster: meta.cluster || '',
+    region: meta.region || '',
+    links: meta.links || [],
+    sources: st.legacy || {},
+    sourceStatus: st.sources || [],
+    degraded: st.degraded || [],
+    ts: k8sAt,
+  });
+}
+function setData(d) {
+  D = d;
+  diffActivity();
+}
+function applySections(sections, full) {
+  const before = JSON.stringify(S.approvals || null);
+  S = full ? Object.assign({}, sections) : Object.assign({}, S, sections);
+  if (Object.keys(sections).some((k) => K8S_SECTIONS.includes(k))) k8sAt = Date.now() / 1000;
+  setData(toD(S));
+  if (!started) {
+    started = true;
+    pushHist();
   }
-  const bu=ce.byUser||[];const cbu=$('cost-by-user');
-  if(cbu){
-    if(!bu.length){cbu.innerHTML='<div class="muted">No per-user usage yet — interactive Open WebUI users appear here</div>';}
-    else{
-      const pal=['#7c6cff','#22c55e','#f59e0b','#ef4444','#06b6d4','#a855f7','#84cc16','#ec4899'];
-      const allM=[...new Set(bu.flatMap(u=>(u.models||[]).map(m=>m.model)))];
-      const mc={};allM.forEach((m,i)=>mc[m]=pal[i%pal.length]);
-      const mu=Math.max(1,...bu.map(x=>x.spend||0));
-      const legend=allM.length?'<div class="muted" style="display:flex;flex-wrap:wrap;gap:12px;margin-bottom:12px;font-size:11px">'+allM.map(m=>`<span style="display:flex;align-items:center;gap:5px"><i style="width:10px;height:10px;border-radius:2px;background:${mc[m]};display:inline-block"></i>${esc(m)}</span>`).join('')+'</div>':'';
-      cbu.innerHTML=legend+bu.map(u=>{const segs=(u.models||[]).map(m=>`<i style="width:${(m.spend||0)/mu*100}%;background:${mc[m.model]}" title="${esc(m.model)}: $${(m.spend||0).toFixed(4)}"></i>`).join('');return `<div style="margin-bottom:10px"><div class="bar-lbl"><span>${esc(u.user)}</span><span>$${(u.spend||0).toFixed(4)} · ${(u.requests||0).toLocaleString()} req · ${(u.tokens||0).toLocaleString()} tok</span></div><div class="bar" style="display:flex;gap:1px">${segs}</div></div>`;}).join('');
+  if (JSON.stringify(S.approvals || null) !== before) loadInvestigations();
+  queueRender();
+}
+function queueRender() {
+  if (renderQueued) return;
+  renderQueued = true;
+  requestAnimationFrame(() => {
+    renderQueued = false;
+    renderAll();
+    if (!routed) {
+      routed = true;
+      routeFromHash();
+    }
+  });
+}
+function setConn(c) {
+  conn = c;
+  const l = $('live');
+  l.textContent = c === 'live' ? 'Live' : c === 'polling' ? 'Polling' : 'reconnecting…';
+  l.className = 'live' + (c === 'live' ? '' : ' off');
+}
+function connect() {
+  if (es) es.close();
+  es = new EventSource('/api/v1/stream');
+  es.addEventListener('snapshot', (e) => {
+    streamFailures = 0;
+    stopPolling();
+    setConn('live');
+    applySections(JSON.parse(e.data).sections || {}, true);
+  });
+  es.addEventListener('section', (e) => {
+    const m = JSON.parse(e.data);
+    applySections({ [m.name]: m.data }, false);
+  });
+  es.onerror = () => {
+    streamFailures++;
+    // CLOSED: the server refused (for example 503, too many streams); the
+    // browser will not retry by itself.
+    if (es.readyState === 2 || streamFailures >= 2) {
+      es.close();
+      es = null;
+      startPolling();
+    } else setConn('reconnecting');
+  };
+}
+async function pollSnapshot() {
+  try {
+    const r = await fetch('/api/v1/snapshot', {
+      cache: 'no-store',
+      headers: etag ? { 'If-None-Match': etag } : {},
+    });
+    if (r.status !== 304) {
+      if (!r.ok) throw new Error('HTTP ' + r.status);
+      etag = r.headers.get('ETag');
+      applySections((await r.json()).sections || {}, true);
+    }
+    if (!es) setConn('polling');
+  } catch (e) {
+    if (!es) setConn('reconnecting');
+  }
+}
+function startPolling() {
+  if (!pollTimer) {
+    pollSnapshot();
+    pollTimer = setInterval(pollSnapshot, 5000);
+  }
+  clearTimeout(retryTimer);
+  retryTimer = setTimeout(() => {
+    streamFailures = 0;
+    connect();
+  }, 60000);
+}
+function stopPolling() {
+  clearInterval(pollTimer);
+  clearTimeout(retryTimer);
+  pollTimer = retryTimer = null;
+}
+async function loadInvestigations() {
+  if (!(S.approvals || {}).available) {
+    invs = [];
+    return;
+  }
+  try {
+    const r = await fetch('/api/v1/investigations', { cache: 'no-store' });
+    invs = r.ok ? (await r.json()).items || [] : [];
+  } catch (e) {}
+  queueRender();
+}
+
+// ---------------------------------------------------------------------------
+// Source status: header pill and list, degraded banner, panel notes.
+// ---------------------------------------------------------------------------
+const hhmm = (t) => new Date(t * 1000).toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit' });
+const ago = (t) => {
+  if (!t) return 'never';
+  const d = Math.max(0, Math.round(Date.now() / 1000 - t));
+  return d < 60 ? d + 's ago' : d < 3600 ? Math.round(d / 60) + 'm ago' : Math.round(d / 3600) + 'h ago';
+};
+const short = (t, n = 140) => (String(t).length > n ? String(t).slice(0, n) + '…' : String(t));
+function srcOf(name) {
+  return (D.sourceStatus || []).find((x) => x.name === name);
+}
+// True when the source has delivered data at least once (shown, maybe old).
+function srcHasData(name) {
+  const x = srcOf(name);
+  return !!x && (x.state === 'ok' || x.state === 'stale' || !!x.lastSuccess);
+}
+// '' when the source is ok; otherwise a note for the panel that uses it.
+function srcNote(name) {
+  const x = srcOf(name);
+  if (!x || x.state === 'ok') return '';
+  if (x.state === 'stale')
+    return `<div class="src-note">as of ${esc(x.lastSuccess ? hhmm(x.lastSuccess) : '—')}</div>`;
+  const why = short(x.lastError || x.detail || x.state);
+  return x.lastSuccess
+    ? `<div class="src-note bad">unavailable since ${esc(hhmm(x.lastSuccess))}: ${esc(why)}</div>`
+    : `<div class="src-note bad">unavailable: ${esc(why)}</div>`;
+}
+const STATE_RANK = { ok: 0, disabled: 1, stale: 2, error: 3 };
+function topSources() {
+  const list = D.sourceStatus || [];
+  const bad = list.filter((x) => x.state !== 'ok');
+  const worst = bad.reduce((w, x) => Math.max(w, STATE_RANK[x.state] || 0), 0);
+  const p = $('top-sources');
+  p.className = 'pill' + (worst >= 3 ? ' bad' : bad.length ? ' warn' : '');
+  p.innerHTML = bad.length
+    ? `<span class="cw">● ${num(bad.length)}</span> source${bad.length === 1 ? '' : 's'}`
+    : `<span class="cg">●</span> sources`;
+  $('src-pop').innerHTML = list
+    .map(
+      (x) =>
+        `<div class="src-row"><span class="dot ${x.state === 'ok' ? 'ok' : x.state === 'error' ? 'bad' : 'warn'}"></span><b>${esc(x.name)}</b><span class="src-st ${esc(x.state)}">${esc(x.state)}</span><span class="src-why" title="${esc(x.lastError || x.detail || '')}"><span class="src-age">${esc(ago(x.lastSuccess))}</span> ${esc(short(x.lastError || x.detail || ''))}</span></div>`,
+    )
+    .join('');
+}
+function toggleSources() {
+  $('src-pop').classList.toggle('open');
+}
+function degradedBanner() {
+  const d = D.degraded || [],
+    b = $('degraded-banner');
+  b.style.display = d.length ? '' : 'none';
+  b.innerHTML = d.length
+    ? `<b>Running degraded</b> — Python packages could not be installed:<ul>${d.map((x) => `<li><b>${esc(x.package)}</b>: ${esc(x.effect)}</li>`).join('')}</ul>`
+    : '';
+}
+function pushHist() {
+  const m = D.models || [];
+  push(
+    hist.rpm,
+    m.reduce((s, x) => s + (x.rpm || 0), 0),
+  );
+  push(hist.tok, Math.round(m.reduce((s, x) => s + (x.tps || 0), 0) * 60));
+  push(hist.cost, (D.cost || {}).hourly || 0);
+  const g = (D.gpu || []).flatMap((x) => x.util || []);
+  push(hist.gpu, g.length ? Math.round(g.reduce((a, b) => a + b, 0) / g.length) : 0);
+}
+function diffActivity() {
+  const t = new Date().toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit', second: '2-digit' });
+  const cur = {};
+  (D.models || []).forEach((m) => (cur[m.name] = m.status));
+  for (const n in cur) {
+    if (!(n in prevM)) activity.unshift([t, `Model "${n}" appeared → ${cur[n]}`]);
+    else if (prevM[n] !== cur[n]) activity.unshift([t, `Model "${n}" → ${cur[n]}`]);
+  }
+  for (const n in prevM) {
+    if (!(n in cur)) activity.unshift([t, `Model "${n}" removed`]);
+  }
+  prevM = cur;
+  const curN = {};
+  (D.nodes || []).forEach((nd) => (curN[nd.name] = nd.instance || 'node'));
+  if (prevN !== null) {
+    for (const nm in curN) {
+      if (!(nm in prevN)) activity.unshift([t, `Node ${nm.split('.')[0]} (${curN[nm]}) joined`]);
+    }
+    for (const nm in prevN) {
+      if (!(nm in curN)) activity.unshift([t, `Node ${nm.split('.')[0]} removed`]);
     }
   }
+  prevN = curN;
+  const curS = {};
+  (D.autoscaling || []).forEach((a) => {
+    const k = a.pool + (a.role ? ' (' + a.role + ')' : '');
+    curS[k] = a.current;
+  });
+  for (const k in curS) {
+    if (k in prevS && prevS[k] !== curS[k])
+      activity.unshift([t, `⇅ ${k} scaled ${prevS[k]} → ${curS[k]} replicas`]);
+  }
+  prevS = curS;
+  while (activity.length > 18) activity.pop();
+  if (!activity.length) activity = [[t, 'Connected to cluster']];
 }
 
-const POOLMAP={'gpu-inference':'GPU · dedicated','gpu-shared':'GPU · time-sliced','default':'platform services','__mng__':'critical addons'};
-function infra(){const nodes=D.nodes||[],pods=D.pods||[],gpu=D.gpu||[];const utilByHost={};gpu.forEach(g=>utilByHost[g.node]=g);const pools={};nodes.forEach(n=>{(pools[n.pool||'__mng__']=pools[n.pool||'__mng__']||[]).push(n)});let h='';for(const p of Object.keys(pools)){const pl=(p==='__mng__')?'Managed node group':('Karpenter NodePool · '+p);const pd=POOLMAP[p]||'';h+=`<div class="sec-title">${esc(pl)}${pd?' · '+esc(pd):''} · ${pools[p].length} node(s)</div><div class="cols">`;h+=pools[p].map(n=>{const host=n.name.split('.')[0];const g=utilByHost[host];const mdl=g&&g.model;const cnp=n.cpuAllocM?Math.round((n.cpuUsedM||0)/n.cpuAllocM*100):null;const mnp=n.memAllocMi?Math.round((n.memUsedMi||0)/n.memAllocMi*100):null;const usg=cnp!=null?` · <span class="muted">cpu ${cnp}% · mem ${mnp}%</span>`:'';const slots=(n.gpu>0)?`<div class="gpuslots">${(g&&g.util||Array(n.gpu).fill(0)).map(u=>u===0&&!mdl?'<div class="gs free">free</div>':`<div class="gs used">${u}%</div>`).join('')}</div>`:'';return `<div class="card" style="cursor:pointer" onclick="openNode('${esc(n.name)}')"><div class="card-h"><h3>${esc(n.instance)} <span class="badge2 b-ray" style="background:var(--accent-soft);color:#c7d2fe">${esc(n.capacity||'')}</span></h3><span class="util">$${(n.hourly||0).toFixed(2)}/hr</span></div>${slots}<div class="util" style="margin-top:8px">${mdl?'serving '+esc(mdl):(n.gpu>0?'idle':esc(n.zone||''))}${usg}</div></div>`}).join('');h+='</div>';}$('infra-pools').innerHTML=h||'<div class="muted">No nodes</div>';}
+function alertList() {
+  const out = [];
+  (D.models || []).forEach((m) => {
+    if (m.status !== 'running') {
+      const d = m.deploy || {};
+      let reason = '';
+      if (m.reconcileError) reason = m.reconcileError;
+      else if (d.provisioning && d.provisioning.length)
+        reason = 'waiting for GPU node — ' + d.provisioning[0].reason;
+      else if (d.waiting && d.waiting.reason) reason = d.waiting.reason;
+      else if (d.events && d.events.length) {
+        const w = d.events.find((e) => e.type === 'Warning') || d.events[0];
+        reason = w.reason;
+      }
+      const sev = m.status === 'error' || (d.provisioning && d.provisioning.length) ? 'crit' : 'warn';
+      out.push({
+        icon: m.status === 'error' ? '✗' : '⚠',
+        sev,
+        t: `${m.name} · ${m.status}`,
+        d: reason
+          ? `${tierLabel(m.tier)} · ${reason}`
+          : `${tierLabel(m.tier)} · ${m.availableReplicas || 0}/${m.replicas || 1} replicas ready`,
+        open: ['model', m.name],
+      });
+    } else if ((m.tier === 'llm-d' || m.tier === 'llm-d-disagg') && m.router && m.router !== 'Healthy')
+      out.push({
+        icon: '⚠',
+        sev: 'warn',
+        t: `${m.name} · router ${m.router}`,
+        d: 'llm-d EPP/router not yet Healthy',
+        open: ['model', m.name],
+      });
+    else if (m.health && m.health.toLowerCase() !== 'healthy')
+      out.push({
+        icon: '⚠',
+        sev: 'warn',
+        t: `${m.name} · ${m.health}`,
+        d: 'LiteLLM health check',
+        open: ['model', m.name],
+      });
+  });
+  (D.provisioning || []).slice(0, 1).forEach((e) =>
+    out.push({
+      icon: '☁',
+      sev: 'crit',
+      t: `GPU capacity · ${e.reason}`,
+      d: e.message,
+      open: ['view', 'infra'],
+    }),
+  );
+  (D.argocd || []).forEach((a) => {
+    if (a.sync !== 'Synced' || a.health !== 'Healthy')
+      out.push({
+        icon: '🚢',
+        sev: a.health === 'Degraded' || a.health === 'Missing' ? 'crit' : 'warn',
+        t: `ArgoCD · ${a.name}`,
+        d: `${a.sync} · ${a.health}`,
+        open: ['link', 'argocd'],
+      });
+  });
+  (D.nodeAlerts || []).forEach((a) =>
+    out.push({
+      icon: '🖥',
+      sev: a.issue === 'NotReady' ? 'crit' : 'warn',
+      t: `Node ${a.node} · ${a.issue}`,
+      d: 'EKS node condition',
+      open: ['node', a.node],
+    }),
+  );
+  return out;
+}
 
-function fSev(s){s=(s||'').toUpperCase();return {LOW:'#34d399',MEDIUM:'#fbbf24',HIGH:'#fb923c',CRITICAL:'#f87171'}[s]||'#8b93a7';}
-function invCard(iv){const f=iv.findings;const isObj=f&&typeof f==='object';
-  const summary=isObj?(f.summary||''):(f||'');const sev=isObj?(f.severity||''):'';
-  const risk=isObj?(f.risk_assessment||''):'';const cmds=(isObj&&Array.isArray(f.fix_commands))?f.fix_commands:[];
-  const sevB=sev?`<span class="sev" style="background:${fSev(sev)}22;color:${fSev(sev)}">${esc(sev)}</span>`:'';
-  const did='invd-'+iv.id;
-  const detail=`<div id="${did}" class="inv-detail" style="display:none">`
-    +(risk?`<div class="inv-k">Risk assessment</div><div class="inv-v">${esc(risk)}</div>`:'')
-    +`<div class="inv-k">Proposed fix commands</div>`
-    +(cmds.length?`<pre class="inv-cmds">${esc(cmds.join('\n'))}</pre>`:'<div class="inv-v muted">No commands proposed — nothing to apply (informational).</div>')
-    +`</div>`;
-  return `<div class="alert"><span class="ai">🔧</span><div style="flex:1"><div class="at">${esc(iv.resource_kind||'')} ${esc(iv.resource_name||'')} — fix ready ${sevB}</div><div class="ad">${esc(summary.slice(0,240))}</div><a class="inv-more" onclick="var e=document.getElementById('${did}');var o=e.style.display==='none';e.style.display=o?'block':'none';this.textContent=o?'hide details ▾':'details ▸'">details ▸</a>${detail}</div><div class="ax"><button class="btn approve" onclick="approve('${iv.id}',this)">Approve fix</button><button class="btn dismiss" onclick="dismiss('${iv.id}',this)">Dismiss</button></div></div>`;}
-function healthView(){const al=alertList();$('health-alerts').innerHTML=(invs.length?invs.map(invCard).join(''):'')+(al.length?al.map(alertRow).join(''):(invs.length?'':'<div class="muted" style="padding:8px 0">✓ All models and apps healthy · no pending fixes</div>'));
-  const a=D.argocd||[];$('argo-sync').innerHTML=(D.sources||{}).argocd?(a.length?a.map(x=>`<div class="alert"><span class="ai">${x.health==='Healthy'&&x.sync==='Synced'?'🟢':'🟡'}</span><div><div class="at">${esc(x.name)}</div><div class="ad">${esc(x.sync)} · ${esc(x.health)}</div></div></div>`).join(''):'<div class="muted">no applications</div>'):'<div class="muted">ArgoCD status unavailable</div>';}
+function renderAll() {
+  topSources();
+  degradedBanner();
+  ovSub();
+  kpis();
+  topbar();
+  ovModels();
+  costMini();
+  gpuBars();
+  ovHealth();
+  ovFeed();
+  modelTabs();
+  modelsBody();
+  teamsView();
+  costViews();
+  infra();
+  healthView();
+  links();
+  if (selected) openModel(selected, true);
+  if (selectedNode) openNode(selectedNode, true);
+  if (selectedTeam) openTeam(selectedTeam, true);
+}
+
+function ovSub() {
+  const s = $('ov-sub');
+  if (!s) return;
+  const age = D.ts ? Math.max(0, Math.round(Date.now() / 1000 - D.ts)) : null;
+  const when = age === null ? 'updated just now' : age < 5 ? 'updated just now' : 'updated ' + age + 's ago';
+  const parts = [D.cluster, D.region].filter(Boolean);
+  parts.push(when);
+  s.textContent = parts.join(' · ');
+}
+
+function topbar() {
+  const c = D.cost || {};
+  $('top-cost').innerHTML =
+    `💲 <b class="cg">$${(c.hourly || 0).toFixed(2)}</b>/hr · ~$${Math.round(c.monthly || 0).toLocaleString()}/mo`;
+  const al = alertList().length,
+    ap = D.approvals_pending || 0;
+  const p = $('top-health');
+  p.className = 'pill' + (al || ap ? ' warn' : '');
+  p.innerHTML =
+    al || ap
+      ? `<span class="cw">⚠ ${al}</span> alerts · <b>${ap}</b> approval${ap === 1 ? '' : 's'}`
+      : `✓ healthy`;
+  const nm = $('nav-mcount');
+  if (nm) nm.textContent = (D.models || []).length || '';
+  const hb = $('nav-hbadge');
+  if (hb) {
+    const n = al + ap;
+    hb.textContent = n || '';
+    hb.style.display = n ? '' : 'none';
+  }
+}
+
+function kpis() {
+  const m = D.models || [],
+    c = D.cost || {},
+    s = { litellm: srcHasData('litellm-metrics'), dcgm: srcHasData('dcgm') };
+  const live = m.filter((x) => x.status === 'running').length,
+    dep = m.length - live;
+  const al = alertList().length,
+    ap = D.approvals_pending || 0;
+  const cards = [
+    { l: 'Models', v: m.length, s: `${live} live${dep ? ` · ${dep} deploying` : ''}`, c: 'var(--accent)' },
+    {
+      l: 'Requests',
+      v: s.litellm ? num(hist.rpm.at(-1) || 0) : '—',
+      s: s.litellm ? '/min' : 'metrics unavailable',
+      sp: s.litellm ? hist.rpm : null,
+      c: 'var(--green)',
+    },
+    {
+      l: 'Tokens',
+      v: s.litellm ? num(hist.tok.at(-1) || 0) : '—',
+      s: s.litellm ? '/min' : '',
+      sp: s.litellm ? hist.tok : null,
+      c: 'var(--cyan)',
+    },
+    {
+      l: 'Cost',
+      v: '$' + (c.hourly || 0).toFixed(2),
+      s: `/hr · ~$${Math.round(c.monthly || 0).toLocaleString()}/mo`,
+      sp: hist.cost,
+      c: 'var(--green)',
+      cls: 'good',
+    },
+    {
+      l: 'GPU util',
+      v: s.dcgm && (D.gpu || []).length ? (hist.gpu.at(-1) || 0) + '%' : '—',
+      s: s.dcgm && (D.gpu || []).length ? `${(D.gpu || []).length} GPU node(s)` : 'no GPU nodes',
+      sp: s.dcgm ? hist.gpu : null,
+      c: 'var(--purple)',
+    },
+    {
+      l: 'Health',
+      v: al,
+      s: ap ? `<span class="down">${ap} fix ready</span>` : al ? 'needs attention' : 'all clear',
+      c: 'var(--amber)',
+      cls: al ? 'warn' : '',
+    },
+  ];
+  $('kpis').innerHTML = cards
+    .map(
+      (k) =>
+        `<div class="kpi ${k.cls || ''}"><div class="kpi-label">${k.l}</div><div class="kpi-val">${k.v}</div><div class="kpi-sub">${k.s}</div>${k.sp ? spark(k.sp, k.c) : ''}</div>`,
+    )
+    .join('');
+}
+
+function ovModels() {
+  const rows = (D.models || []).slice(0, 6);
+  $('ov-models').innerHTML = rows.length
+    ? rows
+        .map(
+          (m) =>
+            `<tr data-model="${esc(m.name)}" onclick="openModel(this.dataset.model)"><td><span class="dot ${m.status === 'running' ? 'ok' : m.status === 'error' ? 'bad' : 'warn'}"></span><span class="m-name">${esc(m.name)}</span></td><td>${tierBadge(m.tier)}</td><td class="num">${num(m.rpm)}</td><td class="num">${ms(m.p95)}</td><td class="num">$${(m.costHr || 0).toFixed(2)}</td></tr>`,
+        )
+        .join('')
+    : '<tr><td colspan=5 class="muted" style="padding:16px">No models deployed</td></tr>';
+}
+
+function costMini() {
+  const c = D.cost || {},
+    bd = (D.models || []).filter((m) => m.tier === 'bedrock').reduce((s, m) => s + (m.costHr || 0), 0);
+  const segs = [
+    ['GPU', c.gpuHourly || 0, 'var(--purple)'],
+    ['Bedrock', bd, 'var(--orange)'],
+    ['platform', c.platformHourly || 0, 'var(--accent)'],
+  ].filter((x) => x[1] > 0);
+  const tot = segs.reduce((s, x) => s + x[1], 0) || 1;
+  $('cost-hr-mini').textContent = '$' + (c.hourly || 0).toFixed(2);
+  $('cost-mo-mini').textContent =
+    '~$' + (c.monthly || 0).toLocaleString(undefined, { maximumFractionDigits: 0 }) + '/mo if steady';
+  $('cost-stack').innerHTML = segs
+    .map((x) => `<i style="width:${(x[1] / tot) * 100}%;background:${x[2]}"></i>`)
+    .join('');
+  $('cost-legend').innerHTML = segs
+    .map((x) => `<span><i style="background:${x[2]}"></i>${x[0]} $${x[1].toFixed(2)}</span>`)
+    .join('');
+}
+
+function gpuBars() {
+  const g = D.gpu || [];
+  const note = srcNote('dcgm');
+  if (!srcHasData('dcgm')) {
+    $('gpu-bars').innerHTML = note;
+    return;
+  }
+  if (!g.length) {
+    $('gpu-bars').innerHTML =
+      note + '<div class="muted" style="font-size:12px">No GPU nodes — scales from zero on demand</div>';
+    return;
+  }
+  $('gpu-bars').innerHTML =
+    note +
+    g
+      .map((n) => {
+        const u = n.util && n.util.length ? Math.round(n.util.reduce((a, b) => a + b, 0) / n.util.length) : 0;
+        const mmA = (n.mem || []).filter((x) => x != null);
+        const mm = mmA.length ? Math.round(mmA.reduce((s, x) => s + x, 0) / mmA.length) : null;
+        const c = u === 0 ? 'var(--text-muted)' : u > 85 ? 'var(--amber)' : 'var(--green)';
+        const lbl = n.model ? '· ' + esc(n.model) : '<span class="muted">idle</span>';
+        return `<div style="margin-bottom:9px"><div class="bar-lbl"><span>${esc(n.instance)} ${lbl}</span><span>${u}% util${mm != null ? ' · ' + mm + '% mem' : ''}</span></div><div class="bar"><i style="width:${u || 2}%;background:${c}"></i></div></div>`;
+      })
+      .join('');
+}
+
+function alertOpen(kind, arg) {
+  if (kind === 'model') openModel(arg);
+  else if (kind === 'node') openNode(arg);
+  else if (kind === 'link') openLink(arg);
+  else if (kind === 'view') go(arg);
+}
+function alertRow(a) {
+  const act = a.open && ['model', 'node', 'link', 'view'].includes(a.open[0]);
+  return `<div class="alert${a.sev === 'crit' ? ' crit' : ''}${act ? ' clickable' : ''}"${act ? ` data-kind="${esc(a.open[0])}" data-arg="${esc(a.open[1])}" onclick="alertOpen(this.dataset.kind,this.dataset.arg)" role="button" tabindex="0" onkeydown="if(event.key==='Enter'||event.key===' '){event.preventDefault();this.click();}"` : ''}><span class="ai">${esc(a.icon)}</span><div><div class="at">${esc(a.t)}</div><div class="ad">${esc(a.d)}</div></div></div>`;
+}
+function ovHealth() {
+  const al = alertList();
+  $('ov-health').innerHTML = al.length
+    ? al.slice(0, 4).map(alertRow).join('')
+    : '<div class="muted" style="font-size:12px;padding:8px 0">✓ All models and apps healthy</div>';
+}
+function ovFeed() {
+  $('ov-feed').innerHTML = activity
+    .map((f) => `<div class="fr"><span class="ft">${esc(f[0])}</span><span>${esc(f[1])}</span></div>`)
+    .join('');
+}
+
+function modelTabs() {
+  const m = D.models || [];
+  $('model-tabs').innerHTML = MTABS.map((t) => {
+    const n = t[0] === 'all' ? m.length : m.filter((x) => x.tier === t[0]).length;
+    return `<div class="tab ${t[0] === mtab ? 'active' : ''}" data-tab="${esc(t[0])}" onclick="setTab(this.dataset.tab)">${esc(t[1])}<span class="cnt">${n}</span></div>`;
+  }).join('');
+}
+function setTab(t) {
+  mtab = t;
+  modelTabs();
+  modelsBody();
+}
+function modelsBody() {
+  const rows = (D.models || []).filter((m) => mtab === 'all' || m.tier === mtab);
+  const mu = srcHasData('litellm-metrics');
+  const note = srcNote('litellm-metrics');
+  $('models-body').innerHTML =
+    (note ? `<tr><td colspan=10 style="padding:8px 16px 0">${note}</td></tr>` : '') +
+    (rows.length
+      ? rows
+          .map(
+            (m) =>
+              `<tr data-model="${esc(m.name)}" onclick="openModel(this.dataset.model)"><td><div class="m-name">${esc(m.name)}</div><div class="m-id">${esc(m.model)}</div></td><td>${tierBadge(m.tier)}</td><td>${m.status === 'running' ? '<span class="st ok">running</span>' : m.status === 'error' ? '<span class="st bad">error</span>' : '<span class="st warn">deploying</span>'}${scaleBadge(m)}</td><td class="num">${esc(m.gpu)}</td><td class="num">${mu ? num(m.rpm) : '—'}</td><td class="num">${mu ? (m.p50 == null ? '—' : m.p50 + ' / ' + m.p95 + 'ms') : '—'}</td><td class="num">${mu ? num(m.tps) : '—'}</td><td class="num">${mu && m.errPct != null ? m.errPct + '%' : '—'}</td><td class="num">$${(m.costHr || 0).toFixed(2)}</td><td><div class="act"><button title="Copy a ready-to-run curl for this model" onclick="event.stopPropagation();copyCurl(this.closest('tr').dataset.model,event)">⧉ curl</button><button title="Langfuse" onclick="event.stopPropagation();openLink('langfuse')">📊</button><button title="WebUI" onclick="event.stopPropagation();openLink('webui')">💬</button></div></td></tr>`,
+          )
+          .join('')
+      : '<tr><td colspan=10 class="muted" style="padding:20px">No models in this tier</td></tr>');
+}
+
+function teamsView() {
+  const t = D.teams || [];
+  const note = srcNote('litellm-api');
+  if (!srcHasData('litellm-api')) {
+    $('teams-grid').innerHTML = note;
+    return;
+  }
+  $('teams-grid').innerHTML =
+    (note ? `<div style="grid-column:1/-1">${note}</div>` : '') +
+    (t.length
+      ? t
+          .map((x) => {
+            const pct = x.limit ? Math.min(100, Math.round((x.budget / x.limit) * 100)) : 0;
+            const c = pct > 80 ? 'var(--amber)' : 'var(--green)';
+            const bl = x.limit
+              ? `$${x.budget.toFixed(2)} / $${x.limit.toFixed(0)} · ${pct}%`
+              : `$${x.budget.toFixed(2)} · no cap`;
+            return `<div class="card" style="cursor:pointer" data-team="${esc(x.name)}" onclick="openTeam(this.dataset.team)"><div class="card-h"><h3>${esc(x.name)}</h3><span class="m-id">${x.failed ? num(x.failed) + ' failed today' : ''}</span></div><div class="bar-lbl"><span>budget</span><span>${bl}</span></div><div class="bar"><i style="width:${x.limit ? pct : 4}%;background:${c}"></i></div><div class="mini-kpi"><div class="mk"><div class="mkv">${num(x.reqsToday)}</div><div class="mkl">req today</div></div><div class="mk"><div class="mkv">$${(x.spendToday || 0).toFixed(2)}</div><div class="mkl">spend today</div></div><div class="mk"><div class="mkv">${num(x.keys || 0)}</div><div class="mkl">API keys</div></div></div></div>`;
+          })
+          .join('')
+      : '<div class="muted">No teams onboarded yet (create an AITeam)</div>');
+}
+
+function costViews() {
+  const c = D.cost || {},
+    ce = D.costExt || {};
+  const src = c.priceSource === 'aws-price-list' ? 'live AWS pricing' : 'on-demand estimate';
+  const cs = $('cost-sub');
+  if (cs)
+    cs.textContent =
+      (c.region ? c.region + ' ' : '') +
+      src +
+      ' · spot ≈0.35× · GPU is the driver' +
+      (c.unpriced ? ' · ' + c.unpriced + ' node(s) unpriced' : '');
+  const pn = srcNote('pricing'),
+    an = srcNote('litellm-api'),
+    mn = srcNote('litellm-metrics'),
+    apiOk = srcHasData('litellm-api');
+  const cs2 = $('cost-sub');
+  if (cs2 && pn) cs2.innerHTML = esc(cs2.textContent) + pn;
+  $('cost-kpis').innerHTML = [
+    {
+      l: 'Now',
+      v: '$' + (c.hourly || 0).toFixed(2) + '<span style="font-size:12px">/hr</span>',
+      s: `GPU $${(c.gpuHourly || 0).toFixed(2)} · platform $${(c.platformHourly || 0).toFixed(2)}`,
+      cls: 'good',
+    },
+    { l: 'Monthly (24×7)', v: '$' + Math.round(c.monthly || 0).toLocaleString(), s: 'projected' },
+    {
+      l: 'Bedrock (tokens)',
+      v:
+        '$' +
+        (D.models || [])
+          .filter((m) => m.tier === 'bedrock')
+          .reduce((s, m) => s + (m.costHr || 0), 0)
+          .toFixed(2) +
+        '<span style="font-size:12px">/hr</span>',
+      s: 'pay-per-token, no GPU',
+    },
+    {
+      l: 'Spend today',
+      v: '$' + (ce.byTeam || []).reduce((s, x) => s + x[1], 0).toFixed(2),
+      s: 'across teams (LiteLLM)',
+    },
+  ]
+    .map(
+      (k) =>
+        `<div class="kpi ${k.cls || ''}"><div class="kpi-label">${k.l}</div><div class="kpi-val">${k.v}</div><div class="kpi-sub">${k.s}</div></div>`,
+    )
+    .join('');
+  const bm = ce.byModel || [];
+  const mx = Math.max(1, ...bm.map((x) => x[1]));
+  $('cost-by-model').innerHTML = bm.length
+    ? bm
+        .map(
+          (x) =>
+            `<div style="margin-bottom:10px"><div class="bar-lbl"><span>${tierBadge(x[2])} ${esc(x[0])}</span><span>$${x[1].toFixed(2)}/hr</span></div><div class="bar"><i style="width:${(x[1] / mx) * 100}%;background:var(--purple)"></i></div></div>`,
+        )
+        .join('')
+    : '<div class="muted">No GPU-backed models running</div>';
+  const bt = ce.byTeam || [];
+  const mt = Math.max(1, ...bt.map((x) => x[1]));
+  $('cost-by-team').innerHTML = !apiOk
+    ? an
+    : an +
+      (bt.length
+        ? bt
+            .map(
+              (x) =>
+                `<div style="margin-bottom:10px"><div class="bar-lbl"><span>${esc(x[0])}</span><span>$${x[1].toFixed(2)}</span></div><div class="bar"><i style="width:${(x[1] / mt) * 100}%;background:var(--accent)"></i></div></div>`,
+            )
+            .join('')
+        : '<div class="muted">No team spend today</div>');
+  const tr = ce.trend || [];
+  $('cost-trend').innerHTML = !apiOk
+    ? an
+    : an +
+      (tr.length > 1
+        ? spark(
+            tr.map((x) => x[1]),
+            'var(--green)',
+            360,
+            60,
+          ) +
+          `<div class="muted" style="font-size:11px;margin-top:6px">last ${tr.length} days · spend/day</div>`
+        : '<div class="muted">trend builds as usage accrues</div>');
+  const be = ce.byEfficiency || [];
+  const cbe = $('cost-by-efficiency');
+  if (cbe) {
+    const mxe = Math.max(1, ...be.map((x) => x[1] || 0));
+    cbe.innerHTML =
+      mn +
+      (be.length
+        ? be
+            .map((x) => {
+              const v = x[1] || 0;
+              const idle = v === 0;
+              const w = idle ? 100 : Math.max(4, (v / mxe) * 100);
+              const col = idle ? 'var(--orange)' : 'var(--green)';
+              const lbl = idle ? 'idle · billing' : num(Math.round(v)) + ' tok/$';
+              return `<div style="margin-bottom:10px"><div class="bar-lbl"><span>${tierBadge(x[2])} ${esc(x[0])}</span><span>${lbl}</span></div><div class="bar"><i style="width:${w}%;background:${col}"></i></div></div>`;
+            })
+            .join('')
+        : '<div class="muted">No served models with a cost basis yet</div>');
+  }
+  const bu = ce.byUser || [];
+  const cbu = $('cost-by-user');
+  if (cbu) {
+    // Totals per user from LiteLLM (end user = the e-mail Open WebUI forwards).
+    const mu = Math.max(1e-9, ...bu.map((x) => x.spend || 0));
+    cbu.innerHTML = !apiOk
+      ? an
+      : an +
+        (bu.length
+          ? bu
+              .map(
+                (u) =>
+                  `<div style="margin-bottom:10px"><div class="bar-lbl"><span>${esc(u.user)}</span><span>$${(u.spend || 0).toFixed(4)} · ${esc((u.requests || 0).toLocaleString())} req · ${esc((u.tokens || 0).toLocaleString())} tok</span></div><div class="bar"><i style="width:${Math.max(2, ((u.spend || 0) / mu) * 100)}%;background:var(--accent)"></i></div></div>`,
+              )
+              .join('')
+          : '<div class="muted">No per-user usage yet — interactive Open WebUI users appear here</div>');
+  }
+}
+
+const POOLMAP = {
+  'gpu-inference': 'GPU · dedicated',
+  'gpu-shared': 'GPU · time-sliced',
+  'gpu-prefill': 'GPU · split serving, prefill',
+  'gpu-decode': 'GPU · split serving, decode',
+  'default': 'platform services',
+  '__mng__': 'critical addons',
+};
+// ---------------------------------------------------------------------------
+// Infrastructure view. Node pools and node claims come from the sections
+// `nodePools` and `nodeClaims` (read from S: they are not part of /data.json).
+// ---------------------------------------------------------------------------
+const INFRA = { memWarn: 80, memBad: 92, cpuWarn: 85, stuckMin: 5, pendingMin: 2, expandUpTo: 4 };
+const POOL_ORDER = ['gpu-shared', 'gpu-inference', 'gpu-prefill', 'gpu-decode', 'default', '__mng__'];
+const infraUi = { free: false, allOpen: null, toggled: new Set(), sort: 'pool', dir: 1 };
+const poolName = (p) => (p === '__mng__' ? 'managed node group' : p);
+const poolRank = (p) => (POOL_ORDER.indexOf(p) + 99) % 99;
+const minsSince = (iso) => {
+  const t = new Date(iso).getTime();
+  return isNaN(t) ? 0 : Math.max(0, (Date.now() - t) / 60000);
+};
+const usd = (v) => '$' + (Number(v) || 0).toFixed(2);
+// EKS node groups say ON_DEMAND, Karpenter says on-demand.
+const capName = (c) => String(c || '').toLowerCase().replace('_', '-');
+const pctOf = (a, b) => (b ? Math.round((100 * (a || 0)) / b) : 0);
+// Write a panel only when its content changed, so selection and scroll survive
+// the stream's updates.
+function put(id, html) {
+  const el = $(id);
+  if (el._last === html) return;
+  el._last = html;
+  el.innerHTML = html;
+}
+function ubar(value, reserved, warnAt, badAt) {
+  const col = value >= (badAt || 101) ? 'var(--red)' : value >= (warnAt || 101) ? 'var(--amber)' : 'var(--accent)';
+  const mark = reserved == null ? '' : `<u style="left:${Math.min(100, reserved)}%" title="reserved ${reserved}%"></u>`;
+  return `<div class="ubar"><div class="bar"><i style="width:${Math.min(100, value)}%;background:${col}"></i>${mark}</div><span>${value}%</span></div>`;
+}
+function infraModel() {
+  const pools = S.nodePools || [],
+    claims = S.nodeClaims || [];
+  const gpuPools = new Set(pools.filter((p) => p.isGpu).map((p) => p.name));
+  const names = [...new Set([...(D.endpoints || []), ...(D.models || [])].map((m) => m.name))].sort(
+    (a, b) => b.length - a.length,
+  );
+  const modelOf = (pod) => names.find((n) => pod.startsWith(n + '-')) || null;
+  const rpm = {};
+  (D.models || []).forEach((m) => (rpm[m.name] = m.rpm));
+  const byNode = {};
+  (D.pods || []).forEach((p) => (byNode[p.node] = byNode[p.node] || []).push(p));
+  const nodes = (D.nodes || []).map((n) => {
+    const pods = byNode[n.name] || [];
+    const gpuPods = pods.filter((p) => p.gpu > 0).map((p) => Object.assign({}, p, { model: modelOf(p.name) }));
+    const taken = gpuPods.reduce((a, p) => a + p.gpu, 0);
+    const host = n.name.split('.')[0];
+    return Object.assign({}, n, {
+      host,
+      pods,
+      gpuPods,
+      taken,
+      free: Math.max(0, (n.gpu || 0) - taken),
+      isGpu: n.gpu > 0 || gpuPools.has(n.pool),
+      cpuPct: pctOf(n.cpuUsedM, n.cpuAllocM),
+      memPct: pctOf(n.memUsedMi, n.memAllocMi),
+      cpuReq: pctOf(pods.reduce((a, p) => a + (p.cpuReqM || 0), 0), n.cpuAllocM),
+      memReq: pctOf(pods.reduce((a, p) => a + (p.memReqMi || 0), 0), n.memAllocMi),
+      stats: (D.gpu || []).find((g) => g.node === host),
+      hay: [n.name, n.instance, poolName(n.pool), n.zone, capName(n.capacity), n.gpuProduct]
+        .concat(gpuPods.map((p) => p.model || p.name))
+        .join(' ')
+        .toLowerCase(),
+    });
+  });
+  return { nodes, pools, claims, rpm };
+}
+function infraIssues(m) {
+  const out = [];
+  for (const c of m.claims) {
+    if (c.ready || c.deleting) continue;
+    const type = c.instance ? `<span class="m-id">${esc(c.instance)}</span>` : 'a node';
+    if (c.registered && !c.initialized && minsSince(c.created) >= INFRA.stuckMin) {
+      out.push({
+        lvl: 'crit',
+        what: `${esc(c.pool)}: ${type} joined ${relTime(c.created)} ago and never became ready`,
+        why: esc(c.message || 'The node is in the cluster but does not report what it was started for.'),
+        todo: 'Karpenter does not replace it, and models keep waiting for it. Delete its NodeClaim and a new node starts in its place.',
+        cmd: 'kubectl delete nodeclaim ' + c.name,
+      });
+    } else {
+      const stage = !c.launched
+        ? 'asking the cloud for it'
+        : !c.registered
+          ? 'instance started, joining the cluster'
+          : 'joined, starting its GPU software';
+      out.push({
+        lvl: 'info',
+        what: `${esc(c.pool)}: ${type} is on its way`,
+        why: `${relTime(c.created)} so far · ${stage}${c.message ? ' · ' + esc(c.message) : ''}`,
+      });
+    }
+  }
+  for (const e of D.provisioning || [])
+    out.push({
+      lvl: 'warn',
+      what: `The cloud had no capacity for a node${e.obj ? ' (' + esc(e.obj) + ')' : ''}`,
+      why: `${esc(e.message)}${e.ts ? ' · ' + relTime(e.ts) + ' ago' : ''}${e.count > 1 ? ' · ' + num(e.count) + ' times' : ''}`,
+      todo: 'Nothing to do yet: Karpenter tries other instance types and zones. If it stays, the pool allows too few instance types.',
+    });
+  for (const c of m.claims)
+    if (c.ready && c.drifted && !c.deleting)
+      out.push({
+        lvl: 'info',
+        what: `${esc(c.pool)}: <span class="m-id">${esc((c.node || c.name).split('.')[0])}</span> will be replaced`,
+        why: "Its pool's settings changed since it started. Karpenter starts a replacement first, then drains it.",
+      });
+  // A node that is still starting is NotReady for a minute or two; its claim
+  // above already says "on its way".
+  const arriving = new Set(m.claims.filter((c) => !c.ready && !c.deleting && c.node).map((c) => c.node));
+  for (const a of D.nodeAlerts || []) {
+    if (a.issue === 'NotReady' && arriving.has(a.node)) continue;
+    out.push({
+      lvl: a.sev === 'crit' ? 'crit' : 'warn',
+      what: `<span class="m-id">${esc(String(a.node).split('.')[0])}</span>: ${esc(a.issue)}`,
+      why: 'Reported by the node itself.',
+    });
+  }
+  for (const n of m.nodes) {
+    if (n.memPct >= INFRA.memWarn)
+      out.push({
+        lvl: n.memPct >= INFRA.memBad ? 'crit' : 'warn',
+        what: `<span class="m-id">${esc(n.host)}</span> is at ${n.memPct}% memory`,
+        why: `${esc(n.instance)} in ${esc(poolName(n.pool))} · ${n.pods.length} pods · ${n.memReq}% reserved`,
+        todo: 'The next pod placed here may not fit. Karpenter adds a node when a pod cannot be scheduled, not when a node is nearly full.',
+      });
+    else if (n.cpuPct >= INFRA.cpuWarn)
+      out.push({
+        lvl: 'warn',
+        what: `<span class="m-id">${esc(n.host)}</span> is at ${n.cpuPct}% CPU`,
+        why: `${esc(n.instance)} in ${esc(poolName(n.pool))} · ${n.pods.length} pods`,
+      });
+  }
+  for (const p of D.pods || [])
+    if (p.phase === 'Pending' && !p.node && minsSince(p.created) >= INFRA.pendingMin)
+      out.push({
+        lvl: 'warn',
+        what: `<span class="m-id">${esc(p.name)}</span> has waited ${relTime(p.created)} for a node`,
+        why: `namespace ${esc(p.namespace)}${p.gpu ? ' · needs a GPU' : ''}`,
+      });
+  const rank = { crit: 0, warn: 1, info: 2 };
+  return out.sort((a, b) => rank[a.lvl] - rank[b.lvl]);
+}
+function infraAttn(m) {
+  const label = { crit: 'Problem', warn: 'Warning', info: 'In progress' };
+  const issues = infraIssues(m);
+  if (!issues.length)
+    return '<div class="infra-empty"><span class="dot ok"></span>Nothing needs attention. Every node is ready and none is close to full.</div>';
+  return issues
+    .map(
+      (i) =>
+        `<div class="alert"><span class="stag ${i.lvl}">${label[i.lvl]}</span><div style="min-width:0"><div class="at">${i.what}</div>` +
+        (i.why ? `<div class="ad">${i.why}</div>` : '') +
+        (i.todo ? `<div class="ad">${i.todo}</div>` : '') +
+        (i.cmd ? `<div class="code" style="margin-top:7px">${esc(i.cmd)}</div>` : '') +
+        `</div>` +
+        (i.cmd
+          ? `<div class="ax"><button class="btn dismiss" data-copy="${esc(i.cmd)}" onclick="infraCopy(this)">Copy command</button></div>`
+          : '') +
+        `</div>`,
+    )
+    .join('');
+}
+function infraSlots(n, m) {
+  if (!n.gpu) return '<div class="gs none">no GPU reported by this node</div>';
+  const share = (n.hourly || 0) / n.gpu;
+  const used = n.gpuPods.map((p) => {
+    const rate = m.rpm[p.model];
+    const load = rate == null ? 'load unknown' : rate > 0 ? num(rate) + ' req/min' : 'no requests right now';
+    return (
+      `<div class="gs ${p.model ? 'used' : 'none'}" style="flex:${Math.max(1, p.gpu)}" title="${esc(p.name)}"><b>${esc(p.model || p.name)}</b>` +
+      `<small>${p.model ? load : 'not a platform model'}${p.gpu > 1 ? ' · ' + num(p.gpu) + ' GPUs' : ''} · ${usd(share * p.gpu)}/hr</small></div>`
+    );
+  });
+  return used.concat(Array.from({ length: n.free }, () => '<div class="gs free">free</div>')).join('');
+}
+function infraGpuDetail(n, m) {
+  const shared = n.pool === 'gpu-shared',
+    unit = shared ? 'slice' : 'GPU',
+    share = n.gpu ? (n.hourly || 0) / n.gpu : 0;
+  const util = n.stats && n.stats.util && n.stats.util.length ? Math.round(Math.max.apply(null, n.stats.util.map((x) => x || 0))) : null;
+  const mems = ((n.stats && n.stats.mem) || []).filter((x) => x != null);
+  const mem = mems.length ? Math.round(Math.max.apply(null, mems)) : null;
+  const unused = n.free ? ` ${usd(share * n.free)}/hr is unused.` : '';
+  const note = !n.gpu
+    ? 'This node belongs to a GPU pool but reports no GPU. See Needs attention.'
+    : n.taken === 0
+      ? 'Nothing is running here. Karpenter removes an empty GPU node after a few minutes.'
+      : n.free && shared
+        ? `<b>${n.free} more small model${n.free === 1 ? ' fits' : 's fit'}</b> here at no extra cost.${unused}`
+        : n.free
+          ? `${n.free} GPU${n.free === 1 ? ' is' : 's are'} unused on this node.${unused}`
+          : 'Full.';
+  return (
+    `<div style="display:flex;gap:16px;align-items:stretch;flex-wrap:wrap"><div class="gpuslots big" style="flex:3;min-width:260px">${infraSlots(n, m)}</div>` +
+    `<div style="flex:1;min-width:190px"><div class="bar-lbl"><span>GPU use</span><span>${util == null ? '—' : util + '%'}</span></div><div class="bar"><i style="width:${Math.min(100, util || 0)}%;background:${(util || 0) > 85 ? 'var(--amber)' : 'var(--green)'}"></i></div>` +
+    `<div class="bar-lbl" style="margin-top:9px"><span>GPU memory</span><span>${mem == null ? (shared ? 'not reported for shared GPUs' : '—') : mem + '%'}</span></div><div class="bar"><i style="width:${Math.min(100, mem || 0)}%;background:var(--purple)"></i></div></div></div>` +
+    `<div class="infra-note">${n.gpu ? `${n.taken} of ${n.gpu} ${unit}s in use. ` : ''}${note}</div>`
+  );
+}
+const infraDefaultOpen = (total) => (infraUi.allOpen == null ? total <= INFRA.expandUpTo : infraUi.allOpen);
+const infraIsOpen = (name, total) => (infraUi.toggled.has(name) ? !infraDefaultOpen(total) : infraDefaultOpen(total));
+function infraGpu(m, shown) {
+  const all = m.nodes.filter((n) => n.isGpu);
+  if (!all.length)
+    return '<div class="infra-empty">No GPU nodes are running, which costs nothing. Deploying a model starts one; expect a few minutes for the node and its GPU software.</div>';
+  const list = shown.filter((n) => n.isGpu && (!infraUi.free || n.free > 0));
+  if (!list.length) return `<div class="infra-empty">No GPU node matches the filter. ${all.length} running.</div>`;
+  const pools = [...new Set(list.map((n) => n.pool))].sort((a, b) => poolRank(a) - poolRank(b) || (a < b ? -1 : 1));
+  let rows = '';
+  for (const pool of pools) {
+    const mine = list.filter((n) => n.pool === pool).sort((a, b) => b.free - a.free || (a.host < b.host ? -1 : 1));
+    const unit = pool === 'gpu-shared' ? 'slices' : 'GPUs';
+    const slots = mine.reduce((a, n) => a + (n.gpu || 0), 0),
+      taken = mine.reduce((a, n) => a + n.taken, 0);
+    rows += `<tr class="grp"><td colspan="8"><b class="m-id" style="color:var(--text)">${esc(pool)}</b> · ${mine.length} node${mine.length === 1 ? '' : 's'} · ${taken} of ${slots} ${unit} in use · ${slots - taken ? slots - taken + ' free' : 'none free'}<span style="float:right">${usd(mine.reduce((a, n) => a + (n.hourly || 0), 0))}/hr</span></td></tr>`;
+    for (const n of mine) {
+      const open = infraIsOpen(n.name, all.length);
+      const mini =
+        n.gpuPods.map((p) => `<i class="${p.model ? 'u' : 'o'}"></i>`.repeat(Math.max(1, p.gpu))).join('') +
+        '<i class="f"></i>'.repeat(n.free);
+      const names = [...new Set(n.gpuPods.map((p) => p.model || p.name))];
+      const util = n.stats && n.stats.util && n.stats.util.length ? Math.round(Math.max.apply(null, n.stats.util.map((x) => x || 0))) + '%' : '—';
+      rows +=
+        `<tr data-toggle="${esc(n.name)}" onclick="infraToggle(this.dataset.toggle)" aria-expanded="${open}"><td><span class="dot ${n.gpu ? 'ok' : 'bad'}"></span><button class="nlink" data-node="${esc(n.name)}" onclick="event.stopPropagation();openNode(this.dataset.node)">${esc(n.host)}</button></td>` +
+        `<td><span class="m-id">${esc(n.instance)}</span>${n.gpuProduct ? ' <span class="muted">' + esc(n.gpuProduct) + '</span>' : ''}</td><td>${esc(String(n.zone).slice(-2))}</td><td>${esc(capName(n.capacity))}</td>` +
+        `<td><span class="mslots" title="${n.taken} of ${n.gpu || 0} in use">${mini || '<span class="muted">—</span>'}</span></td><td>${names.length ? esc(names.join(', ')) : '<span class="muted">empty</span>'}</td>` +
+        `<td class="num">${util}</td><td class="num">${usd(n.hourly)}</td></tr>`;
+      if (open) rows += `<tr class="exp"><td colspan="8">${infraGpuDetail(n, m)}</td></tr>`;
+    }
+  }
+  return `<table><thead><tr><th>Node</th><th>Type</th><th>Zone</th><th>Capacity</th><th>Slots</th><th>Models</th><th class="num">GPU use</th><th class="num">$/hr</th></tr></thead><tbody>${rows}</tbody></table>`;
+}
+const INFRA_COLS = [
+  ['name', 'Node', (n) => n.host],
+  ['instance', 'Type', (n) => n.instance],
+  ['pool', 'Pool', (n) => String(poolRank(n.pool)).padStart(3, '0') + n.pool],
+  ['zone', 'Zone', (n) => n.zone],
+  ['cpuPct', 'CPU', (n) => n.cpuPct],
+  ['memPct', 'Memory', (n) => n.memPct],
+  ['pods', 'Pods', (n) => n.pods.length, 1],
+  ['created', 'Up', (n) => -new Date(n.created).getTime() || 0],
+  ['hourly', '$/hr', (n) => n.hourly || 0, 1],
+];
+function infraPlatform(m, shown) {
+  const col = INFRA_COLS.find((c) => c[0] === infraUi.sort) || INFRA_COLS[2];
+  const rows = shown
+    .filter((n) => !n.isGpu)
+    .sort((a, b) => {
+      const x = col[2](a),
+        y = col[2](b);
+      return (x > y ? 1 : x < y ? -1 : a.host < b.host ? -1 : 1) * infraUi.dir;
+    });
+  const head = INFRA_COLS.map(
+    (c) =>
+      `<th class="sort${c[3] ? ' num' : ''}${c[0] === infraUi.sort ? ' on' : ''}" data-k="${c[0]}" onclick="infraSort(this.dataset.k)">${c[1]}${c[0] === infraUi.sort ? (infraUi.dir > 0 ? ' ↑' : ' ↓') : ''}</th>`,
+  ).join('');
+  const body = rows.length
+    ? rows
+        .map(
+          (n) =>
+            `<tr class="${n.memPct >= INFRA.memWarn || n.cpuPct >= INFRA.cpuWarn ? 'hot' : ''}" data-node="${esc(n.name)}" onclick="openNode(this.dataset.node)"><td><span class="m-id" style="color:var(--text);font-weight:700">${esc(n.host)}</span></td>` +
+            `<td><span class="m-id">${esc(n.instance)}</span> <span class="muted">${esc(capName(n.capacity))}</span></td><td>${esc(poolName(n.pool))}</td><td>${esc(String(n.zone).slice(-2))}</td>` +
+            `<td>${ubar(n.cpuPct, n.cpuReq, INFRA.cpuWarn)}</td><td>${ubar(n.memPct, n.memReq, INFRA.memWarn, INFRA.memBad)}</td>` +
+            `<td class="num">${n.pods.length}</td><td>${relTime(n.created)}</td><td class="num">${usd(n.hourly)}</td></tr>`,
+        )
+        .join('')
+    : `<tr class="nolink"><td colspan="${INFRA_COLS.length}" class="muted">No platform node matches the filter.</td></tr>`;
+  return `<table><thead><tr>${head}</tr></thead><tbody>${body}</tbody></table>`;
+}
+function infraPools(m) {
+  const known = {};
+  m.pools.forEach((p) => (known[p.name] = p));
+  const names = [...new Set(m.pools.map((p) => p.name).concat(m.nodes.map((n) => n.pool)))].sort(
+    (a, b) => poolRank(a) - poolRank(b) || (a < b ? -1 : 1),
+  );
+  const sum = (list, f) => list.reduce((a, n) => a + (f(n) || 0), 0);
+  let total = 0;
+  const rows = names
+    .map((name) => {
+      const mine = m.nodes.filter((n) => n.pool === name),
+        p = known[name] || {};
+      const slots = sum(mine, (n) => n.gpu),
+        used = sum(mine, (n) => n.taken),
+        hourly = sum(mine, (n) => n.hourly);
+      const isGpu = !!p.isGpu || slots > 0,
+        unit = name === 'gpu-shared' ? 'slices' : 'GPUs';
+      total += hourly;
+      const use =
+        isGpu && !mine.length
+          ? '<span class="muted">No nodes. Starts one when a model needs it.</span>'
+          : isGpu
+            ? `<b>${used} of ${slots}</b> ${unit} in use${slots - used ? ` <span class="muted">· ${slots - used} free</span>` : ''}`
+            : `<div style="display:grid;grid-template-columns:auto minmax(110px,190px);gap:4px 10px;align-items:center"><span class="muted">CPU</span>${ubar(pctOf(sum(mine, (n) => n.cpuUsedM), sum(mine, (n) => n.cpuAllocM)))}<span class="muted">Memory</span>${ubar(pctOf(sum(mine, (n) => n.memUsedMi), sum(mine, (n) => n.memAllocMi)), null, INFRA.memWarn, INFRA.memBad)}</div>`;
+      const limit =
+        isGpu && p.gpuLimit != null
+          ? `${ubar(pctOf(slots, p.gpuLimit))}<div class="m-id" style="margin-top:3px">${slots} of ${num(p.gpuLimit)} ${unit} started</div>`
+          : '<span class="muted">no limit set</span>';
+      const zones = {};
+      mine.forEach((n) => (zones[String(n.zone).slice(-2)] = (zones[String(n.zone).slice(-2)] || 0) + 1));
+      const zoneText = Object.keys(zones).sort().map((z) => `${esc(z)}: ${zones[z]}`).join(', ');
+      const kinds = name === '__mng__' ? 'on-demand' : (p.capacityTypes || [...new Set(mine.map((n) => capName(n.capacity)))]).join(' or ');
+      const refuses = (p.excludedFamilies || []).join(', ');
+      return (
+        `<tr class="nolink"><td><span class="dot ${mine.length ? 'ok' : ''}" style="${mine.length ? '' : 'background:var(--border-light)'}"></span><span class="m-name">${esc(poolName(name))}</span><div class="m-id" style="margin-left:15px">${esc(POOLMAP[name] || p.workload || '')}</div></td>` +
+        `<td class="num">${mine.length}</td><td>${use}</td><td>${limit}</td><td>${zoneText || '<span class="muted">—</span>'}</td><td>${esc(kinds)}</td>` +
+        `<td>${refuses ? '<span class="m-id">' + esc(refuses) + '</span>' : '<span class="muted">—</span>'}</td><td class="num">${hourly ? usd(hourly) : '<span class="muted">$0</span>'}</td></tr>`
+      );
+    })
+    .join('');
+  return `<table><thead><tr><th>Pool</th><th class="num">Nodes</th><th>In use</th><th>Against its limit</th><th>Nodes by zone</th><th>Spot or on-demand</th><th>Refuses</th><th class="num">$/hr</th></tr></thead><tbody>${rows}<tr class="nolink"><td colspan="7" class="muted">Whole cluster, nodes only</td><td class="num"><b>${usd(total)}</b></td></tr></tbody></table>`;
+}
+function infra() {
+  const m = infraModel();
+  const words = String(($('infra-q') || {}).value || '')
+    .toLowerCase()
+    .split(/\s+/)
+    .filter(Boolean);
+  const shown = m.nodes.filter((n) => words.every((w) => n.hay.includes(w)));
+  const gpuNodes = m.nodes.filter((n) => n.isGpu);
+  const free = gpuNodes.reduce((a, n) => a + n.free, 0);
+  put(
+    'infra-sub',
+    `${m.nodes.length} node${m.nodes.length === 1 ? '' : 's'} · ${gpuNodes.length} with GPUs · ${free} free GPU slot${free === 1 ? '' : 's'}`,
+  );
+  put('infra-attn', infraAttn(m));
+  put('infra-gpu', infraGpu(m, shown));
+  put('infra-platform', infraPlatform(m, shown));
+  put('infra-nodepools', infraPools(m));
+  $('infra-expand').textContent = infraDefaultOpen(gpuNodes.length) ? 'Collapse all' : 'Expand all';
+  $('infra-expand').dataset.count = gpuNodes.length;
+}
+function infraRefresh() {
+  infra();
+}
+function infraToggle(name) {
+  if (infraUi.toggled.has(name)) infraUi.toggled.delete(name);
+  else infraUi.toggled.add(name);
+  infra();
+}
+function infraExpandAll() {
+  infraUi.allOpen = !infraDefaultOpen(Number($('infra-expand').dataset.count || 0));
+  infraUi.toggled.clear();
+  infra();
+}
+function infraToggleFree() {
+  infraUi.free = !infraUi.free;
+  const el = $('infra-free');
+  el.classList.toggle('active', infraUi.free);
+  el.setAttribute('aria-pressed', String(infraUi.free));
+  infra();
+}
+function infraSort(key) {
+  infraUi.dir = infraUi.sort === key ? -infraUi.dir : 1;
+  infraUi.sort = key;
+  infra();
+}
+function infraCopy(btn) {
+  const done = (ok) => {
+    btn.textContent = ok ? 'Copied' : 'Select the command and copy it';
+    setTimeout(() => (btn.textContent = 'Copy command'), 1800);
+  };
+  if (!navigator.clipboard) return done(false);
+  navigator.clipboard.writeText(btn.dataset.copy).then(() => done(true), () => done(false));
+}
+function fSev(s) {
+  s = (s || '').toUpperCase();
+  return { LOW: '#34d399', MEDIUM: '#fbbf24', HIGH: '#fb923c', CRITICAL: '#f87171' }[s] || '#8b93a7';
+}
+function invCard(iv) {
+  const f = iv.findings;
+  const isObj = f && typeof f === 'object';
+  const summary = isObj ? f.summary || '' : f || '';
+  const sev = isObj ? f.severity || '' : '';
+  const risk = isObj ? f.risk_assessment || '' : '';
+  const cmds = isObj && Array.isArray(f.fix_commands) ? f.fix_commands : [];
+  const sevB = sev
+    ? `<span class="sev" style="background:${fSev(sev)}22;color:${fSev(sev)}">${esc(sev)}</span>`
+    : '';
+  const did = 'invd-' + iv.id;
+  const detail =
+    `<div id="${esc(did)}" class="inv-detail" style="display:none">` +
+    (risk ? `<div class="inv-k">Risk assessment</div><div class="inv-v">${esc(risk)}</div>` : '') +
+    `<div class="inv-k">Proposed fix commands</div>` +
+    (cmds.length
+      ? `<pre class="inv-cmds">${esc(cmds.join('\n'))}</pre>`
+      : '<div class="inv-v muted">No commands proposed — nothing to apply (informational).</div>') +
+    `</div>`;
+  return `<div class="alert"><span class="ai">🔧</span><div style="flex:1"><div class="at">${esc(iv.resource_kind || '')} ${esc(iv.resource_name || '')} — fix ready ${sevB}</div><div class="ad">${esc(summary.slice(0, 240))}</div><a class="inv-more" data-target="${esc(did)}" onclick="toggleDetail(this)">details ▸</a>${detail}</div><div class="ax"><button class="btn approve" data-id="${esc(iv.id)}" onclick="approve(this.dataset.id,this)">Approve fix</button><button class="btn dismiss" data-id="${esc(iv.id)}" onclick="dismiss(this.dataset.id,this)">Dismiss</button></div></div>`;
+}
+function toggleDetail(a) {
+  const e = document.getElementById(a.dataset.target);
+  const o = e.style.display === 'none';
+  e.style.display = o ? 'block' : 'none';
+  a.textContent = o ? 'hide details ▾' : 'details ▸';
+}
+function healthView() {
+  const al = alertList();
+  $('health-alerts').innerHTML =
+    (invs.length ? invs.map(invCard).join('') : '') +
+    (al.length
+      ? al.map(alertRow).join('')
+      : invs.length
+        ? ''
+        : '<div class="muted" style="padding:8px 0">✓ All models and apps healthy · no pending fixes</div>');
+  const a = D.argocd || [];
+  $('argo-sync').innerHTML = (D.sources || {}).argocd
+    ? a.length
+      ? a
+          .map(
+            (x) =>
+              `<div class="alert"><span class="ai">${x.health === 'Healthy' && x.sync === 'Synced' ? '🟢' : '🟡'}</span><div><div class="at">${esc(x.name)}</div><div class="ad">${esc(x.sync)} · ${esc(x.health)}</div></div></div>`,
+          )
+          .join('')
+      : '<div class="muted">no applications</div>'
+    : '<div class="muted">ArgoCD status unavailable</div>';
+}
 // Mutating calls carry X-Requested-With: the backend requires it as CSRF
 // protection and (on the ALB path) oauth2-proxy injects the verified identity
 // token. A non-OK response means auth/CSRF was refused — surface it rather than
 // silently resetting the button (e.g. approvals aren't available on the raw
 // tunnel path, which has no verified identity).
-async function mutate(url){
-  const r=await fetch(url,{method:'POST',headers:{'X-Requested-With':'dashboard'}});
-  if(!r.ok){let m='';try{m=(await r.json()).error||'';}catch(e){}
-    alert('Action refused ('+r.status+'): '+(m||'not authorized'));}
-  return r.ok;}
-async function approve(id,b){b.disabled=true;b.textContent='…';try{await mutate('/investigations/'+id+'/approve');}catch(e){}poll();}
-async function dismiss(id,b){b.disabled=true;try{await mutate('/investigations/'+id+'/dismiss');}catch(e){}poll();}
+async function mutate(url) {
+  const r = await fetch(url, { method: 'POST', headers: { 'X-Requested-With': 'dashboard' } });
+  if (!r.ok) {
+    let m = '';
+    try {
+      m = (await r.json()).error || '';
+    } catch (e) {}
+    alert('Action refused (' + r.status + '): ' + (m || 'not authorized'));
+  }
+  return r.ok;
+}
+async function approve(id, b) {
+  b.disabled = true;
+  b.textContent = '…';
+  try {
+    await mutate('/api/v1/investigations/' + encodeURIComponent(id) + '/approve');
+  } catch (e) {}
+  loadInvestigations();
+}
+async function dismiss(id, b) {
+  b.disabled = true;
+  try {
+    await mutate('/api/v1/investigations/' + encodeURIComponent(id) + '/dismiss');
+  } catch (e) {}
+  loadInvestigations();
+}
 
 // Over `platformctl tunnel` you reach the dashboard at localhost:9090 and the
 // other UIs are port-forwarded to localhost too — but the server-built links
@@ -478,59 +1681,147 @@ async function dismiss(id,b){b.disabled=true;try{await mutate('/investigations/'
 // When we're served from localhost, rewrite the UI links to localhost:<port> so
 // the Quick Links work through the tunnel. Edge / in-VPC (ALB) access is left as
 // the server built it. ArgoCD has its own endpoint and is never rewritten.
-const TUNNEL_URLS={webui:'http://localhost:8080/',litellm:'http://localhost:4000/ui/',langfuse:'http://localhost:3000/'};
-function resolveLinkUrl(x){if(!x||!x.url)return'#';const h=location.hostname;if(h==='localhost'||h==='127.0.0.1'){const lbl=(x.label||'').toLowerCase();if(lbl.includes('webui'))return TUNNEL_URLS.webui;if(lbl.includes('litellm'))return TUNNEL_URLS.litellm;if(lbl.includes('langfuse'))return TUNNEL_URLS.langfuse;}return x.url;}
-function links(){const l=D.links||[];$('nav-links').innerHTML=l.map(x=>`<a class="nav-link" href="${esc(resolveLinkUrl(x))}" target="_blank" rel="noopener" title="${esc(x.desc||'')}">${x.icon||'🔗'} ${esc(x.label)} ↗</a>`).join('');}
-function linkFor(kind){return (D.links||[]).find(l=>l.label.toLowerCase().includes(kind))||{}}
-function openLink(kind){const u=resolveLinkUrl(linkFor(kind));if(u&&u!=='#')window.open(u,'_blank');}
-function copyCurl(name,ev){const u=(linkFor('litellm').url||'$LITELLM').replace(/\/ui.*/,'');const t=`curl ${u}/v1/chat/completions -H "Authorization: Bearer $LITELLM_KEY" -H "Content-Type: application/json" -d '{"model":"${name}","messages":[{"role":"user","content":"Hello"}]}'`;const fb=()=>{try{const b=ev&&ev.target&&ev.target.closest('button');if(b){const o=b.innerHTML;b.innerHTML='✓ copied';setTimeout(()=>{b.innerHTML=o;},1200);}}catch(e){}};if(navigator.clipboard&&navigator.clipboard.writeText){navigator.clipboard.writeText(t).then(fb,fb);}else{fb();}}
+const TUNNEL_URLS = {
+  webui: 'http://localhost:8080/',
+  litellm: 'http://localhost:4000/ui/',
+  langfuse: 'http://localhost:3000/',
+};
+function resolveLinkUrl(x) {
+  if (!x || !x.url) return '#';
+  const h = location.hostname;
+  if (h === 'localhost' || h === '127.0.0.1') {
+    const lbl = (x.label || '').toLowerCase();
+    if (lbl.includes('webui')) return TUNNEL_URLS.webui;
+    if (lbl.includes('litellm')) return TUNNEL_URLS.litellm;
+    if (lbl.includes('langfuse')) return TUNNEL_URLS.langfuse;
+  }
+  return safeUrl(x.url);
+}
+function links() {
+  const l = D.links || [];
+  $('nav-links').innerHTML = l
+    .map(
+      (x) =>
+        `<a class="nav-link" href="${esc(resolveLinkUrl(x))}" target="_blank" rel="noopener" title="${esc(x.desc || '')}">${esc(x.icon || '🔗')} ${esc(x.label)} ↗</a>`,
+    )
+    .join('');
+}
+function linkFor(kind) {
+  return (D.links || []).find((l) => l.label.toLowerCase().includes(kind)) || {};
+}
+function openLink(kind) {
+  const u = resolveLinkUrl(linkFor(kind));
+  if (u && u !== '#') window.open(u, '_blank');
+}
+function copyCurl(name, ev) {
+  const u = (linkFor('litellm').url || '$LITELLM').replace(/\/ui.*/, '');
+  const t = `curl ${u}/v1/chat/completions -H "Authorization: Bearer $LITELLM_KEY" -H "Content-Type: application/json" -d '{"model":"${name}","messages":[{"role":"user","content":"Hello"}]}'`;
+  const fb = () => {
+    try {
+      const b = ev && ev.target && ev.target.closest('button');
+      if (b) {
+        const o = b.innerHTML;
+        b.innerHTML = '✓ copied';
+        setTimeout(() => {
+          b.innerHTML = o;
+        }, 1200);
+      }
+    } catch (e) {}
+  };
+  if (navigator.clipboard && navigator.clipboard.writeText) {
+    navigator.clipboard.writeText(t).then(fb, fb);
+  } else {
+    fb();
+  }
+}
 
-function deployHTML(m){
-  const d=m&&m.deploy; const rerr=m&&m.reconcileError;
-  if(!d&&!rerr) return '';
-  let h='<div class="sec-title">Deployment</div>';
-  if(rerr) h+=`<div class="dep-warn"><b>✗ Reconcile error</b> — KRO could not apply this endpoint:<div style="margin-top:5px">${esc(rerr)}</div></div>`;
-  if(!d) return h;
-  const rows=[`<span class="k">Pod phase</span><span class="v">${esc(d.phase||'—')}${d.pod?` · <span class="muted">${esc(d.pod)}</span>`:''}</span>`];
-  if(d.waiting) rows.push(`<span class="k">Container</span><span class="v" style="color:var(--orange)">${esc(d.waiting.reason||'')}${d.waiting.message?` — ${esc(d.waiting.message)}`:''}</span>`);
-  h+=`<div class="kv">${rows.join('')}</div>`;
-  if(d.provisioning&&d.provisioning.length)
-    h+=`<div class="dep-warn"><b>⚠ GPU capacity</b> — Karpenter can't launch a node:<ul>${d.provisioning.map(e=>`<li>${esc(e.reason)}: ${esc(e.message)}</li>`).join('')}</ul></div>`;
-  if(d.events&&d.events.length)
-    h+=`<div class="sub-title">Recent events</div><div class="ev-list">${d.events.map(e=>`<div class="ev ${e.type==='Warning'?'warn':''}"><span class="ev-r">${esc(e.reason)}</span> <span class="ev-m">${esc(e.message)}</span>${e.count>1?` <span class="muted">×${e.count}</span>`:''}</div>`).join('')}</div>`;
-  if(d.log&&d.log.length)
-    h+=`<div class="sub-title">Model loading · log tail</div><div class="code logtail">${d.log.map(l=>esc(l)).join('\n')}</div>`;
+function deployHTML(m) {
+  const d = m && m.deploy;
+  const rerr = m && m.reconcileError;
+  if (!d && !rerr) return '';
+  let h = '<div class="sec-title">Deployment</div>';
+  if (rerr)
+    h += `<div class="dep-warn"><b>✗ Reconcile error</b> — KRO could not apply this endpoint:<div style="margin-top:5px">${esc(rerr)}</div></div>`;
+  if (!d) return h;
+  const rows = [
+    `<span class="k">Pod phase</span><span class="v">${esc(d.phase || '—')}${d.pod ? ` · <span class="muted">${esc(d.pod)}</span>` : ''}</span>`,
+  ];
+  if (d.waiting)
+    rows.push(
+      `<span class="k">Container</span><span class="v" style="color:var(--orange)">${esc(d.waiting.reason || '')}${d.waiting.message ? ` — ${esc(d.waiting.message)}` : ''}</span>`,
+    );
+  h += `<div class="kv">${rows.join('')}</div>`;
+  if (d.provisioning && d.provisioning.length)
+    h += `<div class="dep-warn"><b>⚠ GPU capacity</b> — Karpenter can't launch a node:<ul>${d.provisioning.map((e) => `<li>${esc(e.reason)}: ${esc(e.message)}</li>`).join('')}</ul></div>`;
+  if (d.events && d.events.length)
+    h += `<div class="sub-title">Recent events</div><div class="ev-list">${d.events.map((e) => `<div class="ev ${e.type === 'Warning' ? 'warn' : ''}"><span class="ev-r">${esc(e.reason)}</span> <span class="ev-m">${esc(e.message)}</span>${e.count > 1 ? ` <span class="muted">×${e.count}</span>` : ''}</div>`).join('')}</div>`;
+  if (d.log && d.log.length)
+    h += `<div class="sub-title">Model loading · log tail</div><div class="code logtail">${d.log.map((l) => esc(l)).join('\n')}</div>`;
   return h;
 }
-function scaleBadge(m){const sc=m&&m.scale;if(!sc||!sc.length)return'';const cur=sc.reduce((s,a)=>s+a.current,0),mx=sc.reduce((s,a)=>s+a.max,0);const atMax=sc.some(a=>a.atMax),sat=sc.some(a=>a.saturated);const cls=atMax?'crit':(sat?'warn':'ok');const t=atMax?' · at max, add capacity':(sat?' · scaling up':'');return `<span class="stag ${cls}" title="autoscaling ${cur}/${mx} replicas${t}">⇅ ${cur}/${mx}</span>`;}
-function scaleHTML(m){
-  const sc=m&&m.scale; if(!sc||!sc.length) return '';
-  let h='<div class="sec-title">Autoscaling</div>';
-  sc.forEach(a=>{
-    const label=a.role?a.role.charAt(0).toUpperCase()+a.role.slice(1):'Replicas';
-    const span=Math.max(1,a.max-a.min), pct=Math.round((a.current-a.min)/span*100);
-    const col=a.atMax?'var(--red)':(a.saturated?'var(--amber)':'var(--green)');
-    const tag=a.atMax?'<span class="stag crit">at max · add capacity</span>':(a.saturated?'<span class="stag warn">scaling up</span>':'<span class="stag ok">steady</span>');
-    h+=`<div class="scale-pool"><div class="scale-hd"><b>${esc(label)}</b>${tag}<span class="cnt">${a.current} / ${a.max}${a.current!==a.desired?' → '+a.desired:''} · min ${a.min}</span></div>`;
-    h+=`<div class="scale-bar"><div class="scale-fill" style="width:${Math.min(100,Math.max(4,pct))}%;background:${col}"></div></div>`;
-    h+=`<div class="scale-sig">${esc(a.signal)} &nbsp;<b style="color:${col}">${a.value}</b> / ${a.target} ${esc(a.unit)} target</div>`;
-    const L=v=>v==null?null:(v>=1000?(v/1000).toFixed(v>=10000?0:1)+'s':v+'ms');
-    const lat=a.role==='prefill'?(L(a.ttftMs)?['TTFT p95 '+L(a.ttftMs)]:[])
-             :a.role==='decode'?(L(a.itlMs)?['ITL p95 '+L(a.itlMs)]:[])
-             :[].concat(L(a.ttftMs)?['TTFT '+L(a.ttftMs)]:[], L(a.itlMs)?['ITL '+L(a.itlMs)]:[]);
-    if(lat.length)h+=`<div class="scale-sig">latency (p95) · ${lat.join(' &nbsp;·&nbsp; ')}</div>`;
-    if(a.events&&a.events.length) h+=`<div class="scale-ev">${a.events.map(e=>`<div class="ev">⇅ ${esc(e.msg)} <span class="muted">${relTime(e.ts)} ago</span></div>`).join('')}</div>`;
-    h+='</div>';
+function scaleBadge(m) {
+  const sc = m && m.scale;
+  if (!sc || !sc.length) return '';
+  const cur = sc.reduce((s, a) => s + a.current, 0),
+    mx = sc.reduce((s, a) => s + a.max, 0);
+  const atMax = sc.some((a) => a.atMax),
+    sat = sc.some((a) => a.saturated);
+  const cls = atMax ? 'crit' : sat ? 'warn' : 'ok';
+  const t = atMax ? ' · at max, add capacity' : sat ? ' · scaling up' : '';
+  return `<span class="stag ${cls}" title="autoscaling ${cur}/${mx} replicas${t}">⇅ ${cur}/${mx}</span>`;
+}
+function scaleHTML(m) {
+  const sc = m && m.scale;
+  if (!sc || !sc.length) return '';
+  let h = '<div class="sec-title">Autoscaling</div>';
+  sc.forEach((a) => {
+    const label = a.role ? a.role.charAt(0).toUpperCase() + a.role.slice(1) : 'Replicas';
+    const span = Math.max(1, a.max - a.min),
+      pct = Math.round(((a.current - a.min) / span) * 100);
+    const col = a.atMax ? 'var(--red)' : a.saturated ? 'var(--amber)' : 'var(--green)';
+    const tag = a.atMax
+      ? '<span class="stag crit">at max · add capacity</span>'
+      : a.saturated
+        ? '<span class="stag warn">scaling up</span>'
+        : '<span class="stag ok">steady</span>';
+    h += `<div class="scale-pool"><div class="scale-hd"><b>${esc(label)}</b>${tag}<span class="cnt">${a.current} / ${a.max}${a.current !== a.desired ? ' → ' + a.desired : ''} · min ${a.min}</span></div>`;
+    h += `<div class="scale-bar"><div class="scale-fill" style="width:${Math.min(100, Math.max(4, pct))}%;background:${col}"></div></div>`;
+    h += `<div class="scale-sig">${esc(a.signal)} &nbsp;<b style="color:${col}">${a.value}</b> / ${a.target} ${esc(a.unit)} target</div>`;
+    const L = (v) => (v == null ? null : v >= 1000 ? (v / 1000).toFixed(v >= 10000 ? 0 : 1) + 's' : v + 'ms');
+    const lat =
+      a.role === 'prefill'
+        ? L(a.ttftMs)
+          ? ['TTFT p95 ' + L(a.ttftMs)]
+          : []
+        : a.role === 'decode'
+          ? L(a.itlMs)
+            ? ['ITL p95 ' + L(a.itlMs)]
+            : []
+          : [].concat(L(a.ttftMs) ? ['TTFT ' + L(a.ttftMs)] : [], L(a.itlMs) ? ['ITL ' + L(a.itlMs)] : []);
+    if (lat.length) h += `<div class="scale-sig">latency (p95) · ${lat.join(' &nbsp;·&nbsp; ')}</div>`;
+    if (a.events && a.events.length)
+      h += `<div class="scale-ev">${a.events.map((e) => `<div class="ev">⇅ ${esc(e.msg)} <span class="muted">${relTime(e.ts)} ago</span></div>`).join('')}</div>`;
+    h += '</div>';
   });
   return h;
 }
-function openModel(name,keep){const m=(D.models||[]).find(x=>x.name===name);if(!m){closeDrawer();return;}selected=name;selectedNode=null;selectedTeam=null;if(!keep)history.replaceState(null,'','#models/model/'+encodeURIComponent(name));const s=(D.sources||{}).litellm;
-  $('drawer').innerHTML=`<button class="drawer-x" onclick="closeDrawer()">×</button>
-   <div style="display:flex;align-items:center;gap:10px"><span class="dot ${m.status==='running'?'ok':m.status==='error'?'bad':'warn'}"></span><span style="font-size:19px;font-weight:800">${esc(m.name)}</span>${tierBadge(m.tier)}</div>
+function openModel(name, keep) {
+  const m = (D.models || []).find((x) => x.name === name);
+  if (!m) {
+    closeDrawer();
+    return;
+  }
+  selected = name;
+  selectedNode = null;
+  selectedTeam = null;
+  if (!keep) history.replaceState(null, '', '#models/model/' + encodeURIComponent(name));
+  const s = srcHasData('litellm-metrics');
+  $('drawer').innerHTML = `<button class="drawer-x" onclick="closeDrawer()">×</button>
+   <div style="display:flex;align-items:center;gap:10px"><span class="dot ${m.status === 'running' ? 'ok' : m.status === 'error' ? 'bad' : 'warn'}"></span><span style="font-size:19px;font-weight:800">${esc(m.name)}</span>${tierBadge(m.tier)}</div>
    <div class="m-id" style="margin-top:4px">${esc(m.model)}</div>
-   <div class="mini-kpi"><div class="mk"><div class="mkv" style="color:var(--green)">${s?num(m.rpm):'—'}</div><div class="mkl">req/min</div></div><div class="mk"><div class="mkv">${s?ms(m.p95):'—'}</div><div class="mkl">p95</div></div><div class="mk"><div class="mkv">$${(m.costHr||0).toFixed(2)}</div><div class="mkl">$/hr</div></div><div class="mk"><div class="mkv">${m.tokPerDollar!=null?num(m.tokPerDollar):'—'}</div><div class="mkl">tok/$</div></div></div>
+   <div class="mini-kpi"><div class="mk"><div class="mkv" style="color:var(--green)">${s ? num(m.rpm) : '—'}</div><div class="mkl">req/min</div></div><div class="mk"><div class="mkv">${s ? ms(m.p95) : '—'}</div><div class="mkl">p95</div></div><div class="mk"><div class="mkv">$${(m.costHr || 0).toFixed(2)}</div><div class="mkl">$/hr</div></div><div class="mk"><div class="mkv">${m.tokPerDollar != null ? num(m.tokPerDollar) : '—'}</div><div class="mkl">tok/$</div></div></div>
    <div class="sec-title">Configuration</div>
-   <div class="kv"><span class="k">Serving tier</span><span class="v">${tierLabel(m.tier)}</span><span class="k">GPU</span><span class="v">${esc(m.gpu)}</span>${(m.scale&&m.scale.length)?'':(m.prefillReplicas!=null?`<span class="k">Prefill / Decode</span><span class="v">${m.prefillReplicas} / ${m.decodeReplicas} replicas</span>`:(m.replicas!=null?`<span class="k">Replicas</span><span class="v">${m.availableReplicas||0} / ${m.replicas} ready</span>`:''))}${m.router?`<span class="k">llm-d router</span><span class="v">${esc(m.router)}</span>`:''}${s?`<span class="k">Error rate</span><span class="v">${m.errPct==null?'—':m.errPct+'%'}</span><span class="k">Tokens/s</span><span class="v">${num(m.tps)}</span>`:''}${m.health?`<span class="k">Health</span><span class="v">${esc(m.health)}</span>`:''}</div>
+   <div class="kv"><span class="k">Serving tier</span><span class="v">${tierLabel(m.tier)}</span><span class="k">GPU</span><span class="v">${esc(m.gpu)}</span>${m.scale && m.scale.length ? '' : m.prefillReplicas != null ? `<span class="k">Prefill / Decode</span><span class="v">${m.prefillReplicas} / ${m.decodeReplicas} replicas</span>` : m.replicas != null ? `<span class="k">Replicas</span><span class="v">${m.availableReplicas || 0} / ${m.replicas} ready</span>` : ''}${m.router ? `<span class="k">llm-d router</span><span class="v">${esc(m.router)}</span>` : ''}${s ? `<span class="k">Error rate</span><span class="v">${m.errPct == null ? '—' : m.errPct + '%'}</span><span class="k">Tokens/s</span><span class="v">${num(m.tps)}</span>` : ''}${m.health ? `<span class="k">Health</span><span class="v">${esc(m.health)}</span>` : ''}</div>
    ${scaleHTML(m)}
    ${deployHTML(m)}
    <div class="sec-title">Call it (via LiteLLM)</div>
@@ -538,89 +1829,284 @@ function openModel(name,keep){const m=(D.models||[]).find(x=>x.name===name);if(!
   -H "Authorization: Bearer $KEY" \
   -d '{"model":"${esc(m.name)}","messages":[{"role":"user","content":"Hi"}]}'</div>
    <div style="display:flex;gap:8px;margin-top:18px"><button class="btn approve" style="flex:1" onclick="openLink('langfuse')">📊 Langfuse</button><button class="btn dismiss" style="flex:1" onclick="openLink('webui')">💬 WebUI</button></div>`;
-  if(!keep){showDrawer();}}
-function closeDrawer(){selected=null;selectedNode=null;selectedTeam=null;$('drawer').classList.remove('open');$('scrim').classList.remove('open');history.replaceState(null,'','#'+curV);const nv=document.querySelector('.nav-item.active');if(nv&&nv.focus)nv.focus();}
-function showDrawer(){$('drawer').classList.add('open');$('scrim').classList.add('open');const c=$('drawer').querySelector('.drawer-x');if(c)c.focus();}
-function openNode(name,keep){
-  const n=(D.nodes||[]).find(x=>x.name===name);if(!n){closeDrawer();return;}
-  selectedNode=name;selected=null;selectedTeam=null;if(!keep)history.replaceState(null,'','#infra/node/'+encodeURIComponent(name));
-  const host=n.name.split('.')[0];
-  const g=(D.gpu||[]).find(x=>x.node===host);
-  const gutil=g&&g.util&&g.util.length?Math.round(g.util.reduce((a,b)=>a+b,0)/g.util.length):null;
-  const gmemA=(g&&g.mem||[]).filter(x=>x!=null);const gmem=gmemA.length?Math.round(gmemA.reduce((s,x)=>s+x,0)/gmemA.length):null;
-  const np=(D.pods||[]).filter(p=>p.node===name);
-  const cpuReq=np.reduce((s,p)=>s+(p.cpuReqM||0),0),memReq=np.reduce((s,p)=>s+(p.memReqMi||0),0);
-  const cpuA=n.cpuAllocM||0,memA=n.memAllocMi||0;
-  const cpuPct=cpuA?Math.round(cpuReq/cpuA*100):0,memPct=memA?Math.round(memReq/memA*100):0;
-  const cpuUsed=n.cpuUsedM,memUsed=n.memUsedMi;
-  const cpuUsedPct=(cpuUsed!=null&&cpuA)?Math.round(cpuUsed/cpuA*100):null,memUsedPct=(memUsed!=null&&memA)?Math.round(memUsed/memA*100):null;
-  const byNs={};np.forEach(p=>{(byNs[p.namespace]=byNs[p.namespace]||[]).push(p);});
-  const nsList=Object.keys(byNs).sort((a,b)=>byNs[b].length-byNs[a].length);
-  const bar=(pct,col)=>`<div class="bar" style="margin-top:5px"><i style="width:${Math.min(100,Math.max(2,pct))}%;background:${col}"></i></div>`;
-  const usage=`<div class="sec-title">Usage</div>`
-    +`<div class="bar-lbl"><span>GPU util${g&&g.model?' · '+esc(g.model):''}</span><span>${gutil==null?'—':gutil+'%'}</span></div>`
-    +(n.gpu>0?bar(gutil||0,(gutil||0)>85?'var(--amber)':'var(--green)'):'<div class="util" style="margin:2px 0 4px">no GPU on this node</div>')
-    +(n.gpu>0?`<div class="bar-lbl" style="margin-top:8px"><span>GPU memory</span><span>${gmem==null?'—':gmem+'%'}</span></div>`+bar(gmem||0,(gmem||0)>90?'var(--amber)':'var(--purple)'):'')
-    +`<div class="bar-lbl" style="margin-top:11px"><span>CPU${cpuUsedPct!=null?'':' requested'}</span><span>${cpuUsedPct!=null?`${(cpuUsed/1000).toFixed(2)} / ${(cpuA/1000).toFixed(1)} cores · ${cpuUsedPct}%`:`${(cpuReq/1000).toFixed(1)} / ${(cpuA/1000).toFixed(1)} cores · ${cpuPct}%`}</span></div>`
-    +bar(cpuUsedPct!=null?cpuUsedPct:cpuPct,(cpuUsedPct||cpuPct)>85?'var(--amber)':'var(--accent)')
-    +(cpuUsedPct!=null?`<div class="np-sub">requested ${(cpuReq/1000).toFixed(1)} cores · ${cpuPct}%</div>`:'')
-    +`<div class="bar-lbl" style="margin-top:11px"><span>Memory${memUsedPct!=null?'':' requested'}</span><span>${memUsedPct!=null?`${(memUsed/1024).toFixed(1)} / ${(memA/1024).toFixed(1)} GiB · ${memUsedPct}%`:`${(memReq/1024).toFixed(1)} / ${(memA/1024).toFixed(1)} GiB · ${memPct}%`}</span></div>`
-    +bar(memUsedPct!=null?memUsedPct:memPct,(memUsedPct||memPct)>85?'var(--amber)':'var(--cyan)')
-    +(memUsedPct!=null?`<div class="np-sub">requested ${(memReq/1024).toFixed(1)} GiB · ${memPct}%</div>`:'');
-  const legend=nsList.length?`<div class="ns-legend">${nsList.map(ns=>`<span><i style="background:${nsColor(ns)}"></i>${esc(ns)} (${byNs[ns].length})</span>`).join('')}</div>`:'';
-  const podsHtml=nsList.length?nsList.map(ns=>byNs[ns].map(p=>`<div class="np-row"><span class="np-dot" style="background:${nsColor(ns)}"></span><span class="np-name">${esc(p.name)}</span><span class="np-meta">${p.gpu?p.gpu+'×GPU ':''}${p.phase!=='Running'?esc(p.phase):''}</span></div>`).join('')).join(''):'<div class="muted" style="padding:6px 0">No pods scheduled</div>';
-  const age=relTime(n.created);
-  $('drawer').innerHTML=`<button class="drawer-x" onclick="closeDrawer()">×</button>
-   <div style="display:flex;align-items:center;gap:10px"><span class="dot ok"></span><span style="font-size:19px;font-weight:800">${esc(host)}</span><span class="badge2 b-ray" style="background:var(--accent-soft);color:#c7d2fe">${esc(n.capacity||'')}</span></div>
-   <div class="m-id" style="margin-top:4px">${esc(n.instance)}${n.gpuProduct?' · '+esc(n.gpuProduct):''}</div>
-   <div class="mini-kpi"><div class="mk"><div class="mkv" style="color:var(--purple)">${gutil==null?'—':gutil+'%'}</div><div class="mkl">GPU util</div></div><div class="mk"><div class="mkv">${np.length}</div><div class="mkl">pods</div></div><div class="mk"><div class="mkv">$${(n.hourly||0).toFixed(2)}</div><div class="mkl">$/hr</div></div></div>
+  if (!keep) {
+    showDrawer();
+  }
+}
+function closeDrawer() {
+  selected = null;
+  selectedNode = null;
+  selectedTeam = null;
+  $('drawer').classList.remove('open');
+  $('scrim').classList.remove('open');
+  history.replaceState(null, '', '#' + curV);
+  const nv = document.querySelector('.nav-item.active');
+  if (nv && nv.focus) nv.focus();
+}
+function showDrawer() {
+  $('drawer').classList.add('open');
+  $('scrim').classList.add('open');
+  const c = $('drawer').querySelector('.drawer-x');
+  if (c) c.focus();
+}
+function openNode(name, keep) {
+  const n = (D.nodes || []).find((x) => x.name === name);
+  if (!n) {
+    closeDrawer();
+    return;
+  }
+  selectedNode = name;
+  selected = null;
+  selectedTeam = null;
+  if (!keep) history.replaceState(null, '', '#infra/node/' + encodeURIComponent(name));
+  const host = n.name.split('.')[0];
+  const g = (D.gpu || []).find((x) => x.node === host);
+  const gutil =
+    g && g.util && g.util.length ? Math.round(g.util.reduce((a, b) => a + b, 0) / g.util.length) : null;
+  const gmemA = ((g && g.mem) || []).filter((x) => x != null);
+  const gmem = gmemA.length ? Math.round(gmemA.reduce((s, x) => s + x, 0) / gmemA.length) : null;
+  const np = (D.pods || []).filter((p) => p.node === name);
+  const cpuReq = np.reduce((s, p) => s + (p.cpuReqM || 0), 0),
+    memReq = np.reduce((s, p) => s + (p.memReqMi || 0), 0);
+  const cpuA = n.cpuAllocM || 0,
+    memA = n.memAllocMi || 0;
+  const cpuPct = cpuA ? Math.round((cpuReq / cpuA) * 100) : 0,
+    memPct = memA ? Math.round((memReq / memA) * 100) : 0;
+  const cpuUsed = n.cpuUsedM,
+    memUsed = n.memUsedMi;
+  const cpuUsedPct = cpuUsed != null && cpuA ? Math.round((cpuUsed / cpuA) * 100) : null,
+    memUsedPct = memUsed != null && memA ? Math.round((memUsed / memA) * 100) : null;
+  const byNs = {};
+  np.forEach((p) => {
+    (byNs[p.namespace] = byNs[p.namespace] || []).push(p);
+  });
+  const nsList = Object.keys(byNs).sort((a, b) => byNs[b].length - byNs[a].length);
+  const bar = (pct, col) =>
+    `<div class="bar" style="margin-top:5px"><i style="width:${Math.min(100, Math.max(2, pct))}%;background:${col}"></i></div>`;
+  const usage =
+    `<div class="sec-title">Usage</div>` +
+    `<div class="bar-lbl"><span>GPU util${g && g.model ? ' · ' + esc(g.model) : ''}</span><span>${gutil == null ? '—' : gutil + '%'}</span></div>` +
+    (n.gpu > 0
+      ? bar(gutil || 0, (gutil || 0) > 85 ? 'var(--amber)' : 'var(--green)')
+      : '<div class="util" style="margin:2px 0 4px">no GPU on this node</div>') +
+    (n.gpu > 0
+      ? `<div class="bar-lbl" style="margin-top:8px"><span>GPU memory</span><span>${gmem == null ? '—' : gmem + '%'}</span></div>` +
+        bar(gmem || 0, (gmem || 0) > 90 ? 'var(--amber)' : 'var(--purple)')
+      : '') +
+    `<div class="bar-lbl" style="margin-top:11px"><span>CPU${cpuUsedPct != null ? '' : ' requested'}</span><span>${cpuUsedPct != null ? `${(cpuUsed / 1000).toFixed(2)} / ${(cpuA / 1000).toFixed(1)} cores · ${cpuUsedPct}%` : `${(cpuReq / 1000).toFixed(1)} / ${(cpuA / 1000).toFixed(1)} cores · ${cpuPct}%`}</span></div>` +
+    bar(
+      cpuUsedPct != null ? cpuUsedPct : cpuPct,
+      (cpuUsedPct || cpuPct) > 85 ? 'var(--amber)' : 'var(--accent)',
+    ) +
+    (cpuUsedPct != null
+      ? `<div class="np-sub">requested ${(cpuReq / 1000).toFixed(1)} cores · ${cpuPct}%</div>`
+      : '') +
+    `<div class="bar-lbl" style="margin-top:11px"><span>Memory${memUsedPct != null ? '' : ' requested'}</span><span>${memUsedPct != null ? `${(memUsed / 1024).toFixed(1)} / ${(memA / 1024).toFixed(1)} GiB · ${memUsedPct}%` : `${(memReq / 1024).toFixed(1)} / ${(memA / 1024).toFixed(1)} GiB · ${memPct}%`}</span></div>` +
+    bar(
+      memUsedPct != null ? memUsedPct : memPct,
+      (memUsedPct || memPct) > 85 ? 'var(--amber)' : 'var(--cyan)',
+    ) +
+    (memUsedPct != null
+      ? `<div class="np-sub">requested ${(memReq / 1024).toFixed(1)} GiB · ${memPct}%</div>`
+      : '');
+  const legend = nsList.length
+    ? `<div class="ns-legend">${nsList.map((ns) => `<span><i style="background:${nsColor(ns)}"></i>${esc(ns)} (${byNs[ns].length})</span>`).join('')}</div>`
+    : '';
+  const podsHtml = nsList.length
+    ? nsList
+        .map((ns) =>
+          byNs[ns]
+            .map(
+              (p) =>
+                `<div class="np-row"><span class="np-dot" style="background:${nsColor(ns)}"></span><span class="np-name">${esc(p.name)}</span><span class="np-meta">${p.gpu ? p.gpu + '×GPU ' : ''}${p.phase !== 'Running' ? esc(p.phase) : ''}</span></div>`,
+            )
+            .join(''),
+        )
+        .join('')
+    : '<div class="muted" style="padding:6px 0">No pods scheduled</div>';
+  const age = relTime(n.created);
+  $('drawer').innerHTML = `<button class="drawer-x" onclick="closeDrawer()">×</button>
+   <div style="display:flex;align-items:center;gap:10px"><span class="dot ok"></span><span style="font-size:19px;font-weight:800">${esc(host)}</span><span class="badge2 b-ray" style="background:var(--accent-soft);color:#c7d2fe">${esc(n.capacity || '')}</span></div>
+   <div class="m-id" style="margin-top:4px">${esc(n.instance)}${n.gpuProduct ? ' · ' + esc(n.gpuProduct) : ''}</div>
+   <div class="mini-kpi"><div class="mk"><div class="mkv" style="color:var(--purple)">${gutil == null ? '—' : gutil + '%'}</div><div class="mkl">GPU util</div></div><div class="mk"><div class="mkv">${np.length}</div><div class="mkl">pods</div></div><div class="mk"><div class="mkv">$${(n.hourly || 0).toFixed(2)}</div><div class="mkl">$/hr</div></div></div>
    <div class="sec-title">Node</div>
-   <div class="kv"><span class="k">Instance</span><span class="v">${esc(n.instance)}</span><span class="k">Capacity</span><span class="v">${esc(n.capacity||'')}</span><span class="k">GPUs</span><span class="v">${n.gpu||0}</span><span class="k">Zone</span><span class="v">${esc(n.zone||'')}</span><span class="k">Nodepool</span><span class="v">${esc(n.pool==='__mng__'?'managed node group':n.pool)}</span>${age?`<span class="k">Age</span><span class="v">${esc(age)}</span>`:''}</div>
+   <div class="kv"><span class="k">Instance</span><span class="v">${esc(n.instance)}</span><span class="k">Capacity</span><span class="v">${esc(n.capacity || '')}</span><span class="k">GPUs</span><span class="v">${n.gpu || 0}</span><span class="k">Zone</span><span class="v">${esc(n.zone || '')}</span><span class="k">Nodepool</span><span class="v">${esc(n.pool === '__mng__' ? 'managed node group' : n.pool)}</span>${age ? `<span class="k">Age</span><span class="v">${esc(age)}</span>` : ''}</div>
    ${usage}
    <div class="sec-title">Pods by namespace <span class="muted" style="font-weight:500;text-transform:none;letter-spacing:0">· ${np.length} on node</span></div>
    ${legend}${podsHtml}`;
-  if(!keep){showDrawer();}}
-function openTeam(name,keep){const t=(D.teams||[]).find(x=>x.name===name||x.id===name);if(!t){closeDrawer();return;}
-  selectedTeam=t.name;selected=null;selectedNode=null;if(!keep)history.replaceState(null,'','#teams/team/'+encodeURIComponent(t.name));
-  const pct=t.limit?Math.min(100,Math.round(t.budget/t.limit*100)):null;
-  const bar=(p,col)=>`<div class="bar" style="margin-top:5px"><i style="width:${Math.min(100,Math.max(2,p))}%;background:${col}"></i></div>`;
-  $('drawer').innerHTML=`<button class="drawer-x" onclick="closeDrawer()">×</button>
+  if (!keep) {
+    showDrawer();
+  }
+}
+function openTeam(name, keep) {
+  const t = (D.teams || []).find((x) => x.name === name || x.id === name);
+  if (!t) {
+    closeDrawer();
+    return;
+  }
+  selectedTeam = t.name;
+  selected = null;
+  selectedNode = null;
+  if (!keep) history.replaceState(null, '', '#teams/team/' + encodeURIComponent(t.name));
+  const pct = t.limit ? Math.min(100, Math.round((t.budget / t.limit) * 100)) : null;
+  const bar = (p, col) =>
+    `<div class="bar" style="margin-top:5px"><i style="width:${Math.min(100, Math.max(2, p))}%;background:${col}"></i></div>`;
+  $('drawer').innerHTML = `<button class="drawer-x" onclick="closeDrawer()">×</button>
    <div style="display:flex;align-items:center;gap:10px"><span style="font-size:17px">◐</span><span style="font-size:19px;font-weight:800">${esc(t.name)}</span></div>
    <div class="m-id" style="margin-top:4px">namespace: team-${esc(t.name)}</div>
-   <div class="mini-kpi"><div class="mk"><div class="mkv" style="color:var(--green)">${num(t.reqsToday||0)}</div><div class="mkl">req today</div></div><div class="mk"><div class="mkv">$${(t.spendToday||0).toFixed(2)}</div><div class="mkl">spend today</div></div><div class="mk"><div class="mkv">${t.keys||0}</div><div class="mkl">API keys</div></div></div>
+   <div class="mini-kpi"><div class="mk"><div class="mkv" style="color:var(--green)">${num(t.reqsToday || 0)}</div><div class="mkl">req today</div></div><div class="mk"><div class="mkv">$${(t.spendToday || 0).toFixed(2)}</div><div class="mkl">spend today</div></div><div class="mk"><div class="mkv">${t.keys || 0}</div><div class="mkl">API keys</div></div></div>
    <div class="sec-title">Budget</div>
-   <div class="bar-lbl"><span>${t.limit?'used of cap':'spend (no cap set)'}</span><span>${t.limit?`$${(t.budget||0).toFixed(2)} / $${t.limit.toFixed(0)} · ${pct}%`:`$${(t.budget||0).toFixed(2)}`}</span></div>
-   ${t.limit?bar(pct,pct>80?'var(--amber)':'var(--green)'):''}
+   <div class="bar-lbl"><span>${t.limit ? 'used of cap' : 'spend (no cap set)'}</span><span>${t.limit ? `$${(t.budget || 0).toFixed(2)} / $${t.limit.toFixed(0)} · ${pct}%` : `$${(t.budget || 0).toFixed(2)}`}</span></div>
+   ${t.limit ? bar(pct, pct > 80 ? 'var(--amber)' : 'var(--green)') : ''}
    <div class="sec-title">Today</div>
-   <div class="kv"><span class="k">Requests</span><span class="v">${num(t.reqsToday||0)}</span><span class="k">Failed</span><span class="v">${t.failed||0}</span><span class="k">Tokens</span><span class="v">${num(t.tokens||0)}</span><span class="k">Spend</span><span class="v">$${(t.spendToday||0).toFixed(2)}</span><span class="k">API keys</span><span class="v">${t.keys||0}</span></div>
+   <div class="kv"><span class="k">Requests</span><span class="v">${num(t.reqsToday || 0)}</span><span class="k">Failed</span><span class="v">${t.failed || 0}</span><span class="k">Tokens</span><span class="v">${num(t.tokens || 0)}</span><span class="k">Spend</span><span class="v">$${(t.spendToday || 0).toFixed(2)}</span><span class="k">API keys</span><span class="v">${t.keys || 0}</span></div>
    <div class="sec-title">Call it (via LiteLLM)</div>
    <div class="code">curl $LITELLM/v1/chat/completions \\
   -H "Authorization: Bearer $TEAM_KEY" \\
   -d '{"model":"<model>","messages":[{"role":"user","content":"Hi"}]}'</div>`;
-  if(!keep){showDrawer();}}
-function doSearch(q){q=(q||'').trim().toLowerCase();const res=$('q-res');if(!res)return;if(!q){res.className='q-res';res.innerHTML='';lastSearch=[];return;}
-  const items=[];
-  (D.models||[]).forEach(m=>{if((m.name||'').toLowerCase().includes(q)||(m.model||'').toLowerCase().includes(q))items.push({type:'model',name:m.name,label:m.name,sub:m.model||''});});
-  (D.nodes||[]).forEach(n=>{const h=n.name.split('.')[0];if(h.toLowerCase().includes(q)||(n.instance||'').toLowerCase().includes(q))items.push({type:'node',name:n.name,label:h,sub:n.instance||''});});
-  (D.teams||[]).forEach(t=>{if((t.name||'').toLowerCase().includes(q)||(t.id||'').toLowerCase().includes(q))items.push({type:'team',name:t.name||t.id,label:t.name||t.id,sub:'team'});});
-  lastSearch=items.slice(0,8);
-  res.innerHTML=lastSearch.length?lastSearch.map((it,i)=>`<div class="q-item${i===0?' sel':''}" onmousedown="pickSearch(${i})"><b>${esc(it.label)}</b> <span class="muted" style="font-size:11px">${esc(it.sub)}</span><span class="q-type">${it.type}</span></div>`).join(''):'<div class="q-item muted">No matches</div>';
-  res.className='q-res open';}
-function pickSearch(i){const it=lastSearch[i];if(!it)return;const inp=$('q');if(inp)inp.value='';$('q-res').className='q-res';
-  if(it.type==='model'){go('models',document.querySelectorAll('.nav-item')[1]);openModel(it.name);}
-  else if(it.type==='node'){go('infra',document.querySelectorAll('.nav-item')[4]);openNode(it.name);}
-  else if(it.type==='team'){go('teams',document.querySelectorAll('.nav-item')[2]);openTeam(it.name);}}
-function searchGo(){if(lastSearch.length)pickSearch(0);}
-function go(v,el){document.querySelectorAll('.view').forEach(x=>x.classList.remove('active'));$('v-'+v).classList.add('active');document.querySelectorAll('.nav-item').forEach(x=>x.classList.remove('active'));if(el)el.classList.add('active');document.querySelector('.main').scrollTop=0;curV=v;history.replaceState(null,'','#'+v);}
-function toggleTheme(){const b=document.body,n=b.getAttribute('data-theme')==='light'?'dark':'light';b.setAttribute('data-theme',n);localStorage.setItem('theme',n);}
-const saved=localStorage.getItem('theme');if(saved)document.body.setAttribute('data-theme',saved);
-poll();setInterval(poll,5000);
-document.addEventListener('keydown',e=>{if(e.key==='Escape'){const r=document.getElementById('q-res');if(r&&r.classList.contains('open')){r.className='q-res';}else{closeDrawer();}}});
-function routeFromHash(){const parts=(location.hash||'').replace(/^#/,'').split('/');const v=parts[0];if(!NAVIX.hasOwnProperty(v))return;go(v,document.querySelectorAll('.nav-item')[NAVIX[v]]);const type=parts[1],name=parts[2]?decodeURIComponent(parts[2]):null;if(type&&name){if(type==='model')openModel(name);else if(type==='node')openNode(name);else if(type==='team')openTeam(name);}}
-window.addEventListener('hashchange',routeFromHash);
-document.querySelectorAll('.nav-item').forEach(n=>{n.tabIndex=0;n.setAttribute('role','button');n.addEventListener('keydown',e=>{if(e.key==='Enter'||e.key===' '){e.preventDefault();n.click();}});});
-document.addEventListener('keydown',function(e){if(e.key!=='Tab')return;var dr=document.getElementById('drawer');if(!dr.classList.contains('open'))return;var f=Array.prototype.slice.call(dr.querySelectorAll('button,a[href],input,[tabindex]')).filter(function(x){return x.offsetParent!==null;});if(!f.length)return;var first=f[0],last=f[f.length-1];if(e.shiftKey&&document.activeElement===first){e.preventDefault();last.focus();}else if(!e.shiftKey&&document.activeElement===last){e.preventDefault();first.focus();}});
-
+  if (!keep) {
+    showDrawer();
+  }
+}
+function doSearch(q) {
+  q = (q || '').trim().toLowerCase();
+  const res = $('q-res');
+  if (!res) return;
+  if (!q) {
+    res.className = 'q-res';
+    res.innerHTML = '';
+    lastSearch = [];
+    return;
+  }
+  const items = [];
+  (D.models || []).forEach((m) => {
+    if ((m.name || '').toLowerCase().includes(q) || (m.model || '').toLowerCase().includes(q))
+      items.push({ type: 'model', name: m.name, label: m.name, sub: m.model || '' });
+  });
+  (D.nodes || []).forEach((n) => {
+    const h = n.name.split('.')[0];
+    if (h.toLowerCase().includes(q) || (n.instance || '').toLowerCase().includes(q))
+      items.push({ type: 'node', name: n.name, label: h, sub: n.instance || '' });
+  });
+  (D.teams || []).forEach((t) => {
+    if ((t.name || '').toLowerCase().includes(q) || (t.id || '').toLowerCase().includes(q))
+      items.push({ type: 'team', name: t.name || t.id, label: t.name || t.id, sub: 'team' });
+  });
+  lastSearch = items.slice(0, 8);
+  res.innerHTML = lastSearch.length
+    ? lastSearch
+        .map(
+          (it, i) =>
+            `<div class="q-item${i === 0 ? ' sel' : ''}" data-i="${i}" onmousedown="pickSearch(+this.dataset.i)"><b>${esc(it.label)}</b> <span class="muted" style="font-size:11px">${esc(it.sub)}</span><span class="q-type">${esc(it.type)}</span></div>`,
+        )
+        .join('')
+    : '<div class="q-item muted">No matches</div>';
+  res.className = 'q-res open';
+}
+function pickSearch(i) {
+  const it = lastSearch[i];
+  if (!it) return;
+  const inp = $('q');
+  if (inp) inp.value = '';
+  $('q-res').className = 'q-res';
+  if (it.type === 'model') {
+    go('models', document.querySelectorAll('.nav-item')[1]);
+    openModel(it.name);
+  } else if (it.type === 'node') {
+    go('infra', document.querySelectorAll('.nav-item')[4]);
+    openNode(it.name);
+  } else if (it.type === 'team') {
+    go('teams', document.querySelectorAll('.nav-item')[2]);
+    openTeam(it.name);
+  }
+}
+function searchGo() {
+  if (lastSearch.length) pickSearch(0);
+}
+function go(v, el) {
+  document.querySelectorAll('.view').forEach((x) => x.classList.remove('active'));
+  $('v-' + v).classList.add('active');
+  document.querySelectorAll('.nav-item').forEach((x) => x.classList.remove('active'));
+  if (el) el.classList.add('active');
+  document.querySelector('.main').scrollTop = 0;
+  curV = v;
+  history.replaceState(null, '', '#' + v);
+}
+function toggleTheme() {
+  const b = document.body,
+    n = b.getAttribute('data-theme') === 'light' ? 'dark' : 'light';
+  b.setAttribute('data-theme', n);
+  localStorage.setItem('theme', n);
+}
+const saved = localStorage.getItem('theme');
+if (saved) document.body.setAttribute('data-theme', saved);
+connect();
+// Local 5 s tick (no request): sparkline samples and "updated N s ago".
+setInterval(() => {
+  if (!started) return;
+  pushHist();
+  renderAll();
+}, 5000);
+document.addEventListener('click', (e) => {
+  const pop = $('src-pop');
+  if (pop.classList.contains('open') && !e.target.closest('.src-wrap')) pop.classList.remove('open');
+});
+document.addEventListener('keydown', (e) => {
+  if (e.key === 'Escape') {
+    const r = document.getElementById('q-res');
+    if (r && r.classList.contains('open')) {
+      r.className = 'q-res';
+    } else if ($('src-pop').classList.contains('open')) {
+      $('src-pop').classList.remove('open');
+    } else {
+      closeDrawer();
+    }
+  }
+});
+function routeFromHash() {
+  const parts = (location.hash || '').replace(/^#/, '').split('/');
+  const v = parts[0];
+  if (!NAVIX.hasOwnProperty(v)) return;
+  go(v, document.querySelectorAll('.nav-item')[NAVIX[v]]);
+  const type = parts[1],
+    name = parts[2] ? decodeURIComponent(parts[2]) : null;
+  if (type && name) {
+    if (type === 'model') openModel(name);
+    else if (type === 'node') openNode(name);
+    else if (type === 'team') openTeam(name);
+  }
+}
+window.addEventListener('hashchange', routeFromHash);
+document.querySelectorAll('.nav-item').forEach((n) => {
+  n.tabIndex = 0;
+  n.setAttribute('role', 'button');
+  n.addEventListener('keydown', (e) => {
+    if (e.key === 'Enter' || e.key === ' ') {
+      e.preventDefault();
+      n.click();
+    }
+  });
+});
+document.addEventListener('keydown', function (e) {
+  if (e.key !== 'Tab') return;
+  var dr = document.getElementById('drawer');
+  if (!dr.classList.contains('open')) return;
+  var f = Array.prototype.slice
+    .call(dr.querySelectorAll('button,a[href],input,[tabindex]'))
+    .filter(function (x) {
+      return x.offsetParent !== null;
+    });
+  if (!f.length) return;
+  var first = f[0],
+    last = f[f.length - 1];
+  if (e.shiftKey && document.activeElement === first) {
+    e.preventDefault();
+    last.focus();
+  } else if (!e.shiftKey && document.activeElement === last) {
+    e.preventDefault();
+    first.focus();
+  }
+});
 </script>
 </body>
 </html>
