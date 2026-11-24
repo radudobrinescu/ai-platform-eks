@@ -87,7 +87,8 @@ roleRef:
 # Namespaced ConfigMap read (ai-platform only): the dashboard fetches
 # litellm-config (Bedrock model_list) and node-prices by name from ai-platform.
 # Scoped to a Role here instead of the cluster-wide ClusterRole above so it can't
-# read ConfigMaps in other namespaces.
+# read ConfigMaps in other namespaces. The one Secret it reads is its own
+# read-only LiteLLM key, by name (written by the CronJob at the end of this file).
 apiVersion: rbac.authorization.k8s.io/v1
 kind: Role
 metadata:
@@ -97,6 +98,10 @@ rules:
   - apiGroups: [""]
     resources: ["configmaps"]
     verbs: ["get", "list", "watch"]
+  - apiGroups: [""]
+    resources: ["secrets"]
+    verbs: ["get"]
+    resourceNames: ["cluster-dashboard-litellm-key"]
 ---
 apiVersion: rbac.authorization.k8s.io/v1
 kind: RoleBinding
@@ -407,3 +412,104 @@ spec:
                 name: oauth2-proxy
                 port:
                   number: 4180
+---
+# Read-only LiteLLM key for the dashboard. Every 15 minutes this CronJob checks
+# that Secret cluster-dashboard-litellm-key holds an active key of LiteLLM user
+# cluster-dashboard (role proxy_admin_viewer: GET routes only, no model calls)
+# and, if not, creates the user and a new key (scripts/litellm_viewer_key.py).
+# The master key comes in as an environment variable, so this ServiceAccount
+# needs no RBAC on litellm-secrets. Until the first run (up to 15 minutes after
+# install) the dashboard shows the LiteLLM sources as "viewer key not created yet".
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: cluster-dashboard-litellm-key
+  namespace: ai-platform
+automountServiceAccountToken: false
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: cluster-dashboard-litellm-key
+  namespace: ai-platform
+rules:
+  # create is not name-restrictable; get/patch are limited to the key Secret.
+  - apiGroups: [""]
+    resources: ["secrets"]
+    verbs: ["create"]
+  - apiGroups: [""]
+    resources: ["secrets"]
+    verbs: ["get", "patch"]
+    resourceNames: ["cluster-dashboard-litellm-key"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: cluster-dashboard-litellm-key
+  namespace: ai-platform
+subjects:
+  - kind: ServiceAccount
+    name: cluster-dashboard-litellm-key
+    namespace: ai-platform
+roleRef:
+  kind: Role
+  name: cluster-dashboard-litellm-key
+  apiGroup: rbac.authorization.k8s.io
+---
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: cluster-dashboard-litellm-key
+  namespace: ai-platform
+spec:
+  schedule: "*/15 * * * *"
+  concurrencyPolicy: Forbid
+  successfulJobsHistoryLimit: 1
+  failedJobsHistoryLimit: 1
+  jobTemplate:
+    spec:
+      backoffLimit: 2
+      activeDeadlineSeconds: 300
+      template:
+        metadata:
+          labels:
+            app: cluster-dashboard
+            ai-platform/job: litellm-viewer-key
+          annotations:
+            instrumentation.opentelemetry.io/inject-python: "false"
+        spec:
+          restartPolicy: Never
+          serviceAccountName: cluster-dashboard-litellm-key
+          automountServiceAccountToken: true
+          securityContext:
+            runAsNonRoot: true
+            runAsUser: 65532
+            seccompProfile: { type: RuntimeDefault }
+          containers:
+            - name: viewer-key
+              image: python:3.15-slim
+              command: ["python3", "/app/litellm_viewer_key.py"]
+              env:
+                - name: PYTHONDONTWRITEBYTECODE
+                  value: "1"
+                - name: LITELLM_MASTER_KEY
+                  valueFrom: { secretKeyRef: { name: litellm-secrets, key: master-key } }
+              volumeMounts:
+                - name: script
+                  mountPath: /app
+                  readOnly: true
+              resources:
+                requests:
+                  cpu: 10m
+                  memory: 32Mi
+                limits:
+                  cpu: 100m
+                  memory: 64Mi
+              securityContext:
+                allowPrivilegeEscalation: false
+                readOnlyRootFilesystem: true
+                capabilities: { drop: ["ALL"] }
+          volumes:
+            - name: script
+              configMap:
+                name: cluster-dashboard-litellm-key-script

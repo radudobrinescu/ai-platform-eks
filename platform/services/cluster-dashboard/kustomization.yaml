@@ -52,6 +52,12 @@ configMapGenerator:
       - dashboard__prom.py=scripts/dashboard/prom.py
       - dashboard__snapshot.py=scripts/dashboard/snapshot.py
       - dashboard__sources.py=scripts/dashboard/sources.py
+  # Script of the viewer-key CronJob (manifests.yaml). Hash suffix on, so a
+  # script change gives the CronJob a new ConfigMap name.
+  - name: cluster-dashboard-litellm-key-script
+    namespace: ai-platform
+    files:
+      - scripts/litellm_viewer_key.py
   # Platform Health Agent scripts. Mounted by the event-watcher AND by every
   # Investigator/Remediator Job (the Job specs in event_watcher.py / backend.py
   # reference this ConfigMap by HARDCODED name) → keep the name stable, no hash.
