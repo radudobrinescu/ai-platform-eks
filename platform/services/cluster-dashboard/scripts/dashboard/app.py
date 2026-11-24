@@ -19,9 +19,9 @@ from dashboard.config import Settings
 from dashboard.deps import Deps
 from dashboard.k8s import (ApiError, KubeClient, WatchCache, project_argo, project_configmap, project_cr,
                            project_event, project_ingress, project_node, project_pod)
-from dashboard.models import SERVING_KINDS
+from dashboard.models import SERVING_KINDS, node_records
 from dashboard.snapshot import Store
-from dashboard.sources import PolledSource, Scheduler, SourceStatus
+from dashboard.sources import PolledSource, Scheduler, SourceStatus, SourceUnavailable
 
 log = logging.getLogger("dashboard.app")
 
@@ -86,6 +86,7 @@ class App:
         self.litellm_api = litellm.LiteLLMApi(settings.litellm_api_url, self.viewer_key,
                                               lambda url, key, where: self.litellm_get(url, key, where))
         self.traffic = litellm.Traffic()
+        self.dcgm_fetch = prom.fetch_text            # replaced in tests
         self._live_prices = None
         if boto3_client is not None:
             from dashboard.pricing import LivePrices
@@ -165,14 +166,26 @@ class App:
         self.set_input("litellm_traffic", figures)
         return detail
 
-    def _run_dcgm(self):
+    def _dcgm_exporter_urls(self) -> list[str]:
+        """Metrics URL of every Running DCGM exporter pod (one per GPU node)."""
         key, _, val = self.s.dcgm_pod_selector.partition("=")
-        urls = [f"http://{p['status']['podIP']}:{self.s.dcgm_port}/metrics"
+        return [f"http://{p['status']['podIP']}:{self.s.dcgm_port}/metrics"
                 for p in self.caches["pods"].items()
                 if p["metadata"].get("namespace") == self.s.dcgm_namespace
                 and (p["metadata"].get("labels") or {}).get(key) == val
                 and p["status"].get("phase") == "Running" and p["status"].get("podIP")]
-        util, errors = ddcgm.scrape(urls, self.s.dcgm_url)
+
+    def _run_dcgm(self):
+        if not (self.caches["nodes"].synced and self.caches["pods"].synced):
+            raise SourceUnavailable("waiting for the first node and pod lists")
+        urls = self._dcgm_exporter_urls()
+        nodes, _ = node_records(self.caches["nodes"].items())
+        if not urls and not any(n["gpu"] > 0 for n in nodes):
+            # GPU pools scaled to zero (the normal idle state): no exporter
+            # pods and nothing behind the exporter Service. An empty result.
+            self.set_input("dcgm", {})
+            return "no GPU nodes"
+        util, errors = ddcgm.scrape(urls, self.s.dcgm_url, self.dcgm_fetch)
         if errors and not util:
             raise RuntimeError("; ".join(errors)[:300])
         self.set_input("dcgm", util)
@@ -188,7 +201,6 @@ class App:
         if self._live_prices is None:
             return "static price table"
         from dashboard.cost import detect_region, priced_instances
-        from dashboard.models import node_records
         nodes, _ = node_records(self.caches["nodes"].items())
         region = detect_region(nodes, self.s.aws_region)
         failed = self._live_prices.refresh(region, priced_instances(nodes))
