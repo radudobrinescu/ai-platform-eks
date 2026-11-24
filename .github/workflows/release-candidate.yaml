@@ -113,7 +113,7 @@ jobs:
           set -euo pipefail
           git -C subject fetch --quiet --prune origin '+refs/heads/renovate/*:refs/remotes/origin/renovate/*' \
             '+refs/heads/release/*:refs/remotes/origin/release/*'
-          gh pr list --repo "$REPO" --state open --limit 100 --json headRefName,labels,headRefOid > prs.json
+          gh pr list --repo "$REPO" --state open --limit 100 --json headRefName,labels,headRefOid,statusCheckRollup > prs.json
           gh pr list --repo "$REPO" --state all --limit 300 --json headRefName,headRefOid,state,number,createdAt > all-prs.json
           args=(--repo subject --prs prs.json --release-prs all-prs.json --github "$REPO" --today "$(date -u +%F)"
                 --cycle-days "$CYCLE_DAYS" --publish-days "$PUBLISH_DAYS" --wait-days "$WAIT_DAYS"

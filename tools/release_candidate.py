@@ -281,7 +281,7 @@ def is_release(prs: list[dict], branches: list[str], repo: str, tag: str, today:
 
 def _blank() -> dict:
     return {"action": "none", "release": False, "resume": False, "version": None, "base": None, "branches": [],
-            "kind": None, "publish": False, "stale": [], "held": [], "unchanged": [], "failed_alone": [],
+            "kind": None, "publish": False, "stale": [], "held": [], "red": [], "unchanged": [], "failed_alone": [],
             "deferred": [], "conflicts": [], "product_commits": [], "reason": "", "pr": None, "pr_created": None,
             "why": None, "retry": None, "marks": [], "attention": False, "leftover": False, "security": []}
 
@@ -382,6 +382,18 @@ def _plan_in_flight(repo, out, prs, inflight, tag, today, publish, publish_days,
     return out
 
 
+FAILED_CHECK = {"FAILURE", "TIMED_OUT", "STARTUP_FAILURE", "ACTION_REQUIRED"}
+
+
+def failed_checks(pr: dict) -> list[str]:
+    """Names of the pull request's own CI checks that failed (`statusCheckRollup`
+    of `gh pr list`). Only check runs count: commit statuses are the factory's
+    own marks and E2E results of earlier candidates. A check that still runs, or
+    a pull request without checks, is not known to be broken."""
+    return sorted({c.get("name", "?") for c in pr.get("statusCheckRollup") or []
+                   if c.get("__typename") == "CheckRun" and (c.get("conclusion") or "").upper() in FAILED_CHECK})
+
+
 def _plan_cut(repo, out, prs, tag, today, force, publish, cycle_days, publish_days, mark_days, remote,
               marks) -> dict:
     main = f"{remote}/main"
@@ -408,6 +420,10 @@ def _plan_cut(repo, out, prs, tag, today, force, publish, cycle_days, publish_da
             out["unchanged"].append(name)
         elif conflicts_with(repo, main, ref):
             out["conflicts"].append(name)       # Renovate rebases it; it returns in a later cycle
+        elif failed_checks(pr):
+            # main's CI already says it is broken (a version that needs a code
+            # change, usually). E2E would only say the same, four builds later.
+            out["red"].append(f"{name} ({', '.join(failed_checks(pr))})")
         else:
             sha = pr.get("headRefOid") or git(repo, "rev-parse", ref).stdout.strip()
             if marked(marks, sha, SOLO, today, mark_days):
@@ -542,6 +558,8 @@ def pr_body(p: dict, notes_md: str, changes: dict | None = None, wait_days: int 
         lines += [f"- {c}" for c in p["product_commits"]]
     for key, why in (("stale", "left out: does not contain the last release (Renovate has not rebased it; check the dashboard)"),
                      ("held", f"left out: labelled `{HOLD_LABEL}`"),
+                     ("red", "left out: its own checks fail on its pull request (it usually needs a code change"
+                             " alongside the new version; it returns when they pass)"),
                      ("unchanged", "left out: no change against main"),
                      ("failed_alone", "left out: this version failed E2E alone; it returns with the next version"),
                      ("deferred", "left for a later cycle (one anchor update, or one suspect, at a time)"),

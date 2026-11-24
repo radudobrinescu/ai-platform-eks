@@ -102,6 +102,45 @@ def test_a_cycle_takes_fresh_changed_unheld_groups(repo):
     assert p["stale"] == ["renovate/stale"] and p["held"] == ["renovate/held"] and p["unchanged"] == ["renovate/same"]
 
 
+def _checks(*pairs):
+    """statusCheckRollup as `gh pr list --json statusCheckRollup` gives it."""
+    out = []
+    for name, result in pairs:
+        if name.startswith(("candidate/", "e2e/")):
+            out.append({"__typename": "StatusContext", "context": name, "state": result})
+        else:
+            out.append({"__typename": "CheckRun", "name": name, "status": "COMPLETED" if result else "IN_PROGRESS",
+                        "conclusion": result or ""})
+    return out
+
+
+def test_a_group_whose_own_checks_fail_stays_out(repo):
+    """2026-11-20: the infra major update did not validate (a renamed Terraform
+    module). main's CI said so on its pull request; a cycle would have bundled it
+    anyway and spent paid E2E runs to learn the same."""
+    clone, _ = repo
+    prs = [dict(pr) for pr in PRS]
+    prs[0] = {**prs[0], "statusCheckRollup": _checks(("pytest (unit tests + guards)", "SUCCESS"),
+                                                     ("terraform fmt + validate", "FAILURE"))}
+    p = rc.plan(str(clone), prs, TODAY)
+    assert p["branches"] == ["renovate/major-gateway"]
+    assert p["red"] == ["renovate/gateway (terraform fmt + validate)"]
+    body = rc.pr_body(p, "# Release v2026.11.2\n", [], 5)
+    assert "its own checks fail" in body and "`renovate/gateway (terraform fmt + validate)`" in body
+
+
+def test_checks_that_run_pass_or_are_not_ci_do_not_keep_a_group_out(repo):
+    clone, _ = repo
+    prs = [dict(pr) for pr in PRS]
+    # Still running: not known to be broken. A failure mark of the factory and an E2E
+    # status of an earlier candidate are not the pull request's own checks.
+    prs[0] = {**prs[0], "statusCheckRollup": _checks(("terraform fmt + validate", ""), ("shellcheck", "SUCCESS"),
+                                                     ("candidate/combined", "FAILURE"), ("e2e/fresh-default", "FAILURE"))}
+    prs[1] = {**prs[1], "statusCheckRollup": None}
+    p = rc.plan(str(clone), prs, TODAY)
+    assert p["branches"] == ["renovate/gateway", "renovate/major-gateway"] and p["red"] == []
+
+
 def test_hold_label_keeps_any_group_out(repo):
     clone, _ = repo
     prs = [dict(pr) for pr in PRS]

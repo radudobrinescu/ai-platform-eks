@@ -223,6 +223,19 @@ class TestPolicy:
         # kubernetes-client major N tracks Kubernetes 1.N; ceiling = N+1 (one minor above) exclusive -> < minor+2
         assert rules[("kubernetes",)] == f"<{minor + 2}", "raise the kubernetes-client ceiling with the EKS anchor"
 
+    def test_postgres_stays_on_the_major_that_main_runs(self, subject_root):
+        """A Postgres major cannot start on the data directory of the one before it:
+        changing the tag alone would take the shared database down in every
+        upgraded environment. Until `platformctl upgrade` migrates the data, the
+        next major is not proposed at all. This fails when main moves to another
+        major (with that migration) and the rule was not moved with it."""
+        current = re.search(r"image:\s*postgres:(\d+)\.", _read(subject_root, "platform/services/litellm/litellm.yaml")).group(1)
+        rules = [r for r in _renovate()["packageRules"] if r.get("matchDepNames") == ["postgres"] and r.get("allowedVersions")]
+        assert len(rules) == 1 and "migrat" in rules[0]["description"]
+        rx = re.compile(rules[0]["allowedVersions"].strip("/"))
+        assert rx.match(f"{current}.16-alpine") and rx.match(f"{current}.2")
+        assert not rx.match(f"{int(current) + 1}.0-alpine") and not rx.match(f"{current}0.1")
+
     def test_interpolated_terraform_versions_are_not_looked_up(self):
         """karpenter.tf: version = local.karpenter_chart_version. The built-in
         terraform manager reports that reference as a version; only the regex
