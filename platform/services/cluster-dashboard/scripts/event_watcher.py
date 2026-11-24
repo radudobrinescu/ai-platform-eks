@@ -484,7 +484,8 @@ def _watch_loop(label, conn_factory, lister, detect) -> None:
                 w = watch.Watch()
                 for ev in w.stream(lister(v1), timeout_seconds=300):
                     if stop_event.is_set():
-                        w.stop(); break
+                        w.stop()
+                        break
                     trig = detect(ev["object"])
                     if trig:
                         spawn_investigation(conn, batch_v1, trig[0], trig[1])
@@ -580,7 +581,8 @@ def reconcile_rolebindings_loop() -> None:
             log.warning("reconciler error: %s", e)
 
         for _ in range(300):
-            if stop_event.is_set(): return
+            if stop_event.is_set():
+                return
             time.sleep(1)
 
 
@@ -733,10 +735,12 @@ def _health_server() -> None:
                 client.CoreV1Api().list_namespace(limit=1)
                 with db_connect() as c, c.cursor() as cur:
                     cur.execute("SELECT 1")
-                self.send_response(200); self.end_headers()
+                self.send_response(200)
+                self.end_headers()
                 self.wfile.write(b"ok")
             except Exception as e:
-                self.send_response(503); self.end_headers()
+                self.send_response(503)
+                self.end_headers()
                 self.wfile.write(str(e).encode())
 
         def log_message(self, *_): pass

@@ -33,7 +33,6 @@ import decimal
 import json
 import os
 import re
-import socket
 import ssl
 import sys
 import threading
@@ -332,7 +331,10 @@ def _build_links() -> list:
     tunnel access. ArgoCD is an EKS capability with its own URL (ARGOCD_URL).
     Links with no resolvable URL are omitted."""
     alb = _alb_hostname()
-    alb_url = (lambda port: f"http://{alb}:{port}" if alb else "")
+
+    def alb_url(port: int) -> str:
+        return f"http://{alb}:{port}" if alb else ""
+
     webui = os.environ.get("OPEN_WEBUI_URL", "") or alb_url(8080)
     litellm = os.environ.get("LITELLM_URL", "") or alb_url(4000)
     langfuse = os.environ.get("LANGFUSE_URL", "") or alb_url(3000)
@@ -616,9 +618,12 @@ def _cpu_m(s) -> int:
     """K8s CPU quantity -> millicores."""
     s = str(s or "0").strip()
     try:
-        if s.endswith("m"): return int(float(s[:-1]))
-        if s.endswith("n"): return int(float(s[:-1]) / 1e6)
-        if s.endswith("u"): return int(float(s[:-1]) / 1e3)
+        if s.endswith("m"):
+            return int(float(s[:-1]))
+        if s.endswith("n"):
+            return int(float(s[:-1]) / 1e6)
+        if s.endswith("u"):
+            return int(float(s[:-1]) / 1e3)
         return int(float(s) * 1000)
     except Exception:
         return 0
@@ -630,10 +635,14 @@ def _mem_mi(s) -> int:
     for u, f in (("Ki", 1 / 1024), ("Mi", 1.0), ("Gi", 1024.0), ("Ti", 1048576.0),
                  ("K", 0.000953674), ("M", 0.953674), ("G", 953.674)):
         if s.endswith(u):
-            try: return int(float(s[:-len(u)]) * f)
-            except Exception: return 0
-    try: return int(float(s) / 1048576)
-    except Exception: return 0
+            try:
+                return int(float(s[:-len(u)]) * f)
+            except Exception:
+                return 0
+    try:
+        return int(float(s) / 1048576)
+    except Exception:
+        return 0
 
 
 def _build_k8s_snapshot() -> dict:
@@ -853,7 +862,9 @@ def _litellm_metrics() -> dict:
             agg = {}
             for u, model, reqs, toks, spend in cur.fetchall():
                 e = agg.setdefault(u, {"user": u, "requests": 0, "tokens": 0, "spend": 0.0, "models": {}})
-                e["requests"] += int(reqs); e["tokens"] += int(toks); e["spend"] += float(spend)
+                e["requests"] += int(reqs)
+                e["tokens"] += int(toks)
+                e["spend"] += float(spend)
                 e["models"][model] = e["models"].get(model, 0.0) + float(spend)
             out["byUser"] = sorted(
                 [{"user": e["user"], "requests": e["requests"], "tokens": e["tokens"],
@@ -1212,13 +1223,17 @@ def _build_metrics(nodes: list, pods: list) -> dict:
     endpoints = _fetch_endpoints()
     src: dict = {}
     try:
-        met = _litellm_metrics(); src["litellm"] = True
+        met = _litellm_metrics()
+        src["litellm"] = True
     except Exception:
-        met = {"perModel": {}, "teams": [], "trend": [], "health": {}, "byTeam": [], "byUser": []}; src["litellm"] = False
+        met = {"perModel": {}, "teams": [], "trend": [], "health": {}, "byTeam": [], "byUser": []}
+        src["litellm"] = False
     try:
-        bedrock = _bedrock_models(); src["bedrock"] = True
+        bedrock = _bedrock_models()
+        src["bedrock"] = True
     except Exception:
-        bedrock = []; src["bedrock"] = False
+        bedrock = []
+        src["bedrock"] = False
 
     node_by_name = {n["name"]: n for n in nodes}
     def cost_for(name: str) -> float:
@@ -1264,7 +1279,8 @@ def _build_metrics(nodes: list, pods: list) -> dict:
 
     gpu = []
     try:
-        util = _dcgm_util(); src["dcgm"] = True
+        util = _dcgm_util()
+        src["dcgm"] = True
         for n in nodes:
             if n.get("gpu", 0) > 0:
                 host = n["name"].split(".")[0]
@@ -1337,7 +1353,8 @@ def metrics_loop() -> None:
     while True:
         try:
             with snapshot_lock:
-                nodes = list(snapshot.get("nodes", [])); pods = list(snapshot.get("pods", []))
+                nodes = list(snapshot.get("nodes", []))
+                pods = list(snapshot.get("pods", []))
             m = _build_metrics(nodes, pods)
             with metrics_lock:
                 metrics = m
@@ -1585,7 +1602,8 @@ class Handler(http.server.SimpleHTTPRequestHandler):
                 status, body = dismiss_investigation(investigation_id, approver)
             return self._json(status, body)
 
-        self.send_response(404); self.end_headers()
+        self.send_response(404)
+        self.end_headers()
 
     def do_DELETE(self) -> None:  # type: ignore[override]
         # DELETE /investigations/<id> — permanently removes the row from postgres.
@@ -1609,7 +1627,8 @@ class Handler(http.server.SimpleHTTPRequestHandler):
                 return self._json(400, {"error": "invalid investigation id"})
             status, body = delete_investigation(investigation_id)
             return self._json(status, body)
-        self.send_response(404); self.end_headers()
+        self.send_response(404)
+        self.end_headers()
 
     def log_message(self, format: str, *args: object) -> None:  # type: ignore[override]
         pass
