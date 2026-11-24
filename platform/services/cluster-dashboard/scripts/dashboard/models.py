@@ -314,9 +314,12 @@ def gpu_records(nodes: list[dict], pods: list[dict], endpoints: list[dict], util
 
 
 def argocd_records(items: list[dict]) -> list[dict]:
-    return [{"name": a["metadata"]["name"],
-             "sync": (a.get("status", {}) or {}).get("sync", {}).get("status", "?"),
-             "health": (a.get("status", {}) or {}).get("health", {}).get("status", "?")}
+    """Name, sync and health of each Argo CD Application; "?" for a status
+    Argo CD has not reported yet (the projection keeps such a field as None)."""
+    def reported(app: dict, field: str) -> str:
+        return ((app.get("status") or {}).get(field) or {}).get("status") or "?"
+
+    return [{"name": a["metadata"]["name"], "sync": reported(a, "sync"), "health": reported(a, "health")}
             for a in items]
 
 
