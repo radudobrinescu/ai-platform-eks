@@ -45,7 +45,7 @@ def compute(view: dict, inputs: dict, settings, yaml_load=None) -> tuple[dict, l
             notes.append(f"litellm-config: cannot parse config.yaml ({type(e).__name__})")
     bedrock = m.merge_bedrock(static, m.bedrock_from_crs(view.get("bedrockmodels", [])))
 
-    met = inputs.get("litellm") or m.EMPTY_LITELLM
+    met = dict(m.EMPTY_LITELLM, **(inputs.get("litellm_api") or {}), perModel=inputs.get("litellm_traffic") or {})
     models = m.build_models(endpoints, bedrock, met, pods, nodes)
     dcgm = inputs.get("dcgm")
     gpu = m.gpu_records(nodes, pods, endpoints, dcgm) if dcgm is not None else []

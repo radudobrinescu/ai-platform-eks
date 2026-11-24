@@ -83,12 +83,6 @@
     ],
     "byUser": [
       {
-        "models": [
-          {
-            "model": "nova-lite",
-            "spend": 0.0311
-          }
-        ],
         "requests": 7,
         "spend": 0.0311,
         "tokens": 5100,

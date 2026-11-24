@@ -173,7 +173,7 @@ def fixture_kube():
 FIXTURE_NOW = 1795168800.0   # 2026-11-20T10:00:00Z
 
 
-def fixture_app(env=None, deps_missing=(), clock=lambda: FIXTURE_NOW):
+def fixture_app(env=None, deps_missing=(), clock=lambda: FIXTURE_NOW, kube=None):
     """An App with every watch cache listed from the recorded cluster and the
     polled sources' inputs set from the recorded metrics. Nothing runs in the
     background."""
@@ -186,14 +186,16 @@ def fixture_app(env=None, deps_missing=(), clock=lambda: FIXTURE_NOW):
     settings = config.load({"CLUSTER_NAME": "ai-platform-dev", "AWS_REGION": "eu-central-1",
                             "ARGOCD_URL": "https://argocd.example", "DB_USER": "u", "DB_PASSWORD": "p",
                             **(env or {})})
-    kube = fixture_kube()
+    kube = kube or fixture_kube()
     app = App(settings, Deps(frozenset(deps_missing)), kube=kube, yaml_load=yaml.safe_load, clock=clock,
               remediator_job=lambda i: {"metadata": {"name": f"remediator-{i[:8]}"}})
     for c in app.caches.values():
         c.list(kube)
     prom = load_fixture("prom.json.in")
     app.set_input("usage", kube.lists["/apis/metrics.k8s.io/v1beta1/nodes"]["items"])
-    app.set_input("litellm", load_fixture("litellm_metrics.json.in"))
+    lite = load_fixture("litellm_inputs.json.in")
+    app.set_input("litellm_api", lite["litellm_api"])
+    app.set_input("litellm_traffic", lite["litellm_traffic"])
     app.set_input("dcgm", load_fixture("dcgm.json.in"))
     app.set_input("latency", (models.quantile_map(prom["vllm:time_to_first_token_seconds"]),
                               models.quantile_map(prom["vllm:inter_token_latency_seconds"])))

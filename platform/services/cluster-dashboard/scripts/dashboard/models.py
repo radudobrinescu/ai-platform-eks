@@ -281,7 +281,7 @@ def build_models(endpoints: list[dict], bedrock: list[dict], litellm: dict,
         m["tps"] = pm["tps"] if pm else 0
         m["errPct"] = pm["errPct"] if pm else 0
         if pm and m["tier"] == "bedrock":
-            m["costHr"] = round(pm["spend5m"] * 12, 2)   # 5-minute spend -> $/hr
+            m["costHr"] = round(pm["spendHr"], 2)
         h = health.get(m["name"])
         m["health"] = h["status"] if h else ""
         m["tokPerDollar"] = tok_per_dollar(m.get("tps"), m.get("costHr"))

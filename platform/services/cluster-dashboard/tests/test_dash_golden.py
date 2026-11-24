@@ -32,7 +32,7 @@ def test_data_json_matches_golden():
 def test_added_fields_report_every_source():
     _, added = build_data_json()
     names = [s["name"] for s in added["sourceStatus"]]
-    assert names[0] == "kubernetes" and {"litellm", "dcgm", "pricing", "approvals"} <= set(names)
+    assert names[0] == "kubernetes" and {"litellm-api", "litellm-metrics", "dcgm", "pricing", "approvals"} <= set(names)
     assert {s["name"]: s["state"] for s in added["sourceStatus"]}["kubernetes"] == "ok"
     assert added["degraded"] == []
 

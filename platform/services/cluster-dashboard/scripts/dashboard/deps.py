@@ -16,7 +16,7 @@ log = logging.getLogger("dashboard.deps")
 # import name -> (pip name, effect when missing)
 EFFECTS = {
     "kubernetes": ("kubernetes", "no Kubernetes data: nodes, pods, models, alerts and GPU views are empty"),
-    "psycopg": ("psycopg", "approvals, investigations and LiteLLM usage are unavailable"),
+    "psycopg": ("psycopg", "approvals and investigations are unavailable"),
     "jwt": ("pyjwt", "approve, dismiss and delete are refused (authentication cannot be verified)"),
     "boto3": ("boto3", "prices come from the shipped table instead of the AWS Price List"),
     "yaml": ("pyyaml", "Bedrock models declared in litellm-config are not listed"),

@@ -37,10 +37,11 @@ LATENCY_Q = "histogram_quantile(0.95, sum by (le,pool,role) (rate({}_bucket[5m])
 
 def cache_specs(s: Settings) -> list[tuple]:
     """(name, path, projection, query, retention, max_items) for every watch."""
-    sel_key = s.dcgm_pod_selector.split("=", 1)[0]
+    label_keys = tuple(dict.fromkeys(("app", s.dcgm_pod_selector.split("=", 1)[0],
+                                      s.litellm_pod_selector.split("=", 1)[0])))
     specs = [
         ("nodes", "/api/v1/nodes", project_node, None, None, None),
-        ("pods", "/api/v1/pods", functools.partial(project_pod, label_keys=("app", sel_key)), None, None, None),
+        ("pods", "/api/v1/pods", functools.partial(project_pod, label_keys=label_keys), None, None, None),
         ("bedrockmodels", "/apis/bedrock.ai-platform/v1alpha1/bedrockmodels", project_cr, None, None, None),
         ("hpas", "/apis/autoscaling/v2/namespaces/inference/horizontalpodautoscalers", project_cr, None, None, None),
         ("argocd", "/apis/argoproj.io/v1alpha1/namespaces/argocd/applications", project_argo, None, None, None),
@@ -78,8 +79,13 @@ class App:
                        for name, path, proj, q, ret, mx in cache_specs(settings)}
         connect_agent = self._connector(settings.db_name) if deps.has("psycopg") and settings.db_configured else None
         self.approvals = Approvals(settings, connect_agent, self._create_job, remediator_job or (lambda i: {}), clock)
-        self._connect_litellm = (self._connector(settings.litellm_db_name)
-                                 if deps.has("psycopg") and settings.db_configured else None)
+        # LiteLLM through its API and per-pod metrics with the read-only key.
+        self.viewer_key = (litellm.ViewerKey(kube.get, settings.litellm_namespace, settings.litellm_key_secret,
+                                             clock) if kube is not None else None)
+        self.litellm_get = litellm.http_get          # replaced in tests
+        self.litellm_api = litellm.LiteLLMApi(settings.litellm_api_url, self.viewer_key,
+                                              lambda url, key, where: self.litellm_get(url, key, where))
+        self.traffic = litellm.Traffic()
         self._live_prices = None
         if boto3_client is not None:
             from dashboard.pricing import LivePrices
@@ -120,7 +126,8 @@ class App:
                  else "database credentials not configured")
         defs = [
             ("k8s-usage", 30, self._run_usage, None, no_kube),
-            ("litellm", self.s.metrics_interval, self._run_litellm, None, no_db),
+            ("litellm-api", 30, self._run_litellm_api, 90, no_kube),
+            ("litellm-metrics", 15, self._run_litellm_metrics, 45, no_kube),
             ("dcgm", 15, self._run_dcgm, None, no_kube),
             ("autoscaling", 15, self._run_latency, None, None),
             ("pricing", 60, self._run_pricing, 3 * 3600, None),
@@ -145,10 +152,18 @@ class App:
             return "metrics-server not installed"
         return None
 
-    def _run_litellm(self):
-        data = litellm.fetch(self._connect_litellm)
-        self.set_input("litellm", data)
-        return ("unavailable: " + ", ".join(data["missing"])) if data["missing"] else None
+    def _run_litellm_api(self):
+        data, detail = litellm.fetch_api(self.litellm_api, self._clock(), self.inputs().get("litellm_api"))
+        self.set_input("litellm_api", data)
+        return detail
+
+    def _run_litellm_metrics(self):
+        pods = litellm.litellm_pods(self.caches["pods"].items(), self.s.litellm_namespace,
+                                    self.s.litellm_pod_selector)
+        figures, detail = litellm.fetch_metrics(self.traffic, pods, self.viewer_key, self.s.litellm_metrics_port,
+                                                self._clock(), self.litellm_get)
+        self.set_input("litellm_traffic", figures)
+        return detail
 
     def _run_dcgm(self):
         key, _, val = self.s.dcgm_pod_selector.partition("=")
@@ -257,7 +272,7 @@ class App:
             "degraded": self.deps.degraded(),
             "notes": notes,
             # Pre-rebuild `sources` booleans, kept for /data.json readers.
-            "legacy": {"litellm": by["litellm"] in ("ok", "stale"), "bedrock": kube_ok,
+            "legacy": {"litellm": by["litellm-api"] in ("ok", "stale"), "bedrock": kube_ok,
                        "dcgm": by["dcgm"] in ("ok", "stale"),
                        "argocd": kube_ok and self.caches["argocd"].installed,
                        "autoscaling": by["autoscaling"] in ("ok", "stale")},

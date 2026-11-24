@@ -32,7 +32,6 @@ class Settings:
     db_name: str = "platform_health_agent"
     db_user: str = ""
     db_password: str = field(default="", repr=False)
-    litellm_db_name: str = "litellm"
     agent_namespace: str = "ai-platform"
     approval_expiry_hours: int = 24
     stale_investigation_minutes: int = 15
@@ -56,6 +55,10 @@ class Settings:
 
     # Sources
     litellm_namespace: str = "ai-platform"
+    litellm_api_url: str = "http://litellm.ai-platform.svc.cluster.local:4000"
+    litellm_pod_selector: str = "app=litellm"
+    litellm_metrics_port: int = 4000
+    litellm_key_secret: str = "cluster-dashboard-litellm-key"
     litellm_config_cm: str = "litellm-config"
     node_prices_cm: str = "cluster-dashboard-node-prices"
     pricing_endpoint_region: str = "us-east-1"
@@ -64,7 +67,6 @@ class Settings:
     dcgm_pod_selector: str = "app=nvidia-dcgm-exporter"
     dcgm_port: str = "9400"
     autoscaling_prom_url: str = "http://autoscaling-prometheus.inference.svc.cluster.local:9090"
-    metrics_interval: int = 25
 
     @property
     def db_configured(self) -> bool:
@@ -82,7 +84,6 @@ def load(env: dict | None = None) -> Settings:
         db_name=e.get("DB_NAME", Settings.db_name),
         db_user=e.get("DB_USER", ""),
         db_password=e.get("DB_PASSWORD", ""),
-        litellm_db_name=e.get("LITELLM_DB_NAME", Settings.litellm_db_name),
         agent_namespace=e.get("PLATFORM_HEALTH_AGENT_NAMESPACE", Settings.agent_namespace),
         approval_expiry_hours=_int(e, "APPROVAL_EXPIRY_HOURS", 24),
         stale_investigation_minutes=_int(e, "STALE_INVESTIGATION_MINUTES", 15),
@@ -100,6 +101,10 @@ def load(env: dict | None = None) -> Settings:
         links_ingress_namespace=e.get("LINKS_INGRESS_NAMESPACE", Settings.links_ingress_namespace),
         links_ingress_name=e.get("LINKS_INGRESS_NAME", Settings.links_ingress_name),
         litellm_namespace=e.get("LITELLM_NAMESPACE", Settings.litellm_namespace),
+        litellm_api_url=e.get("LITELLM_API_URL", Settings.litellm_api_url).rstrip("/"),
+        litellm_pod_selector=e.get("LITELLM_POD_SELECTOR", Settings.litellm_pod_selector),
+        litellm_metrics_port=_int(e, "LITELLM_METRICS_PORT", Settings.litellm_metrics_port),
+        litellm_key_secret=e.get("LITELLM_KEY_SECRET", Settings.litellm_key_secret),
         litellm_config_cm=e.get("LITELLM_CONFIG_CM", Settings.litellm_config_cm),
         node_prices_cm=e.get("NODE_PRICES_CM", Settings.node_prices_cm),
         pricing_endpoint_region=e.get("PRICING_ENDPOINT_REGION", Settings.pricing_endpoint_region),
@@ -108,5 +113,4 @@ def load(env: dict | None = None) -> Settings:
         dcgm_pod_selector=e.get("DCGM_POD_SELECTOR", Settings.dcgm_pod_selector),
         dcgm_port=e.get("DCGM_PORT", Settings.dcgm_port),
         autoscaling_prom_url=e.get("AUTOSCALING_PROM_URL", Settings.autoscaling_prom_url),
-        metrics_interval=_int(e, "METRICS_INTERVAL", 25),
     )

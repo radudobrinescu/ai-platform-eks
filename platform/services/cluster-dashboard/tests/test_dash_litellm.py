@@ -476,3 +476,111 @@ def test_http_size_cap(server, monkeypatch):
 def test_http_connection_refused():
     with pytest.raises(ll.LiteLLMError, match="^pod p: URLError$"):
         ll.http_get("http://127.0.0.1:9/metrics", SECRET_KEY, "pod p")
+
+
+# ---------------------------------------------------------------------------
+# App wiring
+# ---------------------------------------------------------------------------
+
+SECRET_PATH = "/api/v1/namespaces/ai-platform/secrets/cluster-dashboard-litellm-key"
+
+
+def raw_pod(name, ip):
+    return {"metadata": {"name": name, "namespace": "ai-platform", "labels": {"app": "litellm"}},
+            "spec": {"nodeName": "n1", "containers": [{"name": "litellm"}]},
+            "status": {"phase": "Running", "podIP": ip,
+                       "containerStatuses": [{"name": "litellm", "ready": True, "state": {"running": {}}}]}}
+
+
+def wired_app(with_secret=True):
+    from dash_testlib import fixture_app, fixture_kube
+    kube = fixture_kube()
+    pods = kube.lists["/api/v1/pods"]
+    kube.lists["/api/v1/pods"] = dict(pods, items=pods["items"] + [raw_pod("litellm-a", "10.0.0.1"),
+                                                                    raw_pod("litellm-b", "10.0.0.2")])
+    if with_secret:
+        kube.lists[SECRET_PATH] = secret(SECRET_KEY)
+    clock = Clock()
+    clock.t = FIXTURE_NOW
+    app = fixture_app(kube=kube, clock=clock)
+    scrapes = {"http://10.0.0.1:4000/metrics": "litellm_metrics_a1.txt.in",
+               "http://10.0.0.2:4000/metrics": "litellm_metrics_b1.txt.in"}
+    rest = {"/team/list": "litellm_team_list.json.in",
+            "/team/daily/activity/aggregated": "litellm_team_activity.json.in",
+            "/customer/daily/activity/aggregated": "litellm_customer_activity.json.in",
+            "/health/latest": "litellm_health_latest.json.in"}
+    keys_sent = []
+
+    def get(url, key, where):
+        keys_sent.append(key)
+        return text(scrapes.get(url) or rest[where]).encode()
+    app.litellm_get = get
+    return app, kube, clock, scrapes, keys_sent
+
+
+def source(app, name):
+    return next(s for s in app.sources if s.name == name)
+
+
+def test_sources_disabled_until_the_key_exists_then_recover():
+    app, kube, clock, _, _ = wired_app(with_secret=False)
+    for name in ("litellm-api", "litellm-metrics"):
+        source(app, name).run_once()
+        st = source(app, name).tracker.status()
+        assert (st.state, st.detail) == ("disabled", "viewer key not created yet")
+    kube.lists[SECRET_PATH] = secret(SECRET_KEY)        # the CronJob ran
+    clock.t += ll.KEY_REFRESH
+    source(app, "litellm-api").run_once()
+    assert source(app, "litellm-api").tracker.status().state == "ok"
+
+
+def test_api_and_metrics_feed_the_snapshot_with_one_shared_key_read():
+    app, kube, clock, scrapes, keys_sent = wired_app()
+    source(app, "litellm-api").run_once()
+    source(app, "litellm-metrics").run_once()
+    assert source(app, "litellm-metrics").tracker.status().detail == "warming up"
+    clock.t += 15
+    scrapes.update({"http://10.0.0.1:4000/metrics": "litellm_metrics_a2.txt.in",
+                    "http://10.0.0.2:4000/metrics": "litellm_metrics_b2.txt.in"})
+    source(app, "litellm-metrics").run_once()
+    assert source(app, "litellm-metrics").tracker.status().state == "ok"
+    app.derive_once()
+    doc = app.store.data_json()
+    models = {m["name"]: m for m in doc["models"]}
+    assert models[QWEN]["rpm"] == 52.0                  # 13 requests over the 15 s between the scrapes
+    assert models[QWEN]["health"] == "healthy" and models[NOVA]["health"] == "unhealthy"
+    assert models[NOVA]["costHr"] == 0.72               # $0.003 in 15 s
+    assert doc["teams"][0]["name"] == "search" and doc["costExt"]["byUser"][0]["requests"] == 7
+    assert doc["sources"]["litellm"] is True
+    assert set(keys_sent) == {SECRET_KEY}
+    assert [c for c in kube.calls if c[1] == SECRET_PATH] == [("GET", SECRET_PATH, None)]
+
+
+def test_failed_metrics_run_keeps_previous_figures():
+    app, _, clock, scrapes, _ = wired_app()
+    src = source(app, "litellm-metrics")
+    src.run_once()
+    clock.t += 15
+    scrapes.update({"http://10.0.0.1:4000/metrics": "litellm_metrics_a2.txt.in",
+                    "http://10.0.0.2:4000/metrics": "litellm_metrics_b2.txt.in"})
+    src.run_once()
+    before = app.inputs()["litellm_traffic"]
+    clock.t += 15
+    good = app.litellm_get
+
+    def failing(url, key, where):
+        if "10.0.0.2" in url:
+            raise ll.LiteLLMError(f"{where}: URLError")
+        return good(url, key, where)
+    app.litellm_get = failing
+    src.run_once()
+    st = src.tracker.status()
+    assert st.state == "error" and "pod litellm-b" in st.lastError
+    assert app.inputs()["litellm_traffic"] == before
+
+
+def test_legacy_litellm_flag_follows_the_api_source():
+    app, _, _, _, _ = wired_app()
+    source(app, "litellm-api").tracker.fail("HTTP 500 from /team/list")
+    app.derive_once()
+    assert app.store.data_json()["sources"]["litellm"] is False
