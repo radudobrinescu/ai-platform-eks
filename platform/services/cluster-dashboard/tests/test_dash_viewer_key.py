@@ -5,6 +5,9 @@ The fake mirrors LiteLLM 1.108.10 behaviour the script relies on: unique key
 aliases on /key/generate, /key/delete failing for unknown keys, /key/info
 returning `info.status` and `info.user_id`, /user/info returning 404 for an
 unknown user, and /health/liveliness answering with a non-object body.
+/key/info without a `key` parameter describes the key in the Authorization
+header (`key = key or user_api_key_dict.api_key` in LiteLLM); a deleted,
+revoked or expired key does not get that far, it fails authentication (401).
 """
 import base64
 import json
@@ -28,6 +31,8 @@ class Fake:
         self.users: dict[str, dict] = {}
         self.keys: dict[str, dict] = {}          # token -> {alias, user_id, status}
         self.calls: list[tuple[str, str]] = []
+        self.requests: list[tuple[str, str, str]] = []   # (method, raw path with query, Authorization)
+        self.key_info_status: int | None = None          # force this status on /key/info
         self.litellm_up = True
         self.master_ok = True
         self.fail_secret_write = 0
@@ -60,6 +65,7 @@ def _handler(fake: Fake):
             q = dict(urllib.parse.parse_qsl(u.query))
             fake.calls.append((method, u.path))
             auth = self.headers.get("Authorization", "")
+            fake.requests.append((method, self.path, auth))
             if u.path.startswith("/api/v1/"):
                 if auth != f"Bearer {SA_TOKEN}":
                     return self._send(401)
@@ -68,9 +74,24 @@ def _handler(fake: Fake):
                 return self._send(503)
             if u.path == "/health/liveliness":
                 return self._send(200, raw=b"\"I'm alive!\"")
-            if auth != f"Bearer {MASTER}" or not fake.master_ok:
+            if method == "GET" and u.path == "/key/info" and fake.key_info_status:
+                return self._send(fake.key_info_status, {"error": "forced"})
+            if auth != f"Bearer {MASTER}":
+                return self._as_virtual_key(method, u.path, q, auth[len("Bearer "):])
+            if not fake.master_ok:
                 return self._send(401, {"error": "auth"})
             return self._litellm(method, u.path, q)
+
+        def _as_virtual_key(self, method, path, q, token):
+            """A request authenticated with a generated key: only an active
+            key passes, and all it may do here is read its own info."""
+            k = fake.keys.get(token)
+            if k is None or k["status"] != "active":
+                return self._send(401, {"error": "Authentication Error"})
+            if method == "GET" and path == "/key/info" and "key" not in q:
+                return self._send(200, {"key": "<hash>", "info": {"status": k["status"], "user_id": k["user_id"],
+                                                                  "key_alias": k["alias"]}})
+            return self._send(403, {"error": "not allowed for this role"})
 
         def _kube(self, method, path):
             base = f"/api/v1/namespaces/{NS}/secrets"
@@ -195,6 +216,39 @@ def test_inactive_key_is_replaced(fake, status):
     assert _run(fake) == 0
     new = _stored_key(fake)
     assert new != old and old not in fake.keys and fake.keys[new]["status"] == "active"
+
+
+def test_viewer_key_is_checked_as_bearer_token_and_never_sent_in_a_url(fake):
+    """A query string can end up in LiteLLM's access log (and any proxy's);
+    the Authorization header does not."""
+    assert _run(fake) == 0
+    key, fake.requests[:], fake.calls[:] = _stored_key(fake), [], []
+    assert _run(fake) == 0
+    assert all(key not in path for _method, path, _auth in fake.requests), fake.requests
+    info = [(path, auth) for method, path, auth in fake.requests if path.startswith("/key/info")]
+    assert info == [("/key/info", f"Bearer {key}")]
+    assert _writes(fake) == [] and _stored_key(fake) == key
+
+
+def test_key_of_another_user_is_replaced(fake):
+    assert _run(fake) == 0
+    old = _stored_key(fake)
+    fake.keys[old]["user_id"] = "someone-else"
+    fake.keys[old]["alias"] = "someone-elses-key"
+    assert _run(fake) == 0
+    new = _stored_key(fake)
+    assert new != old and fake.keys[new]["user_id"] == "cluster-dashboard"
+
+
+@pytest.mark.parametrize("status,kept", [(400, False), (403, False), (404, False), (500, True), (503, True)])
+def test_key_info_errors(fake, status, kept):
+    """4xx: LiteLLM does not accept the stored key, so it is replaced. 5xx:
+    LiteLLM is in trouble, so the run stops without changing anything."""
+    assert _run(fake) == 0
+    old, fake.calls[:] = _stored_key(fake), []
+    fake.key_info_status = status
+    assert _run(fake) == (1 if kept else 0)
+    assert (_stored_key(fake) == old) is kept and (_writes(fake) == []) is kept
 
 
 def test_deleted_key_is_replaced(fake):

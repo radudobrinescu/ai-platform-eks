@@ -14,7 +14,7 @@ from __future__ import annotations
 import logging
 import sys
 
-from dashboard import config, cost, deps, models
+from dashboard import config, cost, deps, models, pricing
 from pha import jobs as pha_jobs
 from pha import log as pha_log
 
@@ -80,7 +80,7 @@ def _bedrock_models() -> list:
 def main() -> int:
     pha_log.setup("cluster-dashboard")
     settings = config.load()
-    found = deps.check(settings.pydeps_dir)
+    found = deps.check()
 
     from dashboard.app import App
     from dashboard.api import serve
@@ -97,10 +97,7 @@ def main() -> int:
     if found.has("yaml"):
         import yaml
         yaml_load = yaml.safe_load
-    boto3_client = None
-    if found.has("boto3"):
-        import boto3
-        boto3_client = lambda: boto3.client("pricing", region_name=settings.pricing_endpoint_region)  # noqa: E731
+    boto3_client = pricing.client_factory(settings.pricing_endpoint_region) if found.has("boto3") else None
 
     app = App(settings, found, kube=kube, kube_error=kube_error, yaml_load=yaml_load, boto3_client=boto3_client,
               remediator_job=lambda inv_id: build_remediator_job(inv_id, settings))

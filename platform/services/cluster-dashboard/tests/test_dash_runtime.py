@@ -183,16 +183,17 @@ def test_events_expire_and_are_capped():
 
 # --- R6 degraded mode ---------------------------------------------------------------
 
-def test_deps_reports_missing_packages_and_install_errors(tmp_path):
+def test_deps_reports_missing_packages(caplog):
     def importer(name):
         if name in ("kubernetes", "boto3"):
             raise ImportError(name)
 
-    d = ddeps.check(str(tmp_path), importer)
+    with caplog.at_level("WARNING", logger="dashboard.deps"):
+        d = ddeps.check(importer)
     assert [x["package"] for x in d.degraded()] == ["boto3", "kubernetes"]
-    (tmp_path / "INSTALL_FAILED").write_text("ERROR: no network\n")
-    d = ddeps.check(str(tmp_path), lambda n: None)
-    assert d.install_error == "ERROR: no network" and d.degraded()[0]["package"] == "(install)"
+    assert not d.has("kubernetes") and d.has("psycopg")
+    assert [r.getMessage() for r in caplog.records] == ["degraded"]
+    assert ddeps.check(lambda n: None).degraded() == []
 
 
 def test_app_without_kubernetes_is_degraded_but_serves():

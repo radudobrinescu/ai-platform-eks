@@ -178,9 +178,9 @@ def project_event(o: dict) -> dict:
 # ---------------------------------------------------------------------------
 
 class WatchCache:
-    """Keeps a projected, up-to-date copy of one list (R2 in the U2 functional
-    design): list, watch from the list's version, restart on stream end, relist
-    on 410, back off on errors, treat 404 as "not installed"."""
+    """Keeps a projected, up-to-date copy of one list: list, watch from the
+    list's version, restart on stream end, relist on 410, back off on errors,
+    treat 404 as "not installed"."""
 
     def __init__(self, kind: str, path: str, project: Callable[[dict], dict], *,
                  query: dict | None = None, on_change: Callable[[str], None] = lambda k: None,

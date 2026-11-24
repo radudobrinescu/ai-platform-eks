@@ -22,11 +22,13 @@ def approvals(fake_db):
     from dashboard.k8s import ApiError
 
     posted = []
-    state = {"post": None}
+    state = {"post": None, "error": None}
     ns = types.SimpleNamespace(posted=posted, state=state, conns=[], current=None)
 
     def create_job(spec):
         posted.append(("/apis/batch/v1/namespaces/ai-platform/jobs", spec))
+        if state["error"] is not None:
+            raise state["error"]
         if state["post"] is not None:
             raise ApiError(*state["post"])
 
@@ -111,6 +113,35 @@ def test_failed_job_create_releases_the_claim(approvals):
     assert status == 502 and "boom" in body["body"]
     assert any("SET status='awaiting_approval', approved_by=NULL" in s for s in c.sql())
     assert not any("INSERT INTO daily_counters" in s for s in c.sql())
+
+
+class MaxRetryError(Exception):
+    """Stands in for urllib3's: the kubernetes package raises it (not an API
+    status) when the API server cannot be reached."""
+
+
+@pytest.mark.parametrize("error", [MaxRetryError("Max retries exceeded with url: /apis/batch/v1/jobs"),
+                                   TimeoutError("timed out")])
+def test_job_create_failing_without_an_api_status_releases_the_claim(approvals, error):
+    c = approvals.conn(_ready([("SET status='remediating'", 1)]))
+    approvals.state["error"] = error
+    status, body = approvals.api.approve(INV, "alice")
+    assert (status, body["error"], body["status"]) == (502, "job create failed", None)
+    assert str(error) in body["body"] and type(error).__name__ in body["body"]
+    assert any("SET status='awaiting_approval', approved_by=NULL" in s for s in c.sql()), "claim must be released"
+    assert not any("INSERT INTO daily_counters" in s for s in c.sql())
+
+
+def test_failing_to_build_the_job_spec_releases_the_claim(approvals):
+    c = approvals.conn(_ready([("SET status='remediating'", 1)]))
+
+    def broken_spec(_inv_id):
+        raise KeyError("python_image")
+
+    approvals.api.remediator_job = broken_spec
+    assert approvals.api.approve(INV, "alice")[0] == 502
+    assert any("SET status='awaiting_approval', approved_by=NULL" in s for s in c.sql())
+    assert approvals.posted == []
 
 
 def test_db_unavailable(approvals):
