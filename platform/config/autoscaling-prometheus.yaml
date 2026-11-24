@@ -84,8 +84,10 @@ data:
       # LiteLLM (the always-on gateway) — per-model request counters. This is
       # the wake-from-zero signal: LiteLLM counts a request for a model before
       # it reaches the EPP, so the counter moves even when the pool is at zero.
-      # Static target (no cross-namespace pod discovery / RBAC needed); /metrics
-      # is unauthenticated and in-cluster only.
+      # Static target (no cross-namespace pod discovery / RBAC needed). LiteLLM
+      # serves /metrics without a key (require_auth_for_metrics_endpoint: false
+      # in litellm-config) and the gateway's ingress does not forward that path,
+      # so it is reachable from inside the cluster only.
       - job_name: litellm
         metrics_path: /metrics
         static_configs:
