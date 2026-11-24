@@ -499,6 +499,13 @@
         "clickhouse/clickhouse-server"
       ],
       "allowedVersions": "/^\\d+\\.(3|8)\\./"
+    },
+    {
+      "description": "Postgres stays on major 16. A Postgres major cannot start on the data directory of the one before it, so a new tag alone would take the shared database (LiteLLM, Langfuse, the dashboard) down in every upgraded environment. The next major is not proposed until `platformctl upgrade` migrates the data (dump and restore); move this rule together with that change.",
+      "matchDepNames": [
+        "postgres"
+      ],
+      "allowedVersions": "/^16\\./"
     }
   ]
 }

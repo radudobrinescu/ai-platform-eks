@@ -168,7 +168,7 @@ alone (`candidate/solo`) and stays out until its branch gets a newer commit. Sev
 `candidate/combined` and the next cycles, one a day, test one suspect at a time, `main` first if it had commits
 no cycle had tested. If `main` fails alone, cycles stop until `main` moves. A candidate that nobody approves
 for `WAIT_DAYS` (default 5) is abandoned without marks and cut again, so an approver never approves a stale
-one. A group that does not merge cleanly is left out of that cycle. At most one of the anchor updates (vLLM,
+one. A group that does not merge cleanly is left out of that cycle. So is a group whose own pull request checks fail: `main`'s CI already says the new version needs a code change, and E2E would only repeat it. At most one of the anchor updates (vLLM,
 the EKS Kubernetes version) goes into a cycle.
 
 **What you are approving.** The E2E run's name starts with what the candidate changes on top of `main`
