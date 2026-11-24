@@ -1333,12 +1333,17 @@ function infraIssues(m) {
         what: `${esc(c.pool)}: <span class="m-id">${esc((c.node || c.name).split('.')[0])}</span> will be replaced`,
         why: "Its pool's settings changed since it started. Karpenter starts a replacement first, then drains it.",
       });
-  for (const a of D.nodeAlerts || [])
+  // A node that is still starting is NotReady for a minute or two; its claim
+  // above already says "on its way".
+  const arriving = new Set(m.claims.filter((c) => !c.ready && !c.deleting && c.node).map((c) => c.node));
+  for (const a of D.nodeAlerts || []) {
+    if (a.issue === 'NotReady' && arriving.has(a.node)) continue;
     out.push({
       lvl: a.sev === 'crit' ? 'crit' : 'warn',
       what: `<span class="m-id">${esc(String(a.node).split('.')[0])}</span>: ${esc(a.issue)}`,
       why: 'Reported by the node itself.',
     });
+  }
   for (const n of m.nodes) {
     if (n.memPct >= INFRA.memWarn)
       out.push({
