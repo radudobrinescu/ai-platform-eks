@@ -133,7 +133,8 @@ Expected:
                         ┌────────────┴───────────┐
                         │ cluster-dashboard      │ — cluster-dashboard SA
                         │ topbar approvals UI    │   + create-jobs in
-                        │ POST /investigations/  │     ai-platform ns
+                        │ POST /api/v1/          │     ai-platform ns
+                        │   investigations/      │
                         │   <id>/approve         │
                         │ Spawns Remediator      │
                         └────────────┬───────────┘
@@ -152,6 +153,29 @@ Expected:
                         │ status='done'          │
                         └────────────────────────┘
 ```
+
+### Code
+
+The event watcher (`scripts/event_watcher.py`) is the entry point: settings
+from the environment, idle mode without a key, one thread per loop. The
+logic lives in the shared `pha` package (ConfigMap
+`platform-health-agent-scripts`, keys `pha__<file>`, projected to
+`/opt/lib/pha/` by the `pha-lib` volumes):
+
+| Module | Content |
+|---|---|
+| `pha/triggers.py` | Trigger rules as pure functions on Kubernetes objects in their JSON shape: pods, Warning events, nodes, stuck kro resources; owner key for debounce; own workloads and namespace filters |
+| `pha/watch.py` | Watch loops for pods, events and nodes, the stuck-resource scan, and spawning an investigation (throttle, row, Job, debounce) |
+| `pha/rbac.py` | Writer RoleBindings in `inference` and `team-*` (every 5 minutes) |
+| `pha/health.py` | Health endpoint on port 8080 for the probes (Kubernetes API and database reachable) |
+| `pha/db.py` | Agent database: throttle, counters, investigation rows, approvals |
+| `pha/jobs.py` | Investigator and Remediator Job specs (shared with the dashboard backend) |
+| `pha/log.py` | JSON logs |
+
+Tests run without a cluster or database:
+`python3 -m pytest -q platform/services/cluster-dashboard/tests/test_pha_*.py`.
+The trigger cases are in `tests/pha_cases.py`; with the `kubernetes` package
+on `PYTHONPATH` they also run through the real client models.
 
 ---
 

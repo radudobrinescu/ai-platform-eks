@@ -34,6 +34,40 @@ configMapGenerator:
     # keeps running stale code (e.g. a route the freshly-served HTML calls 404s).
     files:
       - scripts/backend.py
+      # Package `dashboard`, flat keys <package>__<file> (see the pha note below).
+      - dashboard____init__.py=scripts/dashboard/__init__.py
+      - dashboard__api.py=scripts/dashboard/api.py
+      - dashboard__app.py=scripts/dashboard/app.py
+      - dashboard__approvals.py=scripts/dashboard/approvals.py
+      - dashboard__auth.py=scripts/dashboard/auth.py
+      - dashboard__config.py=scripts/dashboard/config.py
+      - dashboard__cost.py=scripts/dashboard/cost.py
+      - dashboard__dcgm.py=scripts/dashboard/dcgm.py
+      - dashboard__deps.py=scripts/dashboard/deps.py
+      - dashboard__derive.py=scripts/dashboard/derive.py
+      - dashboard__k8s.py=scripts/dashboard/k8s.py
+      - dashboard__litellm.py=scripts/dashboard/litellm.py
+      - dashboard__models.py=scripts/dashboard/models.py
+      - dashboard__pricing.py=scripts/dashboard/pricing.py
+      - dashboard__prom.py=scripts/dashboard/prom.py
+      - dashboard__snapshot.py=scripts/dashboard/snapshot.py
+      - dashboard__sources.py=scripts/dashboard/sources.py
+  # UI fonts (SIL Open Font License, see fonts/README.md), served by the
+  # backend at /fonts/ so the page makes no request outside the dashboard.
+  # Binary files land in binaryData.
+  - name: cluster-dashboard-fonts
+    namespace: ai-platform
+    files:
+      - fonts/manrope-latin.woff2
+      - fonts/jetbrains-mono-latin.woff2
+      - fonts/OFL-Manrope.txt
+      - fonts/OFL-JetBrainsMono.txt
+  # Script of the viewer-key CronJob (manifests.yaml). Hash suffix on, so a
+  # script change gives the CronJob a new ConfigMap name.
+  - name: cluster-dashboard-litellm-key-script
+    namespace: ai-platform
+    files:
+      - scripts/litellm_viewer_key.py
   # Platform Health Agent scripts. Mounted by the event-watcher AND by every
   # Investigator/Remediator Job (the Job specs in event_watcher.py / backend.py
   # reference this ConfigMap by HARDCODED name) → keep the name stable, no hash.
@@ -51,3 +85,16 @@ configMapGenerator:
       - scripts/fix_command_policy.py
       - scripts/db_init.sh
       - scripts/ddl.sql
+      # Shared Python package `pha`: ConfigMap keys cannot contain "/", so each
+      # file is stored as <package>__<file> and the volumes that import it
+      # project the keys back to pha/<file> (see `pha-lib` volumes). Add new
+      # pha modules here AND to those volumes; tests/test_dash_packaging.py
+      # fails if one is missed.
+      - pha____init__.py=scripts/pha/__init__.py
+      - pha__db.py=scripts/pha/db.py
+      - pha__health.py=scripts/pha/health.py
+      - pha__jobs.py=scripts/pha/jobs.py
+      - pha__log.py=scripts/pha/log.py
+      - pha__rbac.py=scripts/pha/rbac.py
+      - pha__triggers.py=scripts/pha/triggers.py
+      - pha__watch.py=scripts/pha/watch.py

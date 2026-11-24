@@ -1,0 +1,180 @@
+{
+ "metadata": {
+  "api_key_limit": null,
+  "entity_total_api_keys": null,
+  "has_more": false,
+  "page": 1,
+  "total_api_keys": null,
+  "total_api_requests": 0,
+  "total_autorouter_savings_spend": 0.0,
+  "total_cache_creation_input_tokens": 0,
+  "total_cache_read_input_tokens": 0,
+  "total_completion_tokens": 0,
+  "total_compression_saved_tokens": 0,
+  "total_compression_savings_spend": 0.0,
+  "total_failed_requests": 0,
+  "total_flat_cost": 0.0,
+  "total_gateway_injected_caching_savings_spend": 0.0,
+  "total_pages": 1,
+  "total_prompt_caching_savings_spend": 0.0,
+  "total_prompt_tokens": 0,
+  "total_ptu_hours": 0.0,
+  "total_response_time_ms": 0,
+  "total_spend": 0.0,
+  "total_successful_requests": 0,
+  "total_timed_requests": 0,
+  "total_tokens": 0
+ },
+ "results": [
+  {
+   "breakdown": {
+    "api_keys": {},
+    "endpoints": {},
+    "entities": {},
+    "mcp_servers": {},
+    "model_groups": {},
+    "models": {},
+    "providers": {}
+   },
+   "date": "2026-11-18",
+   "metrics": {
+    "api_requests": 0,
+    "autorouter_savings_spend": 0.0,
+    "cache_creation_input_tokens": 0,
+    "cache_read_input_tokens": 0,
+    "completion_tokens": 0,
+    "compression_saved_tokens": 0,
+    "compression_savings_spend": 0.0,
+    "failed_requests": 0,
+    "flat_cost": 0.0,
+    "gateway_injected_caching_savings_spend": 0.0,
+    "prompt_caching_savings_spend": 0.0,
+    "prompt_tokens": 0,
+    "ptu_hours": 0.0,
+    "spend": 0.0,
+    "successful_requests": 0,
+    "timed_requests": 0,
+    "total_response_time_ms": 0,
+    "total_tokens": 0
+   }
+  },
+  {
+   "breakdown": {
+    "api_keys": {},
+    "endpoints": {},
+    "entities": {
+     "t1": {
+      "api_key_breakdown": {},
+      "metadata": {
+       "team_alias": "search"
+      },
+      "metrics": {
+       "api_requests": 30,
+       "autorouter_savings_spend": 0.0,
+       "cache_creation_input_tokens": 0,
+       "cache_read_input_tokens": 0,
+       "completion_tokens": 6000,
+       "compression_saved_tokens": 0,
+       "compression_savings_spend": 0.0,
+       "failed_requests": 0,
+       "flat_cost": 0.0,
+       "gateway_injected_caching_savings_spend": 0.0,
+       "prompt_caching_savings_spend": 0.0,
+       "prompt_tokens": 6000,
+       "ptu_hours": 0.0,
+       "spend": 0.3,
+       "successful_requests": 30,
+       "timed_requests": 0,
+       "total_response_time_ms": 0,
+       "total_tokens": 12000
+      }
+     }
+    },
+    "mcp_servers": {},
+    "model_groups": {},
+    "models": {},
+    "providers": {}
+   },
+   "date": "2026-11-19",
+   "metrics": {
+    "api_requests": 30,
+    "autorouter_savings_spend": 0.0,
+    "cache_creation_input_tokens": 0,
+    "cache_read_input_tokens": 0,
+    "completion_tokens": 6000,
+    "compression_saved_tokens": 0,
+    "compression_savings_spend": 0.0,
+    "failed_requests": 0,
+    "flat_cost": 0.0,
+    "gateway_injected_caching_savings_spend": 0.0,
+    "prompt_caching_savings_spend": 0.0,
+    "prompt_tokens": 6000,
+    "ptu_hours": 0.0,
+    "spend": 0.3,
+    "successful_requests": 30,
+    "timed_requests": 0,
+    "total_response_time_ms": 0,
+    "total_tokens": 12000
+   }
+  },
+  {
+   "breakdown": {
+    "api_keys": {},
+    "endpoints": {},
+    "entities": {
+     "t1": {
+      "api_key_breakdown": {},
+      "metadata": {
+       "team_alias": "search"
+      },
+      "metrics": {
+       "api_requests": 18,
+       "autorouter_savings_spend": 0.0,
+       "cache_creation_input_tokens": 0,
+       "cache_read_input_tokens": 0,
+       "completion_tokens": 4500,
+       "compression_saved_tokens": 0,
+       "compression_savings_spend": 0.0,
+       "failed_requests": 1,
+       "flat_cost": 0.0,
+       "gateway_injected_caching_savings_spend": 0.0,
+       "prompt_caching_savings_spend": 0.0,
+       "prompt_tokens": 4500,
+       "ptu_hours": 0.0,
+       "spend": 0.12,
+       "successful_requests": 17,
+       "timed_requests": 0,
+       "total_response_time_ms": 0,
+       "total_tokens": 9000
+      }
+     }
+    },
+    "mcp_servers": {},
+    "model_groups": {},
+    "models": {},
+    "providers": {}
+   },
+   "date": "2026-11-20",
+   "metrics": {
+    "api_requests": 18,
+    "autorouter_savings_spend": 0.0,
+    "cache_creation_input_tokens": 0,
+    "cache_read_input_tokens": 0,
+    "completion_tokens": 4500,
+    "compression_saved_tokens": 0,
+    "compression_savings_spend": 0.0,
+    "failed_requests": 1,
+    "flat_cost": 0.0,
+    "gateway_injected_caching_savings_spend": 0.0,
+    "prompt_caching_savings_spend": 0.0,
+    "prompt_tokens": 4500,
+    "ptu_hours": 0.0,
+    "spend": 0.12,
+    "successful_requests": 17,
+    "timed_requests": 0,
+    "total_response_time_ms": 0,
+    "total_tokens": 9000
+   }
+  }
+ ]
+}

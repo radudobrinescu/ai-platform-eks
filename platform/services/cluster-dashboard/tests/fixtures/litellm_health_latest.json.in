@@ -1,0 +1,47 @@
+{
+ "latest_health_checks": {
+  "a1b2": {
+   "checked_at": "2026-11-20T09:58:00+00:00",
+   "checked_by": "background_health_check",
+   "created_at": "2026-11-20T09:58:00+00:00",
+   "details": null,
+   "error_message": null,
+   "health_check_id": "hc-a1b2-00",
+   "healthy_count": 1,
+   "model_id": "a1b2",
+   "model_name": "qwen2-5-3b-instruct",
+   "response_time_ms": 210.0,
+   "status": "healthy",
+   "unhealthy_count": 0
+  },
+  "a1b3": {
+   "checked_at": "2026-11-20T09:40:00+00:00",
+   "checked_by": "background_health_check",
+   "created_at": "2026-11-20T09:40:00+00:00",
+   "details": null,
+   "error_message": null,
+   "health_check_id": "hc-a1b3-00",
+   "healthy_count": 0,
+   "model_id": "a1b3",
+   "model_name": "qwen2-5-3b-instruct",
+   "response_time_ms": 210.0,
+   "status": "unhealthy",
+   "unhealthy_count": 1
+  },
+  "c3d4": {
+   "checked_at": "2026-11-20T09:59:00+00:00",
+   "checked_by": "background_health_check",
+   "created_at": "2026-11-20T09:59:00+00:00",
+   "details": null,
+   "error_message": null,
+   "health_check_id": "hc-c3d4-00",
+   "healthy_count": 0,
+   "model_id": "c3d4",
+   "model_name": "nova-lite",
+   "response_time_ms": 210.0,
+   "status": "unhealthy",
+   "unhealthy_count": 1
+  }
+ },
+ "total_models": 3
+}
