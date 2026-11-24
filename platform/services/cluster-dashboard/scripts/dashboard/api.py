@@ -6,7 +6,7 @@ declared body is read and dropped before the request is handled, and one that
 cannot be (over MAX_BODY_BYTES, or no Content-Length) is refused and the
 connection closed.
 
-Routes (R4, R5 in the U2 functional design):
+Routes:
   GET  /api/v1/snapshot          versioned sections, ETag, 304
   GET  /api/v1/stream            server-sent events
   GET  /api/v1/sources           source status

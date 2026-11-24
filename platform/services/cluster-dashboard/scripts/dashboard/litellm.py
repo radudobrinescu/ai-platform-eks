@@ -11,9 +11,8 @@ the viewer-key CronJob):
   error rate and spend/hour over the last 5 minutes are computed from counter
   increases between scrapes, the way Prometheus `increase()` does.
 
-Rules: aidlc-docs/construction/dashboard-u3-litellm/functional-design/
-business-rules.md (L1 to L13). The key is never logged or returned: errors
-carry only an HTTP status and a path.
+The key is never logged or returned: errors carry only an HTTP status and a
+path.
 """
 from __future__ import annotations
 
@@ -184,7 +183,7 @@ def _num(v) -> float:
 
 def teams_from(team_list: list, activity: dict, today: date) -> list[dict]:
     """Teams with budget and key count from /team/list, today's usage from
-    the per-team breakdown of today's activity (L9)."""
+    the per-team breakdown of today's activity."""
     day = next((r for r in activity.get("results") or [] if str(r.get("date")) == today.isoformat()), {})
     entities = (day.get("breakdown") or {}).get("entities") or {}
     out = []
@@ -298,7 +297,7 @@ def parse_metrics(text: str) -> dict[str, dict]:
 
 
 # ---------------------------------------------------------------------------
-# Traffic window (L7, L8)
+# Traffic window
 # ---------------------------------------------------------------------------
 
 def _increase(prev: float, cur: float) -> float:
@@ -390,7 +389,7 @@ class Traffic:
 
 
 def litellm_pods(pods: list[dict], namespace: str, selector: str) -> list[tuple[str, str]]:
-    """(name, IP) of ready LiteLLM pods (L5). The name identifies the pod
+    """(name, IP) of ready LiteLLM pods. The name identifies the pod
     process: a replaced pod gets a new name, a container restart keeps it
     and shows as a counter reset."""
     key, _, val = selector.partition("=")

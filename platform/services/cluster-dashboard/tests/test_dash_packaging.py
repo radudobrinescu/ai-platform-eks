@@ -7,6 +7,7 @@ only fail at pod start (ImportError), so it is checked here.
 """
 import ast
 import os
+import re
 import shutil
 import subprocess
 
@@ -201,3 +202,31 @@ def test_rendered_pod_template_changes_with_the_code_the_dashboard_imports(tmp_p
         f.write("\n# a change\n")
     after = _rendered_pod_template(str(work))
     assert (after != before) is restarts
+
+
+# ---------------------------------------------------------------------------
+# Comments in the shipped code point only at things that exist
+# ---------------------------------------------------------------------------
+
+def _shipped_python():
+    for root, _dirs, files in os.walk(os.path.join(DASH, "scripts")):
+        for name in sorted(files):
+            if name.endswith(".py"):
+                with open(os.path.join(root, name), encoding="utf-8") as f:
+                    yield os.path.relpath(os.path.join(root, name), DASH), f.read()
+
+
+def test_shipped_code_does_not_cite_the_unpublished_design_notes():
+    """The design notes (aidlc-docs/, with their rule numbers R1.., L1..) are
+    not in the repository, so a reference to them leads nowhere."""
+    for path, text in _shipped_python():
+        flat = " ".join(text.split())
+        assert "aidlc-docs" not in flat, path
+        assert "functional design" not in flat and "functional-design" not in flat, path
+        assert not re.search(r"\((?:[RL]\d{1,2})(?:,\s*[RL]\d{1,2})*\)", flat), f"{path}: rule number without its document"
+
+
+def test_derive_docstring_names_something_that_exists():
+    from dashboard import app, derive
+    names = re.findall(r"\bapp\.(\w+)", derive.__doc__)
+    assert names and all(hasattr(app, n) for n in names), names

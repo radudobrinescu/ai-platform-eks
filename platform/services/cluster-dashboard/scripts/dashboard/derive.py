@@ -2,7 +2,7 @@
 source inputs. Pure: the same view and inputs always give the same sections,
 which is what the /data.json golden test checks.
 
-`view` maps a cache name to its projected objects (see app.CACHES);
+`view` maps a cache name to its projected objects (see app.cache_specs);
 `inputs` holds the polled sources' latest results (missing keys mean "no data
 yet").
 """
