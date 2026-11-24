@@ -1,5 +1,6 @@
 // Runs the dashboard page's script in Node with a minimal DOM stand-in and
-// renders every view and drawer from the data given on stdin. Prints, as
+// renders every view and drawer from the store sections given on stdin (as
+// the stream's "snapshot" event delivers them). Prints, as
 // JSON, every HTML string the page assigned to innerHTML (plus the hrefs it
 // built), so tests/test_dash_ui.py can check that data never reaches the
 // page unescaped. No network: fetch and EventSource never answer.
@@ -88,11 +89,14 @@ const ctx = {
 vm.createContext(ctx);
 vm.runInContext(script, ctx, { filename: 'cluster-topology.html' });
 ctx.__input = input;
+ctx.__keys = null;
 vm.runInContext(
   `
-  setData(__input.data);
+  var __keys;
+  applySections(__input.sections, true);
   invs = __input.investigations || [];
   renderAll();
+  __keys = Object.keys(D);
   for (const m of D.models || []) openModel(m.name);
   for (const n of D.nodes || []) openNode(n.name);
   for (const t of D.teams || []) openTeam(t.name);
@@ -100,4 +104,4 @@ vm.runInContext(
 `,
   ctx,
 );
-process.stdout.write(JSON.stringify(written));
+process.stdout.write(JSON.stringify({ written, keys: ctx.__keys }));

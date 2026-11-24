@@ -4,6 +4,7 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>AI Platform — Console</title>
+<link rel="icon" href="data:,">
 <style>
 /* Fonts are served by the dashboard (/fonts/, SIL Open Font License): the page
    makes no request outside the dashboard's origin. Latin subsets of the
@@ -239,6 +240,19 @@ tbody tr:hover{background:var(--surface-2)}
 .inv-v{font-size:12px;margin-top:2px}
 .inv-cmds{font-family:ui-monospace,monospace;font-size:11px;background:var(--bg,#0b0e14);padding:8px 10px;border-radius:8px;white-space:pre-wrap;margin-top:4px;overflow-x:auto}
 .inv-more{font-size:11px;cursor:pointer;color:var(--accent,#818cf8);display:inline-block;margin-top:4px}
+/* Source status: header pill and list, degraded banner, per-panel notes. */
+.pill.bad{border-color:rgba(248,113,113,.4)} .pill.bad .cw{color:var(--red);font-weight:700}
+.src-wrap{position:relative}
+.src-pop{position:absolute;top:40px;right:0;z-index:60;display:none;width:600px;max-width:90vw;background:var(--surface);border:1px solid var(--border);border-radius:10px;box-shadow:0 14px 34px rgba(0,0,0,.45);padding:8px 0;font-size:12px}
+.src-pop.open{display:block}
+.src-row{display:grid;grid-template-columns:16px 120px 64px 1fr;gap:8px;padding:6px 14px;align-items:baseline}
+.src-row .src-age{color:var(--text-muted);font-family:var(--mono);font-size:11px}
+.src-row .src-why{color:var(--text-2);overflow-wrap:anywhere}
+.src-st{font-weight:700} .src-st.ok{color:var(--green)} .src-st.stale,.src-st.disabled{color:var(--amber)} .src-st.error{color:var(--red)}
+.banner{margin:0 0 16px;padding:10px 14px;border-radius:8px;background:var(--orange-soft);color:var(--orange);font-size:13px}
+.banner ul{margin:6px 0 0;padding-left:18px}
+.src-note{font-size:11px;margin:0 0 8px;color:var(--amber)} .src-note.bad{color:var(--red)}
+.live.off{color:var(--amber)} .live.off::before{background:var(--amber);box-shadow:0 0 8px var(--amber)}
 </style>
 </head>
 <body>
@@ -250,6 +264,7 @@ tbody tr:hover{background:var(--surface-2)}
     <div class="spacer"></div>
     <div class="pill" id="top-cost" title="Realtime cluster cost — estimate">💲 —</div>
     <div class="pill" id="top-health" title="Health — click for details" style="cursor:pointer" onclick="go('health',document.querySelectorAll('.nav-item')[5])"></div>
+    <div class="src-wrap"><div class="pill" id="top-sources" title="Data sources — click for details" style="cursor:pointer" role="button" tabindex="0" onclick="toggleSources()">sources</div><div class="src-pop" id="src-pop" role="dialog" aria-label="Data sources"></div></div>
     <button class="icon-btn" title="Theme" onclick="toggleTheme()">◐</button>
     <div class="live" id="live" aria-live="polite" role="status">connecting…</div>
   </div>
@@ -265,6 +280,7 @@ tbody tr:hover{background:var(--surface-2)}
   </div>
 
   <div class="main">
+    <div class="banner" id="degraded-banner" style="display:none" role="status"></div>
     <!-- OVERVIEW -->
     <div class="view active" id="v-overview">
       <div class="vhead"><div class="vtitle">Overview</div><div class="vsub" id="ov-sub">updated just now</div></div>
@@ -463,29 +479,214 @@ const push = (a, v, n = 32) => {
   while (a.length > n) a.shift();
 };
 
+// ---------------------------------------------------------------------------
+// Data: the backend's sections arrive on the stream (/api/v1/stream: one
+// "snapshot" event, then one "section" event per change). After two failed
+// connects the page polls /api/v1/snapshot every 5 s with If-None-Match and
+// tries the stream again every 60 s. D is built from the sections with the
+// same mapping as the backend's /data.json (snapshot.Store.data_json).
+// ---------------------------------------------------------------------------
+const DATA_SECTIONS = [
+  ['nodes', []],
+  ['pods', []],
+  ['endpoints', []],
+  ['nodeAlerts', []],
+  ['cost', {}],
+  ['models', []],
+  ['teams', []],
+  ['gpu', []],
+  ['argocd', []],
+  ['autoscaling', []],
+  ['costExt', {}],
+  ['provisioning', []],
+];
+const K8S_SECTIONS = ['nodes', 'pods', 'endpoints', 'nodeAlerts', 'cost', 'approvals', 'meta'];
+let S = {},
+  k8sAt = 0,
+  conn = 'connecting',
+  es = null,
+  streamFailures = 0,
+  etag = null,
+  pollTimer = null,
+  retryTimer = null,
+  renderQueued = false,
+  started = false;
+function toD(sec) {
+  const d = {};
+  for (const [k, def] of DATA_SECTIONS) d[k] = sec[k] == null ? def : sec[k];
+  const a = sec.approvals || {},
+    meta = sec.meta || {},
+    st = sec.status || {};
+  return Object.assign(d, {
+    approvals_available: !!a.available,
+    approvals_pending: a.pending || 0,
+    cluster: meta.cluster || '',
+    region: meta.region || '',
+    links: meta.links || [],
+    sources: st.legacy || {},
+    sourceStatus: st.sources || [],
+    degraded: st.degraded || [],
+    ts: k8sAt,
+  });
+}
 function setData(d) {
   D = d;
   diffActivity();
-  pushHist();
 }
-async function poll() {
-  try {
-    const r = await fetch('/data.json');
-    if (!r.ok) throw 0;
-    setData(await r.json());
-    try {
-      const ri = await fetch('/investigations');
-      if (ri.ok) invs = (await ri.json()).items || [];
-    } catch (e) {}
+function applySections(sections, full) {
+  const before = JSON.stringify(S.approvals || null);
+  S = full ? Object.assign({}, sections) : Object.assign({}, S, sections);
+  if (Object.keys(sections).some((k) => K8S_SECTIONS.includes(k))) k8sAt = Date.now() / 1000;
+  setData(toD(S));
+  if (!started) {
+    started = true;
+    pushHist();
+  }
+  if (JSON.stringify(S.approvals || null) !== before) loadInvestigations();
+  queueRender();
+}
+function queueRender() {
+  if (renderQueued) return;
+  renderQueued = true;
+  requestAnimationFrame(() => {
+    renderQueued = false;
     renderAll();
-    $('live').textContent = 'Live';
     if (!routed) {
       routed = true;
       routeFromHash();
     }
+  });
+}
+function setConn(c) {
+  conn = c;
+  const l = $('live');
+  l.textContent = c === 'live' ? 'Live' : c === 'polling' ? 'Polling' : 'reconnecting…';
+  l.className = 'live' + (c === 'live' ? '' : ' off');
+}
+function connect() {
+  if (es) es.close();
+  es = new EventSource('/api/v1/stream');
+  es.addEventListener('snapshot', (e) => {
+    streamFailures = 0;
+    stopPolling();
+    setConn('live');
+    applySections(JSON.parse(e.data).sections || {}, true);
+  });
+  es.addEventListener('section', (e) => {
+    const m = JSON.parse(e.data);
+    applySections({ [m.name]: m.data }, false);
+  });
+  es.onerror = () => {
+    streamFailures++;
+    // CLOSED: the server refused (for example 503, too many streams); the
+    // browser will not retry by itself.
+    if (es.readyState === 2 || streamFailures >= 2) {
+      es.close();
+      es = null;
+      startPolling();
+    } else setConn('reconnecting');
+  };
+}
+async function pollSnapshot() {
+  try {
+    const r = await fetch('/api/v1/snapshot', {
+      cache: 'no-store',
+      headers: etag ? { 'If-None-Match': etag } : {},
+    });
+    if (r.status !== 304) {
+      if (!r.ok) throw new Error('HTTP ' + r.status);
+      etag = r.headers.get('ETag');
+      applySections((await r.json()).sections || {}, true);
+    }
+    if (!es) setConn('polling');
   } catch (e) {
-    $('live').textContent = 'reconnecting…';
+    if (!es) setConn('reconnecting');
   }
+}
+function startPolling() {
+  if (!pollTimer) {
+    pollSnapshot();
+    pollTimer = setInterval(pollSnapshot, 5000);
+  }
+  clearTimeout(retryTimer);
+  retryTimer = setTimeout(() => {
+    streamFailures = 0;
+    connect();
+  }, 60000);
+}
+function stopPolling() {
+  clearInterval(pollTimer);
+  clearTimeout(retryTimer);
+  pollTimer = retryTimer = null;
+}
+async function loadInvestigations() {
+  if (!(S.approvals || {}).available) {
+    invs = [];
+    return;
+  }
+  try {
+    const r = await fetch('/api/v1/investigations', { cache: 'no-store' });
+    invs = r.ok ? (await r.json()).items || [] : [];
+  } catch (e) {}
+  queueRender();
+}
+
+// ---------------------------------------------------------------------------
+// Source status: header pill and list, degraded banner, panel notes.
+// ---------------------------------------------------------------------------
+const hhmm = (t) => new Date(t * 1000).toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit' });
+const ago = (t) => {
+  if (!t) return 'never';
+  const d = Math.max(0, Math.round(Date.now() / 1000 - t));
+  return d < 60 ? d + 's ago' : d < 3600 ? Math.round(d / 60) + 'm ago' : Math.round(d / 3600) + 'h ago';
+};
+const short = (t, n = 140) => (String(t).length > n ? String(t).slice(0, n) + '…' : String(t));
+function srcOf(name) {
+  return (D.sourceStatus || []).find((x) => x.name === name);
+}
+// True when the source has delivered data at least once (shown, maybe old).
+function srcHasData(name) {
+  const x = srcOf(name);
+  return !!x && (x.state === 'ok' || x.state === 'stale' || !!x.lastSuccess);
+}
+// '' when the source is ok; otherwise a note for the panel that uses it.
+function srcNote(name) {
+  const x = srcOf(name);
+  if (!x || x.state === 'ok') return '';
+  if (x.state === 'stale')
+    return `<div class="src-note">as of ${esc(x.lastSuccess ? hhmm(x.lastSuccess) : '—')}</div>`;
+  const why = short(x.lastError || x.detail || x.state);
+  return x.lastSuccess
+    ? `<div class="src-note bad">unavailable since ${esc(hhmm(x.lastSuccess))}: ${esc(why)}</div>`
+    : `<div class="src-note bad">unavailable: ${esc(why)}</div>`;
+}
+const STATE_RANK = { ok: 0, disabled: 1, stale: 2, error: 3 };
+function topSources() {
+  const list = D.sourceStatus || [];
+  const bad = list.filter((x) => x.state !== 'ok');
+  const worst = bad.reduce((w, x) => Math.max(w, STATE_RANK[x.state] || 0), 0);
+  const p = $('top-sources');
+  p.className = 'pill' + (worst >= 3 ? ' bad' : bad.length ? ' warn' : '');
+  p.innerHTML = bad.length
+    ? `<span class="cw">● ${num(bad.length)}</span> source${bad.length === 1 ? '' : 's'}`
+    : `<span class="cg">●</span> sources`;
+  $('src-pop').innerHTML = list
+    .map(
+      (x) =>
+        `<div class="src-row"><span class="dot ${x.state === 'ok' ? 'ok' : x.state === 'error' ? 'bad' : 'warn'}"></span><b>${esc(x.name)}</b><span class="src-st ${esc(x.state)}">${esc(x.state)}</span><span class="src-why" title="${esc(x.lastError || x.detail || '')}"><span class="src-age">${esc(ago(x.lastSuccess))}</span> ${esc(short(x.lastError || x.detail || ''))}</span></div>`,
+    )
+    .join('');
+}
+function toggleSources() {
+  $('src-pop').classList.toggle('open');
+}
+function degradedBanner() {
+  const d = D.degraded || [],
+    b = $('degraded-banner');
+  b.style.display = d.length ? '' : 'none';
+  b.innerHTML = d.length
+    ? `<b>Running degraded</b> — Python packages could not be installed:<ul>${d.map((x) => `<li><b>${esc(x.package)}</b>: ${esc(x.effect)}</li>`).join('')}</ul>`
+    : '';
 }
 function pushHist() {
   const m = D.models || [];
@@ -576,17 +777,15 @@ function alertList() {
         open: ['model', m.name],
       });
   });
-  (D.provisioning || [])
-    .slice(0, 1)
-    .forEach((e) =>
-      out.push({
-        icon: '☁',
-        sev: 'crit',
-        t: `GPU capacity · ${e.reason}`,
-        d: e.message,
-        open: ['view', 'infra'],
-      }),
-    );
+  (D.provisioning || []).slice(0, 1).forEach((e) =>
+    out.push({
+      icon: '☁',
+      sev: 'crit',
+      t: `GPU capacity · ${e.reason}`,
+      d: e.message,
+      open: ['view', 'infra'],
+    }),
+  );
   (D.argocd || []).forEach((a) => {
     if (a.sync !== 'Synced' || a.health !== 'Healthy')
       out.push({
@@ -610,6 +809,8 @@ function alertList() {
 }
 
 function renderAll() {
+  topSources();
+  degradedBanner();
   ovSub();
   kpis();
   topbar();
@@ -665,7 +866,7 @@ function topbar() {
 function kpis() {
   const m = D.models || [],
     c = D.cost || {},
-    s = D.sources || {};
+    s = { litellm: srcHasData('litellm-metrics'), dcgm: srcHasData('dcgm') };
   const live = m.filter((x) => x.status === 'running').length,
     dep = m.length - live;
   const al = alertList().length,
@@ -751,26 +952,28 @@ function costMini() {
 
 function gpuBars() {
   const g = D.gpu || [];
-  if (!(D.sources || {}).dcgm) {
-    $('gpu-bars').innerHTML =
-      '<div class="muted" style="font-size:12px">GPU metrics unavailable (dcgm-exporter unreachable)</div>';
+  const note = srcNote('dcgm');
+  if (!srcHasData('dcgm')) {
+    $('gpu-bars').innerHTML = note;
     return;
   }
   if (!g.length) {
     $('gpu-bars').innerHTML =
-      '<div class="muted" style="font-size:12px">No GPU nodes — scales from zero on demand</div>';
+      note + '<div class="muted" style="font-size:12px">No GPU nodes — scales from zero on demand</div>';
     return;
   }
-  $('gpu-bars').innerHTML = g
-    .map((n) => {
-      const u = n.util && n.util.length ? Math.round(n.util.reduce((a, b) => a + b, 0) / n.util.length) : 0;
-      const mmA = (n.mem || []).filter((x) => x != null);
-      const mm = mmA.length ? Math.round(mmA.reduce((s, x) => s + x, 0) / mmA.length) : null;
-      const c = u === 0 ? 'var(--text-muted)' : u > 85 ? 'var(--amber)' : 'var(--green)';
-      const lbl = n.model ? '· ' + esc(n.model) : '<span class="muted">idle</span>';
-      return `<div style="margin-bottom:9px"><div class="bar-lbl"><span>${esc(n.instance)} ${lbl}</span><span>${u}% util${mm != null ? ' · ' + mm + '% mem' : ''}</span></div><div class="bar"><i style="width:${u || 2}%;background:${c}"></i></div></div>`;
-    })
-    .join('');
+  $('gpu-bars').innerHTML =
+    note +
+    g
+      .map((n) => {
+        const u = n.util && n.util.length ? Math.round(n.util.reduce((a, b) => a + b, 0) / n.util.length) : 0;
+        const mmA = (n.mem || []).filter((x) => x != null);
+        const mm = mmA.length ? Math.round(mmA.reduce((s, x) => s + x, 0) / mmA.length) : null;
+        const c = u === 0 ? 'var(--text-muted)' : u > 85 ? 'var(--amber)' : 'var(--green)';
+        const lbl = n.model ? '· ' + esc(n.model) : '<span class="muted">idle</span>';
+        return `<div style="margin-bottom:9px"><div class="bar-lbl"><span>${esc(n.instance)} ${lbl}</span><span>${u}% util${mm != null ? ' · ' + mm + '% mem' : ''}</span></div><div class="bar"><i style="width:${u || 2}%;background:${c}"></i></div></div>`;
+      })
+      .join('');
 }
 
 function alertOpen(kind, arg) {
@@ -809,35 +1012,41 @@ function setTab(t) {
 }
 function modelsBody() {
   const rows = (D.models || []).filter((m) => mtab === 'all' || m.tier === mtab);
-  const mu = (D.sources || {}).litellm;
-  $('models-body').innerHTML = rows.length
-    ? rows
-        .map(
-          (m) =>
-            `<tr data-model="${esc(m.name)}" onclick="openModel(this.dataset.model)"><td><div class="m-name">${esc(m.name)}</div><div class="m-id">${esc(m.model)}</div></td><td>${tierBadge(m.tier)}</td><td>${m.status === 'running' ? '<span class="st ok">running</span>' : m.status === 'error' ? '<span class="st bad">error</span>' : '<span class="st warn">deploying</span>'}${scaleBadge(m)}</td><td class="num">${esc(m.gpu)}</td><td class="num">${mu ? num(m.rpm) : '—'}</td><td class="num">${mu ? (m.p50 == null ? '—' : m.p50 + ' / ' + m.p95 + 'ms') : '—'}</td><td class="num">${mu ? num(m.tps) : '—'}</td><td class="num">${mu && m.errPct != null ? m.errPct + '%' : '—'}</td><td class="num">$${(m.costHr || 0).toFixed(2)}</td><td><div class="act"><button title="Copy a ready-to-run curl for this model" onclick="event.stopPropagation();copyCurl(this.closest('tr').dataset.model,event)">⧉ curl</button><button title="Langfuse" onclick="event.stopPropagation();openLink('langfuse')">📊</button><button title="WebUI" onclick="event.stopPropagation();openLink('webui')">💬</button></div></td></tr>`,
-        )
-        .join('')
-    : '<tr><td colspan=10 class="muted" style="padding:20px">No models in this tier</td></tr>';
+  const mu = srcHasData('litellm-metrics');
+  const note = srcNote('litellm-metrics');
+  $('models-body').innerHTML =
+    (note ? `<tr><td colspan=10 style="padding:8px 16px 0">${note}</td></tr>` : '') +
+    (rows.length
+      ? rows
+          .map(
+            (m) =>
+              `<tr data-model="${esc(m.name)}" onclick="openModel(this.dataset.model)"><td><div class="m-name">${esc(m.name)}</div><div class="m-id">${esc(m.model)}</div></td><td>${tierBadge(m.tier)}</td><td>${m.status === 'running' ? '<span class="st ok">running</span>' : m.status === 'error' ? '<span class="st bad">error</span>' : '<span class="st warn">deploying</span>'}${scaleBadge(m)}</td><td class="num">${esc(m.gpu)}</td><td class="num">${mu ? num(m.rpm) : '—'}</td><td class="num">${mu ? (m.p50 == null ? '—' : m.p50 + ' / ' + m.p95 + 'ms') : '—'}</td><td class="num">${mu ? num(m.tps) : '—'}</td><td class="num">${mu && m.errPct != null ? m.errPct + '%' : '—'}</td><td class="num">$${(m.costHr || 0).toFixed(2)}</td><td><div class="act"><button title="Copy a ready-to-run curl for this model" onclick="event.stopPropagation();copyCurl(this.closest('tr').dataset.model,event)">⧉ curl</button><button title="Langfuse" onclick="event.stopPropagation();openLink('langfuse')">📊</button><button title="WebUI" onclick="event.stopPropagation();openLink('webui')">💬</button></div></td></tr>`,
+          )
+          .join('')
+      : '<tr><td colspan=10 class="muted" style="padding:20px">No models in this tier</td></tr>');
 }
 
 function teamsView() {
   const t = D.teams || [];
-  if (!(D.sources || {}).litellm) {
-    $('teams-grid').innerHTML = '<div class="muted">Team metrics unavailable (LiteLLM DB unreachable)</div>';
+  const note = srcNote('litellm-api');
+  if (!srcHasData('litellm-api')) {
+    $('teams-grid').innerHTML = note;
     return;
   }
-  $('teams-grid').innerHTML = t.length
-    ? t
-        .map((x) => {
-          const pct = x.limit ? Math.min(100, Math.round((x.budget / x.limit) * 100)) : 0;
-          const c = pct > 80 ? 'var(--amber)' : 'var(--green)';
-          const bl = x.limit
-            ? `$${x.budget.toFixed(2)} / $${x.limit.toFixed(0)} · ${pct}%`
-            : `$${x.budget.toFixed(2)} · no cap`;
-          return `<div class="card" style="cursor:pointer" data-team="${esc(x.name)}" onclick="openTeam(this.dataset.team)"><div class="card-h"><h3>${esc(x.name)}</h3><span class="m-id">${x.failed ? num(x.failed) + ' failed today' : ''}</span></div><div class="bar-lbl"><span>budget</span><span>${bl}</span></div><div class="bar"><i style="width:${x.limit ? pct : 4}%;background:${c}"></i></div><div class="mini-kpi"><div class="mk"><div class="mkv">${num(x.reqsToday)}</div><div class="mkl">req today</div></div><div class="mk"><div class="mkv">$${(x.spendToday || 0).toFixed(2)}</div><div class="mkl">spend today</div></div><div class="mk"><div class="mkv">${num(x.keys || 0)}</div><div class="mkl">API keys</div></div></div></div>`;
-        })
-        .join('')
-    : '<div class="muted">No teams onboarded yet (create an AITeam)</div>';
+  $('teams-grid').innerHTML =
+    (note ? `<div style="grid-column:1/-1">${note}</div>` : '') +
+    (t.length
+      ? t
+          .map((x) => {
+            const pct = x.limit ? Math.min(100, Math.round((x.budget / x.limit) * 100)) : 0;
+            const c = pct > 80 ? 'var(--amber)' : 'var(--green)';
+            const bl = x.limit
+              ? `$${x.budget.toFixed(2)} / $${x.limit.toFixed(0)} · ${pct}%`
+              : `$${x.budget.toFixed(2)} · no cap`;
+            return `<div class="card" style="cursor:pointer" data-team="${esc(x.name)}" onclick="openTeam(this.dataset.team)"><div class="card-h"><h3>${esc(x.name)}</h3><span class="m-id">${x.failed ? num(x.failed) + ' failed today' : ''}</span></div><div class="bar-lbl"><span>budget</span><span>${bl}</span></div><div class="bar"><i style="width:${x.limit ? pct : 4}%;background:${c}"></i></div><div class="mini-kpi"><div class="mk"><div class="mkv">${num(x.reqsToday)}</div><div class="mkl">req today</div></div><div class="mk"><div class="mkv">$${(x.spendToday || 0).toFixed(2)}</div><div class="mkl">spend today</div></div><div class="mk"><div class="mkv">${num(x.keys || 0)}</div><div class="mkl">API keys</div></div></div></div>`;
+          })
+          .join('')
+      : '<div class="muted">No teams onboarded yet (create an AITeam)</div>');
 }
 
 function costViews() {
@@ -851,6 +1060,12 @@ function costViews() {
       src +
       ' · spot ≈0.35× · GPU is the driver' +
       (c.unpriced ? ' · ' + c.unpriced + ' node(s) unpriced' : '');
+  const pn = srcNote('pricing'),
+    an = srcNote('litellm-api'),
+    mn = srcNote('litellm-metrics'),
+    apiOk = srcHasData('litellm-api');
+  const cs2 = $('cost-sub');
+  if (cs2 && pn) cs2.innerHTML = esc(cs2.textContent) + pn;
   $('cost-kpis').innerHTML = [
     {
       l: 'Now',
@@ -893,78 +1108,65 @@ function costViews() {
     : '<div class="muted">No GPU-backed models running</div>';
   const bt = ce.byTeam || [];
   const mt = Math.max(1, ...bt.map((x) => x[1]));
-  $('cost-by-team').innerHTML = bt.length
-    ? bt
-        .map(
-          (x) =>
-            `<div style="margin-bottom:10px"><div class="bar-lbl"><span>${esc(x[0])}</span><span>$${x[1].toFixed(2)}</span></div><div class="bar"><i style="width:${(x[1] / mt) * 100}%;background:var(--accent)"></i></div></div>`,
-        )
-        .join('')
-    : '<div class="muted">No team spend today</div>';
+  $('cost-by-team').innerHTML = !apiOk
+    ? an
+    : an +
+      (bt.length
+        ? bt
+            .map(
+              (x) =>
+                `<div style="margin-bottom:10px"><div class="bar-lbl"><span>${esc(x[0])}</span><span>$${x[1].toFixed(2)}</span></div><div class="bar"><i style="width:${(x[1] / mt) * 100}%;background:var(--accent)"></i></div></div>`,
+            )
+            .join('')
+        : '<div class="muted">No team spend today</div>');
   const tr = ce.trend || [];
-  $('cost-trend').innerHTML =
-    tr.length > 1
-      ? spark(
-          tr.map((x) => x[1]),
-          'var(--green)',
-          360,
-          60,
-        ) +
-        `<div class="muted" style="font-size:11px;margin-top:6px">last ${tr.length} days · spend/day</div>`
-      : '<div class="muted">trend builds as usage accrues</div>';
+  $('cost-trend').innerHTML = !apiOk
+    ? an
+    : an +
+      (tr.length > 1
+        ? spark(
+            tr.map((x) => x[1]),
+            'var(--green)',
+            360,
+            60,
+          ) +
+          `<div class="muted" style="font-size:11px;margin-top:6px">last ${tr.length} days · spend/day</div>`
+        : '<div class="muted">trend builds as usage accrues</div>');
   const be = ce.byEfficiency || [];
   const cbe = $('cost-by-efficiency');
   if (cbe) {
     const mxe = Math.max(1, ...be.map((x) => x[1] || 0));
-    cbe.innerHTML = be.length
-      ? be
-          .map((x) => {
-            const v = x[1] || 0;
-            const idle = v === 0;
-            const w = idle ? 100 : Math.max(4, (v / mxe) * 100);
-            const col = idle ? 'var(--orange)' : 'var(--green)';
-            const lbl = idle ? 'idle · billing' : num(Math.round(v)) + ' tok/$';
-            return `<div style="margin-bottom:10px"><div class="bar-lbl"><span>${tierBadge(x[2])} ${esc(x[0])}</span><span>${lbl}</span></div><div class="bar"><i style="width:${w}%;background:${col}"></i></div></div>`;
-          })
-          .join('')
-      : '<div class="muted">No served models with a cost basis yet</div>';
+    cbe.innerHTML =
+      mn +
+      (be.length
+        ? be
+            .map((x) => {
+              const v = x[1] || 0;
+              const idle = v === 0;
+              const w = idle ? 100 : Math.max(4, (v / mxe) * 100);
+              const col = idle ? 'var(--orange)' : 'var(--green)';
+              const lbl = idle ? 'idle · billing' : num(Math.round(v)) + ' tok/$';
+              return `<div style="margin-bottom:10px"><div class="bar-lbl"><span>${tierBadge(x[2])} ${esc(x[0])}</span><span>${lbl}</span></div><div class="bar"><i style="width:${w}%;background:${col}"></i></div></div>`;
+            })
+            .join('')
+        : '<div class="muted">No served models with a cost basis yet</div>');
   }
   const bu = ce.byUser || [];
   const cbu = $('cost-by-user');
   if (cbu) {
-    if (!bu.length) {
-      cbu.innerHTML =
-        '<div class="muted">No per-user usage yet — interactive Open WebUI users appear here</div>';
-    } else {
-      const pal = ['#7c6cff', '#22c55e', '#f59e0b', '#ef4444', '#06b6d4', '#a855f7', '#84cc16', '#ec4899'];
-      const allM = [...new Set(bu.flatMap((u) => (u.models || []).map((m) => m.model)))];
-      const mc = {};
-      allM.forEach((m, i) => (mc[m] = pal[i % pal.length]));
-      const mu = Math.max(1, ...bu.map((x) => x.spend || 0));
-      const legend = allM.length
-        ? '<div class="muted" style="display:flex;flex-wrap:wrap;gap:12px;margin-bottom:12px;font-size:11px">' +
-          allM
-            .map(
-              (m) =>
-                `<span style="display:flex;align-items:center;gap:5px"><i style="width:10px;height:10px;border-radius:2px;background:${mc[m]};display:inline-block"></i>${esc(m)}</span>`,
-            )
-            .join('') +
-          '</div>'
-        : '';
-      cbu.innerHTML =
-        legend +
-        bu
-          .map((u) => {
-            const segs = (u.models || [])
+    // Totals per user from LiteLLM (end user = the e-mail Open WebUI forwards).
+    const mu = Math.max(1e-9, ...bu.map((x) => x.spend || 0));
+    cbu.innerHTML = !apiOk
+      ? an
+      : an +
+        (bu.length
+          ? bu
               .map(
-                (m) =>
-                  `<i style="width:${((m.spend || 0) / mu) * 100}%;background:${mc[m.model]}" title="${esc(m.model)}: $${(m.spend || 0).toFixed(4)}"></i>`,
+                (u) =>
+                  `<div style="margin-bottom:10px"><div class="bar-lbl"><span>${esc(u.user)}</span><span>$${(u.spend || 0).toFixed(4)} · ${esc((u.requests || 0).toLocaleString())} req · ${esc((u.tokens || 0).toLocaleString())} tok</span></div><div class="bar"><i style="width:${Math.max(2, ((u.spend || 0) / mu) * 100)}%;background:var(--accent)"></i></div></div>`,
               )
-              .join('');
-            return `<div style="margin-bottom:10px"><div class="bar-lbl"><span>${esc(u.user)}</span><span>$${(u.spend || 0).toFixed(4)} · ${(u.requests || 0).toLocaleString()} req · ${(u.tokens || 0).toLocaleString()} tok</span></div><div class="bar" style="display:flex;gap:1px">${segs}</div></div>`;
-          })
-          .join('');
-    }
+              .join('')
+          : '<div class="muted">No per-user usage yet — interactive Open WebUI users appear here</div>');
   }
 }
 
@@ -1081,16 +1283,16 @@ async function approve(id, b) {
   b.disabled = true;
   b.textContent = '…';
   try {
-    await mutate('/investigations/' + id + '/approve');
+    await mutate('/api/v1/investigations/' + encodeURIComponent(id) + '/approve');
   } catch (e) {}
-  poll();
+  loadInvestigations();
 }
 async function dismiss(id, b) {
   b.disabled = true;
   try {
-    await mutate('/investigations/' + id + '/dismiss');
+    await mutate('/api/v1/investigations/' + encodeURIComponent(id) + '/dismiss');
   } catch (e) {}
-  poll();
+  loadInvestigations();
 }
 
 // Over `platformctl tunnel` you reach the dashboard at localhost:9090 and the
@@ -1233,7 +1435,7 @@ function openModel(name, keep) {
   selectedNode = null;
   selectedTeam = null;
   if (!keep) history.replaceState(null, '', '#models/model/' + encodeURIComponent(name));
-  const s = (D.sources || {}).litellm;
+  const s = srcHasData('litellm-metrics');
   $('drawer').innerHTML = `<button class="drawer-x" onclick="closeDrawer()">×</button>
    <div style="display:flex;align-items:center;gap:10px"><span class="dot ${m.status === 'running' ? 'ok' : m.status === 'error' ? 'bad' : 'warn'}"></span><span style="font-size:19px;font-weight:800">${esc(m.name)}</span>${tierBadge(m.tier)}</div>
    <div class="m-id" style="margin-top:4px">${esc(m.model)}</div>
@@ -1458,13 +1660,24 @@ function toggleTheme() {
 }
 const saved = localStorage.getItem('theme');
 if (saved) document.body.setAttribute('data-theme', saved);
-poll();
-setInterval(poll, 5000);
+connect();
+// Local 5 s tick (no request): sparkline samples and "updated N s ago".
+setInterval(() => {
+  if (!started) return;
+  pushHist();
+  renderAll();
+}, 5000);
+document.addEventListener('click', (e) => {
+  const pop = $('src-pop');
+  if (pop.classList.contains('open') && !e.target.closest('.src-wrap')) pop.classList.remove('open');
+});
 document.addEventListener('keydown', (e) => {
   if (e.key === 'Escape') {
     const r = document.getElementById('q-res');
     if (r && r.classList.contains('open')) {
       r.className = 'q-res';
+    } else if ($('src-pop').classList.contains('open')) {
+      $('src-pop').classList.remove('open');
     } else {
       closeDrawer();
     }

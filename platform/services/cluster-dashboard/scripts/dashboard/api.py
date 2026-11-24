@@ -13,7 +13,6 @@ Routes (R4, R5 in the U2 functional design):
   GET  /data.json                pre-rebuild document (compatibility)
   GET  /fonts/<file>             the UI fonts and their licences (fixed list, read at start-up)
   GET  /                         the UI (cluster-topology.html); no directory listings
-  /investigations...             pre-rebuild paths of the same handlers (until the UI moves)
 """
 from __future__ import annotations
 
@@ -35,7 +34,7 @@ log = logging.getLogger("dashboard.api")
 HEARTBEAT_S = 15
 MIN_SECTION_GAP_S = 1.0
 MAX_STREAMS = 8
-_INV = re.compile(r"^/(?:api/v1/)?investigations(?:/([^/]+))?(?:/(approve|dismiss))?/?$")
+_INV = re.compile(r"^/api/v1/investigations(?:/([^/]+))?(?:/(approve|dismiss))?/?$")
 _QUIET = ("/api/v1/health/", "/api/v1/stream")
 
 
@@ -112,8 +111,7 @@ def make_handler(app, html_dir: str, fonts_dir: str | None = None):
 
         def _access_log(self):
             path = urlparse(self.path).path
-            quiet = path.startswith(_QUIET) or not (path.startswith("/api/") or path in ("/data.json",)
-                                                    or path.startswith("/investigations"))
+            quiet = path.startswith(_QUIET) or not (path.startswith("/api/") or path == "/data.json")
             log.log(logging.DEBUG if quiet and self.command == "GET" else logging.INFO, "http.request",
                     extra={"method": self.command, "path": path, "status": self._status,
                            "ms": round((time.monotonic() - self._t0) * 1000)})

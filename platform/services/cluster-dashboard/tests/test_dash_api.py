@@ -65,11 +65,11 @@ def test_sources_health_and_unknown_paths(server):
     assert (status, body) == (404, {"error": "not found"})
 
 
-def test_investigation_reads_on_old_and_new_paths(server):
+def test_investigation_reads(server):
     app, port = server
     rows = [{"id": uuid.UUID(int=1), "created_at": None}]
     app.approvals.connect = lambda: FakeConn([("FROM investigations", rows)])
-    for path in ("/investigations", "/api/v1/investigations", "/api/v1/investigations?status=pending"):
+    for path in ("/api/v1/investigations", "/api/v1/investigations?status=pending"):
         status, _, body = call(port, "GET", path)
         assert status == 200 and body["items"][0]["id"] == str(uuid.UUID(int=1)), path
     assert call(port, "GET", "/api/v1/investigations?status=all&limit=0")[0] == 400
@@ -102,8 +102,17 @@ def test_mutation_reaches_approvals_when_auth_disabled(server, monkeypatch):
     seen = []
     monkeypatch.setattr(app.approvals, "dismiss", lambda i, who: seen.append((i, who)) or (200, {"ok": True}))
     hdr = {"X-Requested-With": "d", "X-Forwarded-Email": "ops@example.com"}
-    status, _, _ = call(port, "POST", f"/investigations/{INV}/dismiss", hdr)
+    status, _, _ = call(port, "POST", f"/api/v1/investigations/{INV}/dismiss", hdr)
     assert status == 200 and seen == [(INV, "ops@example.com")]
+
+
+def test_pre_rebuild_investigation_paths_are_gone(server):
+    app, port = server
+    hdr = {"X-Requested-With": "d"}
+    assert call(port, "GET", "/investigations")[0] == 404
+    assert call(port, "GET", f"/investigations/{INV}")[0] == 404
+    assert call(port, "POST", f"/investigations/{INV}/approve", hdr)[0] == 404
+    assert call(port, "DELETE", "/investigations", hdr)[0] == 404
 
 
 # --- stream ------------------------------------------------------------------------

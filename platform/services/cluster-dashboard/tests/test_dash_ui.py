@@ -13,7 +13,7 @@ import subprocess
 
 import pytest
 
-from dash_testlib import load_fixture
+from dash_testlib import fixture_app
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 HTML = os.path.join(os.path.dirname(HERE), "cluster-topology.html")
@@ -65,15 +65,21 @@ def hostile(v):
     return v
 
 
-def render(data, investigations=(), search=""):
+def render(sections, investigations=(), search=""):
     node = shutil.which("node")
     if node is None:
         pytest.skip("node not installed")
     out = subprocess.run([node, os.path.join(HERE, "ui_render.js"), HTML], check=True, capture_output=True,
                          text=True, timeout=60,
-                         input=json.dumps({"data": data, "investigations": list(investigations),
-                                           "search": search}))
+                         input=json.dumps({"sections": sections, "investigations": list(investigations),
+                                           "search": search}, default=str))
     return json.loads(out.stdout)
+
+
+def store_sections():
+    app = fixture_app()
+    app.derive_once()
+    return app, app.store.get()[1]
 
 
 INVESTIGATION = {"id": "0b6c2f3e-8a51-4f7d-9c1e-2a3b4c5d6e7f", "resource_kind": "Pod", "resource_name": "x",
@@ -81,14 +87,30 @@ INVESTIGATION = {"id": "0b6c2f3e-8a51-4f7d-9c1e-2a3b4c5d6e7f", "resource_kind": 
                               "fix_commands": ["kubectl get pods"]}}
 
 
+def hostile_sections():
+    """Every string hostile, except source names and states (the page looks
+    sources up by name); one source failing and one stale so the panel notes
+    render with hostile reasons."""
+    _, sections = store_sections()
+    sources = sections["status"]["sources"]
+    bad = hostile(sections)
+    bad["status"]["sources"] = [dict(hostile(x), name=x["name"], state=x["state"]) for x in sources]
+    for x in bad["status"]["sources"]:
+        if x["name"] == "litellm-api":
+            x.update(state="error", lastSuccess=1795168000.0)
+        if x["name"] == "dcgm":
+            x.update(state="stale", lastSuccess=1795168000.0)
+    bad["status"]["degraded"] = [{"package": PAYLOAD, "effect": PAYLOAD}]
+    bad["meta"]["links"] = [{"label": "LiteLLM Admin", "url": "javascript:alert(1)", "icon": "x", "desc": "d"}]
+    return bad
+
+
 def test_hostile_values_are_always_escaped():
-    data = hostile(load_fixture("data.json.golden"))
-    data["links"] = [{"label": "LiteLLM Admin", "url": "javascript:alert(1)", "icon": "🔗", "desc": "d"}]
-    written = render(data, [hostile(INVESTIGATION)], search="x-pwn")
-    assert written, "nothing rendered"
+    out = render(hostile_sections(), [hostile(INVESTIGATION)], search="x-pwn")
+    written = out["written"]
     views = {w["id"] for w in written}
     assert {"kpis", "models-body", "teams-grid", "cost-by-user", "infra-pools", "health-alerts", "drawer",
-            "q-res"} <= views
+            "q-res", "src-pop", "degraded-banner"} <= views
     for w in written:
         html = w["html"]
         assert "<x-pwn" not in html, f"unescaped value in #{w['id']}"
@@ -97,12 +119,27 @@ def test_hostile_values_are_always_escaped():
         for handler in re.findall(r'\bon[a-z]+="([^"]*)"', html):
             assert "x-pwn" not in handler, f"value inside an inline handler in #{w['id']}"
         assert "javascript:" not in html
+    last = {w["id"]: w["html"] for w in written}
+    assert "unavailable since" in last["teams-grid"] and "as of" in last["gpu-bars"]
 
 
 def test_plain_values_render_unchanged():
-    written = render(load_fixture("data.json.golden"))
-    models = next(w["html"] for w in written if w["id"] == "models-body")
+    out = render(store_sections()[1])
+    models = next(w["html"] for w in out["written"] if w["id"] == "models-body")
     assert 'data-model="qwen2-5-3b-instruct"' in models and ">qwen2-5-3b-instruct<" in models
+
+
+def test_page_builds_the_same_document_as_data_json():
+    """The page maps store sections to its D object as Store.data_json does."""
+    app, sections = store_sections()
+    keys = set(render(sections)["keys"])
+    assert keys == set(app.store.data_json()) - {"mts"}
+
+
+def test_page_uses_only_the_versioned_api_and_fonts():
+    urls = re.findall(r"\b(?:fetch|EventSource|mutate)\(\s*['\"`]([^'\"`]+)", script())
+    assert urls and all(u.startswith(("/api/v1/", "/fonts/")) for u in urls), urls
+    assert "/data.json'" not in script() and "'/investigations" not in script()
 
 
 # ---------------------------------------------------------------------------

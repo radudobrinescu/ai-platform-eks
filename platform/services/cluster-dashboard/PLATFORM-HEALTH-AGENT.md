@@ -133,7 +133,8 @@ Expected:
                         ┌────────────┴───────────┐
                         │ cluster-dashboard      │ — cluster-dashboard SA
                         │ topbar approvals UI    │   + create-jobs in
-                        │ POST /investigations/  │     ai-platform ns
+                        │ POST /api/v1/          │     ai-platform ns
+                        │   investigations/      │
                         │   <id>/approve         │
                         │ Spawns Remediator      │
                         └────────────┬───────────┘
