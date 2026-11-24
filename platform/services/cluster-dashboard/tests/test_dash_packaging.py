@@ -56,14 +56,17 @@ def test_every_package_file_is_projected_wherever_the_package_is_mounted():
     volumes = _projecting_volumes()
     assert {w for w, _, _ in volumes} >= {"cluster-dashboard", "event-watcher"}
     for workload, cm, items in volumes:
-        expected = {k: "/".join(k.split("__", 1)) for k in keys.get(cm, {})
-                    if k.split("__", 1)[0] in {p.split("/")[0] for p in items.values()}}
-        assert items == expected, f"{workload}: projection of {cm} out of date"
+        pkg_items = {k: v for k, v in items.items() if "__" in k}
+        packages = {v.split("/")[0] for v in pkg_items.values()}
+        expected = {k: "/".join(k.split("__", 1)) for k in keys.get(cm, {}) if k.split("__", 1)[0] in packages}
+        assert pkg_items == expected, f"{workload}: projection of {cm} out of date"
+        # Plain files keep their key as their path.
+        assert all(k == v for k, v in items.items() if "__" not in k), workload
 
 
 def test_every_package_file_is_shipped():
     shipped = {src for keys in _package_keys().values() for src in keys.values()}
-    for pkg in ("pha",):
+    for pkg in ("pha", "dashboard"):
         on_disk = {f"scripts/{pkg}/{f}" for f in os.listdir(os.path.join(DASH, "scripts", pkg))
                    if f.endswith(".py")}
         assert on_disk <= shipped, f"not in kustomization.yaml: {sorted(on_disk - shipped)}"

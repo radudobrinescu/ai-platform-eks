@@ -310,6 +310,14 @@ spec:
         - name: backend-script
           configMap:
             name: cluster-dashboard-backend
+            items:
+              - { key: backend.py, path: backend.py }
+              - { key: dashboard____init__.py, path: dashboard/__init__.py }
+              - { key: dashboard__config.py, path: dashboard/config.py }
+              - { key: dashboard__cost.py, path: dashboard/cost.py }
+              - { key: dashboard__dcgm.py, path: dashboard/dcgm.py }
+              - { key: dashboard__models.py, path: dashboard/models.py }
+              - { key: dashboard__prom.py, path: dashboard/prom.py }
         - name: html
           configMap:
             name: cluster-dashboard-html

@@ -40,6 +40,10 @@ import time
 import uuid
 from urllib.parse import urlparse
 
+from dashboard import cost as dcost
+from dashboard import dcgm as ddcgm
+from dashboard import models as dmodels
+from dashboard import prom as dprom
 from pha import db as pha_db
 from pha import jobs as pha_jobs
 
@@ -325,100 +329,35 @@ def _alb_hostname() -> str:
 
 
 def _build_links() -> list:
-    """Quick links to the platform's web UIs. Prefers the public CloudFront edge
-    URLs (set by Terraform into the cluster-dashboard-links ConfigMap when the
-    edge is enabled) and falls back to the internal-ALB host:port for in-VPC /
-    tunnel access. ArgoCD is an EKS capability with its own URL (ARGOCD_URL).
-    Links with no resolvable URL are omitted."""
-    alb = _alb_hostname()
-
-    def alb_url(port: int) -> str:
-        return f"http://{alb}:{port}" if alb else ""
-
-    webui = os.environ.get("OPEN_WEBUI_URL", "") or alb_url(8080)
-    litellm = os.environ.get("LITELLM_URL", "") or alb_url(4000)
-    langfuse = os.environ.get("LANGFUSE_URL", "") or alb_url(3000)
-    links = []
-    if webui:
-        links.append({"label": "Open WebUI", "url": webui,
-                      "desc": "Chat with models", "icon": "💬"})
-    if litellm:
-        links.append({"label": "LiteLLM Admin", "url": litellm.rstrip("/") + "/ui/",
-                      "desc": "API gateway + keys + usage", "icon": "🔑"})
-    if langfuse:
-        links.append({"label": "Langfuse", "url": langfuse,
-                      "desc": "Traces, evals, cost", "icon": "📊"})
-    if ARGOCD_URL:
-        links.append({"label": "ArgoCD", "url": ARGOCD_URL,
-                      "desc": "GitOps sync status", "icon": "🚢"})
-    return links
+    """Quick links to the platform UIs (public edge URLs, else internal ALB)."""
+    return dmodels.build_links(_alb_hostname(), os.environ.get("OPEN_WEBUI_URL", ""),
+                               os.environ.get("LITELLM_URL", ""), os.environ.get("LANGFUSE_URL", ""),
+                               ARGOCD_URL)
 
 
-# Serving kinds surfaced on the dashboard — the three tiers, all kro.run/v1alpha1
-# in the `inference` namespace: VLLMEndpoint (simple), LLMDEndpoint (llm-d scale),
-# LLMDDisaggEndpoint (llm-d scale + prefill/decode disaggregation).
-SERVING_KINDS = [
-    ("vllmendpoints", "vllm"),
-    ("llmdendpoints", "llm-d"),
-    ("llmddisaggendpoints", "llm-d-disagg"),
-]
-
-
-# Node hourly cost estimate — eu-central-1 on-demand list price ($/hr, Linux/
-# Shared) from the AWS Pricing API. Spot nodes are approximated at SPOT_FACTOR of
-# on-demand (real spot price varies). Unknown instance types are counted as
-# `unpriced` so the total stays honest rather than silently undercounting.
-# On-demand $/hr by region → instance type. Ships with eu-central-1 (the
-# reference deployment). Other regions are supplied at runtime via an optional
-# ConfigMap (see _prices_by_region) so the estimate works in any account/region
-# without code changes. Unpriced instance types are counted and surfaced in the
-# UI rather than guessed.
-DEFAULT_PRICES_BY_REGION = {
-    "eu-central-1": {
-        "g6.xlarge": 1.0064, "g6.2xlarge": 1.2225, "g6.4xlarge": 1.6547, "g6.8xlarge": 2.519,
-        "g6.12xlarge": 5.7543, "g6.16xlarge": 4.2477, "g6.24xlarge": 8.3473, "g6.48xlarge": 16.6946,
-        "g5.xlarge": 1.258, "g5.2xlarge": 1.5156, "g5.4xlarge": 2.0308, "g5.8xlarge": 3.0612,
-        "g5.12xlarge": 7.0928, "g5.48xlarge": 20.3681,
-        "c5.large": 0.097, "c5.xlarge": 0.194, "c5.2xlarge": 0.388,
-        "c5a.large": 0.087, "c5a.xlarge": 0.174,
-        "c7i.large": 0.1018, "c7i.xlarge": 0.2037, "c7a.large": 0.1171, "c7a.xlarge": 0.2343,
-        "m6g.large": 0.092, "m6g.xlarge": 0.184, "m5.large": 0.115, "m5.xlarge": 0.23, "r5.large": 0.152,
-    },
-}
-SPOT_FACTOR = 0.35        # rough spot discount vs on-demand
-HOURS_PER_MONTH = 730
+SERVING_KINDS = list(dmodels.SERVING_KINDS)
+SPOT_FACTOR = dcost.SPOT_FACTOR
 NODE_PRICES_CM = os.environ.get("NODE_PRICES_CM", "cluster-dashboard-node-prices")
 _price_cache: dict = {"ts": 0.0, "data": None}
 
 
 def _prices_by_region() -> dict:
-    """Region -> {instance: $/hr}. Merges the shipped defaults with an optional
-    operator/Terraform-supplied ConfigMap (data['prices.json'] =
-    {"<region>": {"<instance>": <usd_hourly>}}) so the cost estimate is not tied
-    to a single account or region. Cached for an hour; best-effort."""
+    """Region -> {instance: $/hr}: shipped table plus the optional ConfigMap.
+    Cached for an hour."""
     now = time.time()
     if _price_cache["data"] is not None and now - _price_cache["ts"] < 3600:
         return _price_cache["data"]
-    merged = {r: dict(v) for r, v in DEFAULT_PRICES_BY_REGION.items()}
     try:
         cm = k8s_get(f"/api/v1/namespaces/{LITELLM_NAMESPACE}/configmaps/{NODE_PRICES_CM}")
-        raw = ((cm or {}).get("data") or {}).get("prices.json", "")
-        for region, table in (json.loads(raw) if raw else {}).items():
-            merged.setdefault(region, {}).update({k: float(v) for k, v in table.items()})
-    except Exception:
-        pass
+        merged = dcost.merge_prices(((cm or {}).get("data") or {}).get("prices.json", ""))
+    except ValueError:
+        merged = dcost.merge_prices(None)
     _price_cache.update(ts=now, data=merged)
     return merged
 
 
 def _detect_region(nodes: list) -> str:
-    """Most common node region label, falling back to the AWS_REGION env."""
-    counts: dict = {}
-    for n in nodes:
-        r = n.get("region")
-        if r:
-            counts[r] = counts.get(r, 0) + 1
-    return max(counts, key=counts.get) if counts else os.environ.get("AWS_REGION", "")
+    return dcost.detect_region(nodes, os.environ.get("AWS_REGION", ""))
 
 
 PRICING_ENDPOINT_REGION = os.environ.get("PRICING_ENDPOINT_REGION", "us-east-1")
@@ -446,10 +385,8 @@ def _fetch_ec2_ondemand(client, region: str, instance_type: str):
 
 
 def _live_prices(region: str, instances: tuple) -> dict:
-    """Live on-demand prices from the AWS Price List API (needs pricing:GetProducts
-    via Pod Identity + boto3). Cached per region for 6h; missing types fetched on
-    demand. Best-effort — returns {} if boto3/creds/perms are unavailable so the
-    caller falls back to the shipped/ConfigMap table."""
+    """Live on-demand prices from the AWS Price List API, cached per region for
+    6 h. Returns {} when boto3, credentials or permissions are missing."""
     if not (HAVE_BOTO3 and region and instances):
         return {}
     ent = _live_price_cache.get(region)
@@ -474,270 +411,37 @@ def _live_prices(region: str, instances: tuple) -> dict:
 
 
 def _compute_cost(nodes: list) -> dict:
-    """Sum the running nodes' hourly rates -> realtime $/hr + 730h monthly
-    projection, split GPU vs platform. Region-aware; annotates each node with
-    its `hourly`. Instance types with no price data are counted (`unpriced`).
-    Prefers live AWS Price List data, falling back to the ConfigMap/shipped table."""
     region = _detect_region(nodes)
-    instances = tuple(sorted({n.get("instance") for n in nodes
-                              if n.get("instance") and n.get("instance") != "unknown"}))
     prices = dict(_prices_by_region().get(region, {}))
-    live = _live_prices(region, instances)
+    live = _live_prices(region, dcost.priced_instances(nodes))
     prices.update(live)
-    price_source = "aws-price-list" if live else ("table" if prices else "none")
-    hourly = gpu_hourly = 0.0
-    unpriced = 0
-    for n in nodes:
-        base = prices.get(n["instance"])
-        if base is None:
-            unpriced += 1
-            n["hourly"] = 0.0
-            continue
-        rate = base * (SPOT_FACTOR if n.get("capacity") == "spot" else 1.0)
-        n["hourly"] = round(rate, 4)
-        hourly += rate
-        if n["gpu"] > 0:
-            gpu_hourly += rate
-    return {
-        "hourly": round(hourly, 4),
-        "monthly": round(hourly * HOURS_PER_MONTH, 2),
-        "gpuHourly": round(gpu_hourly, 4),
-        "platformHourly": round(hourly - gpu_hourly, 4),
-        "unpriced": unpriced,
-        "region": region,
-        "priceSource": price_source,
-    }
+    return dcost.compute_cost(nodes, region, prices, bool(live))
 
 
-def _tok_per_dollar(tps, cost_hr):
-    """Serving efficiency: tokens produced per US dollar of serving cost.
-
-    Combines the two data sources the platform already has — LiteLLM throughput
-    and the cost engine — into one comparable number across every tier:
-      * tps      = tokens/sec (LiteLLM 5-min rate, from _litellm_metrics)
-      * cost_hr  = $/hr for the model — GPU node cost for self-hosted vLLM/llm-d
-                   (attributed by which node the pods run on), or token spend for
-                   Bedrock (spend5m×12). Both are already on the per-model record.
-    tokens/hr (tps×3600) ÷ $/hr = tokens/$.
-
-    Returns None when there is no cost basis (idle/unpriced model → ratio
-    undefined), and 0 when the model costs money but produced no tokens in the
-    window — an idle-but-billing model, which is exactly the inefficiency this
-    view is meant to surface."""
-    try:
-        c = float(cost_hr or 0)
-        t = float(tps or 0)
-    except (TypeError, ValueError):
-        return None
-    if c <= 0:
-        return None
-    return round(t * 3600.0 / c)
-
-
-def _normalize_endpoint(ep: dict, mode: str) -> dict:
-    """Flatten a serving CR (any of the three kinds) into one dashboard record
-    with a `mode` field. Status is normalized so the UI can render all kinds
-    uniformly: vLLM/llm-d report ready +
-    availableReplicas; llm-d also reports routerHealth (EPP/router health)."""
-    spec = ep.get("spec", {}) or {}
-    status = ep.get("status", {}) or {}
-    gpu_count = int(spec.get("gpuCount", 1) or 1)
-    tp = int(spec.get("tensorParallelSize", 0) or 0)
-    pp = int(spec.get("pipelineParallelSize", 1) or 1)
-    if tp == 0:
-        tp = gpu_count if pp == 1 else 1
-    # Desired replicas: llm-d + vLLM use `replicas`;
-    # llm-d-disagg splits into prefill + decode pools.
-    is_disagg = mode == "llm-d-disagg"
-    if is_disagg:
-        prefill_n = int(spec.get("prefillReplicas", 1) or 1)
-        decode_n = int(spec.get("decodeReplicas", 1) or 1)
-        replicas = prefill_n + decode_n
-    else:
-        prefill_n = decode_n = None
-        replicas = int(spec.get("replicas", spec.get("minReplicas", 1)) or 1)
-    ready = str(status.get("ready", "False"))
-    avail = (int(status.get("prefillReplicas", 0) or 0) + int(status.get("decodeReplicas", 0) or 0)) \
-        if is_disagg else int(status.get("availableReplicas", 0) or 0)
-    norm_status = "Running" if ready == "True" else "Pending"
-    # KRO reconcile state (CR-level). An ERROR CR — e.g. a name collision where a
-    # generated resource belongs to another endpoint's ApplySet — can still read
-    # a colliding resource's replicas, so surface the real state rather than a
-    # false "ready". Capture the failing Ready/ResourcesReady condition message.
-    kro_state = str(status.get("state", "") or "")
-    recon_err = ""
-    if kro_state == "ERROR":
-        norm_status = "Error"
-        for c in (status.get("conditions", []) or []):
-            if c.get("type") in ("Ready", "ResourcesReady") and str(c.get("status")) == "False":
-                recon_err = " ".join((c.get("message", "") or "").split())[:300]
-                break
-    return {
-        "name": ep["metadata"]["name"],
-        "model": spec.get("model", ""),
-        "mode": mode,
-        "shared": bool(spec.get("shared", False)),
-        "gpuCount": gpu_count,
-        "tp": tp,
-        "pp": pp,
-        "replicas": replicas,
-        "availableReplicas": avail,
-        "ready": ready,
-        # `modelStatus` kept for back-compat with the current HTML; `status` is
-        # the normalized, mode-agnostic label the reworked UI should use.
-        "modelStatus": norm_status,
-        "status": norm_status,
-        "routerHealth": str(status.get("routerHealth", "")) if mode in ("llm-d", "llm-d-disagg") else "",
-        "message": "",
-        "kroState": kro_state,
-        "reconcileError": recon_err,
-        "prefillReplicas": prefill_n,
-        "decodeReplicas": decode_n,
-        "created": ep["metadata"].get("creationTimestamp", ""),
-    }
+_tok_per_dollar = dcost.tok_per_dollar
 
 
 def _fetch_endpoints() -> list:
-    """Poll every serving kind in the `inference` namespace and return normalized
-    records. A kind whose CRD isn't installed is skipped silently."""
-    out = []
+    """Every serving kind in `inference`; a kind whose CRD is absent is skipped."""
+    by_mode = {}
     for plural, mode in SERVING_KINDS:
         data = k8s_get(f"/apis/kro.run/v1alpha1/namespaces/inference/{plural}")
-        if not data:
-            continue
-        for ep in data.get("items", []):
-            try:
-                out.append(_normalize_endpoint(ep, mode))
-            except Exception:
-                continue
-    out.sort(key=lambda e: (e["mode"], e["name"]))
-    return out
-
-
-def _cpu_m(s) -> int:
-    """K8s CPU quantity -> millicores."""
-    s = str(s or "0").strip()
-    try:
-        if s.endswith("m"):
-            return int(float(s[:-1]))
-        if s.endswith("n"):
-            return int(float(s[:-1]) / 1e6)
-        if s.endswith("u"):
-            return int(float(s[:-1]) / 1e3)
-        return int(float(s) * 1000)
-    except Exception:
-        return 0
-
-
-def _mem_mi(s) -> int:
-    """K8s memory quantity -> MiB."""
-    s = str(s or "0").strip()
-    for u, f in (("Ki", 1 / 1024), ("Mi", 1.0), ("Gi", 1024.0), ("Ti", 1048576.0),
-                 ("K", 0.000953674), ("M", 0.953674), ("G", 953.674)):
-        if s.endswith(u):
-            try:
-                return int(float(s[:-len(u)]) * f)
-            except Exception:
-                return 0
-    try:
-        return int(float(s) / 1048576)
-    except Exception:
-        return 0
+        by_mode[mode] = (data or {}).get("items", [])
+    return dmodels.endpoint_records(by_mode)
 
 
 def _build_k8s_snapshot() -> dict:
-    nodes_data = k8s_get("/api/v1/nodes")
-    pods_data = k8s_get("/api/v1/pods")
-
-    nodes = []
-    node_alerts = []
-    if nodes_data:
-        for n in nodes_data.get("items", []):
-            meta = n.get("metadata", {}) or {}
-            labels = meta.get("labels", {})
-            nm = meta["name"]
-            # A node being deprovisioned goes NotReady/unreachable by design:
-            # Karpenter cordons + drains it (taint karpenter.sh/disrupted) and
-            # sets a deletionTimestamp. Alerting on that false-positives on every
-            # scale-down/consolidation, so skip health alerts while it terminates.
-            terminating = bool(meta.get("deletionTimestamp")) or any(
-                tt.get("key") == "karpenter.sh/disrupted"
-                for tt in ((n.get("spec", {}) or {}).get("taints") or [])
-            )
-            conditions = n.get("status", {}).get("conditions", [])
-            ready = any(c.get("type") == "Ready" and c.get("status") == "True" for c in conditions)
-            # EKS node health: surface resource pressures + NotReady as alerts.
-            if not terminating:
-                for c in conditions:
-                    t = c.get("type")
-                    if t in ("MemoryPressure", "DiskPressure", "PIDPressure") and c.get("status") == "True":
-                        node_alerts.append({"node": nm, "issue": t, "sev": "warn"})
-            if not ready:
-                if not terminating:
-                    node_alerts.append({"node": nm, "issue": "NotReady", "sev": "warn"})
-                continue
-            allocatable = n.get("status", {}).get("allocatable", {})
-            zone = labels.get("topology.kubernetes.io/zone", "")
-            nodes.append({
-                "name": nm,
-                "instance": labels.get("node.kubernetes.io/instance-type", "unknown"),
-                "pool": labels.get("karpenter.sh/nodepool",
-                                   "__mng__" if labels.get("eks.amazonaws.com/nodegroup") else "__mng__"),
-                "zone": zone,
-                "region": labels.get("topology.kubernetes.io/region", zone[:-1] if zone else ""),
-                "capacity": labels.get("karpenter.sh/capacity-type",
-                                       labels.get("eks.amazonaws.com/capacityType", "on-demand")),
-                "gpu": int(allocatable.get("nvidia.com/gpu", "0")),
-                "gpuProduct": labels.get("nvidia.com/gpu.product", "").replace("-", " "),
-                "cpuAllocM": _cpu_m(allocatable.get("cpu", "0")),
-                "memAllocMi": _mem_mi(allocatable.get("memory", "0")),
-                "created": n["metadata"].get("creationTimestamp", ""),
-            })
-
-    # Actual node usage from metrics-server (metrics.k8s.io). Best-effort: with
-    # no metrics-server, cpuUsedM/memUsedMi stay None and the UI shows only
-    # requested. cpu is nanocores/millicores, memory is Ki/Mi — reuse parsers.
-    node_usage = {}
+    nodes, node_alerts = dmodels.node_records((k8s_get("/api/v1/nodes") or {}).get("items", []))
     try:
-        mu = k8s_get("/apis/metrics.k8s.io/v1beta1/nodes")
-        for it in (mu or {}).get("items", []):
-            u = it.get("usage", {}) or {}
-            node_usage[it.get("metadata", {}).get("name", "")] = {
-                "cpuUsedM": _cpu_m(u.get("cpu", "0")),
-                "memUsedMi": _mem_mi(u.get("memory", "0")),
-            }
+        usage = (k8s_get("/apis/metrics.k8s.io/v1beta1/nodes") or {}).get("items")
     except Exception:
-        node_usage = {}
-    for n in nodes:
-        n["cpuUsedM"] = node_usage.get(n["name"], {}).get("cpuUsedM")
-        n["memUsedMi"] = node_usage.get(n["name"], {}).get("memUsedMi")
-
-    pods = []
-    if pods_data:
-        for p in pods_data.get("items", []):
-            phase = p.get("status", {}).get("phase", "")
-            if phase not in ("Running", "Pending"):
-                continue
-            containers = p.get("spec", {}).get("containers", [])
-            reqs = [c.get("resources", {}).get("requests", {}) or {} for c in containers]
-            gpu_req = sum(int(r.get("nvidia.com/gpu", "0") or 0) for r in reqs)
-            cpu_req = sum(_cpu_m(r.get("cpu", "0")) for r in reqs)
-            mem_req = sum(_mem_mi(r.get("memory", "0")) for r in reqs)
-            pods.append({
-                "name": p["metadata"]["name"],
-                "namespace": p["metadata"]["namespace"],
-                "node": p.get("spec", {}).get("nodeName", ""),
-                "phase": phase,
-                "gpu": gpu_req,
-                "cpuReqM": cpu_req,
-                "memReqMi": mem_req,
-                "created": p["metadata"].get("creationTimestamp", ""),
-            })
-
+        usage = None
+    dmodels.apply_usage(nodes, usage)
+    pods = dmodels.pod_records((k8s_get("/api/v1/pods") or {}).get("items", []))
     endpoints = _fetch_endpoints()
     cost = _compute_cost(nodes)
 
-    # Approvals snapshot — best-effort, never blocks the dashboard.
+    # Approvals snapshot: best-effort, never blocks the dashboard.
     approvals_available = False
     approvals_pending = 0
     if HAVE_PSYCOPG and DB_USER and DB_PASSWORD:
@@ -878,65 +582,14 @@ def _litellm_metrics() -> dict:
 
 
 def _dcgm_util() -> dict:
-    """Per-node GPU utilization AND framebuffer-memory % from dcgm-exporter.
-
-    Returns {host: {"util": [pct-per-gpu], "mem": [pct-per-gpu]}}. Scrapes EVERY
-    exporter pod directly (one per GPU node), not the round-robin Service VIP —
-    the VIP returns only one pod's GPUs per scrape. Falls back to the Service URL
-    if pod discovery yields nothing."""
-    import urllib.request
-    METRICS = ("DCGM_FI_DEV_GPU_UTIL", "DCGM_FI_DEV_FB_USED", "DCGM_FI_DEV_FB_FREE")
-
-    def _parse(text: str, acc: dict) -> None:
-        for line in text.splitlines():
-            for m in METRICS:
-                if line.startswith(m + "{"):
-                    try:
-                        labels = line[line.index("{") + 1:line.index("}")]
-                        val = float(line.rsplit(" ", 1)[1])
-                        kv = dict(x.split("=", 1) for x in labels.split(",") if "=" in x)
-                        host = kv.get("Hostname", "").strip('"')
-                        gpu = kv.get("gpu", "0").strip('"')
-                        if host:
-                            acc.setdefault(host, {}).setdefault(gpu, {})[m] = val
-                    except Exception:
-                        pass
-                    break
-
-    def _scrape(url: str, acc: dict) -> None:
-        try:
-            with urllib.request.urlopen(urllib.request.Request(url), timeout=4) as r:
-                _parse(r.read().decode("utf-8", "ignore"), acc)
-        except Exception:
-            pass
-
-    acc: dict = {}
+    """Per-node GPU utilization and memory from every dcgm-exporter pod."""
     urls = []
-    try:
-        pods = k8s_get(f"/api/v1/namespaces/{DCGM_NAMESPACE}/pods"
-                       f"?labelSelector={DCGM_POD_SELECTOR}")
-        for p in (pods or {}).get("items", []):
-            st = p.get("status", {})
-            if st.get("phase") == "Running" and st.get("podIP"):
-                urls.append(f"http://{st['podIP']}:{DCGM_PORT}/metrics")
-    except Exception:
-        urls = []
-    for url in urls:
-        _scrape(url, acc)
-    if not acc:
-        _scrape(DCGM_URL, acc)
-
-    out: dict = {}
-    for host, gpus in acc.items():
-        util, mem = [], []
-        for g in sorted(gpus, key=lambda x: int(x) if str(x).isdigit() else 0):
-            d = gpus[g]
-            util.append(round(d.get("DCGM_FI_DEV_GPU_UTIL", 0)))
-            used, free = d.get("DCGM_FI_DEV_FB_USED"), d.get("DCGM_FI_DEV_FB_FREE")
-            mem.append(round(used / (used + free) * 100)
-                       if (used is not None and free is not None and (used + free) > 0) else None)
-        out[host] = {"util": util, "mem": mem}
-    return out
+    pods = k8s_get(f"/api/v1/namespaces/{DCGM_NAMESPACE}/pods?labelSelector={DCGM_POD_SELECTOR}")
+    for p in (pods or {}).get("items", []):
+        st = p.get("status", {})
+        if st.get("phase") == "Running" and st.get("podIP"):
+            urls.append(f"http://{st['podIP']}:{DCGM_PORT}/metrics")
+    return ddcgm.scrape(urls, DCGM_URL)[0]
 
 
 def _bedrock_models_from_config() -> list:
@@ -947,64 +600,27 @@ def _bedrock_models_from_config() -> list:
     if not cm:
         return []
     try:
-        cfg = _yaml.safe_load((cm.get("data") or {}).get("config.yaml", "")) or {}
-        out = []
-        for m in (cfg.get("model_list") or []):
-            mdl = str((m.get("litellm_params") or {}).get("model", ""))
-            if mdl.startswith("bedrock/"):
-                out.append({"name": m.get("model_name", ""), "model": mdl})
-        return out
+        return dmodels.bedrock_from_config(_yaml.safe_load((cm.get("data") or {}).get("config.yaml", "")) or {})
     except Exception:
         return []
 
 
 def _bedrock_models_from_crs() -> list:
-    """Bedrock models enrolled as BedrockModel CRs (`platformctl new-model --source bedrock`).
-
-    litellm-sync registers these in LiteLLM through its API, so they never appear in
-    the litellm-config ConfigMap. Read the CRs (all namespaces) to list them."""
-    d = k8s_get("/apis/bedrock.ai-platform/v1alpha1/bedrockmodels")
-    out = []
-    for item in (d or {}).get("items", []):
-        spec = item.get("spec") or {}
-        name = spec.get("modelName") or (item.get("metadata") or {}).get("name", "")
-        if name:
-            out.append({"name": name, "model": str(spec.get("model", ""))})
-    return out
+    """Bedrock models enrolled as BedrockModel CRs (`platformctl new-model --source bedrock`)."""
+    return dmodels.bedrock_from_crs((k8s_get("/apis/bedrock.ai-platform/v1alpha1/bedrockmodels") or {}).get("items", []))
 
 
 def _bedrock_models() -> list:
-    """Declared Bedrock models: static litellm-config entries plus BedrockModel CRs.
-
-    De-duplicated by name (a CR wins over a same-named static entry)."""
-    merged = {m["name"]: m for m in _bedrock_models_from_config() if m.get("name")}
-    for m in _bedrock_models_from_crs():
-        merged[m["name"]] = m
-    return list(merged.values())
-
-
-# Karpenter/provisioning Warning reasons that explain a stuck GPU deploy.
-_PROVISION_HINT = ("capacity", "fulfill", "launch", "zonal", "quota")
+    """Static litellm-config entries plus BedrockModel CRs; a CR wins on a name clash."""
+    return dmodels.merge_bedrock(_bedrock_models_from_config(), _bedrock_models_from_crs())
 
 
 def _events_list(path: str, kind: str = "") -> list:
-    """Fetch + flatten K8s Events at `path`, optionally filtered to a kind."""
-    d = k8s_get(path)
-    out = []
-    for e in (d or {}).get("items", []):
-        io = e.get("involvedObject", {}) or {}
-        if kind and io.get("kind") != kind:
-            continue
-        out.append({
-            "type": e.get("type", ""),
-            "reason": e.get("reason", ""),
-            "message": " ".join((e.get("message", "") or "").split())[:220],
-            "count": int(e.get("count", 1) or 1),
-            "obj": io.get("name", ""),
-            "ts": e.get("lastTimestamp") or e.get("eventTime") or "",
-            "by": (e.get("source", {}) or {}).get("component", "") or e.get("reportingComponent", ""),
-        })
-    return out
+    """Flattened Kubernetes Events at `path`, optionally of one involved kind."""
+    items = (k8s_get(path) or {}).get("items", [])
+    if kind:
+        return dmodels.events_of_kind(items, kind)
+    return [dmodels.event_record(e) for e in items]
 
 
 AUTOSCALING_PROM_URL = os.environ.get(
@@ -1012,210 +628,32 @@ AUTOSCALING_PROM_URL = os.environ.get(
 
 
 def _prom_query(promql: str) -> list:
-    """Instant query against the always-on autoscaling Prometheus. Returns the
-    result vector [{metric:{...}, value:[ts,'v']}] or [] on any failure."""
-    import urllib.request
-    import urllib.parse
-    url = AUTOSCALING_PROM_URL + "/api/v1/query?query=" + urllib.parse.quote(promql)
+    """Instant query against the autoscaling Prometheus; [] on any failure."""
     try:
-        with urllib.request.urlopen(urllib.request.Request(url), timeout=4) as r:
-            d = json.loads(r.read().decode("utf-8", "ignore"))
-        return d.get("data", {}).get("result", []) if d.get("status") == "success" else []
+        return dprom.query(AUTOSCALING_PROM_URL, promql)
     except Exception:
         return []
-
-
-def _quantity(q) -> float:
-    """Parse a k8s quantity string (e.g. '144', '900m', '2') to float."""
-    s = str(q if q is not None else "0").strip()
-    try:
-        if s.endswith("m"):
-            return float(s[:-1]) / 1000.0
-        return float(s)
-    except Exception:
-        return 0.0
 
 
 def _autoscaling_status(endpoints: list, hpa_events: list) -> list:
-    """Per-pool KEDA/HPA autoscaling state — so admins see each pool scaling
-    INDEPENDENTLY and where it's bottlenecked. For every keda-hpa-* in the
-    `inference` namespace it reports current/desired within min..max, the driving
-    saturation signal vs its KEDA target (prefill & llm-d -> queue depth; decode
-    -> KV-cache %), whether it's capped at max (a real capacity bottleneck), the
-    last scale time, and recent scale events. Metric value + target come straight
-    from the HPA (KEDA publishes them there), so no extra scrape is needed.
-
-    Pool + role are derived from the scale-target Deployment suffix:
-      <pool>-prefill -> disagg prefill,  <pool>-decode -> disagg decode,
-      <pool>-llmd    -> llm-d single pool.
-    """
     hpas = k8s_get("/apis/autoscaling/v2/namespaces/inference/horizontalpodautoscalers")
     if not hpas:
         return []
-    mode_by_pool = {ep["name"]: ep.get("mode", "") for ep in endpoints}
-    # Per-pool p95 latency attribution (prefill -> TTFT, decode -> ITL). vLLM
-    # exposes these as histograms; quantile them grouped by (pool, role).
-    def _q95(metric: str) -> dict:
-        b: dict = {}
-        for s in _prom_query(f"histogram_quantile(0.95, sum by (le,pool,role) (rate({metric}_bucket[5m])))"):
-            m = s.get("metric", {})
-            try:
-                v = float(s["value"][1])
-                if v == v:  # drop NaN (no samples in window)
-                    b[(m.get("pool", ""), m.get("role", ""))] = v
-            except Exception:
-                pass
-        return b
-
-    def _pick(b: dict, pool: str, role: str):
-        if (pool, role) in b:
-            return b[(pool, role)]
-        # llm-d single pool labels its pods role=decode while its HPA target is
-        # <name>-llmd (role ""); fall back to any role for the same pool.
-        for (p, _r), v in b.items():
-            if p == pool:
-                return v
-        return None
-
-    ttft = _q95("vllm:time_to_first_token_seconds")
-    itl = _q95("vllm:inter_token_latency_seconds")
-    rescales: dict = {}
-    for e in hpa_events:
-        if e.get("reason") == "SuccessfulRescale":
-            rescales.setdefault(e.get("obj", ""), []).append({"ts": e.get("ts", ""), "msg": e.get("message", "")})
-    out = []
-    for h in hpas.get("items", []):
-        meta = h.get("metadata", {}) or {}
-        spec = h.get("spec", {}) or {}
-        st = h.get("status", {}) or {}
-        hname = meta.get("name", "")
-        dep = (spec.get("scaleTargetRef", {}) or {}).get("name", "")
-        if dep.endswith("-prefill"):
-            pool, role, sig, unit = dep[:-len("-prefill")], "prefill", "queue depth", "req"
-        elif dep.endswith("-decode"):
-            pool, role, sig, unit = dep[:-len("-decode")], "decode", "KV-cache", "%"
-        elif dep.endswith("-llmd"):
-            pool, role, sig, unit = dep[:-len("-llmd")], "", "queue depth", "req"
-        else:
-            pool, role, sig, unit = dep, "", "queue depth", "req"
-        # Driving signal = the external metric with the highest value/target ratio
-        # (the one actually pushing the scale decision — i.e. the bottleneck).
-        best = None  # (value, target, ratio)
-        m_specs = spec.get("metrics", []) or []
-        m_curs = st.get("currentMetrics", []) or []
-        for i, ms in enumerate(m_specs):
-            tgt = _quantity((((ms.get("external", {}) or {}).get("target", {}) or {}).get("averageValue")))
-            val = 0.0
-            if i < len(m_curs):
-                val = _quantity(((((m_curs[i] or {}).get("external", {}) or {}).get("current", {}) or {}).get("averageValue")))
-            ratio = (val / tgt) if tgt > 0 else 0.0
-            if best is None or ratio > best[2]:
-                best = (val, tgt, ratio)
-        val, tgt, _ratio = best or (0.0, 0.0, 0.0)
-        _tt = _pick(ttft, pool, role)
-        _it = _pick(itl, pool, role)
-        mn = int(spec.get("minReplicas", 1) or 1)
-        mx = int(spec.get("maxReplicas", 1) or 1)
-        cur = int(st.get("currentReplicas", 0) or 0)
-        des = int(st.get("desiredReplicas", 0) or 0)
-        out.append({
-            "pool": pool, "role": role, "mode": mode_by_pool.get(pool, ""),
-            "deployment": dep, "signal": sig, "unit": unit,
-            "value": round(val, 2), "target": round(tgt, 2),
-            "ttftMs": round(_tt * 1000) if _tt else None,
-            "itlMs": round(_it * 1000, 1) if _it else None,
-            "min": mn, "max": mx, "current": cur, "desired": des,
-            # atMax: pinned at ceiling AND wanting more -> add capacity here.
-            "atMax": des >= mx and mx > mn,
-            # saturated: driving signal within 10% of its target (scaling pressure).
-            "saturated": tgt > 0 and val >= 0.9 * tgt,
-            "lastScale": st.get("lastScaleTime", ""),
-            "events": sorted(rescales.get(hname, []), key=lambda x: x["ts"], reverse=True)[:6],
-        })
-    out.sort(key=lambda x: (x["pool"], x["role"]))
-    return out
+    q = "histogram_quantile(0.95, sum by (le,pool,role) (rate({}_bucket[5m])))"
+    ttft = dmodels.quantile_map(_prom_query(q.format("vllm:time_to_first_token_seconds")))
+    itl = dmodels.quantile_map(_prom_query(q.format("vllm:inter_token_latency_seconds")))
+    return dmodels.autoscaling_status(endpoints, hpas.get("items", []), hpa_events, ttft, itl)
 
 
 def _deploy_diagnostics(models: list, pods: list) -> list:
-    """Explain why non-running self-hosted models aren't serving yet. Attaches a
-    `deploy` block to each (pod phase, container waiting reason, recent
-    scheduling events, model-load log tail) and returns cluster-level GPU
-    provisioning warnings (Karpenter capacity errors) for the alert feed.
-
-    All calls are best-effort; a failing source degrades to empty, never raises.
-    Targeted per-pod GETs only run for models that aren't running (typically
-    0-2 at a time), so this stays cheap on the poll loop."""
-    # Cluster GPU provisioning warnings — durable NodeClaim events survive the
-    # create->UnfulfillableCapacity->delete retry loop that Karpenter runs.
-    provisioning, seen = [], set()
-    for e in _events_list("/api/v1/events?fieldSelector=involvedObject.kind=NodeClaim", "NodeClaim"):
-        if e["type"] != "Warning" or not any(h in e["reason"].lower() for h in _PROVISION_HINT):
-            continue
-        key = (e["reason"], e["message"][:60])
-        if key in seen:
-            continue
-        seen.add(key)
-        provisioning.append(e)
-    provisioning = provisioning[:5]
-
-    # Pod events in the inference namespace, indexed by pod name.
-    ev_index: dict = {}
-    for e in _events_list("/api/v1/namespaces/inference/events?fieldSelector=involvedObject.kind=Pod", "Pod"):
-        ev_index.setdefault(e["obj"], []).append(e)
-
-    for m in models:
-        if m.get("status") == "running" or m.get("tier") == "bedrock":
-            continue
-        name = m["name"]
-        # The serving pod(s) — skip the transient LiteLLM register job pod.
-        cand = [p for p in pods if p.get("namespace") == "inference"
-                and p["name"].startswith(name + "-") and "-register" not in p["name"]]
-        cand.sort(key=lambda p: ((p.get("gpu", 0) or 0) > 0, p.get("created", "")), reverse=True)
-        dep = {"phase": "NoPod", "pod": "", "waiting": None, "events": [],
-               "provisioning": [], "log": []}
-        if cand:
-            pod = cand[0]
-            dep["pod"] = pod["name"]
-            dep["phase"] = pod.get("phase", "")
-            gpu_pod = (pod.get("gpu", 0) or 0) > 0
-            evs = ev_index.get(pod["name"], [])
-            unschedulable = any(e["reason"] == "FailedScheduling" for e in evs)
-            # Keep the most useful few events: warnings first, newest first,
-            # deduped by reason.
-            evs_sorted = sorted(evs, key=lambda e: (e["type"] != "Warning", e["ts"]), reverse=True)
-            picked, reasons = [], set()
-            for e in evs_sorted:
-                if e["reason"] in reasons:
-                    continue
-                reasons.add(e["reason"])
-                picked.append(e)
-                if len(picked) >= 4:
-                    break
-            dep["events"] = picked
-            # A Pending, unschedulable GPU pod is stuck on capacity — surface it.
-            if pod.get("phase") == "Pending" and unschedulable and gpu_pod and provisioning:
-                dep["provisioning"] = provisioning
-            # Container waiting reason + model-loading log tail (best-effort).
-            pj = k8s_get(f"/api/v1/namespaces/inference/pods/{pod['name']}")
-            if pj:
-                st = pj.get("status", {}) or {}
-                cstats = st.get("containerStatuses", []) or []
-                ready = False
-                cname = cstats[0].get("name") if cstats else ""
-                for c in cstats:
-                    w = (c.get("state", {}) or {}).get("waiting")
-                    if w and not dep["waiting"]:
-                        dep["waiting"] = {"reason": w.get("reason", ""),
-                                          "message": " ".join((w.get("message", "") or "").split())[:200]}
-                    ready = ready or bool(c.get("ready"))
-                # Pod is up but the model isn't serving yet → show load progress.
-                if st.get("phase") == "Running" and not ready and cname:
-                    txt = k8s_get_text(
-                        f"/api/v1/namespaces/inference/pods/{pod['name']}/log"
-                        f"?tailLines=14&container={cname}")
-                    if txt:
-                        dep["log"] = [ln for ln in txt.splitlines() if ln.strip()][-14:]
-        m["deploy"] = dep
+    provisioning = dmodels.provisioning_warnings(
+        _events_list("/api/v1/events?fieldSelector=involvedObject.kind=NodeClaim", "NodeClaim"))
+    pod_events = _events_list("/api/v1/namespaces/inference/events?fieldSelector=involvedObject.kind=Pod", "Pod")
+    dmodels.deploy_diagnostics(
+        models, pods, pod_events, provisioning,
+        pod_status=lambda name: (k8s_get(f"/api/v1/namespaces/inference/pods/{name}") or {}).get("status"),
+        log_tail=lambda name, c: k8s_get_text(
+            f"/api/v1/namespaces/inference/pods/{name}/log?tailLines=14&container={c}"))
     return provisioning
 
 
@@ -1226,7 +664,7 @@ def _build_metrics(nodes: list, pods: list) -> dict:
         met = _litellm_metrics()
         src["litellm"] = True
     except Exception:
-        met = {"perModel": {}, "teams": [], "trend": [], "health": {}, "byTeam": [], "byUser": []}
+        met = dict(dmodels.EMPTY_LITELLM)
         src["litellm"] = False
     try:
         bedrock = _bedrock_models()
@@ -1234,118 +672,40 @@ def _build_metrics(nodes: list, pods: list) -> dict:
     except Exception:
         bedrock = []
         src["bedrock"] = False
-
-    node_by_name = {n["name"]: n for n in nodes}
-    def cost_for(name: str) -> float:
-        c = 0.0
-        for p in pods:
-            if p.get("namespace") == "inference" and p["name"].startswith(name + "-") and p.get("gpu", 0) > 0:
-                nd = node_by_name.get(p.get("node"))
-                if nd and nd.get("gpu"):
-                    c += nd.get("hourly", 0) * p["gpu"] / nd["gpu"]
-        return round(c, 2)
-
-    models = []
-    for ep in endpoints:
-        tier = ep["mode"]
-        models.append({"name": ep["name"], "model": ep["model"], "tier": tier,
-            "status": "error" if ep.get("kroState") == "ERROR" else ("running" if ep["ready"] == "True" else "deploying"),
-            "gpu": ("shared" if ep.get("shared") else f'{ep["gpuCount"]}×GPU'),
-            "replicas": ep.get("replicas"), "availableReplicas": ep.get("availableReplicas"),
-            "router": ep.get("routerHealth", ""), "costHr": cost_for(ep["name"]),
-            "reconcileError": ep.get("reconcileError", ""),
-            "prefillReplicas": ep.get("prefillReplicas"), "decodeReplicas": ep.get("decodeReplicas"),
-            "created": ep.get("created")})
-    for b in bedrock:
-        models.append({"name": b["name"], "model": b["model"], "tier": "bedrock",
-            "status": "running", "gpu": "—", "replicas": None, "availableReplicas": None,
-            "router": "", "costHr": 0.0, "created": None})
-    for m in models:
-        pm = met["perModel"].get(m["name"])
-        m["rpm"] = pm["rpm"] if pm else 0
-        m["p50"] = pm["p50"] if pm else None
-        m["p95"] = pm["p95"] if pm else None
-        m["tps"] = pm["tps"] if pm else 0
-        m["errPct"] = pm["errPct"] if pm else 0
-        if pm and m["tier"] == "bedrock":
-            m["costHr"] = round(pm["spend5m"] * 12, 2)
-        h = met["health"].get(m["name"])
-        m["health"] = h["status"] if h else ""
-        # Efficiency: tokens/$ from the model's live throughput (tps) and its
-        # $/hr cost basis (GPU node cost for self-hosted, token spend for
-        # Bedrock) — both already set above, so this is a pure derivation.
-        m["tokPerDollar"] = _tok_per_dollar(m.get("tps"), m.get("costHr"))
-    models.sort(key=lambda x: (-(x.get("rpm") or 0), x["name"]))
+    models = dmodels.build_models(endpoints, bedrock, met, pods, nodes)
 
     gpu = []
     try:
-        util = _dcgm_util()
+        gpu = dmodels.gpu_records(nodes, pods, endpoints, _dcgm_util())
         src["dcgm"] = True
-        for n in nodes:
-            if n.get("gpu", 0) > 0:
-                host = n["name"].split(".")[0]
-                e = util.get(host) or util.get(n["name"]) or {}
-                us = e.get("util") or [0] * n["gpu"]
-                mem = e.get("mem") or [None] * n["gpu"]
-                mdl = next((ep["name"] for ep in endpoints for p in pods
-                            if p.get("node") == n["name"] and p.get("gpu", 0) > 0
-                            and p["name"].startswith(ep["name"] + "-")), None)
-                gpu.append({"node": host, "instance": n["instance"], "util": us, "mem": mem, "model": mdl})
     except Exception:
         src["dcgm"] = False
 
     argo = []
     try:
         d = k8s_get("/apis/argoproj.io/v1alpha1/namespaces/argocd/applications")
+        src["argocd"] = d is not None
         if d is not None:
-            for a in d.get("items", []):
-                st = a.get("status", {})
-                argo.append({"name": a["metadata"]["name"],
-                             "sync": st.get("sync", {}).get("status", "?"),
-                             "health": st.get("health", {}).get("status", "?")})
-            src["argocd"] = True
-        else:
-            src["argocd"] = False
+            argo = dmodels.argocd_records(d.get("items", []))
     except Exception:
         src["argocd"] = False
 
-    # Deployment diagnostics: explain any not-yet-running model + collect
-    # cluster GPU provisioning warnings. Best-effort; never blocks the payload.
     try:
         provisioning = _deploy_diagnostics(models, pods)
     except Exception:
         provisioning = []
-
-    by_model = sorted([[m["name"], m["costHr"], m["tier"]] for m in models if m["costHr"] > 0], key=lambda x: -x[1])
-    # Tokens-per-dollar leaderboard, most-efficient first. Models with a cost
-    # basis but zero throughput (idle-but-billing → 0) sink to the bottom, where
-    # the view flags them as wasted spend.
-    by_eff = sorted([[m["name"], m["tokPerDollar"], m["tier"]] for m in models
-                     if m.get("tokPerDollar") is not None], key=lambda x: -x[1])
-    cost_ext = {"byModel": by_model, "byTeam": met.get("byTeam", []), "trend": met.get("trend", []), "byUser": met.get("byUser", []), "byEfficiency": by_eff}
-    # Autoscaling: per-pool KEDA/HPA state + bottleneck signal, attached to each
-    # model (disagg models get two entries: prefill + decode, scaling
-    # independently). Replaces the now-deprecated spec replica counts with the
-    # live HPA reality.
+    ext = dmodels.cost_ext(models, met)
     try:
         hpa_events = _events_list("/api/v1/namespaces/inference/events", "HorizontalPodAutoscaler")
         autoscaling = _autoscaling_status(endpoints, hpa_events)
         src["autoscaling"] = True
     except Exception:
         autoscaling, src["autoscaling"] = [], False
-    by_pool: dict = {}
-    for a in autoscaling:
-        by_pool.setdefault(a["pool"], []).append(a)
-    for m in models:
-        sc = by_pool.get(m["name"])
-        if sc:
-            m["scale"] = sc
-            m["availableReplicas"] = sum(x["current"] for x in sc)  # live running
-            m["replicas"] = sum(x["desired"] for x in sc)           # what the HPAs want now
+    dmodels.attach_scale(models, autoscaling)
 
     return {"models": models, "teams": met.get("teams", []), "gpu": gpu, "argocd": argo,
             "autoscaling": autoscaling,
-            "costExt": cost_ext, "provisioning": provisioning, "sources": src, "mts": time.time()}
+            "costExt": ext, "provisioning": provisioning, "sources": src, "mts": time.time()}
 
 
 def metrics_loop() -> None:

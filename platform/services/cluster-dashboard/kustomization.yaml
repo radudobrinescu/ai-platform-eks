@@ -34,6 +34,13 @@ configMapGenerator:
     # keeps running stale code (e.g. a route the freshly-served HTML calls 404s).
     files:
       - scripts/backend.py
+      # Package `dashboard`, flat keys <package>__<file> (see the pha note below).
+      - dashboard____init__.py=scripts/dashboard/__init__.py
+      - dashboard__config.py=scripts/dashboard/config.py
+      - dashboard__cost.py=scripts/dashboard/cost.py
+      - dashboard__dcgm.py=scripts/dashboard/dcgm.py
+      - dashboard__models.py=scripts/dashboard/models.py
+      - dashboard__prom.py=scripts/dashboard/prom.py
   # Platform Health Agent scripts. Mounted by the event-watcher AND by every
   # Investigator/Remediator Job (the Job specs in event_watcher.py / backend.py
   # reference this ConfigMap by HARDCODED name) → keep the name stable, no hash.
