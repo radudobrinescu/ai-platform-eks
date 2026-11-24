@@ -176,6 +176,20 @@ def test_infra_needs_attention_names_a_node_that_joined_without_its_gpu():
     assert "No GPU nodes are running, which costs nothing" in calm["infra-gpu"]
 
 
+def test_infra_does_not_warn_twice_about_a_node_that_is_still_starting():
+    """A new node is NotReady for a minute or two. Its claim already reads "on
+    its way"; a second line calling it a warning is noise on every scale-up."""
+    _, sections = store_sections()
+    node = "ip-10-10-40-1.eu-central-1.compute.internal"
+    claim = dict(sections["nodeClaims"][0], name="gpu-shared-new", node=node, ready=False, launched=True,
+                 registered=True, initialized=False, created="2099-01-01T00:00:00Z", waitingOn="Initialized", message="")
+    starting = dict(sections, nodeClaims=[claim], nodeAlerts=[{"node": node, "issue": "NotReady", "sev": "warn"}])
+    attn = infra_panels(starting)["infra-attn"]
+    assert "is on its way" in attn and "NotReady" not in attn
+    gone = dict(sections, nodeClaims=[], nodeAlerts=[{"node": node, "issue": "NotReady", "sev": "warn"}])
+    assert "NotReady" in infra_panels(gone)["infra-attn"], "a NotReady node nobody is starting is still a warning"
+
+
 def test_infra_puts_a_gpu_pool_node_without_a_gpu_under_gpu_nodes():
     _, sections = store_sections()
     node = next(n for n in sections["nodes"] if n["gpu"])
