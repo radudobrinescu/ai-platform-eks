@@ -353,20 +353,17 @@ spec:
             name: cluster-dashboard-fonts
         - name: pydeps
           emptyDir: {}
-        # Shared `pha` package from the agent ConfigMap (no hash suffix: a
-        # pha-only change does not restart this pod; restart it by hand).
+        # The modules of the shared `pha` package that the dashboard imports,
+        # from the hashed backend ConfigMap (not the agent's fixed-name one),
+        # so a change to them restarts this pod.
         - name: pha-lib
           configMap:
-            name: platform-health-agent-scripts
+            name: cluster-dashboard-backend
             items:
               - { key: pha____init__.py, path: pha/__init__.py }
               - { key: pha__db.py, path: pha/db.py }
-              - { key: pha__health.py, path: pha/health.py }
               - { key: pha__jobs.py, path: pha/jobs.py }
               - { key: pha__log.py, path: pha/log.py }
-              - { key: pha__rbac.py, path: pha/rbac.py }
-              - { key: pha__triggers.py, path: pha/triggers.py }
-              - { key: pha__watch.py, path: pha/watch.py }
         - name: tmp
           emptyDir: {}
 ---

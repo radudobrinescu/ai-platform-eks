@@ -172,6 +172,13 @@ logic lives in the shared `pha` package (ConfigMap
 | `pha/jobs.py` | Investigator and Remediator Job specs (shared with the dashboard backend) |
 | `pha/log.py` | JSON logs |
 
+The dashboard backend imports `pha/db.py`, `pha/jobs.py` and `pha/log.py`. It
+mounts them from its own ConfigMap (`cluster-dashboard-backend`, whose name
+carries a content hash), so a change to one of them restarts the dashboard on
+the next sync. The event watcher reads the fixed-name ConfigMap and needs
+`kubectl rollout restart deployment event-watcher -n ai-platform` after a
+change to its scripts.
+
 Tests run without a cluster or database:
 `python3 -m pytest -q platform/services/cluster-dashboard/tests/test_pha_*.py`.
 The trigger cases are in `tests/pha_cases.py`; with the `kubernetes` package

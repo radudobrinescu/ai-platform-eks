@@ -5,7 +5,9 @@ ConfigMap keys cannot contain "/", so `scripts/pha/db.py` ships under the key
 `pha__db.py` and volumes map it back with `items`. Forgetting one entry would
 only fail at pod start (ImportError), so it is checked here.
 """
+import ast
 import os
+import shutil
 import subprocess
 
 import pytest
@@ -105,3 +107,97 @@ def test_install_container_exits_with_pips_status(tmp_path, pip_exit):
     if pip_exit:
         assert "ERROR: no route to PyPI" in done.stderr, "pip's error must reach the container log"
     assert list(pydeps.iterdir()) == [], "no failure marker: the exit status is the signal"
+
+
+# ---------------------------------------------------------------------------
+# A change to code the dashboard imports must restart the dashboard
+# ---------------------------------------------------------------------------
+
+BACKEND_CM = "cluster-dashboard-backend"
+
+
+def _pha_imports(path):
+    """Names of the `pha` modules a Python file imports (`from pha import x`,
+    `import pha.x`, `from pha.x import y`), at any nesting level."""
+    with open(path, encoding="utf-8") as f:
+        tree = ast.parse(f.read())
+    found = set()
+    for n in ast.walk(tree):
+        if isinstance(n, ast.ImportFrom) and n.module == "pha":
+            found |= {a.name for a in n.names}
+        elif isinstance(n, ast.ImportFrom) and (n.module or "").startswith("pha."):
+            found.add(n.module.split(".")[1])
+        elif isinstance(n, ast.Import):
+            found |= {a.name.split(".")[1] for a in n.names if a.name.startswith("pha.")}
+    return found
+
+
+def _dashboard_pha_modules():
+    """Every pha module the dashboard process loads, directly or through
+    another pha module, plus the package's __init__."""
+    scripts = os.path.join(DASH, "scripts")
+    todo = _pha_imports(os.path.join(scripts, "backend.py"))
+    for name in os.listdir(os.path.join(scripts, "dashboard")):
+        if name.endswith(".py"):
+            todo |= _pha_imports(os.path.join(scripts, "dashboard", name))
+    seen = set()
+    while todo:
+        mod = todo.pop()
+        seen.add(mod)
+        todo |= _pha_imports(os.path.join(scripts, "pha", f"{mod}.py")) - seen
+    return seen | {"__init__"}
+
+
+def _dashboard_volumes():
+    dep = next(d for d in _load("manifests.yaml")
+               if d.get("kind") == "Deployment" and d["metadata"]["name"] == "cluster-dashboard")
+    return dep["spec"]["template"]["spec"]["volumes"]
+
+
+def test_dashboard_code_comes_only_from_the_hashed_configmap():
+    """Python is loaded once at process start. Everything the dashboard
+    imports must be in the ConfigMap whose name carries a content hash, so a
+    change gives the Deployment a new pod template and restarts the pod. The
+    agent's ConfigMap has a fixed name: a change there restarts nothing."""
+    assert _dashboard_pha_modules() >= {"__init__", "db", "jobs", "log"}
+    gen = {g["name"]: g for g in _load("kustomization.yaml")[0]["configMapGenerator"]}
+    assert not (gen[BACKEND_CM].get("options") or {}).get("disableNameSuffixHash")
+    shipped = _package_keys()[BACKEND_CM]
+    for mod in sorted(_dashboard_pha_modules()):
+        assert shipped.get(f"pha__{mod}.py") == f"scripts/pha/{mod}.py", f"pha/{mod}.py is not in {BACKEND_CM}"
+    code_volumes = {v["name"]: v["configMap"]["name"] for v in _dashboard_volumes()
+                    if (v.get("configMap") or {}).get("items")}
+    assert code_volumes == {"backend-script": BACKEND_CM, "pha-lib": BACKEND_CM}
+
+
+def _kustomize():
+    for cmd in (["kustomize", "build"], ["kubectl", "kustomize"]):
+        if shutil.which(cmd[0]):
+            return cmd
+    return None
+
+
+def _rendered_pod_template(directory):
+    out = subprocess.run([*_kustomize(), directory], capture_output=True, text=True, timeout=120, check=True).stdout
+    dep = next(d for d in yaml.safe_load_all(out)
+               if d and d.get("kind") == "Deployment" and d["metadata"]["name"] == "cluster-dashboard")
+    return dep["spec"]["template"]
+
+
+@pytest.mark.skipif(_kustomize() is None, reason="needs kustomize or kubectl")
+@pytest.mark.parametrize("changed,restarts", [
+    ("scripts/pha/db.py", True),               # approval SQL
+    ("scripts/pha/jobs.py", True),             # Remediator Job spec
+    ("scripts/pha/log.py", True),
+    ("scripts/pha/__init__.py", True),
+    ("scripts/dashboard/api.py", True),
+    ("scripts/pha/watch.py", False),           # agent only: the dashboard does not import it
+])
+def test_rendered_pod_template_changes_with_the_code_the_dashboard_imports(tmp_path, changed, restarts):
+    work = tmp_path / "cluster-dashboard"
+    shutil.copytree(DASH, work, ignore=shutil.ignore_patterns("tests", "__pycache__"))
+    before = _rendered_pod_template(str(work))
+    with open(work / changed, "a", encoding="utf-8") as f:
+        f.write("\n# a change\n")
+    after = _rendered_pod_template(str(work))
+    assert (after != before) is restarts
