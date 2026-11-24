@@ -27,6 +27,10 @@ log = logging.getLogger("dashboard.app")
 
 KUBE_STALE_AFTER = 360       # s; a quiet watch can go 300 s without an event
 KUBE_LIVENESS_LIMIT = 600    # s of stale or failing Kubernetes data before liveness fails
+# Sources whose stalled loop must not fail liveness. Live prices are optional
+# (the price tables are used without them) and come from outside the cluster
+# through an SDK with its own credential lookups and retries.
+OPTIONAL_SOURCES = frozenset({"pricing"})
 EVENT_RETENTION = 3600       # s
 EVENT_MAX = 500
 DERIVE_MIN_GAP = 1.0         # s between recomputes
@@ -138,7 +142,7 @@ class App:
         ]
         out = []
         for name, interval, fn, stale, disabled in defs:
-            src = PolledSource(name, interval, fn, stale, c)
+            src = PolledSource(name, interval, fn, stale, c, liveness=name not in OPTIONAL_SOURCES)
             if disabled:
                 src.tracker.disable(disabled)
             out.append(src)
@@ -204,9 +208,15 @@ class App:
         from dashboard.cost import detect_region, priced_instances
         nodes, _ = node_records(self.caches["nodes"].items())
         region = detect_region(nodes, self.s.aws_region)
-        failed = self._live_prices.refresh(region, priced_instances(nodes))
-        self.set_input("live_prices", {region: self._live_prices.get(region)})
-        return f"no live price for: {', '.join(failed)}" if failed else None
+        instances = priced_instances(nodes)
+        failed = self._live_prices.refresh(region, instances)
+        prices = self._live_prices.get(region)
+        self.set_input("live_prices", {region: prices})
+        # Not reached before the run's time budget was used up (see LivePrices).
+        waiting = [i for i in instances if i not in prices and i not in failed] if region else []
+        problems = [f"{what}: {', '.join(names)}"
+                    for what, names in (("no live price for", failed), ("not looked up yet", waiting)) if names]
+        return "; ".join(problems) or None
 
     def _run_approvals(self):
         self.set_input("approvals", (True, self.approvals.pending_count()))

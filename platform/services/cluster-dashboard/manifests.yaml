@@ -298,9 +298,11 @@ spec:
               cpu: "300m"
               memory: "256Mi"
           # live: fails when a data loop stopped or no Kubernetes data arrived
-          # for 10 min (a restart fixes both). ready: first Kubernetes list
-          # done. Outages of LiteLLM, DCGM or Prometheus never fail a probe:
-          # they show as source status in the UI.
+          # for 10 min (a restart fixes both). The live-price loop is
+          # excepted: prices are optional, so a stuck lookup only shows in
+          # the source status. ready: first Kubernetes list done. Outages of
+          # LiteLLM, DCGM, Prometheus or the AWS Price List never fail a
+          # probe: they show as source status in the UI.
           livenessProbe:
             httpGet:
               path: /api/v1/health/live

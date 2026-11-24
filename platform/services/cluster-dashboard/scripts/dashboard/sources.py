@@ -3,7 +3,10 @@
 A source is one upstream (LiteLLM, DCGM, Prometheus, pricing, ...). Each runs
 in its own thread on its own interval, so a slow or failing source only
 changes its own status. Every upstream call made by a source has its own
-timeout (5 s or less); a loop that stops ticking fails the liveness probe.
+timeout (5 s or less). A loop that stops ticking shows as an error in its
+status and fails the liveness probe, unless the source is optional
+(`liveness=False`): a restart is not worth it for data the dashboard works
+without.
 """
 from __future__ import annotations
 
@@ -89,11 +92,27 @@ class Tracker:
     def last_tick(self) -> float:
         return self._last_tick
 
+    def _stalled_for(self, now: float) -> float | None:
+        """Seconds since the last run started, when that is longer than
+        max(3 x interval, 60 s) plus one interval: a run is stuck or the loop
+        stopped. None while the loop is ticking."""
+        idle = now - self._last_tick
+        return idle if idle > max(3 * self.interval, 60) + self.interval else None
+
+    def stalled(self) -> bool:
+        with self._lock:
+            return self._stalled_for(self._clock()) is not None
+
     def status(self) -> SourceStatus:
         with self._lock:
             now = self._clock()
+            stalled = self._stalled_for(now)
             if self._disabled is not None or self._paused is not None:
                 state, detail = "disabled", self._disabled or self._paused
+            elif stalled is not None:
+                return SourceStatus(self.name, "error", self._last_success,
+                                    f"no run started for {int(stalled)} s (a run is stuck or the loop stopped)",
+                                    self._detail, self.interval, self.stale_after)
             elif self._failing:
                 state, detail = "error", self._detail
             elif self._last_success is None:
@@ -117,11 +136,13 @@ class Tracker:
 
 
 class PolledSource:
-    """A source that runs `fn()` every `interval` seconds."""
+    """A source that runs `fn()` every `interval` seconds. `liveness` says
+    whether a stalled loop fails the liveness probe."""
 
     def __init__(self, name: str, interval: int, fn: Callable[[], str | None],
-                 stale_after: int | None = None, clock: Callable[[], float] = time.time):
-        self.name, self.interval, self.fn = name, interval, fn
+                 stale_after: int | None = None, clock: Callable[[], float] = time.time,
+                 liveness: bool = True):
+        self.name, self.interval, self.fn, self.liveness = name, interval, fn, liveness
         self.tracker = Tracker(name, interval, stale_after or 3 * interval, clock)
 
     def run_once(self) -> None:
@@ -154,7 +175,7 @@ class Scheduler:
             threading.Thread(target=s.loop, args=(self.stop,), daemon=True, name=f"src-{s.name}").start()
 
     def dead_loops(self) -> list[str]:
-        """Sources whose loop has not completed a run for max(3 x interval, 60 s)."""
-        now = self._clock()
-        return [s.name for s in self.sources
-                if now - s.tracker.last_tick() > max(3 * s.interval, 60) + s.interval]
+        """Sources that count for liveness whose loop is stalled (see
+        Tracker._stalled_for). A stalled optional source only shows in its
+        own status."""
+        return [s.name for s in self.sources if s.liveness and s.tracker.stalled()]
