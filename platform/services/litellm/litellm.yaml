@@ -19,6 +19,11 @@ spec:
     metadata:
       labels:
         app: litellm
+      annotations:
+        # LiteLLM reads litellm-config at start only. These are plain manifests,
+        # so nothing rolls the pods when the ConfigMap changes: raise this number
+        # in the same commit as any change to config.yaml below.
+        ai-platform/config-revision: "2"
     spec:
       # ServiceAccount carries the Bedrock IRSA role when enable_bedrock=true
       # (annotation injected by Terraform). Without it, this is a plain SA with
@@ -220,6 +225,14 @@ data:
       # wake a zero'd pool. `callbacks` applies to success AND failure, so a
       # request that arrives while the pool is cold is still counted.
       callbacks: ["prometheus"]
+      # From the long-term-support line LiteLLM asks for a key on /metrics unless
+      # told otherwise. The autoscaling Prometheus scrapes it from inside the
+      # cluster without one (it runs in another namespace and holds no LiteLLM
+      # key), and with a key required the scrape answered 401: the request rate
+      # that wakes a zero'd pool never arrived. The gateway's ingress does not
+      # forward /metrics (platform/config/ingress.yaml), so the endpoint stays
+      # reachable from inside the cluster only.
+      require_auth_for_metrics_endpoint: false
       # Per-user cost attribution: capture the identity Open WebUI forwards
       # (via ENABLE_FORWARD_USER_INFO_HEADERS) as spend tags, so spend reports
       # break down per user without issuing per-user API keys. Inert when the

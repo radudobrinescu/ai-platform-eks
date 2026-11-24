@@ -41,11 +41,30 @@ metadata:
     alb.ingress.kubernetes.io/healthcheck-path: /health/liveliness
     alb.ingress.kubernetes.io/security-groups: ai-platform-alb-inbound
     alb.ingress.kubernetes.io/manage-backend-security-group-rules: "true"
+    # LiteLLM serves /metrics without a key so the in-cluster Prometheus can
+    # scrape it (see litellm-config). The load balancer answers that path itself:
+    # usage figures by model, team and user are not for whoever reaches the gateway.
+    alb.ingress.kubernetes.io/actions.metrics-not-served: >-
+      {"type":"fixed-response","fixedResponseConfig":{"contentType":"text/plain","statusCode":"404","messageBody":"not found"}}
 spec:
   ingressClassName: alb
   rules:
     - http:
         paths:
+          - path: /metrics
+            pathType: Exact
+            backend:
+              service:
+                name: metrics-not-served
+                port:
+                  name: use-annotation
+          - path: /metrics/
+            pathType: Prefix
+            backend:
+              service:
+                name: metrics-not-served
+                port:
+                  name: use-annotation
           - path: /
             pathType: Prefix
             backend:
