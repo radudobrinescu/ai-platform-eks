@@ -1,0 +1,268 @@
+{
+  "apiVersion": "batch/v1",
+  "kind": "Job",
+  "metadata": {
+    "labels": {
+      "app.kubernetes.io/name": "platform-health-agent-remediator",
+      "app.kubernetes.io/part-of": "platform-health-agent",
+      "investigation-id": "1234abcd-0000-0000-0000-000000000000"
+    },
+    "name": "remediator-1234abcd",
+    "namespace": "ai-platform"
+  },
+  "spec": {
+    "activeDeadlineSeconds": 600,
+    "backoffLimit": 0,
+    "template": {
+      "metadata": {
+        "labels": {
+          "app.kubernetes.io/name": "platform-health-agent-remediator",
+          "investigation-id": "1234abcd-0000-0000-0000-000000000000"
+        }
+      },
+      "spec": {
+        "automountServiceAccountToken": true,
+        "containers": [
+          {
+            "command": [
+              "/bin/sh",
+              "/scripts/remediate.sh"
+            ],
+            "env": [
+              {
+                "name": "INVESTIGATION_ID",
+                "value": "1234abcd-0000-0000-0000-000000000000"
+              },
+              {
+                "name": "PATH",
+                "value": "/tools:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
+              },
+              {
+                "name": "PYTHONPATH",
+                "value": "/pydeps"
+              },
+              {
+                "name": "HOME",
+                "value": "/tmp"
+              },
+              {
+                "name": "CLUSTER_NAME",
+                "valueFrom": {
+                  "configMapKeyRef": {
+                    "key": "CLUSTER_NAME",
+                    "name": "platform-health-agent-config"
+                  }
+                }
+              },
+              {
+                "name": "AWS_REGION",
+                "valueFrom": {
+                  "configMapKeyRef": {
+                    "key": "AWS_REGION",
+                    "name": "platform-health-agent-config"
+                  }
+                }
+              },
+              {
+                "name": "DB_HOST",
+                "valueFrom": {
+                  "configMapKeyRef": {
+                    "key": "DB_HOST",
+                    "name": "platform-health-agent-config"
+                  }
+                }
+              },
+              {
+                "name": "DB_PORT",
+                "valueFrom": {
+                  "configMapKeyRef": {
+                    "key": "DB_PORT",
+                    "name": "platform-health-agent-config"
+                  }
+                }
+              },
+              {
+                "name": "DB_NAME",
+                "valueFrom": {
+                  "configMapKeyRef": {
+                    "key": "DB_NAME",
+                    "name": "platform-health-agent-config"
+                  }
+                }
+              },
+              {
+                "name": "KIRO_MODEL_REMEDIATE",
+                "valueFrom": {
+                  "configMapKeyRef": {
+                    "key": "KIRO_MODEL_REMEDIATE",
+                    "name": "platform-health-agent-config"
+                  }
+                }
+              },
+              {
+                "name": "DB_USER",
+                "valueFrom": {
+                  "secretKeyRef": {
+                    "key": "username",
+                    "name": "platform-db-credentials"
+                  }
+                }
+              },
+              {
+                "name": "DB_PASSWORD",
+                "valueFrom": {
+                  "secretKeyRef": {
+                    "key": "password",
+                    "name": "platform-db-credentials"
+                  }
+                }
+              },
+              {
+                "name": "KIRO_API_KEY",
+                "valueFrom": {
+                  "secretKeyRef": {
+                    "key": "KIRO_API_KEY",
+                    "name": "platform-health-agent-secrets"
+                  }
+                }
+              }
+            ],
+            "image": "python:3.12-slim",
+            "name": "remediator",
+            "resources": {
+              "limits": {
+                "cpu": "1000m",
+                "memory": "1Gi"
+              },
+              "requests": {
+                "cpu": "200m",
+                "memory": "256Mi"
+              }
+            },
+            "securityContext": {
+              "allowPrivilegeEscalation": false,
+              "capabilities": {
+                "drop": [
+                  "ALL"
+                ]
+              },
+              "runAsNonRoot": true,
+              "runAsUser": 65532
+            },
+            "volumeMounts": [
+              {
+                "mountPath": "/scripts",
+                "name": "scripts",
+                "readOnly": true
+              },
+              {
+                "mountPath": "/tools",
+                "name": "tools",
+                "readOnly": true
+              },
+              {
+                "mountPath": "/pydeps",
+                "name": "pydeps",
+                "readOnly": true
+              },
+              {
+                "mountPath": "/results",
+                "name": "results"
+              },
+              {
+                "mountPath": "/tmp",
+                "name": "tmp"
+              }
+            ]
+          }
+        ],
+        "initContainers": [
+          {
+            "args": [
+              "set -eu; cd /tools; echo 'fetching kubectl v1.32.5'; wget -qO kubectl https://dl.k8s.io/release/v1.32.5/bin/linux/amd64/kubectl && chmod +x kubectl; apk add -q curl bash; export HOME=/tools; curl -fsSL https://cli.kiro.dev/install | bash; mv /tools/.local/bin/* /tools/ 2>/dev/null || true; chmod +x /tools/kiro-cli /tools/kiro-cli-chat /tools/kiro-cli-term 2>/dev/null || true; ls -la /tools/"
+            ],
+            "command": [
+              "/bin/sh",
+              "-c"
+            ],
+            "image": "alpine:3.20",
+            "name": "install-tools",
+            "securityContext": {
+              "allowPrivilegeEscalation": false,
+              "capabilities": {
+                "drop": [
+                  "ALL"
+                ]
+              },
+              "runAsUser": 0
+            },
+            "volumeMounts": [
+              {
+                "mountPath": "/tools",
+                "name": "tools"
+              }
+            ]
+          },
+          {
+            "args": [
+              "set -eu; pip install --no-cache-dir --target=/pydeps psycopg[binary]==3.3.9 awslabs.eks-mcp-server"
+            ],
+            "command": [
+              "/bin/sh",
+              "-c"
+            ],
+            "image": "python:3.12-slim",
+            "name": "install-pydeps",
+            "securityContext": {
+              "allowPrivilegeEscalation": false,
+              "capabilities": {
+                "drop": [
+                  "ALL"
+                ]
+              },
+              "runAsNonRoot": true,
+              "runAsUser": 65532
+            },
+            "volumeMounts": [
+              {
+                "mountPath": "/pydeps",
+                "name": "pydeps"
+              }
+            ]
+          }
+        ],
+        "nodeSelector": {
+          "kubernetes.io/arch": "amd64"
+        },
+        "restartPolicy": "Never",
+        "serviceAccountName": "platform-health-agent-writer",
+        "volumes": [
+          {
+            "configMap": {
+              "defaultMode": 493,
+              "name": "platform-health-agent-scripts"
+            },
+            "name": "scripts"
+          },
+          {
+            "emptyDir": {},
+            "name": "tools"
+          },
+          {
+            "emptyDir": {},
+            "name": "pydeps"
+          },
+          {
+            "emptyDir": {},
+            "name": "results"
+          },
+          {
+            "emptyDir": {},
+            "name": "tmp"
+          }
+        ]
+      }
+    },
+    "ttlSecondsAfterFinished": 3600
+  }
+}

@@ -1,0 +1,536 @@
+{
+  "approvals_available": false,
+  "approvals_pending": 0,
+  "argocd": [
+    {
+      "health": "Healthy",
+      "name": "litellm",
+      "sync": "Synced"
+    },
+    {
+      "health": "Progressing",
+      "name": "models-inference",
+      "sync": "OutOfSync"
+    }
+  ],
+  "autoscaling": [
+    {
+      "atMax": false,
+      "current": 1,
+      "deployment": "gemma-12b-llmd",
+      "desired": 2,
+      "events": [
+        {
+          "msg": "New size: 2; reason: external metric above target",
+          "ts": "2026-11-20T09:50:00Z"
+        }
+      ],
+      "itlMs": 31.0,
+      "lastScale": "2026-11-20T09:50:00Z",
+      "max": 3,
+      "min": 1,
+      "mode": "llm-d",
+      "pool": "gemma-12b",
+      "role": "",
+      "saturated": true,
+      "signal": "queue depth",
+      "target": 4.0,
+      "ttftMs": 850,
+      "unit": "req",
+      "value": 3.8
+    }
+  ],
+  "cluster": "ai-platform-dev",
+  "cost": {
+    "gpuHourly": 0.5791,
+    "hourly": 0.7121,
+    "monthly": 519.85,
+    "platformHourly": 0.133,
+    "priceSource": "table",
+    "region": "eu-central-1",
+    "unpriced": 1
+  },
+  "costExt": {
+    "byEfficiency": [
+      [
+        "nova-lite",
+        960000,
+        "bedrock"
+      ],
+      [
+        "qwen2-5-3b-instruct",
+        528828,
+        "vllm"
+      ]
+    ],
+    "byModel": [
+      [
+        "qwen2-5-3b-instruct",
+        0.58,
+        "vllm"
+      ],
+      [
+        "nova-lite",
+        0.15,
+        "bedrock"
+      ]
+    ],
+    "byTeam": [
+      [
+        "search",
+        0.12
+      ]
+    ],
+    "byUser": [
+      {
+        "models": [
+          {
+            "model": "nova-lite",
+            "spend": 0.0311
+          }
+        ],
+        "requests": 7,
+        "spend": 0.0311,
+        "tokens": 5100,
+        "user": "developer@example.com"
+      }
+    ],
+    "trend": [
+      [
+        "2026-11-19",
+        0.3
+      ],
+      [
+        "2026-11-20",
+        0.42
+      ]
+    ]
+  },
+  "endpoints": [
+    {
+      "availableReplicas": 0,
+      "created": "2026-11-20T10:00:00Z",
+      "decodeReplicas": null,
+      "gpuCount": 1,
+      "kroState": "ERROR",
+      "message": "",
+      "mode": "llm-d",
+      "model": "x/y",
+      "modelStatus": "Error",
+      "name": "broken",
+      "pp": 1,
+      "prefillReplicas": null,
+      "ready": "False",
+      "reconcileError": "apply failed: name collision",
+      "replicas": 1,
+      "routerHealth": "",
+      "shared": false,
+      "status": "Error",
+      "tp": 1
+    },
+    {
+      "availableReplicas": 0,
+      "created": "2026-11-20T10:00:00Z",
+      "decodeReplicas": null,
+      "gpuCount": 1,
+      "kroState": "IN_PROGRESS",
+      "message": "",
+      "mode": "llm-d",
+      "model": "google/gemma-3-12b-it",
+      "modelStatus": "Pending",
+      "name": "gemma-12b",
+      "pp": 1,
+      "prefillReplicas": null,
+      "ready": "False",
+      "reconcileError": "",
+      "replicas": 2,
+      "routerHealth": "Progressing",
+      "shared": false,
+      "status": "Pending",
+      "tp": 1
+    },
+    {
+      "availableReplicas": 1,
+      "created": "2026-11-20T10:00:00Z",
+      "decodeReplicas": null,
+      "gpuCount": 1,
+      "kroState": "ACTIVE",
+      "message": "",
+      "mode": "vllm",
+      "model": "Qwen/Qwen2.5-3B-Instruct",
+      "modelStatus": "Running",
+      "name": "qwen2-5-3b-instruct",
+      "pp": 1,
+      "prefillReplicas": null,
+      "ready": "True",
+      "reconcileError": "",
+      "replicas": 1,
+      "routerHealth": "",
+      "shared": false,
+      "status": "Running",
+      "tp": 1
+    }
+  ],
+  "gpu": [
+    {
+      "instance": "g6.4xlarge",
+      "mem": [
+        92
+      ],
+      "model": "qwen2-5-3b-instruct",
+      "node": "ip-10-10-7-165",
+      "util": [
+        37
+      ]
+    }
+  ],
+  "links": [
+    {
+      "desc": "Chat with models",
+      "icon": "\ud83d\udcac",
+      "label": "Open WebUI",
+      "url": "http://internal-k8s-aiplatform-123.eu-central-1.elb.amazonaws.com:8080"
+    },
+    {
+      "desc": "API gateway + keys + usage",
+      "icon": "\ud83d\udd11",
+      "label": "LiteLLM Admin",
+      "url": "http://internal-k8s-aiplatform-123.eu-central-1.elb.amazonaws.com:4000/ui/"
+    },
+    {
+      "desc": "Traces, evals, cost",
+      "icon": "\ud83d\udcca",
+      "label": "Langfuse",
+      "url": "http://internal-k8s-aiplatform-123.eu-central-1.elb.amazonaws.com:3000"
+    },
+    {
+      "desc": "GitOps sync status",
+      "icon": "\ud83d\udea2",
+      "label": "ArgoCD",
+      "url": "https://argocd.example"
+    }
+  ],
+  "models": [
+    {
+      "availableReplicas": 1,
+      "costHr": 0.58,
+      "created": "2026-11-20T10:00:00Z",
+      "decodeReplicas": null,
+      "errPct": 0.0,
+      "gpu": "1\u00d7GPU",
+      "health": "healthy",
+      "model": "Qwen/Qwen2.5-3B-Instruct",
+      "name": "qwen2-5-3b-instruct",
+      "p50": 420,
+      "p95": 1300,
+      "prefillReplicas": null,
+      "reconcileError": "",
+      "replicas": 1,
+      "router": "",
+      "rpm": 12.4,
+      "status": "running",
+      "tier": "vllm",
+      "tokPerDollar": 528828,
+      "tps": 85.2
+    },
+    {
+      "availableReplicas": null,
+      "costHr": 0.15,
+      "created": null,
+      "errPct": 2.5,
+      "gpu": "\u2014",
+      "health": "",
+      "model": "bedrock/eu.amazon.nova-lite-v1:0",
+      "name": "nova-lite",
+      "p50": 610,
+      "p95": 900,
+      "replicas": null,
+      "router": "",
+      "rpm": 3.0,
+      "status": "running",
+      "tier": "bedrock",
+      "tokPerDollar": 960000,
+      "tps": 40.0
+    },
+    {
+      "availableReplicas": 0,
+      "costHr": 0.0,
+      "created": "2026-11-20T10:00:00Z",
+      "decodeReplicas": null,
+      "deploy": {
+        "events": [],
+        "log": [],
+        "phase": "NoPod",
+        "pod": "",
+        "provisioning": [],
+        "waiting": null
+      },
+      "errPct": 0,
+      "gpu": "1\u00d7GPU",
+      "health": "",
+      "model": "x/y",
+      "name": "broken",
+      "p50": null,
+      "p95": null,
+      "prefillReplicas": null,
+      "reconcileError": "apply failed: name collision",
+      "replicas": 1,
+      "router": "",
+      "rpm": 0,
+      "status": "error",
+      "tier": "llm-d",
+      "tokPerDollar": null,
+      "tps": 0
+    },
+    {
+      "availableReplicas": null,
+      "costHr": 0.0,
+      "created": null,
+      "errPct": 0,
+      "gpu": "\u2014",
+      "health": "",
+      "model": "bedrock/eu.anthropic.claude-haiku",
+      "name": "claude-static",
+      "p50": null,
+      "p95": null,
+      "replicas": null,
+      "router": "",
+      "rpm": 0,
+      "status": "running",
+      "tier": "bedrock",
+      "tokPerDollar": null,
+      "tps": 0
+    },
+    {
+      "availableReplicas": 1,
+      "costHr": 0.0,
+      "created": "2026-11-20T10:00:00Z",
+      "decodeReplicas": null,
+      "deploy": {
+        "events": [
+          {
+            "by": "default-scheduler",
+            "count": 5,
+            "message": "0/6 nodes are available: insufficient nvidia.com/gpu",
+            "obj": "gemma-12b-llmd-7c9d-abcde",
+            "reason": "FailedScheduling",
+            "ts": "2026-11-20T09:59:00Z",
+            "type": "Warning"
+          }
+        ],
+        "log": [],
+        "phase": "Pending",
+        "pod": "gemma-12b-llmd-7c9d-abcde",
+        "provisioning": [
+          {
+            "by": "karpenter",
+            "count": 3,
+            "message": "could not launch: InsufficientInstanceCapacity for g6.4xlarge",
+            "obj": "gpu-inference-x1",
+            "reason": "InsufficientCapacityError",
+            "ts": "2026-11-20T09:58:00Z",
+            "type": "Warning"
+          }
+        ],
+        "waiting": null
+      },
+      "errPct": 0,
+      "gpu": "1\u00d7GPU",
+      "health": "",
+      "model": "google/gemma-3-12b-it",
+      "name": "gemma-12b",
+      "p50": null,
+      "p95": null,
+      "prefillReplicas": null,
+      "reconcileError": "",
+      "replicas": 2,
+      "router": "Progressing",
+      "rpm": 0,
+      "scale": [
+        {
+          "atMax": false,
+          "current": 1,
+          "deployment": "gemma-12b-llmd",
+          "desired": 2,
+          "events": [
+            {
+              "msg": "New size: 2; reason: external metric above target",
+              "ts": "2026-11-20T09:50:00Z"
+            }
+          ],
+          "itlMs": 31.0,
+          "lastScale": "2026-11-20T09:50:00Z",
+          "max": 3,
+          "min": 1,
+          "mode": "llm-d",
+          "pool": "gemma-12b",
+          "role": "",
+          "saturated": true,
+          "signal": "queue depth",
+          "target": 4.0,
+          "ttftMs": 850,
+          "unit": "req",
+          "value": 3.8
+        }
+      ],
+      "status": "deploying",
+      "tier": "llm-d",
+      "tokPerDollar": null,
+      "tps": 0
+    }
+  ],
+  "mts": 0,
+  "nodeAlerts": [
+    {
+      "issue": "MemoryPressure",
+      "node": "ip-10-10-1-12.eu-central-1.compute.internal",
+      "sev": "warn"
+    },
+    {
+      "issue": "NotReady",
+      "node": "ip-10-10-9-99.eu-central-1.compute.internal",
+      "sev": "warn"
+    }
+  ],
+  "nodes": [
+    {
+      "capacity": "ON_DEMAND",
+      "cpuAllocM": 1930,
+      "cpuUsedM": null,
+      "created": "2026-11-20T10:00:00Z",
+      "gpu": 0,
+      "gpuProduct": "",
+      "hourly": 0.092,
+      "instance": "m6g.large",
+      "memAllocMi": 3117,
+      "memUsedMi": null,
+      "name": "ip-10-10-1-10.eu-central-1.compute.internal",
+      "pool": "__mng__",
+      "region": "eu-central-1",
+      "zone": "eu-central-1a"
+    },
+    {
+      "capacity": "spot",
+      "cpuAllocM": 1930,
+      "cpuUsedM": 120,
+      "created": "2026-11-20T10:00:00Z",
+      "gpu": 0,
+      "gpuProduct": "",
+      "hourly": 0.041,
+      "instance": "c7a.large",
+      "memAllocMi": 3117,
+      "memUsedMi": 900,
+      "name": "ip-10-10-1-11.eu-central-1.compute.internal",
+      "pool": "default",
+      "region": "eu-central-1",
+      "zone": "eu-central-1b"
+    },
+    {
+      "capacity": "spot",
+      "cpuAllocM": 1930,
+      "cpuUsedM": null,
+      "created": "2026-11-20T10:00:00Z",
+      "gpu": 0,
+      "gpuProduct": "",
+      "hourly": 0.0,
+      "instance": "c5d.large",
+      "memAllocMi": 3117,
+      "memUsedMi": null,
+      "name": "ip-10-10-1-12.eu-central-1.compute.internal",
+      "pool": "default",
+      "region": "eu-central-1",
+      "zone": "eu-central-1b"
+    },
+    {
+      "capacity": "spot",
+      "cpuAllocM": 15890,
+      "cpuUsedM": 800,
+      "created": "2026-11-20T10:00:00Z",
+      "gpu": 1,
+      "gpuProduct": "NVIDIA L4",
+      "hourly": 0.5791,
+      "instance": "g6.4xlarge",
+      "memAllocMi": 57629,
+      "memUsedMi": 4096,
+      "name": "ip-10-10-7-165.eu-central-1.compute.internal",
+      "pool": "gpu-inference",
+      "region": "eu-central-1",
+      "zone": "eu-central-1b"
+    }
+  ],
+  "pods": [
+    {
+      "cpuReqM": 4000,
+      "created": "2026-11-20T10:00:00Z",
+      "gpu": 1,
+      "memReqMi": 16384,
+      "name": "qwen2-5-3b-instruct-vllm-654bd4bf49-42w75",
+      "namespace": "inference",
+      "node": "ip-10-10-7-165.eu-central-1.compute.internal",
+      "phase": "Running"
+    },
+    {
+      "cpuReqM": 4000,
+      "created": "2026-11-20T10:00:00Z",
+      "gpu": 1,
+      "memReqMi": 24576,
+      "name": "gemma-12b-llmd-7c9d-abcde",
+      "namespace": "inference",
+      "node": "",
+      "phase": "Pending"
+    },
+    {
+      "cpuReqM": 250,
+      "created": "2026-11-20T10:00:00Z",
+      "gpu": 0,
+      "memReqMi": 512,
+      "name": "litellm-5d65d7c775-9ht95",
+      "namespace": "ai-platform",
+      "node": "ip-10-10-1-11.eu-central-1.compute.internal",
+      "phase": "Running"
+    },
+    {
+      "cpuReqM": 50,
+      "created": "2026-11-20T10:00:00Z",
+      "gpu": 0,
+      "memReqMi": 96,
+      "name": "cluster-dashboard-df5b5bfc-hkd7p",
+      "namespace": "ai-platform",
+      "node": "ip-10-10-1-11.eu-central-1.compute.internal",
+      "phase": "Running"
+    }
+  ],
+  "provisioning": [
+    {
+      "by": "karpenter",
+      "count": 3,
+      "message": "could not launch: InsufficientInstanceCapacity for g6.4xlarge",
+      "obj": "gpu-inference-x1",
+      "reason": "InsufficientCapacityError",
+      "ts": "2026-11-20T09:58:00Z",
+      "type": "Warning"
+    }
+  ],
+  "region": "eu-central-1",
+  "sources": {
+    "argocd": true,
+    "autoscaling": true,
+    "bedrock": true,
+    "dcgm": true,
+    "litellm": true
+  },
+  "teams": [
+    {
+      "budget": 0.42,
+      "failed": 1,
+      "id": "t1",
+      "keys": 1,
+      "limit": 50.0,
+      "name": "search",
+      "reqsToday": 18,
+      "spendToday": 0.12,
+      "tokens": 9000
+    }
+  ],
+  "ts": 0
+}

@@ -1,0 +1,560 @@
+{
+ "/api/v1/events?fieldSelector=involvedObject.kind=NodeClaim": {
+  "items": [
+   {
+    "count": 3,
+    "involvedObject": {
+     "kind": "NodeClaim",
+     "name": "gpu-inference-x1"
+    },
+    "lastTimestamp": "2026-11-20T09:58:00Z",
+    "message": "could not launch: InsufficientInstanceCapacity for g6.4xlarge",
+    "reason": "InsufficientCapacityError",
+    "source": {
+     "component": "karpenter"
+    },
+    "type": "Warning"
+   }
+  ]
+ },
+ "/api/v1/namespaces/ai-platform/configmaps/litellm-config": {
+  "data": {
+   "config.yaml": "model_list:\n  - model_name: claude-static\n    litellm_params:\n      model: bedrock/eu.anthropic.claude-haiku\n  - model_name: local\n    litellm_params:\n      model: openai/x\n"
+  }
+ },
+ "/api/v1/namespaces/inference/events": {
+  "items": [
+   {
+    "count": 1,
+    "involvedObject": {
+     "kind": "HorizontalPodAutoscaler",
+     "name": "keda-hpa-gemma-12b-llmd"
+    },
+    "lastTimestamp": "2026-11-20T09:50:00Z",
+    "message": "New size: 2; reason: external metric above target",
+    "reason": "SuccessfulRescale",
+    "source": {
+     "component": "horizontal-pod-autoscaler"
+    },
+    "type": "Normal"
+   }
+  ]
+ },
+ "/api/v1/namespaces/inference/events?fieldSelector=involvedObject.kind=Pod": {
+  "items": [
+   {
+    "count": 5,
+    "involvedObject": {
+     "kind": "Pod",
+     "name": "gemma-12b-llmd-7c9d-abcde"
+    },
+    "lastTimestamp": "2026-11-20T09:59:00Z",
+    "message": "0/6 nodes are available: insufficient nvidia.com/gpu",
+    "reason": "FailedScheduling",
+    "source": {
+     "component": "default-scheduler"
+    },
+    "type": "Warning"
+   },
+   {
+    "count": 1,
+    "involvedObject": {
+     "kind": "Pod",
+     "name": "qwen2-5-3b-instruct-vllm-654bd4bf49-42w75"
+    },
+    "lastTimestamp": "2026-11-20T08:00:00Z",
+    "message": "assigned",
+    "reason": "Scheduled",
+    "source": {
+     "component": "default-scheduler"
+    },
+    "type": "Normal"
+   }
+  ]
+ },
+ "/api/v1/namespaces/inference/pods/gemma-12b-llmd-7c9d-abcde": {
+  "status": {
+   "containerStatuses": [],
+   "phase": "Pending"
+  }
+ },
+ "/api/v1/nodes": {
+  "items": [
+   {
+    "metadata": {
+     "creationTimestamp": "2026-11-20T10:00:00Z",
+     "labels": {
+      "eks.amazonaws.com/capacityType": "ON_DEMAND",
+      "eks.amazonaws.com/nodegroup": "criticaladdons",
+      "node.kubernetes.io/instance-type": "m6g.large",
+      "topology.kubernetes.io/region": "eu-central-1",
+      "topology.kubernetes.io/zone": "eu-central-1a"
+     },
+     "name": "ip-10-10-1-10.eu-central-1.compute.internal"
+    },
+    "spec": {},
+    "status": {
+     "allocatable": {
+      "cpu": "1930m",
+      "memory": "3117Mi"
+     },
+     "conditions": [
+      {
+       "status": "True",
+       "type": "Ready"
+      }
+     ]
+    }
+   },
+   {
+    "metadata": {
+     "creationTimestamp": "2026-11-20T10:00:00Z",
+     "labels": {
+      "karpenter.sh/capacity-type": "spot",
+      "karpenter.sh/nodepool": "default",
+      "node.kubernetes.io/instance-type": "c7a.large",
+      "topology.kubernetes.io/region": "eu-central-1",
+      "topology.kubernetes.io/zone": "eu-central-1b"
+     },
+     "name": "ip-10-10-1-11.eu-central-1.compute.internal"
+    },
+    "spec": {},
+    "status": {
+     "allocatable": {
+      "cpu": "1930m",
+      "memory": "3117Mi"
+     },
+     "conditions": [
+      {
+       "status": "True",
+       "type": "Ready"
+      }
+     ]
+    }
+   },
+   {
+    "metadata": {
+     "creationTimestamp": "2026-11-20T10:00:00Z",
+     "labels": {
+      "karpenter.sh/capacity-type": "spot",
+      "karpenter.sh/nodepool": "default",
+      "node.kubernetes.io/instance-type": "c5d.large",
+      "topology.kubernetes.io/region": "eu-central-1",
+      "topology.kubernetes.io/zone": "eu-central-1b"
+     },
+     "name": "ip-10-10-1-12.eu-central-1.compute.internal"
+    },
+    "spec": {},
+    "status": {
+     "allocatable": {
+      "cpu": "1930m",
+      "memory": "3117Mi"
+     },
+     "conditions": [
+      {
+       "status": "True",
+       "type": "Ready"
+      },
+      {
+       "status": "True",
+       "type": "MemoryPressure"
+      }
+     ]
+    }
+   },
+   {
+    "metadata": {
+     "creationTimestamp": "2026-11-20T10:00:00Z",
+     "labels": {
+      "karpenter.sh/capacity-type": "spot",
+      "karpenter.sh/nodepool": "gpu-inference",
+      "node.kubernetes.io/instance-type": "g6.4xlarge",
+      "nvidia.com/gpu.product": "NVIDIA-L4",
+      "topology.kubernetes.io/region": "eu-central-1",
+      "topology.kubernetes.io/zone": "eu-central-1b"
+     },
+     "name": "ip-10-10-7-165.eu-central-1.compute.internal"
+    },
+    "spec": {},
+    "status": {
+     "allocatable": {
+      "cpu": "15890m",
+      "memory": "57629Mi",
+      "nvidia.com/gpu": "1"
+     },
+     "conditions": [
+      {
+       "status": "True",
+       "type": "Ready"
+      }
+     ]
+    }
+   },
+   {
+    "metadata": {
+     "creationTimestamp": "2026-11-20T10:00:00Z",
+     "labels": {
+      "karpenter.sh/capacity-type": "spot",
+      "karpenter.sh/nodepool": "default",
+      "node.kubernetes.io/instance-type": "c7a.large",
+      "topology.kubernetes.io/region": "eu-central-1",
+      "topology.kubernetes.io/zone": "eu-central-1a"
+     },
+     "name": "ip-10-10-9-99.eu-central-1.compute.internal"
+    },
+    "spec": {},
+    "status": {
+     "allocatable": {
+      "cpu": "1930m",
+      "memory": "3117Mi"
+     },
+     "conditions": [
+      {
+       "status": "False",
+       "type": "Ready"
+      }
+     ]
+    }
+   },
+   {
+    "metadata": {
+     "creationTimestamp": "2026-11-20T10:00:00Z",
+     "deletionTimestamp": "2026-11-20T10:00:00Z",
+     "labels": {
+      "karpenter.sh/capacity-type": "spot",
+      "karpenter.sh/nodepool": "default",
+      "node.kubernetes.io/instance-type": "c7a.large",
+      "topology.kubernetes.io/region": "eu-central-1",
+      "topology.kubernetes.io/zone": "eu-central-1a"
+     },
+     "name": "ip-10-10-9-98.eu-central-1.compute.internal"
+    },
+    "spec": {
+     "taints": [
+      {
+       "key": "karpenter.sh/disrupted"
+      }
+     ]
+    },
+    "status": {
+     "allocatable": {
+      "cpu": "1930m",
+      "memory": "3117Mi"
+     },
+     "conditions": [
+      {
+       "status": "False",
+       "type": "Ready"
+      }
+     ]
+    }
+   }
+  ]
+ },
+ "/api/v1/pods": {
+  "items": [
+   {
+    "metadata": {
+     "creationTimestamp": "2026-11-20T10:00:00Z",
+     "name": "qwen2-5-3b-instruct-vllm-654bd4bf49-42w75",
+     "namespace": "inference"
+    },
+    "spec": {
+     "containers": [
+      {
+       "name": "c",
+       "resources": {
+        "requests": {
+         "cpu": "4",
+         "memory": "16Gi",
+         "nvidia.com/gpu": "1"
+        }
+       }
+      }
+     ],
+     "nodeName": "ip-10-10-7-165.eu-central-1.compute.internal"
+    },
+    "status": {
+     "phase": "Running"
+    }
+   },
+   {
+    "metadata": {
+     "creationTimestamp": "2026-11-20T10:00:00Z",
+     "name": "gemma-12b-llmd-7c9d-abcde",
+     "namespace": "inference"
+    },
+    "spec": {
+     "containers": [
+      {
+       "name": "c",
+       "resources": {
+        "requests": {
+         "cpu": "4",
+         "memory": "24Gi",
+         "nvidia.com/gpu": "1"
+        }
+       }
+      }
+     ],
+     "nodeName": ""
+    },
+    "status": {
+     "phase": "Pending"
+    }
+   },
+   {
+    "metadata": {
+     "creationTimestamp": "2026-11-20T10:00:00Z",
+     "name": "litellm-5d65d7c775-9ht95",
+     "namespace": "ai-platform"
+    },
+    "spec": {
+     "containers": [
+      {
+       "name": "c",
+       "resources": {
+        "requests": {
+         "cpu": "250m",
+         "memory": "512Mi"
+        }
+       }
+      }
+     ],
+     "nodeName": "ip-10-10-1-11.eu-central-1.compute.internal"
+    },
+    "status": {
+     "phase": "Running"
+    }
+   },
+   {
+    "metadata": {
+     "creationTimestamp": "2026-11-20T10:00:00Z",
+     "name": "cluster-dashboard-df5b5bfc-hkd7p",
+     "namespace": "ai-platform"
+    },
+    "spec": {
+     "containers": [
+      {
+       "name": "c",
+       "resources": {
+        "requests": {
+         "cpu": "50m",
+         "memory": "96Mi"
+        }
+       }
+      }
+     ],
+     "nodeName": "ip-10-10-1-11.eu-central-1.compute.internal"
+    },
+    "status": {
+     "phase": "Running"
+    }
+   },
+   {
+    "metadata": {
+     "creationTimestamp": "2026-11-20T10:00:00Z",
+     "name": "old-job-xyz",
+     "namespace": "ai-platform"
+    },
+    "spec": {
+     "containers": [
+      {
+       "name": "c",
+       "resources": {
+        "requests": {
+         "cpu": "100m",
+         "memory": "128Mi"
+        }
+       }
+      }
+     ],
+     "nodeName": "ip-10-10-1-11.eu-central-1.compute.internal"
+    },
+    "status": {
+     "phase": "Succeeded"
+    }
+   }
+  ]
+ },
+ "/apis/argoproj.io/v1alpha1/namespaces/argocd/applications": {
+  "items": [
+   {
+    "metadata": {
+     "name": "litellm"
+    },
+    "status": {
+     "health": {
+      "status": "Healthy"
+     },
+     "sync": {
+      "status": "Synced"
+     }
+    }
+   },
+   {
+    "metadata": {
+     "name": "models-inference"
+    },
+    "status": {
+     "health": {
+      "status": "Progressing"
+     },
+     "sync": {
+      "status": "OutOfSync"
+     }
+    }
+   }
+  ]
+ },
+ "/apis/autoscaling/v2/namespaces/inference/horizontalpodautoscalers": {
+  "items": [
+   {
+    "metadata": {
+     "name": "keda-hpa-gemma-12b-llmd"
+    },
+    "spec": {
+     "maxReplicas": 3,
+     "metrics": [
+      {
+       "external": {
+        "target": {
+         "averageValue": "4"
+        }
+       }
+      }
+     ],
+     "minReplicas": 1,
+     "scaleTargetRef": {
+      "name": "gemma-12b-llmd"
+     }
+    },
+    "status": {
+     "currentMetrics": [
+      {
+       "external": {
+        "current": {
+         "averageValue": "3800m"
+        }
+       }
+      }
+     ],
+     "currentReplicas": 1,
+     "desiredReplicas": 2,
+     "lastScaleTime": "2026-11-20T09:50:00Z"
+    }
+   }
+  ]
+ },
+ "/apis/bedrock.ai-platform/v1alpha1/bedrockmodels": {
+  "items": [
+   {
+    "metadata": {
+     "name": "nova-lite"
+    },
+    "spec": {
+     "model": "bedrock/eu.amazon.nova-lite-v1:0",
+     "modelName": "nova-lite"
+    }
+   }
+  ]
+ },
+ "/apis/kro.run/v1alpha1/namespaces/inference/llmddisaggendpoints": {
+  "items": []
+ },
+ "/apis/kro.run/v1alpha1/namespaces/inference/llmdendpoints": {
+  "items": [
+   {
+    "metadata": {
+     "creationTimestamp": "2026-11-20T10:00:00Z",
+     "name": "gemma-12b"
+    },
+    "spec": {
+     "gpuCount": 1,
+     "minReplicas": 2,
+     "model": "google/gemma-3-12b-it"
+    },
+    "status": {
+     "availableReplicas": 0,
+     "ready": "False",
+     "routerHealth": "Progressing",
+     "state": "IN_PROGRESS"
+    }
+   },
+   {
+    "metadata": {
+     "creationTimestamp": "2026-11-20T10:00:00Z",
+     "name": "broken"
+    },
+    "spec": {
+     "gpuCount": 1,
+     "model": "x/y"
+    },
+    "status": {
+     "conditions": [
+      {
+       "message": "apply   failed:   name collision",
+       "status": "False",
+       "type": "Ready"
+      }
+     ],
+     "ready": "False",
+     "state": "ERROR"
+    }
+   }
+  ]
+ },
+ "/apis/kro.run/v1alpha1/namespaces/inference/vllmendpoints": {
+  "items": [
+   {
+    "metadata": {
+     "creationTimestamp": "2026-11-20T10:00:00Z",
+     "name": "qwen2-5-3b-instruct"
+    },
+    "spec": {
+     "gpuCount": 1,
+     "model": "Qwen/Qwen2.5-3B-Instruct",
+     "replicas": 1
+    },
+    "status": {
+     "availableReplicas": 1,
+     "ready": "True",
+     "state": "ACTIVE"
+    }
+   }
+  ]
+ },
+ "/apis/metrics.k8s.io/v1beta1/nodes": {
+  "items": [
+   {
+    "metadata": {
+     "name": "ip-10-10-1-11.eu-central-1.compute.internal"
+    },
+    "usage": {
+     "cpu": "120000000n",
+     "memory": "900Mi"
+    }
+   },
+   {
+    "metadata": {
+     "name": "ip-10-10-7-165.eu-central-1.compute.internal"
+    },
+    "usage": {
+     "cpu": "800m",
+     "memory": "4Gi"
+    }
+   }
+  ]
+ },
+ "/apis/networking.k8s.io/v1/namespaces/ai-platform/ingresses/ai-platform-litellm": {
+  "status": {
+   "loadBalancer": {
+    "ingress": [
+     {
+      "hostname": "internal-k8s-aiplatform-123.eu-central-1.elb.amazonaws.com"
+     }
+    ]
+   }
+  }
+ }
+}

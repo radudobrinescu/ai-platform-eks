@@ -1,0 +1,71 @@
+{
+ "byTeam": [
+  [
+   "search",
+   0.12
+  ]
+ ],
+ "byUser": [
+  {
+   "models": [
+    {
+     "model": "nova-lite",
+     "spend": 0.0311
+    }
+   ],
+   "requests": 7,
+   "spend": 0.0311,
+   "tokens": 5100,
+   "user": "developer@example.com"
+  }
+ ],
+ "health": {
+  "qwen2-5-3b-instruct": {
+   "rt": 210.0,
+   "status": "healthy"
+  }
+ },
+ "perModel": {
+  "nova-lite": {
+   "errPct": 2.5,
+   "p50": 610,
+   "p95": 900,
+   "provider": "bedrock",
+   "rpm": 3.0,
+   "spend5m": 0.0125,
+   "tps": 40.0
+  },
+  "qwen2-5-3b-instruct": {
+   "errPct": 0.0,
+   "p50": 420,
+   "p95": 1300,
+   "provider": "openai",
+   "rpm": 12.4,
+   "spend5m": 0.0,
+   "tps": 85.2
+  }
+ },
+ "teams": [
+  {
+   "budget": 0.42,
+   "failed": 1,
+   "id": "t1",
+   "keys": 1,
+   "limit": 50.0,
+   "name": "search",
+   "reqsToday": 18,
+   "spendToday": 0.12,
+   "tokens": 9000
+  }
+ ],
+ "trend": [
+  [
+   "2026-11-19",
+   0.3
+  ],
+  [
+   "2026-11-20",
+   0.42
+  ]
+ ]
+}
