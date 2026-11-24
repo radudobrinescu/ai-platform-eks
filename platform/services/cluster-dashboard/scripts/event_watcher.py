@@ -654,71 +654,86 @@ def watch_stuck_resources(conn_factory) -> None:
     custom = client.CustomObjectsApi()
     batch_v1 = client.BatchV1Api()
 
-    while not stop_event.is_set():
-        try:
-            conn = conn_factory()
+    # One connection for all scans, as _watch_loop does; a new one only when
+    # it broke. (Opening one per scan left the previous one to the garbage
+    # collector.)
+    conn = conn_factory()
+    try:
+        while not stop_event.is_set():
+            try:
+                if not _db_alive(conn):
+                    try:
+                        conn.close()
+                    except Exception:
+                        pass
+                    conn = conn_factory()
 
-            # --- VLLMEndpoints (simple vLLM) + LLMDEndpoints (llm-d scale) ---
-            for plural, kind, stuck_fn in (
-                ("vllmendpoints", "VLLMEndpoint", _is_stuck_vllmendpoint),
-                ("llmdendpoints", "LLMDEndpoint", _is_stuck_llmdendpoint),
-                ("llmddisaggendpoints", "LLMDDisaggEndpoint", _is_stuck_llmdendpoint),
-            ):
+                # --- VLLMEndpoints (simple vLLM) + LLMDEndpoints (llm-d scale) ---
+                for plural, kind, stuck_fn in (
+                    ("vllmendpoints", "VLLMEndpoint", _is_stuck_vllmendpoint),
+                    ("llmdendpoints", "LLMDEndpoint", _is_stuck_llmdendpoint),
+                    ("llmddisaggendpoints", "LLMDDisaggEndpoint", _is_stuck_llmdendpoint),
+                ):
+                    try:
+                        items = custom.list_namespaced_custom_object(
+                            group="kro.run", version="v1alpha1",
+                            namespace="inference", plural=plural,
+                        ).get("items", [])
+                    except ApiException as e:
+                        if e.status != 404:
+                            log.warning("list %s: %s", plural, e)
+                        items = []
+                    for ep in items:
+                        if not stuck_fn(ep):
+                            continue
+                        st = ep.get("status") or {}
+                        payload = {
+                            "kind": kind,
+                            "namespace": ep["metadata"].get("namespace", ""),
+                            "name": ep["metadata"]["name"],
+                            "ready": str(st.get("ready", "False")),
+                            "routerHealth": st.get("routerHealth", ""),
+                            "availableReplicas": st.get("availableReplicas", 0),
+                            "model": (ep.get("spec") or {}).get("model", ""),
+                            "age_seconds": int(_resource_age_seconds(ep)),
+                        }
+                        spawn_investigation(conn, batch_v1, "StuckResource", payload)
+
+                # --- AITeams ---
                 try:
-                    items = custom.list_namespaced_custom_object(
+                    teams = custom.list_namespaced_custom_object(
                         group="kro.run", version="v1alpha1",
-                        namespace="inference", plural=plural,
+                        namespace="ai-platform", plural="aiteams",
                     ).get("items", [])
                 except ApiException as e:
                     if e.status != 404:
-                        log.warning("list %s: %s", plural, e)
-                    items = []
-                for ep in items:
-                    if not stuck_fn(ep):
+                        log.warning("list aiteams: %s", e)
+                    teams = []
+                for team in teams:
+                    if not _is_stuck_aiteam(team):
                         continue
-                    st = ep.get("status") or {}
                     payload = {
-                        "kind": kind,
-                        "namespace": ep["metadata"].get("namespace", ""),
-                        "name": ep["metadata"]["name"],
-                        "ready": str(st.get("ready", "False")),
-                        "routerHealth": st.get("routerHealth", ""),
-                        "availableReplicas": st.get("availableReplicas", 0),
-                        "model": (ep.get("spec") or {}).get("model", ""),
-                        "age_seconds": int(_resource_age_seconds(ep)),
+                        "kind": "AITeam",
+                        "namespace": team["metadata"].get("namespace", ""),
+                        "name": team["metadata"]["name"],
+                        "phase": (team.get("status") or {}).get("phase", "Pending"),
+                        "message": (team.get("status") or {}).get("message", ""),
+                        "age_seconds": int(_resource_age_seconds(team)),
                     }
                     spawn_investigation(conn, batch_v1, "StuckResource", payload)
 
-            # --- AITeams ---
-            try:
-                teams = custom.list_namespaced_custom_object(
-                    group="kro.run", version="v1alpha1",
-                    namespace="ai-platform", plural="aiteams",
-                ).get("items", [])
-            except ApiException as e:
-                if e.status != 404:
-                    log.warning("list aiteams: %s", e)
-                teams = []
-            for team in teams:
-                if not _is_stuck_aiteam(team):
-                    continue
-                payload = {
-                    "kind": "AITeam",
-                    "namespace": team["metadata"].get("namespace", ""),
-                    "name": team["metadata"]["name"],
-                    "phase": (team.get("status") or {}).get("phase", "Pending"),
-                    "message": (team.get("status") or {}).get("message", ""),
-                    "age_seconds": int(_resource_age_seconds(team)),
-                }
-                spawn_investigation(conn, batch_v1, "StuckResource", payload)
+            except Exception as e:
+                log.warning("stuck-resource scan error: %s", e)
 
-        except Exception as e:
-            log.warning("stuck-resource scan error: %s", e)
-
-        for _ in range(STUCK_RESOURCE_POLL_INTERVAL):
-            if stop_event.is_set():
-                return
-            time.sleep(1)
+            for _ in range(STUCK_RESOURCE_POLL_INTERVAL):
+                if stop_event.is_set():
+                    return
+                time.sleep(1)
+    finally:
+        try:
+            conn.close()
+        except Exception:
+            pass
 
 
 # ---------------------------------------------------------------------------
