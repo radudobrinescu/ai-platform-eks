@@ -9,6 +9,7 @@ Ported from v1 tests/test_e2e_runner.py and extended for v2:
   * --dry-run works offline for both modes and both profiles.
 """
 
+import json
 import os
 import re
 import subprocess
@@ -36,9 +37,9 @@ class TestRegistry:
         assert want, "could not parse domains from COMPATIBILITY.md"
         assert want <= set(checks.DOMAINS), f"domains without a check: {want - set(checks.DOMAINS)}"
 
-    def test_twenty_two_unique_checks(self):
+    def test_twenty_four_unique_checks(self):
         names = [n for _, n, _, _ in checks.CHECKS]
-        assert len(names) == 22 and len(set(names)) == 22
+        assert len(names) == 24 and len(set(names)) == 24
         assert all(callable(fn) for _, _, fn, _ in checks.CHECKS)
 
     def test_gpu_check_runs_before_its_dependents(self):
@@ -917,3 +918,84 @@ def test_keda_check_fails_and_says_so_when_capacity_never_came(monkeypatch):
     with pytest.raises(TimeoutError) as e:
         checks._keda_scale(Ctx, "qwen", "qwen-llmd")
     assert "the cloud had no GPU capacity" in str(e.value) and "gpu-inference-hp572" in str(e.value)
+
+
+# --------------------------------------------------------------------------- #
+# Dashboard data sources and Prometheus scrape targets
+# --------------------------------------------------------------------------- #
+def test_dashboard_problems_names_every_source_that_is_not_ok():
+    import checks
+    ok = [{"name": "kubernetes", "state": "ok"}, {"name": "litellm-api", "state": "ok"}]
+    sections = {"nodes": [{"name": "n"}], "nodePools": [{"name": "default"}]}
+    assert checks.dashboard_problems(200, ok, sections) == []
+    bad = [{"name": "kubernetes", "state": "ok"},
+           {"name": "litellm-metrics", "state": "error", "lastError": "401 from http://10.0.0.1:4000/metrics"},
+           {"name": "dcgm", "state": "stale", "detail": "last success 600 s ago"}]
+    got = checks.dashboard_problems(503, bad, {"nodes": [], "nodePools": []})
+    assert got == ["/api/v1/health/ready answered HTTP 503",
+                   "source litellm-metrics is error (401 from http://10.0.0.1:4000/metrics)",
+                   "source dcgm is stale (last success 600 s ago)",
+                   "the snapshot has no nodes", "the snapshot has no node pools"]
+
+
+def test_scrape_problems_lists_targets_that_are_down_and_a_missing_litellm_job():
+    import checks
+    up = {"labels": {"job": "litellm"}, "health": "up", "scrapeUrl": "http://litellm:4000/metrics"}
+    assert checks.scrape_problems([up]) == []
+    down = {"labels": {"job": "litellm"}, "health": "down", "scrapeUrl": "http://litellm:4000/metrics",
+            "lastError": "server returned HTTP status 401 Unauthorized"}
+    assert checks.scrape_problems([down]) == [
+        "litellm http://litellm:4000/metrics is down (server returned HTTP status 401 Unauthorized)"]
+    vllm = {"labels": {"job": "llmd-vllm"}, "health": "up", "scrapeUrl": "http://10.0.0.2:8000/metrics"}
+    assert checks.scrape_problems([vllm]) == ["no target for the job litellm (the request rate that wakes a pool from zero)"]
+
+
+def _fake_http(monkeypatch, answers):
+    import checks
+
+    class PF:
+        base = "http://pf"
+        def __init__(self, *a): self.args = a
+        def __enter__(self): return self
+        def __exit__(self, *a): return False
+    monkeypatch.setattr(checks, "PortForward", PF)
+    monkeypatch.setattr(checks, "http", lambda method, url, **k: answers[url[len("http://pf"):]])
+    monkeypatch.setattr(checks, "wait_for", lambda desc, fn, timeout, interval=15: fn() or (_ for _ in ()).throw(
+        TimeoutError(f"timed out after {timeout}s waiting for {desc}")))
+    return checks
+
+
+def test_dashboard_sources_check_passes_on_a_healthy_dashboard_and_says_why_it_fails(monkeypatch):
+    sources = [{"name": n, "state": "ok"} for n in ("kubernetes", "litellm-api", "litellm-metrics", "dcgm")]
+    snapshot = {"version": 3, "sections": {"nodes": [{}, {}], "nodePools": [{}, {}, {}]}}
+    checks = _fake_http(monkeypatch, {"/api/v1/health/ready": (200, "{}"), "/api/v1/sources": (200, json.dumps(sources)),
+                                      "/api/v1/snapshot": (200, json.dumps(snapshot))})
+    assert checks.chk_dashboard_sources(None) == (True, "4 data sources ok; snapshot has 2 nodes and 3 node pools")
+    sources[2] = {"name": "litellm-metrics", "state": "error", "lastError": "no viewer key yet"}
+    checks = _fake_http(monkeypatch, {"/api/v1/health/ready": (200, "{}"), "/api/v1/sources": (200, json.dumps(sources)),
+                                      "/api/v1/snapshot": (200, json.dumps(snapshot))})
+    ok, detail = checks.chk_dashboard_sources(None)
+    assert not ok and detail == "source litellm-metrics is error (no viewer key yet)"
+    checks = _fake_http(monkeypatch, {"/api/v1/health/ready": (404, ""), "/api/v1/sources": (404, "not found"),
+                                      "/api/v1/snapshot": (404, "not found")})
+    ok, detail = checks.chk_dashboard_sources(None)
+    assert not ok and "/api/v1/sources answered HTTP 404" in detail
+
+
+def test_scrape_targets_check(monkeypatch):
+    up = {"status": "success", "data": {"activeTargets": [
+        {"labels": {"job": "litellm"}, "health": "up", "scrapeUrl": "u"},
+        {"labels": {"job": "llmd-vllm"}, "health": "up", "scrapeUrl": "v"}]}}
+    checks = _fake_http(monkeypatch, {"/api/v1/targets": (200, json.dumps(up))})
+    assert checks.chk_scrape_targets(None) == (True, "2 scrape targets up (litellm, llmd-vllm)")
+    up["data"]["activeTargets"][0].update(health="down", lastError="401")
+    checks = _fake_http(monkeypatch, {"/api/v1/targets": (200, json.dumps(up))})
+    ok, detail = checks.chk_scrape_targets(None)
+    assert not ok and detail == "litellm u is down (401)"
+
+
+def test_the_two_checks_are_registered_and_the_dashboard_one_runs_last():
+    import checks
+    names = [n for _d, n, _f, _w in checks.CHECKS]
+    assert names[-1] == "cluster-dashboard-sources-ok", "last: its LiteLLM key comes from a job that runs every 15 minutes"
+    assert names.index("autoscaling-scrape-targets-up") > names.index("litellm-ready")
