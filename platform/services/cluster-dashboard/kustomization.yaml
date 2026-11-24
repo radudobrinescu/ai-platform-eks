@@ -52,6 +52,16 @@ configMapGenerator:
       - dashboard__prom.py=scripts/dashboard/prom.py
       - dashboard__snapshot.py=scripts/dashboard/snapshot.py
       - dashboard__sources.py=scripts/dashboard/sources.py
+      # The modules of the shared `pha` package that the dashboard imports
+      # (approval SQL, the Remediator Job spec, logging). They are in this
+      # hashed ConfigMap too, and the dashboard mounts them from here, so a
+      # change to one restarts the dashboard like any other change to its
+      # code. tests/test_dash_packaging.py fails if an imported module is
+      # missing from this list.
+      - pha____init__.py=scripts/pha/__init__.py
+      - pha__db.py=scripts/pha/db.py
+      - pha__jobs.py=scripts/pha/jobs.py
+      - pha__log.py=scripts/pha/log.py
   # UI fonts (SIL Open Font License, see fonts/README.md), served by the
   # backend at /fonts/ so the page makes no request outside the dashboard.
   # Binary files land in binaryData.
@@ -73,6 +83,8 @@ configMapGenerator:
   # reference this ConfigMap by HARDCODED name) → keep the name stable, no hash.
   # Trade-off: the watcher doesn't auto-restart on script changes — use
   # `kubectl rollout restart deployment event-watcher -n ai-platform`.
+  # (The dashboard does restart: it takes its pha modules from the hashed
+  # cluster-dashboard-backend ConfigMap above.)
   - name: platform-health-agent-scripts
     namespace: ai-platform
     options:
@@ -88,7 +100,8 @@ configMapGenerator:
       # Shared Python package `pha`: ConfigMap keys cannot contain "/", so each
       # file is stored as <package>__<file> and the volumes that import it
       # project the keys back to pha/<file> (see `pha-lib` volumes). Add new
-      # pha modules here AND to those volumes; tests/test_dash_packaging.py
+      # pha modules here AND to those volumes (and, if the dashboard imports
+      # them, to cluster-dashboard-backend); tests/test_dash_packaging.py
       # fails if one is missed.
       - pha____init__.py=scripts/pha/__init__.py
       - pha__db.py=scripts/pha/db.py

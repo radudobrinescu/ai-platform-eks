@@ -20,7 +20,8 @@ UNAVAILABLE = (503, {"error": "approvals db unavailable"})
 class Approvals:
     """`connect()` opens an agent-database connection (None when psycopg or the
     credentials are missing); `create_job(spec)` creates a Job or raises
-    ApiError; `remediator_job(id)` builds the Remediator Job spec."""
+    (ApiError for an API status, anything else for a failed connection);
+    `remediator_job(id)` builds the Remediator Job spec."""
 
     def __init__(self, settings: Settings, connect: Callable | None,
                  create_job: Callable[[dict], object], remediator_job: Callable[[str], dict],
@@ -60,8 +61,8 @@ class Approvals:
         """Start the Remediator Job for an investigation awaiting approval.
 
         The row is claimed (awaiting_approval -> remediating) before the Job is
-        created, so two concurrent approvals cannot both start a Job; a failed
-        Job create releases the claim so the operator can retry."""
+        created, so two concurrent approvals cannot both start a Job; any
+        failure to create the Job releases the claim so the operator can retry."""
         if not self.available:
             return UNAVAILABLE
         with self.connect() as conn, conn.cursor(row_factory=pha_db.dict_rows()) as cur:
@@ -80,18 +81,29 @@ class Approvals:
                 return 429, {"error": f"daily remediation budget exceeded ({today}/{self.s.max_remediations_per_day})"}
             if not pha_db.claim_for_remediation(cur, inv_id, approver):
                 return 409, {"error": "already approved"}
-            try:
-                self.create_job(self.remediator_job(inv_id))
-            except ApiError as e:
-                if e.status != 409:            # 409: the Job exists, so it is running
-                    pha_db.release_claim(cur, inv_id)
-                    log.warning("approval", extra={"investigation": inv_id, "action": "approve",
-                                                   "approver": approver, "result": f"job create failed: {e}"})
-                    return 502, {"error": "job create failed", "status": e.status, "body": str(e)[:500]}
+            failure = self._start_job(inv_id)
+            if failure is not None:
+                api_status, reason = failure
+                pha_db.release_claim(cur, inv_id)
+                log.warning("approval", extra={"investigation": inv_id, "action": "approve",
+                                               "approver": approver, "result": f"job create failed: {reason}"})
+                return 502, {"error": "job create failed", "status": api_status, "body": reason[:500]}
             pha_db.count_remediation(cur)
         log.info("approval", extra={"investigation": inv_id, "action": "approve", "approver": approver,
                                     "result": "remediating"})
         return 200, {"ok": True, "investigation_id": inv_id, "status": "remediating"}
+
+    def _start_job(self, inv_id: str) -> tuple[int | None, str] | None:
+        """Create the Remediator Job. None when it is running (created now, or
+        it exists already); otherwise (API status or None, reason), so the
+        caller can release its claim whatever went wrong."""
+        try:
+            self.create_job(self.remediator_job(inv_id))
+        except ApiError as e:
+            return None if e.status == 409 else (e.status, str(e))      # 409: the Job exists, so it is running
+        except Exception as e:  # no API status: connection refused, timeout, retries exhausted, bad Job spec
+            return None, f"{type(e).__name__}: {e}"
+        return None
 
     def dismiss(self, inv_id: str, approver: str) -> tuple[int, dict]:
         """Dismiss an investigation awaiting approval, or an in-flight one whose

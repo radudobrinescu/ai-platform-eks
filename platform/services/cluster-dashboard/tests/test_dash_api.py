@@ -19,7 +19,7 @@ def server(tmp_path, monkeypatch):
     app = fixture_app()
     app.derive_once()
     srv = api.Server(("127.0.0.1", 0), api.make_handler(app, str(tmp_path)))
-    threading.Thread(target=srv.serve_forever, daemon=True).start()
+    threading.Thread(target=srv.serve_forever, kwargs={"poll_interval": 0.05}, daemon=True).start()
     yield app, srv.server_address[1]
     app.stop.set()
     srv.shutdown()
@@ -115,6 +115,103 @@ def test_pre_rebuild_investigation_paths_are_gone(server):
     assert call(port, "DELETE", "/investigations", hdr)[0] == 404
 
 
+# --- request bodies on keep-alive connections ---------------------------------------
+
+def _exchange(conn, method, path, body=None, headers=None):
+    conn.request(method, path, body=body, headers=headers or {})
+    r = conn.getresponse()
+    raw = r.read()
+    return r, (json.loads(raw) if raw and r.getheader("Content-Type") == "application/json" else raw)
+
+
+@pytest.mark.parametrize("method,path,body,expected", [
+    ("POST", f"/api/v1/investigations/{INV}/approve", b'{"a":1}', 403),      # refused: no X-Requested-With
+    ("POST", f"/api/v1/investigations/{INV}/approve", b'{"reason": "looks right"}', 403),
+    ("DELETE", "/api/v1/investigations", b"x" * 4096, 403),
+    ("GET", "/api/v1/sources", b"ignored", 200),
+    ("PUT", "/api/v1/sources", b"data", 501),
+], ids=["post-json", "post-json-with-spaces", "delete-4k", "get", "unsupported-method"])
+def test_request_body_is_consumed_before_the_next_request(server, method, path, body, expected):
+    """oauth2-proxy reuses its connections to the dashboard. Body bytes left
+    unread would be parsed as the start of the next request on the connection,
+    which may be another user's."""
+    _app, port = server
+    c = http.client.HTTPConnection("127.0.0.1", port, timeout=5)
+    r, _ = _exchange(c, method, path, body)
+    assert r.status == expected
+    if expected == 501:               # the standard library closes after an unsupported method
+        c.close()
+    r, sources = _exchange(c, "GET", "/api/v1/sources")
+    assert r.status == 200 and sources[0]["name"] == "kubernetes"
+    c.close()
+
+
+def test_two_mutations_with_bodies_on_one_connection(server, monkeypatch):
+    app, port = server
+    from dashboard import config
+    monkeypatch.setattr(app, "s", config.load({"DASHBOARD_AUTH_REQUIRED": "false"}))
+    seen = []
+    monkeypatch.setattr(app.approvals, "dismiss", lambda i, who: seen.append(i) or (200, {"ok": True}))
+    c = http.client.HTTPConnection("127.0.0.1", port, timeout=5)
+    for _ in range(2):
+        r, body = _exchange(c, "POST", f"/api/v1/investigations/{INV}/dismiss", b'{"note":"x"}',
+                            {"X-Requested-With": "d", "Content-Type": "application/json"})
+        assert (r.status, body) == (200, {"ok": True})
+    c.close()
+    assert seen == [INV, INV]
+
+
+@pytest.mark.parametrize("headers,status", [
+    ({"Content-Length": str(api.MAX_BODY_BYTES + 1)}, 413),
+    ({"Content-Length": "10000000000"}, 413),
+    ({"Content-Length": "-5"}, 400),
+    ({"Content-Length": "many"}, 400),
+    ({"Transfer-Encoding": "chunked"}, 411),
+], ids=["over-limit", "absurd", "negative", "not-a-number", "chunked"])
+def test_unreadable_body_is_refused_and_the_connection_closed(server, monkeypatch, headers, status):
+    """A body that will not be read (too large, no usable length) must not
+    stay on a reusable connection: the request is refused, the mutation does
+    not run and the server closes the connection."""
+    app, port = server
+    monkeypatch.setattr(app.approvals, "dismiss", lambda *a: pytest.fail("must not run"))
+    c = http.client.HTTPConnection("127.0.0.1", port, timeout=5)
+    c.putrequest("POST", f"/api/v1/investigations/{INV}/dismiss")
+    for k, v in {"X-Requested-With": "d", **headers}.items():
+        c.putheader(k, v)
+    c.endheaders()                    # the body is never sent: the server must answer without waiting for it
+    r = c.getresponse()
+    assert r.status == status and r.getheader("Connection") == "close" and "error" in json.loads(r.read())
+    assert c.sock is None, "http.client drops the socket when the server says close"
+
+
+def test_body_cut_short_closes_the_connection(server):
+    import socket
+    _app, port = server
+    with socket.create_connection(("127.0.0.1", port), timeout=5) as sock:
+        sock.sendall(b"POST /api/v1/investigations/x/approve HTTP/1.1\r\nHost: x\r\nContent-Length: 50\r\n\r\nshort")
+        sock.shutdown(socket.SHUT_WR)
+        assert sock.recv(4096) == b"", "no response to a request that never completed"
+
+
+def test_body_length_rules():
+    from email.message import Message
+
+    def length(**headers):
+        m = Message()
+        for k, v in headers.items():
+            for one in v if isinstance(v, list) else [v]:
+                m[k.replace("_", "-")] = one
+        return api.body_length(m)
+
+    assert length() == (0, None)
+    assert length(Content_Length="0") == (0, None)
+    assert length(Content_Length=" 12 ") == (12, None)
+    assert length(Content_Length=str(api.MAX_BODY_BYTES)) == (api.MAX_BODY_BYTES, None)
+    assert length(Content_Length=["5", "6"])[1][0] == 400, "two lengths: which one is it?"
+    assert length(Content_Length="\u00b2")[1][0] == 400, "a digit, but not a number"
+    assert length(Content_Length="5", Transfer_Encoding="chunked")[1][0] == 411
+
+
 # --- stream ------------------------------------------------------------------------
 
 def _read_events(resp, n):
@@ -178,7 +275,7 @@ def font_server(tmp_path):
     (tmp_path / "secret.woff2").write_bytes(b"outside")
     app = fixture_app()
     srv = api.Server(("127.0.0.1", 0), api.make_handler(app, str(html), str(fonts)))
-    threading.Thread(target=srv.serve_forever, daemon=True).start()
+    threading.Thread(target=srv.serve_forever, kwargs={"poll_interval": 0.05}, daemon=True).start()
     yield srv.server_address[1]
     app.stop.set()
     srv.shutdown()

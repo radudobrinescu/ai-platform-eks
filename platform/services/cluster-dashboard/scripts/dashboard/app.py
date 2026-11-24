@@ -19,14 +19,18 @@ from dashboard.config import Settings
 from dashboard.deps import Deps
 from dashboard.k8s import (ApiError, KubeClient, WatchCache, project_argo, project_configmap, project_cr,
                            project_event, project_ingress, project_karpenter, project_node, project_pod)
-from dashboard.models import SERVING_KINDS
+from dashboard.models import SERVING_KINDS, endpoint_records, log_tail_targets, node_records, pod_records
 from dashboard.snapshot import Store
-from dashboard.sources import PolledSource, Scheduler, SourceStatus
+from dashboard.sources import PolledSource, Scheduler, SourceStatus, SourceUnavailable
 
 log = logging.getLogger("dashboard.app")
 
 KUBE_STALE_AFTER = 360       # s; a quiet watch can go 300 s without an event
 KUBE_LIVENESS_LIMIT = 600    # s of stale or failing Kubernetes data before liveness fails
+# Sources whose stalled loop must not fail liveness. Live prices are optional
+# (the price tables are used without them) and come from outside the cluster
+# through an SDK with its own credential lookups and retries.
+OPTIONAL_SOURCES = frozenset({"pricing"})
 EVENT_RETENTION = 3600       # s
 EVENT_MAX = 500
 DERIVE_MIN_GAP = 1.0         # s between recomputes
@@ -79,6 +83,8 @@ class App:
         self._inputs_lock = threading.Lock()
         self._yaml_load = yaml_load
         self._derive_tick = clock()
+        self._logged_notes: list[str] = []
+        self._log_turn = 0           # where the next log-tail run starts in the list of shown pods
         self.caches = {name: WatchCache(name, path, proj, query=q, on_change=lambda _k: self.dirty.set(),
                                         retention_s=ret, max_items=mx, clock=clock)
                        for name, path, proj, q, ret, mx in cache_specs(settings)}
@@ -91,6 +97,7 @@ class App:
         self.litellm_api = litellm.LiteLLMApi(settings.litellm_api_url, self.viewer_key,
                                               lambda url, key, where: self.litellm_get(url, key, where))
         self.traffic = litellm.Traffic()
+        self.dcgm_fetch = prom.fetch_text            # replaced in tests
         self._live_prices = None
         if boto3_client is not None:
             from dashboard.pricing import LivePrices
@@ -141,7 +148,7 @@ class App:
         ]
         out = []
         for name, interval, fn, stale, disabled in defs:
-            src = PolledSource(name, interval, fn, stale, c)
+            src = PolledSource(name, interval, fn, stale, c, liveness=name not in OPTIONAL_SOURCES)
             if disabled:
                 src.tracker.disable(disabled)
             out.append(src)
@@ -170,14 +177,26 @@ class App:
         self.set_input("litellm_traffic", figures)
         return detail
 
-    def _run_dcgm(self):
+    def _dcgm_exporter_urls(self) -> list[str]:
+        """Metrics URL of every Running DCGM exporter pod (one per GPU node)."""
         key, _, val = self.s.dcgm_pod_selector.partition("=")
-        urls = [f"http://{p['status']['podIP']}:{self.s.dcgm_port}/metrics"
+        return [f"http://{p['status']['podIP']}:{self.s.dcgm_port}/metrics"
                 for p in self.caches["pods"].items()
                 if p["metadata"].get("namespace") == self.s.dcgm_namespace
                 and (p["metadata"].get("labels") or {}).get(key) == val
                 and p["status"].get("phase") == "Running" and p["status"].get("podIP")]
-        util, errors = ddcgm.scrape(urls, self.s.dcgm_url)
+
+    def _run_dcgm(self):
+        if not (self.caches["nodes"].synced and self.caches["pods"].synced):
+            raise SourceUnavailable("waiting for the first node and pod lists")
+        urls = self._dcgm_exporter_urls()
+        nodes, _ = node_records(self.caches["nodes"].items())
+        if not urls and not any(n["gpu"] > 0 for n in nodes):
+            # GPU pools scaled to zero (the normal idle state): no exporter
+            # pods and nothing behind the exporter Service. An empty result.
+            self.set_input("dcgm", {})
+            return "no GPU nodes"
+        util, errors = ddcgm.scrape(urls, self.s.dcgm_url, self.dcgm_fetch)
         if errors and not util:
             raise RuntimeError("; ".join(errors)[:300])
         self.set_input("dcgm", util)
@@ -193,35 +212,59 @@ class App:
         if self._live_prices is None:
             return "static price table"
         from dashboard.cost import detect_region, priced_instances
-        from dashboard.models import node_records
         nodes, _ = node_records(self.caches["nodes"].items())
         region = detect_region(nodes, self.s.aws_region)
-        failed = self._live_prices.refresh(region, priced_instances(nodes))
-        self.set_input("live_prices", {region: self._live_prices.get(region)})
-        return f"no live price for: {', '.join(failed)}" if failed else None
+        instances = priced_instances(nodes)
+        failed = self._live_prices.refresh(region, instances)
+        prices = self._live_prices.get(region)
+        self.set_input("live_prices", {region: prices})
+        # Not reached before the run's time budget was used up (see LivePrices).
+        waiting = [i for i in instances if i not in prices and i not in failed] if region else []
+        problems = [f"{what}: {', '.join(names)}"
+                    for what, names in (("no live price for", failed), ("not looked up yet", waiting)) if names]
+        return "; ".join(problems) or None
 
     def _run_approvals(self):
         self.set_input("approvals", (True, self.approvals.pending_count()))
 
     def _run_log_tails(self):
-        """Log tails for serving pods that are Running but not Ready (model
-        still loading), at most LOG_TAILS_PER_RUN per run."""
-        not_running = {ep["metadata"]["name"] for _p, mode in SERVING_KINDS for ep in self.caches[mode].items()
-                       if str((ep.get("status") or {}).get("ready", "False")) != "True"}
-        logs, fetched = {}, 0
-        for p in self.caches["pods"].items():
-            meta, st = p["metadata"], p["status"]
-            if meta.get("namespace") != "inference" or st.get("phase") != "Running":
-                continue
-            if not any(meta["name"].startswith(n + "-") for n in not_running) or "-register" in meta["name"]:
-                continue
-            cs = st.get("containerStatuses") or []
-            if not cs or any(c.get("ready") for c in cs) or fetched >= LOG_TAILS_PER_RUN:
-                continue
-            logs[meta["name"]] = self.kube.get_text(f"/api/v1/namespaces/inference/pods/{meta['name']}/log",
-                                                    {"tailLines": "14", "container": cs[0]["name"]})
-            fetched += 1
-        self.set_input("logs", logs)
+        """Log tails for the pods the deploy diagnostics show while their
+        model loads (models.log_tail_targets). At most LOG_TAILS_PER_RUN are
+        fetched per run, the shown pods taking turns when there are more; a
+        tail fetched earlier is kept while its pod is still shown."""
+        raw = {p["metadata"]["name"]: p for p in self.caches["pods"].items()
+               if p["metadata"].get("namespace") == "inference"}
+        endpoints = endpoint_records({mode: self.caches[mode].items() for _p, mode in SERVING_KINDS})
+        targets = log_tail_targets(endpoints, pod_records(list(raw.values())),
+                                   lambda name: (raw.get(name) or {}).get("status"))
+        start = self._log_turn % len(targets) if targets else 0
+        chosen = (targets[start:] + targets[:start])[:LOG_TAILS_PER_RUN]
+        self._log_turn = start + len(chosen)
+        fetched, no_log, errors = self._fetch_log_tails(chosen)
+        shown = {pod for pod, _container in targets}
+        kept = {pod: text for pod, text in (self.inputs().get("logs") or {}).items()
+                if pod in shown and pod not in no_log}
+        self.set_input("logs", {**kept, **fetched})
+        if errors and not fetched:
+            raise RuntimeError("; ".join(errors)[:300])
+        return ("some log tails failed: " + "; ".join(errors))[:300] if errors else None
+
+    def _fetch_log_tails(self, targets: list[tuple[str, str]]) -> tuple[dict[str, str], set[str], list[str]]:
+        """({pod: tail}, pods that have no log to read, errors). One pod's
+        failure never stops the others."""
+        fetched, no_log, errors = {}, set(), []
+        for pod, container in targets:
+            try:
+                fetched[pod] = self.kube.get_text(f"/api/v1/namespaces/inference/pods/{pod}/log",
+                                                  {"tailLines": "14", "container": container})
+            except ApiError as e:
+                if e.status in (400, 404):       # container still waiting to start, or the pod is gone
+                    no_log.add(pod)
+                else:
+                    errors.append(f"{pod}: {e}")
+            except Exception as e:  # connection error or timeout for this pod; reported in the source status
+                errors.append(f"{pod}: {e}")
+        return fetched, no_log, errors
 
     # -- status and health -----------------------------------------------------------
     def kube_status(self) -> SourceStatus:
@@ -240,6 +283,12 @@ class App:
             detail = "no recent data: " + ", ".join(stale)
         return SourceStatus("kubernetes", state, oldest, "; ".join(errors)[:300] or None, detail, 0,
                             KUBE_STALE_AFTER)
+
+    def _cache_readable(self, name: str) -> bool:
+        """The watch `name` has listed and is not failing now (a kind that is
+        not installed counts: its list is known to be empty)."""
+        cache = self.caches[name]
+        return cache.synced and cache.error is None
 
     def statuses(self) -> list[SourceStatus]:
         return [self.kube_status()] + [s.tracker.status() for s in self.sources]
@@ -269,17 +318,25 @@ class App:
     def derive_once(self) -> None:
         self._derive_tick = self._clock()
         sections, notes = derive.compute(self.view(), self.inputs(), self.s, self._yaml_load)
+        if notes != self._logged_notes:      # once per change, not on every recompute
+            if notes:
+                log.warning("derive.notes", extra={"notes": notes})
+            self._logged_notes = notes
         statuses = self.statuses()
         by = {st.name: st.state for st in statuses}
-        kube_ok = by["kubernetes"] in ("ok", "stale")
         sections["status"] = {
             "sources": [st.to_dict() for st in statuses],
             "degraded": self.deps.degraded(),
             "notes": notes,
             # Pre-rebuild `sources` booleans, kept for /data.json readers.
-            "legacy": {"litellm": by["litellm-api"] in ("ok", "stale"), "bedrock": kube_ok,
+            # The Kubernetes-backed ones follow their own watch, not the
+            # combined Kubernetes status: one unrelated failing watch must not
+            # hide the Argo CD panel. Without the BedrockModel CRD, Bedrock
+            # models still come from litellm-config.
+            "legacy": {"litellm": by["litellm-api"] in ("ok", "stale"),
+                       "bedrock": self._cache_readable("bedrockmodels"),
                        "dcgm": by["dcgm"] in ("ok", "stale"),
-                       "argocd": kube_ok and self.caches["argocd"].installed,
+                       "argocd": self._cache_readable("argocd") and self.caches["argocd"].installed,
                        "autoscaling": by["autoscaling"] in ("ok", "stale")},
         }
         for name, data in sections.items():

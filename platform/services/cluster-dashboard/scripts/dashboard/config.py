@@ -22,7 +22,6 @@ class Settings:
     port: int = 8080
     html_dir: str = "/html"
     fonts_dir: str = "/fonts"
-    pydeps_dir: str = "/pydeps"
 
     cluster_name: str = ""
     aws_region: str = ""

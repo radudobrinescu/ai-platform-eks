@@ -2,7 +2,7 @@
 source inputs. Pure: the same view and inputs always give the same sections,
 which is what the /data.json golden test checks.
 
-`view` maps a cache name to its projected objects (see app.CACHES);
+`view` maps a cache name to its projected objects (see app.cache_specs);
 `inputs` holds the polled sources' latest results (missing keys mean "no data
 yet").
 """
@@ -19,7 +19,9 @@ def _first(view: dict, name: str) -> dict:
 
 def compute(view: dict, inputs: dict, settings, yaml_load=None) -> tuple[dict, list[str]]:
     """(sections, notes). `notes` are data problems worth surfacing (for
-    example a malformed price ConfigMap); they never stop the computation."""
+    example an invalid price ConfigMap, replaced by the shipped table); they
+    never stop the computation. The app publishes them in the status section
+    and logs them when they change."""
     notes = []
     nodes, alerts = m.node_records(view.get("nodes", []))
     m.apply_usage(nodes, inputs.get("usage"))

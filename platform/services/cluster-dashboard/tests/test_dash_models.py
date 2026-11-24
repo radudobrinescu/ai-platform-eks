@@ -4,6 +4,7 @@ diagnostics event picking, links, quantities."""
 import pytest
 
 from dashboard import config, dcgm, models, prom
+from dashboard.k8s import project_argo
 
 
 def test_parse_text_handles_labels_comments_and_filters():
@@ -202,3 +203,20 @@ def test_compute_publishes_node_pools_and_claims_and_copes_without_karpenter():
     assert [c["name"] for c in sections["nodeClaims"]] == ["a"]
     sections, _ = derive.compute({}, {}, settings)            # Karpenter not installed: the caches stay empty
     assert sections["nodePools"] == [] and sections["nodeClaims"] == []
+
+
+@pytest.mark.parametrize("app", [
+    {"metadata": {"name": "new-app"}},                                        # just created: no status yet
+    {"metadata": {"name": "new-app"}, "status": {}},
+    {"metadata": {"name": "new-app"}, "status": {"sync": None, "health": {}}},
+    {"metadata": {"name": "new-app"}, "status": {"sync": {"status": None}, "health": {"status": ""}}},
+])
+def test_argocd_app_without_status_shows_a_question_mark(app):
+    """Never None: the UI prints the values as they are ("null · null")."""
+    assert models.argocd_records([project_argo(app)]) == [{"name": "new-app", "sync": "?", "health": "?"}]
+    assert models.argocd_records([app]) == [{"name": "new-app", "sync": "?", "health": "?"}]
+
+
+def test_argocd_records_keep_reported_status():
+    app = {"metadata": {"name": "litellm"}, "status": {"sync": {"status": "OutOfSync"}, "health": {"status": "Degraded"}}}
+    assert models.argocd_records([project_argo(app)]) == [{"name": "litellm", "sync": "OutOfSync", "health": "Degraded"}]

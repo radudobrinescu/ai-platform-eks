@@ -5,6 +5,7 @@ Pure functions; the AWS Price List lookup is in dashboard.pricing.
 from __future__ import annotations
 
 import json
+import math
 
 # On-demand $/hr (Linux, shared tenancy) by region and instance type. Ships with
 # eu-central-1 (the reference deployment). Other regions come from the optional
@@ -27,14 +28,50 @@ SPOT_FACTOR = 0.35        # rough spot discount vs on-demand; real spot prices v
 HOURS_PER_MONTH = 730
 
 
+class InvalidPriceTable(ValueError):
+    """The operator price table is valid JSON but not {region: {instance: $/hr}}."""
+
+
+def _price(region: str, instance: str, value) -> float:
+    """One table entry as $/hr. InvalidPriceTable unless it is a finite
+    number >= 0 (a numeric string is accepted, as before the shape was checked)."""
+    where = f"{region}/{instance}"
+    if isinstance(value, bool) or not isinstance(value, (int, float, str)):
+        raise InvalidPriceTable(f"{where}: price must be a number, got {type(value).__name__}")
+    try:
+        price = float(value)
+    except ValueError:
+        raise InvalidPriceTable(f"{where}: price must be a number, got {value[:40]!r}") from None
+    if not math.isfinite(price) or price < 0:
+        raise InvalidPriceTable(f"{where}: price must be a finite number >= 0, got {price}")
+    return price
+
+
+def parse_price_table(prices_json: str | None) -> dict[str, dict[str, float]]:
+    """The operator table from the ConfigMap (data['prices.json'] =
+    {"<region>": {"<instance>": usd_per_hour}}); {} when there is none.
+    Raises ValueError: json.JSONDecodeError for malformed JSON,
+    InvalidPriceTable for JSON of any other shape."""
+    if not prices_json:
+        return {}
+    doc = json.loads(prices_json)          # json.JSONDecodeError is a ValueError
+    if not isinstance(doc, dict):
+        raise InvalidPriceTable(f"expected an object of regions, got {type(doc).__name__}")
+    out = {}
+    for region, table in doc.items():
+        if not isinstance(table, dict):
+            raise InvalidPriceTable(f"{region}: expected an object of instance prices, got {type(table).__name__}")
+        out[region] = {instance: _price(region, instance, v) for instance, v in table.items()}
+    return out
+
+
 def merge_prices(prices_json: str | None) -> dict:
-    """Shipped defaults plus the operator table from the ConfigMap
-    (data['prices.json'] = {"<region>": {"<instance>": usd_per_hour}}).
-    Raises ValueError on malformed JSON so the caller can report it."""
-    merged = {r: dict(v) for r, v in DEFAULT_PRICES_BY_REGION.items()}
-    for region, table in (json.loads(prices_json) if prices_json else {}).items():
-        merged.setdefault(region, {}).update({k: float(v) for k, v in table.items()})
-    return merged
+    """Shipped defaults plus the operator table from the ConfigMap; an
+    operator price wins. Raises ValueError when the table is not valid (see
+    parse_price_table) so the caller can report it and use the defaults."""
+    operator = parse_price_table(prices_json)
+    regions = dict.fromkeys((*DEFAULT_PRICES_BY_REGION, *operator))
+    return {region: {**DEFAULT_PRICES_BY_REGION.get(region, {}), **operator.get(region, {})} for region in regions}
 
 
 def detect_region(nodes: list[dict], fallback: str = "") -> str:
