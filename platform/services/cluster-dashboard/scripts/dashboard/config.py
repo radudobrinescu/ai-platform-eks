@@ -21,6 +21,7 @@ def _int(env: dict, name: str, default: int) -> int:
 class Settings:
     port: int = 8080
     html_dir: str = "/html"
+    fonts_dir: str = "/fonts"
     pydeps_dir: str = "/pydeps"
 
     cluster_name: str = ""
@@ -77,6 +78,7 @@ def load(env: dict | None = None) -> Settings:
     e = dict(os.environ if env is None else env)
     groups = tuple(g.strip() for g in e.get("OIDC_ALLOWED_GROUPS", "ai-platform-admins").split(",") if g.strip())
     return Settings(
+        fonts_dir=e.get("FONTS_DIR", Settings.fonts_dir),
         cluster_name=e.get("CLUSTER_NAME", ""),
         aws_region=e.get("AWS_REGION", ""),
         db_host=e.get("DB_HOST", Settings.db_host),

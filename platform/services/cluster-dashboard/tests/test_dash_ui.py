@@ -103,3 +103,28 @@ def test_plain_values_render_unchanged():
     written = render(load_fixture("data.json.golden"))
     models = next(w["html"] for w in written if w["id"] == "models-body")
     assert 'data-model="qwen2-5-3b-instruct"' in models and ">qwen2-5-3b-instruct<" in models
+
+
+# ---------------------------------------------------------------------------
+# Same origin only
+# ---------------------------------------------------------------------------
+
+def test_page_loads_nothing_from_another_origin():
+    p = page()
+    absolute = r"(?:https?:)?//"
+    assert not re.findall(r"<(?:link|script|img|iframe|source|video|audio)\b[^>]*\b(?:src|href)=[\"']?" + absolute, p)
+    assert not re.findall(r"url\(\s*[\"']?" + absolute, p)
+    assert not re.findall(r"@import\s+(?:url\()?[\"']?" + absolute, p)
+    assert not re.findall(r"\b(?:fetch|EventSource|XMLHttpRequest|WebSocket)\s*\(\s*[`\"']" + absolute, p)
+    assert "fonts.googleapis.com" not in p and "gstatic" not in p
+
+
+def test_every_font_the_page_uses_is_shipped():
+    fonts = os.path.join(os.path.dirname(HERE), "fonts")
+    for url in re.findall(r"url\((/fonts/[^)]+)\)", page()):
+        assert os.path.isfile(os.path.join(fonts, url[len("/fonts/"):])), url
+    with open(os.path.join(os.path.dirname(HERE), "kustomization.yaml"), encoding="utf-8") as f:
+        kust = f.read()
+    for name in os.listdir(fonts):
+        if name.endswith((".woff2", ".txt")):
+            assert f"fonts/{name}" in kust, f"{name} missing from the cluster-dashboard-fonts generator"

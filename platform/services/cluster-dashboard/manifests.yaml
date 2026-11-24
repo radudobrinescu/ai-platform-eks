@@ -282,6 +282,9 @@ spec:
             - name: html
               mountPath: /html
               readOnly: true
+            - name: fonts
+              mountPath: /fonts
+              readOnly: true
             - name: pydeps
               mountPath: /pydeps
               readOnly: true
@@ -346,6 +349,9 @@ spec:
         - name: html
           configMap:
             name: cluster-dashboard-html
+        - name: fonts
+          configMap:
+            name: cluster-dashboard-fonts
         - name: pydeps
           emptyDir: {}
         # Shared `pha` package from the agent ConfigMap (no hash suffix: a

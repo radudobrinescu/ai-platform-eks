@@ -107,7 +107,7 @@ def main() -> int:
     app.start()
     log.info("startup", extra={"port": settings.port, "degraded": found.degraded(),
                                "kubernetes": kube is not None, "approvals": app.approvals.available})
-    serve(app, settings.port, settings.html_dir)
+    serve(app, settings.port, settings.html_dir, settings.fonts_dir)
     return 0
 
 

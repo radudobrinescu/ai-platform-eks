@@ -52,6 +52,16 @@ configMapGenerator:
       - dashboard__prom.py=scripts/dashboard/prom.py
       - dashboard__snapshot.py=scripts/dashboard/snapshot.py
       - dashboard__sources.py=scripts/dashboard/sources.py
+  # UI fonts (SIL Open Font License, see fonts/README.md), served by the
+  # backend at /fonts/ so the page makes no request outside the dashboard.
+  # Binary files land in binaryData.
+  - name: cluster-dashboard-fonts
+    namespace: ai-platform
+    files:
+      - fonts/manrope-latin.woff2
+      - fonts/jetbrains-mono-latin.woff2
+      - fonts/OFL-Manrope.txt
+      - fonts/OFL-JetBrainsMono.txt
   # Script of the viewer-key CronJob (manifests.yaml). Hash suffix on, so a
   # script change gives the CronJob a new ConfigMap name.
   - name: cluster-dashboard-litellm-key-script

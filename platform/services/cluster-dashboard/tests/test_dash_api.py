@@ -147,3 +147,55 @@ def test_stream_cap(server, monkeypatch):
     monkeypatch.setattr(api, "MAX_STREAMS", 0)
     status, _, body = call(port, "GET", "/api/v1/stream")
     assert status == 503 and "poll" in body["error"]
+
+
+# ---------------------------------------------------------------------------
+# Fonts and static files
+# ---------------------------------------------------------------------------
+
+@pytest.fixture
+def font_server(tmp_path):
+    html, fonts = tmp_path / "html", tmp_path / "fonts"
+    html.mkdir()
+    fonts.mkdir()
+    (html / "cluster-topology.html").write_text("<html>dashboard</html>")
+    (html / "sub").mkdir()
+    (html / "sub" / "x.txt").write_text("x")
+    (fonts / "a-latin.woff2").write_bytes(b"wOF2font")
+    (fonts / "OFL-A.txt").write_text("licence")
+    (fonts / "notes.md").write_text("not served")
+    (fonts / ".hidden.woff2").write_bytes(b"x")
+    (fonts / "sub.woff2").mkdir()
+    (tmp_path / "secret.woff2").write_bytes(b"outside")
+    app = fixture_app()
+    srv = api.Server(("127.0.0.1", 0), api.make_handler(app, str(html), str(fonts)))
+    threading.Thread(target=srv.serve_forever, daemon=True).start()
+    yield srv.server_address[1]
+    app.stop.set()
+    srv.shutdown()
+
+
+def test_fonts_served_from_the_fixed_list(font_server):
+    status, headers, body = call(font_server, "GET", "/fonts/a-latin.woff2")
+    assert (status, body) == (200, b"wOF2font")
+    assert headers["Content-Type"] == "font/woff2" and headers["Cache-Control"] == "public, max-age=86400"
+    status, headers, body = call(font_server, "GET", "/fonts/OFL-A.txt")
+    assert status == 200 and headers["Content-Type"].startswith("text/plain") and body == b"licence"
+
+
+@pytest.mark.parametrize("path", ["/fonts/notes.md", "/fonts/.hidden.woff2", "/fonts/sub.woff2", "/fonts/",
+                                  "/fonts/../secret.woff2", "/fonts/..%2fsecret.woff2", "/fonts/%2e%2e/secret.woff2",
+                                  "/fonts/a-latin.woff2/x", "/fonts//etc/passwd"])
+def test_fonts_unknown_names_are_404(font_server, path):
+    assert call(font_server, "GET", path)[0] == 404
+
+
+def test_no_directory_listing(font_server):
+    """The HTML directory is a ConfigMap mount (with ..data subdirectories);
+    it is never listed."""
+    status, _, body = call(font_server, "GET", "/sub/")
+    assert status == 404 and body == {"error": "not found"}
+
+
+def test_no_fonts_dir_serves_nothing(tmp_path):
+    assert api.load_fonts(str(tmp_path / "missing")) == {} and api.load_fonts(None) == {}

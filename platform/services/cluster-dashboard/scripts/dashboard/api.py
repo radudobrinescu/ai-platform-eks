@@ -11,12 +11,15 @@ Routes (R4, R5 in the U2 functional design):
   POST /api/v1/investigations/<id>/approve|dismiss
   DELETE /api/v1/investigations[/<id>]
   GET  /data.json                pre-rebuild document (compatibility)
+  GET  /fonts/<file>             the UI fonts and their licences (fixed list, read at start-up)
+  GET  /                         the UI (cluster-topology.html); no directory listings
   /investigations...             pre-rebuild paths of the same handlers (until the UI moves)
 """
 from __future__ import annotations
 
 import http.server
 import json
+import os
 import logging
 import re
 import threading
@@ -58,9 +61,30 @@ class _Streams:
             self.n -= 1
 
 
-def make_handler(app, html_dir: str):
+_FONT_NAME = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]*\.(woff2|txt)$")
+_FONT_TYPES = {"woff2": "font/woff2", "txt": "text/plain; charset=utf-8"}
+
+
+def load_fonts(fonts_dir: str | None) -> dict[str, tuple[str, bytes]]:
+    """{file name: (content type, bytes)} of the font files (and their
+    licences) in `fonts_dir`, read once at start-up. Requests are answered
+    only from this table, so no request path ever reaches the file system."""
+    out: dict[str, tuple[str, bytes]] = {}
+    if not fonts_dir or not os.path.isdir(fonts_dir):
+        return out
+    for name in sorted(os.listdir(fonts_dir)):
+        m = _FONT_NAME.match(name)
+        path = os.path.join(fonts_dir, name)
+        if m and os.path.isfile(path):
+            with open(path, "rb") as f:
+                out[name] = (_FONT_TYPES[m.group(1)], f.read())
+    return out
+
+
+def make_handler(app, html_dir: str, fonts_dir: str | None = None):
     verifier = Verifier(app.s)
     streams = _Streams()
+    fonts = load_fonts(fonts_dir)
 
     class Handler(http.server.SimpleHTTPRequestHandler):
         protocol_version = "HTTP/1.1"
@@ -71,6 +95,10 @@ def make_handler(app, html_dir: str):
         # -- plumbing ---------------------------------------------------------------
         def log_message(self, *_a):            # replaced by _access_log
             pass
+
+        def list_directory(self, path):        # never list the HTML directory
+            self._json(404, {"error": "not found"})
+            return None
 
         def send_response(self, code, message=None):
             self._status = code
@@ -134,6 +162,8 @@ def make_handler(app, html_dir: str):
                 return super().do_GET()
             if path == "/data.json":
                 return self._json(200, app.store.data_json())
+            if path.startswith("/fonts/"):
+                return self._font(path[len("/fonts/"):])
             if path == "/api/v1/snapshot":
                 version, sections = app.store.get()
                 etag = f'"v{version}"'
@@ -158,6 +188,19 @@ def make_handler(app, html_dir: str):
             if path.startswith("/api/"):
                 return self._json(404, {"error": "not found"})
             return super().do_GET()
+
+        def _font(self, name: str):
+            font = fonts.get(name)
+            if font is None:
+                return self._json(404, {"error": "not found"})
+            ctype, data = font
+            self.send_response(200)
+            self.send_header("Content-Type", ctype)
+            self.send_header("Cache-Control", "public, max-age=86400")
+            self.send_header("Content-Length", str(len(data)))
+            self.end_headers()
+            self.wfile.write(data)
+            return None
 
         def _investigations_get(self, inv_id, query):
             try:
@@ -266,5 +309,5 @@ class Server(http.server.ThreadingHTTPServer):
     allow_reuse_address = True
 
 
-def serve(app, port: int, html_dir: str) -> None:
-    Server(("", port), make_handler(app, html_dir)).serve_forever()
+def serve(app, port: int, html_dir: str, fonts_dir: str | None = None) -> None:
+    Server(("", port), make_handler(app, html_dir, fonts_dir)).serve_forever()
