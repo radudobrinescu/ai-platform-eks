@@ -1,1015 +1,113 @@
 #!/usr/bin/env python3
-"""Cluster dashboard backend.
+"""Cluster dashboard backend: entry point.
 
-Two responsibilities:
-
-1. (Original) Poll the Kubernetes API every 2s, build a JSON snapshot of
-   nodes/pods/serving endpoints, and serve it at /data.json plus static
-   HTML. Browser polls /data.json — no streaming, no proxying, no auth
-   in browser.
-
-2. (New) Surface Platform Health Agent approvals from the `platform_health_agent` postgres
-   database. The agent now ships as a component of THIS dashboard app (its
-   event-watcher + RBAC + config live alongside these manifests, all in the
-   ai-platform namespace):
-     - GET  /investigations           → list of pending investigations
-     - POST /investigations/<id>/approve → spawn Remediator Job in
-                                           the ai-platform namespace
-     - POST /investigations/<id>/dismiss → mark dismissed (no Job)
-   The /data.json payload also includes `approvals_pending` (count) and
-   `approvals_available` (boolean) so the topbar can render a badge.
-
-Backwards-compatibility: when the platform_health_agent DB is unreachable (e.g. the
-agent is not deployed), all approvals endpoints return 503 and the
-snapshot reports `approvals_available: false` — the existing dashboard
-keeps working unchanged.
+The backend lives in the `dashboard` package (sources, watch caches, derive
+loop, API; see dashboard/app.py) and shares the Platform Health Agent's
+database and Job code in `pha`. This file starts it and keeps a small
+compatibility surface used by tests at the repository root
+(tests/test_tokens_per_dollar.py, tests/test_bedrock_models.py):
+`_tok_per_dollar`, `_bedrock_models`, `_bedrock_models_from_config` and a
+monkeypatchable `k8s_get`.
 """
-
 from __future__ import annotations
 
-import http.client
-import http.server
-import decimal
-import json
-import os
-import re
-import ssl
+import logging
 import sys
-import threading
-import time
-import uuid
-from urllib.parse import urlparse
 
-from dashboard import cost as dcost
-from dashboard import dcgm as ddcgm
-from dashboard import models as dmodels
-from dashboard import prom as dprom
-from pha import db as pha_db
+from dashboard import config, cost, deps, models
 from pha import jobs as pha_jobs
+from pha import log as pha_log
 
-
-def _json_default(o):
-    """psycopg returns NUMERIC columns as Decimal, which json can't serialize."""
-    if isinstance(o, decimal.Decimal):
-        return float(o)
-    raise TypeError(f"Object of type {type(o).__name__} is not JSON serializable")
-
-# psycopg is optional from the code's POV — if it can't import (image
-# missing the dep), approvals are disabled rather than crashing the
-# dashboard.
-try:
-    import psycopg                       # type: ignore[import-not-found]
-    HAVE_PSYCOPG = True
-except Exception:
-    HAVE_PSYCOPG = False
-
-try:
-    import boto3                          # type: ignore[import-not-found]
-    HAVE_BOTO3 = True
-except Exception:
-    HAVE_BOTO3 = False
-
-# PyJWT (with cryptography) verifies the OIDC token that gates the mutating
-# endpoints. Optional import: if it's missing AND auth is required, mutations
-# fail closed (see authorize_mutation) rather than silently running unauthenticated.
-try:
-    import jwt                            # type: ignore[import-not-found]
-    from jwt import PyJWKClient           # type: ignore[import-not-found]
-    HAVE_JWT = True
-except Exception:
-    HAVE_JWT = False
-
-
-# ---------------------------------------------------------------------------
-# Config
-# ---------------------------------------------------------------------------
-
-PORT = 8080
-HTML_DIR = "/html"
-POLL_INTERVAL = 2
-
-K8S_HOST = os.environ.get("KUBERNETES_SERVICE_HOST", "kubernetes.default.svc")
-K8S_PORT = int(os.environ.get("KUBERNETES_SERVICE_PORT", "443"))
-TOKEN_PATH = "/var/run/secrets/kubernetes.io/serviceaccount/token"
-CA_PATH = "/var/run/secrets/kubernetes.io/serviceaccount/ca.crt"
-
-DB_HOST = os.environ.get("DB_HOST", "platform-db.ai-platform.svc.cluster.local")
-DB_PORT = int(os.environ.get("DB_PORT", "5432"))
-DB_NAME = os.environ.get("DB_NAME", "platform_health_agent")
-DB_USER = os.environ.get("DB_USER")
-DB_PASSWORD = os.environ.get("DB_PASSWORD")
-
-PLATFORM_HEALTH_AGENT_NAMESPACE = os.environ.get("PLATFORM_HEALTH_AGENT_NAMESPACE", "ai-platform")
-APPROVAL_EXPIRY_HOURS = int(os.environ.get("APPROVAL_EXPIRY_HOURS", "24"))
-# An investigation Job has a 10-min hard deadline (activeDeadlineSeconds=600). If a
-# row is still 'running'/'remediating' well past that, the Job died without writing
-# its result and the row is stuck. Past this age it becomes dismissable from the
-# History tab so users can clear the noise. Must comfortably exceed the Job deadline.
-STALE_INVESTIGATION_MINUTES = int(os.environ.get("STALE_INVESTIGATION_MINUTES", "15"))
-MAX_REMEDIATIONS_PER_DAY = int(os.environ.get("MAX_REMEDIATIONS_PER_DAY", "20"))
-KIRO_MODEL_REMEDIATE = os.environ.get("KIRO_MODEL_REMEDIATE", "auto")
-PYTHON_IMAGE = os.environ.get("PYTHON_IMAGE", "python:3.12-slim")
-KUBECTL_VERSION = os.environ.get("KUBECTL_VERSION", "v1.32.5")
-
-# ---------------------------------------------------------------------------
-# Authentication / authorization for MUTATING endpoints
-# ---------------------------------------------------------------------------
-# The mutating endpoints (approve / dismiss / delete an investigation) spawn a
-# cluster-mutating Remediator Job or destroy audit history, so they MUST be
-# gated by a verified admin identity — never by network position.
-#
-# Why not trust oauth2-proxy's forwarded headers? Because the dashboard's own
-# `platformctl tunnel` forwards straight to this pod's ClusterIP, BYPASSING
-# oauth2-proxy — so any X-Forwarded-* / X-Auth-Request-* header is attacker-
-# settable on that path. Instead the backend cryptographically verifies the
-# OIDC ID token that oauth2-proxy injects as `Authorization: Bearer <jwt>`
-# (--set-authorization-header) against the Cognito JWKS. That check is
-# path-independent: a tunnel client with no valid, correctly-signed, in-group
-# token is refused, and no header can forge a Cognito signature.
-#
-# Config (from the Terraform-managed oauth2-proxy-secrets + deployment env):
-#   OIDC_ISSUER_URL   Cognito user-pool issuer (…/cognito-idp/<region>/<pool>)
-#   OIDC_CLIENT_ID    app client id = expected `aud` of the ID token
-#   OIDC_ALLOWED_GROUPS  comma-separated cognito:groups permitted to MUTATE
-#                        (default: admins only — stricter than the view, which
-#                         oauth2-proxy also opens to developers)
-#   DASHBOARD_AUTH_REQUIRED  "true" (default) = fail closed when a request is
-#                        unauthenticated OR auth is not configured. Set "false"
-#                        ONLY on a trusted network with SSO disabled — mutations
-#                        then run unauthenticated (logged loudly).
-OIDC_ISSUER_URL = os.environ.get("OIDC_ISSUER_URL", "").rstrip("/")
-OIDC_CLIENT_ID = os.environ.get("OIDC_CLIENT_ID", "")
-OIDC_ALLOWED_GROUPS = [
-    g.strip() for g in os.environ.get("OIDC_ALLOWED_GROUPS", "ai-platform-admins").split(",") if g.strip()
-]
-DASHBOARD_AUTH_REQUIRED = os.environ.get("DASHBOARD_AUTH_REQUIRED", "true").lower() not in ("false", "0", "no")
-
-_AUTH_CONFIGURED = bool(OIDC_ISSUER_URL and OIDC_CLIENT_ID and HAVE_JWT)
-_jwks_client = None
-_jwks_lock = threading.Lock()
-
-
-def _get_jwks_client():
-    """Lazily build (and cache) the Cognito JWKS client. Thread-safe."""
-    global _jwks_client
-    if _jwks_client is None:
-        with _jwks_lock:
-            if _jwks_client is None:
-                _jwks_client = PyJWKClient(f"{OIDC_ISSUER_URL}/.well-known/jwks.json")
-    return _jwks_client
-
-
-def verify_identity(auth_header: str) -> tuple[str | None, str]:
-    """Verify a Bearer OIDC token and authorize the caller for mutations.
-
-    Returns (identity, "") on success, or (None, reason) on failure. `identity`
-    is the verified email / username / sub — safe to record as the approver.
-    """
-    if not auth_header:
-        return None, "missing bearer token"
-    parts = auth_header.split(None, 1)
-    if len(parts) != 2 or parts[0].lower() != "bearer" or not parts[1].strip():
-        return None, "malformed Authorization header"
-    token = parts[1].strip()
-    try:
-        signing_key = _get_jwks_client().get_signing_key_from_jwt(token)
-        claims = jwt.decode(
-            token,
-            signing_key.key,
-            algorithms=["RS256"],
-            audience=OIDC_CLIENT_ID,
-            issuer=OIDC_ISSUER_URL,
-            options={"require": ["exp", "iss", "aud"]},
-        )
-    except Exception as e:  # signature/exp/iss/aud failure — deny
-        return None, f"token verification failed: {type(e).__name__}"
-    groups = claims.get("cognito:groups") or []
-    if not any(g in OIDC_ALLOWED_GROUPS for g in groups):
-        return None, "caller not in an allowed admin group"
-    identity = claims.get("email") or claims.get("cognito:username") or claims.get("sub") or "unknown"
-    return identity, ""
-
-# Quick links — centralised entry points to the platform's web UIs, surfaced in
-# the dashboard so users don't have to hunt for per-cluster hostnames.
-#
-# All of LiteLLM / Open WebUI / Langfuse / the dashboard share one internet-
-# facing ALB (the `ai-platform` ingress group), differing only by port — so we
-# discover the ALB hostname at runtime from the ingress status and append the
-# known ports. ArgoCD is an EKS-managed capability with its own endpoint, so its
-# URL can't be derived from the ALB; Terraform passes it in via ARGOCD_URL.
-ARGOCD_URL = os.environ.get("ARGOCD_URL", "")
-# Namespace + ingress name the ALB-fronted services live behind.
-LINKS_INGRESS_NAMESPACE = os.environ.get("LINKS_INGRESS_NAMESPACE", "ai-platform")
-LINKS_INGRESS_NAME = os.environ.get("LINKS_INGRESS_NAME", "ai-platform-litellm")
-
-
-# ---------------------------------------------------------------------------
-# Kubernetes API client (existing logic, preserved as-is)
-# ---------------------------------------------------------------------------
-
-def get_token() -> str:
-    with open(TOKEN_PATH) as f:
-        return f.read().strip()
-
-
-def _k8s_request(method: str, path: str, body: dict | None = None) -> tuple[int, dict | None]:
-    """Generic K8s API call. Returns (status, parsed_json_or_None)."""
-    try:
-        ctx = ssl.create_default_context(cafile=CA_PATH)
-        conn = http.client.HTTPSConnection(K8S_HOST, K8S_PORT, context=ctx, timeout=10)
-        headers = {
-            "Authorization": f"Bearer {get_token()}",
-            "Accept": "application/json",
-        }
-        if body is not None:
-            headers["Content-Type"] = "application/json"
-        conn.request(method, path, body=(json.dumps(body) if body else None), headers=headers)
-        resp = conn.getresponse()
-        raw = resp.read()
-        try:
-            data = json.loads(raw) if raw else None
-        except json.JSONDecodeError:
-            data = None
-        return resp.status, data
-    except Exception:
-        return 0, None
-
-
-def k8s_get(path: str) -> dict | None:
-    status, data = _k8s_request("GET", path)
-    return data if status == 200 else None
-
-
-def k8s_get_text(path: str) -> str:
-    """GET a plain-text K8s endpoint (e.g. pod logs). Returns '' on any error."""
-    try:
-        ctx = ssl.create_default_context(cafile=CA_PATH)
-        conn = http.client.HTTPSConnection(K8S_HOST, K8S_PORT, context=ctx, timeout=10)
-        conn.request("GET", path, headers={"Authorization": f"Bearer {get_token()}"})
-        resp = conn.getresponse()
-        raw = resp.read()
-        return raw.decode("utf-8", "replace") if resp.status == 200 else ""
-    except Exception:
-        return ""
-
-
-def k8s_post(path: str, body: dict) -> tuple[int, dict | None]:
-    return _k8s_request("POST", path, body=body)
-
-
-# ---------------------------------------------------------------------------
-# Postgres
-# ---------------------------------------------------------------------------
-
-class DB:
-    """Thin postgres wrapper. Approvals features go through this; if any
-    method fails, callers fall back to 'unavailable'."""
-
-    @staticmethod
-    def available() -> bool:
-        if not HAVE_PSYCOPG:
-            return False
-        if not (DB_USER and DB_PASSWORD):
-            return False
-        try:
-            with DB.connect() as conn, conn.cursor() as cur:
-                cur.execute("SELECT 1")
-            return True
-        except Exception:
-            return False
-
-    @staticmethod
-    def connect():  # type: ignore[no-untyped-def]
-        return psycopg.connect(
-            host=DB_HOST, port=DB_PORT, dbname=DB_NAME,
-            user=DB_USER, password=DB_PASSWORD,
-            autocommit=True, connect_timeout=5,
-        )
-
-
-# ---------------------------------------------------------------------------
-# Remediator Job spec (shape shared with the Investigator: pha/jobs.py)
-# ---------------------------------------------------------------------------
+log = logging.getLogger("dashboard")
 
 # Python packages for the Remediator Job. The exact `name==version` pins stay
 # in this file: automated dependency updates look for them here.
 REMEDIATOR_PIP_PACKAGES = "psycopg[binary]==3.3.9 awslabs.eks-mcp-server==0.2.3"
 
 
-def build_remediator_job(investigation_id: str) -> dict:
-    return pha_jobs.remediator_job(
-        investigation_id, namespace=PLATFORM_HEALTH_AGENT_NAMESPACE,
-        python_image=PYTHON_IMAGE, kubectl_version=KUBECTL_VERSION,
-        pip_packages=REMEDIATOR_PIP_PACKAGES)
+def build_remediator_job(investigation_id: str, settings: config.Settings | None = None) -> dict:
+    s = settings or config.load()
+    return pha_jobs.remediator_job(investigation_id, namespace=s.agent_namespace, python_image=s.python_image,
+                                   kubectl_version=s.kubectl_version, pip_packages=REMEDIATOR_PIP_PACKAGES)
 
 
 # ---------------------------------------------------------------------------
-# Snapshot building
+# Compatibility surface (repository-root tests)
 # ---------------------------------------------------------------------------
 
-snapshot = {"nodes": [], "pods": [], "endpoints": [], "cost": {},
-            "approvals_available": False, "approvals_pending": 0,
-            "cluster": "", "region": "",
-            "links": [], "ts": 0}
-snapshot_lock = threading.Lock()
+_tok_per_dollar = cost.tok_per_dollar
+_client = None
 
 
-def _alb_hostname() -> str:
-    """Discover the shared ALB hostname from the ingress status (empty until the
-    AWS Load Balancer Controller provisions it)."""
+def k8s_get(path: str) -> dict | None:
+    """GET a Kubernetes API path; None on any error (pre-rebuild contract)."""
+    global _client
     try:
-        ing = k8s_get(
-            f"/apis/networking.k8s.io/v1/namespaces/"
-            f"{LINKS_INGRESS_NAMESPACE}/ingresses/{LINKS_INGRESS_NAME}"
-        )
-        return ((ing.get("status", {}).get("loadBalancer", {})
-                 .get("ingress", [{}]) or [{}])[0].get("hostname", "")) or ""
+        if _client is None:
+            from dashboard.k8s import KubeClient
+            _client = KubeClient()
+        return _client.get(path)
     except Exception:
-        return ""
-
-
-def _build_links() -> list:
-    """Quick links to the platform UIs (public edge URLs, else internal ALB)."""
-    return dmodels.build_links(_alb_hostname(), os.environ.get("OPEN_WEBUI_URL", ""),
-                               os.environ.get("LITELLM_URL", ""), os.environ.get("LANGFUSE_URL", ""),
-                               ARGOCD_URL)
-
-
-SERVING_KINDS = list(dmodels.SERVING_KINDS)
-SPOT_FACTOR = dcost.SPOT_FACTOR
-NODE_PRICES_CM = os.environ.get("NODE_PRICES_CM", "cluster-dashboard-node-prices")
-_price_cache: dict = {"ts": 0.0, "data": None}
-
-
-def _prices_by_region() -> dict:
-    """Region -> {instance: $/hr}: shipped table plus the optional ConfigMap.
-    Cached for an hour."""
-    now = time.time()
-    if _price_cache["data"] is not None and now - _price_cache["ts"] < 3600:
-        return _price_cache["data"]
-    try:
-        cm = k8s_get(f"/api/v1/namespaces/{LITELLM_NAMESPACE}/configmaps/{NODE_PRICES_CM}")
-        merged = dcost.merge_prices(((cm or {}).get("data") or {}).get("prices.json", ""))
-    except ValueError:
-        merged = dcost.merge_prices(None)
-    _price_cache.update(ts=now, data=merged)
-    return merged
-
-
-def _detect_region(nodes: list) -> str:
-    return dcost.detect_region(nodes, os.environ.get("AWS_REGION", ""))
-
-
-PRICING_ENDPOINT_REGION = os.environ.get("PRICING_ENDPOINT_REGION", "us-east-1")
-_live_price_cache: dict = {}   # region -> {"ts": float, "prices": {instance: usd}}
-
-
-def _fetch_ec2_ondemand(client, region: str, instance_type: str):
-    """One instance type's on-demand Linux/shared $/hr from the Price List API."""
-    resp = client.get_products(ServiceCode="AmazonEC2", MaxResults=1, Filters=[
-        {"Type": "TERM_MATCH", "Field": "regionCode", "Value": region},
-        {"Type": "TERM_MATCH", "Field": "instanceType", "Value": instance_type},
-        {"Type": "TERM_MATCH", "Field": "operatingSystem", "Value": "Linux"},
-        {"Type": "TERM_MATCH", "Field": "tenancy", "Value": "Shared"},
-        {"Type": "TERM_MATCH", "Field": "preInstalledSw", "Value": "NA"},
-        {"Type": "TERM_MATCH", "Field": "capacitystatus", "Value": "Used"},
-    ])
-    for item in resp.get("PriceList", []):
-        terms = (json.loads(item).get("terms", {}) or {}).get("OnDemand", {}) or {}
-        for term in terms.values():
-            for dim in (term.get("priceDimensions", {}) or {}).values():
-                usd = (dim.get("pricePerUnit", {}) or {}).get("USD")
-                if usd and float(usd) > 0:
-                    return round(float(usd), 4)
-    return None
-
-
-def _live_prices(region: str, instances: tuple) -> dict:
-    """Live on-demand prices from the AWS Price List API, cached per region for
-    6 h. Returns {} when boto3, credentials or permissions are missing."""
-    if not (HAVE_BOTO3 and region and instances):
-        return {}
-    ent = _live_price_cache.get(region)
-    now = time.time()
-    if ent is None or now - ent["ts"] > 21600:
-        ent = {"ts": now, "prices": {}}
-        _live_price_cache[region] = ent
-    missing = [i for i in instances if i not in ent["prices"]]
-    if missing:
-        try:
-            client = boto3.client("pricing", region_name=PRICING_ENDPOINT_REGION)
-            for it in missing:
-                try:
-                    p = _fetch_ec2_ondemand(client, region, it)
-                    if p is not None:
-                        ent["prices"][it] = p
-                except Exception:
-                    pass
-        except Exception:
-            pass
-    return dict(ent["prices"])
-
-
-def _compute_cost(nodes: list) -> dict:
-    region = _detect_region(nodes)
-    prices = dict(_prices_by_region().get(region, {}))
-    live = _live_prices(region, dcost.priced_instances(nodes))
-    prices.update(live)
-    return dcost.compute_cost(nodes, region, prices, bool(live))
-
-
-_tok_per_dollar = dcost.tok_per_dollar
-
-
-def _fetch_endpoints() -> list:
-    """Every serving kind in `inference`; a kind whose CRD is absent is skipped."""
-    by_mode = {}
-    for plural, mode in SERVING_KINDS:
-        data = k8s_get(f"/apis/kro.run/v1alpha1/namespaces/inference/{plural}")
-        by_mode[mode] = (data or {}).get("items", [])
-    return dmodels.endpoint_records(by_mode)
-
-
-def _build_k8s_snapshot() -> dict:
-    nodes, node_alerts = dmodels.node_records((k8s_get("/api/v1/nodes") or {}).get("items", []))
-    try:
-        usage = (k8s_get("/apis/metrics.k8s.io/v1beta1/nodes") or {}).get("items")
-    except Exception:
-        usage = None
-    dmodels.apply_usage(nodes, usage)
-    pods = dmodels.pod_records((k8s_get("/api/v1/pods") or {}).get("items", []))
-    endpoints = _fetch_endpoints()
-    cost = _compute_cost(nodes)
-
-    # Approvals snapshot: best-effort, never blocks the dashboard.
-    approvals_available = False
-    approvals_pending = 0
-    if HAVE_PSYCOPG and DB_USER and DB_PASSWORD:
-        try:
-            with DB.connect() as conn:
-                approvals_pending = pha_db.pending_count(conn)
-                approvals_available = True
-        except Exception:
-            approvals_available = False
-
-    return {
-        "nodes": nodes, "pods": pods, "endpoints": endpoints, "nodeAlerts": node_alerts,
-        "cost": cost,
-        "approvals_available": approvals_available,
-        "approvals_pending": approvals_pending,
-        "cluster": os.environ.get("CLUSTER_NAME", ""),
-        "region": cost.get("region", "") or os.environ.get("AWS_REGION", ""),
-        "links": _build_links(),
-        "ts": time.time(),
-    }
-
-
-# ---------------------------------------------------------------------------
-# v2 metrics layer — LiteLLM DB (traffic/latency/spend/teams/health) + DCGM GPU
-# utilization + ArgoCD sync + Bedrock model list. All in-cluster; each source is
-# best-effort and reported in `sources` for graceful degradation in the UI.
-# ---------------------------------------------------------------------------
-
-LITELLM_DB_NAME    = os.environ.get("LITELLM_DB_NAME", "litellm")
-DCGM_URL           = os.environ.get("DCGM_URL", "http://nvidia-dcgm-exporter.gpu-operator.svc.cluster.local:9400/metrics")
-DCGM_NAMESPACE     = os.environ.get("DCGM_NAMESPACE", "gpu-operator")
-DCGM_POD_SELECTOR  = os.environ.get("DCGM_POD_SELECTOR", "app=nvidia-dcgm-exporter")
-DCGM_PORT          = os.environ.get("DCGM_PORT", "9400")
-LITELLM_CONFIG_CM  = os.environ.get("LITELLM_CONFIG_CM", "litellm-config")
-LITELLM_NAMESPACE  = os.environ.get("LITELLM_NAMESPACE", "ai-platform")
-METRICS_INTERVAL   = int(os.environ.get("METRICS_INTERVAL", "25"))
-
-try:
-    import yaml as _yaml
-    HAVE_YAML = True
-except Exception:
-    HAVE_YAML = False
-
-metrics = {"models": [], "teams": [], "gpu": [], "argocd": [],
-           "costExt": {}, "sources": {}, "mts": 0}
-metrics_lock = threading.Lock()
-
-
-def _lldb_connect():  # type: ignore[no-untyped-def]
-    return psycopg.connect(host=DB_HOST, port=DB_PORT, dbname=LITELLM_DB_NAME,
-                           user=DB_USER, password=DB_PASSWORD,
-                           autocommit=True, connect_timeout=5)
-
-
-def _litellm_metrics() -> dict:
-    """Per-model 5-min metrics + model health + per-team spend/budgets + cost trend."""
-    out = {"perModel": {}, "teams": [], "trend": [], "health": {}, "byTeam": [], "byUser": []}
-    if not (HAVE_PSYCOPG and DB_USER and DB_PASSWORD):
-        return out
-    with _lldb_connect() as conn, conn.cursor() as cur:
-        cur.execute("""
-          SELECT model_group, custom_llm_provider, count(*)/5.0,
-                 percentile_cont(0.5)  WITHIN GROUP (ORDER BY extract(epoch FROM ("endTime"-"startTime"))*1000),
-                 percentile_cont(0.95) WITHIN GROUP (ORDER BY extract(epoch FROM ("endTime"-"startTime"))*1000),
-                 COALESCE(sum(total_tokens),0)/300.0, COALESCE(sum(spend),0),
-                 100.0*avg(CASE WHEN status='success' THEN 0 ELSE 1 END)
-          FROM "LiteLLM_SpendLogs" WHERE "startTime" > now() - interval '5 minutes'
-          GROUP BY model_group, custom_llm_provider""")
-        for r in cur.fetchall():
-            out["perModel"][r[0]] = {"provider": r[1], "rpm": round(r[2], 1),
-                "p50": round(r[3]) if r[3] is not None else None,
-                "p95": round(r[4]) if r[4] is not None else None,
-                "tps": round(r[5], 1), "spend5m": float(r[6]),
-                "errPct": round(float(r[7]), 1) if r[7] is not None else 0}
-        try:
-            cur.execute('SELECT DISTINCT ON (model_name) model_name,status,response_time_ms FROM "LiteLLM_HealthCheckTable" ORDER BY model_name,checked_at DESC')
-            for r in cur.fetchall():
-                out["health"][r[0]] = {"status": r[1], "rt": float(r[2]) if r[2] is not None else None}
-        except Exception:
-            pass
-        try:
-            cur.execute("""
-              SELECT t.team_id, COALESCE(t.team_alias, left(t.team_id::text,8)), t.max_budget, COALESCE(t.spend,0),
-                     COALESCE(sum(s.api_requests),0), COALESCE(sum(s.failed_requests),0),
-                     COALESCE(sum(s.spend),0), COALESCE(sum(s.prompt_tokens+s.completion_tokens),0)
-              FROM "LiteLLM_TeamTable" t
-              LEFT JOIN "LiteLLM_DailyTeamSpend" s ON s.team_id=t.team_id AND s.date=CURRENT_DATE::text
-              GROUP BY t.team_id, t.team_alias, t.max_budget, t.spend""")
-            teams = {r[0]: {"id": r[0], "name": r[1], "budget": round(float(r[3]), 2),
-                            "limit": float(r[2]) if r[2] else None, "reqsToday": int(r[4]),
-                            "failed": int(r[5]), "spendToday": round(float(r[6]), 2),
-                            "tokens": int(r[7]), "keys": 0} for r in cur.fetchall()}
-            try:
-                cur.execute('SELECT team_id,count(*) FROM "LiteLLM_VerificationToken" WHERE team_id IS NOT NULL GROUP BY team_id')
-                for tid, c in cur.fetchall():
-                    if tid in teams:
-                        teams[tid]["keys"] = int(c)
-            except Exception:
-                pass
-            out["teams"] = list(teams.values())
-            out["byTeam"] = sorted([[t["name"], t["spendToday"]] for t in out["teams"] if t["spendToday"] > 0], key=lambda x: -x[1])
-        except Exception:
-            pass
-        try:
-            cur.execute('SELECT date::text, COALESCE(sum(spend),0) FROM "LiteLLM_DailyTeamSpend" GROUP BY date ORDER BY date DESC LIMIT 14')
-            out["trend"] = [[r[0], round(float(r[1]), 2)] for r in cur.fetchall()][::-1]
-        except Exception:
-            pass
-        try:
-            # Per-user cost/usage (30d). Open WebUI forwards the signed-in user
-            # as an x-openwebui-user-email request tag (ENABLE_FORWARD_USER_INFO_HEADERS
-            # + LiteLLM extra_spend_tag_headers), captured in request_tags (jsonb).
-            # NOTE: only covers interactive (Open WebUI) users; direct API callers
-            # are attributed by key/team, not user.
-            cur.execute("""
-              SELECT split_part(tag, ': ', 2) AS u, COALESCE(model_group, '?'),
-                     count(*), COALESCE(sum(total_tokens),0), COALESCE(sum(spend),0)
-              FROM "LiteLLM_SpendLogs", jsonb_array_elements_text(request_tags) tag
-              WHERE "startTime" > now() - interval '30 days'
-                AND tag LIKE 'x-openwebui-user-email:%'
-              GROUP BY 1, 2""")
-            agg = {}
-            for u, model, reqs, toks, spend in cur.fetchall():
-                e = agg.setdefault(u, {"user": u, "requests": 0, "tokens": 0, "spend": 0.0, "models": {}})
-                e["requests"] += int(reqs)
-                e["tokens"] += int(toks)
-                e["spend"] += float(spend)
-                e["models"][model] = e["models"].get(model, 0.0) + float(spend)
-            out["byUser"] = sorted(
-                [{"user": e["user"], "requests": e["requests"], "tokens": e["tokens"],
-                  "spend": round(e["spend"], 4),
-                  "models": sorted([{"model": m, "spend": round(s, 4)} for m, s in e["models"].items()],
-                                   key=lambda x: -x["spend"])}
-                 for e in agg.values()], key=lambda x: -x["spend"])[:50]
-        except Exception:
-            pass
-    return out
-
-
-def _dcgm_util() -> dict:
-    """Per-node GPU utilization and memory from every dcgm-exporter pod."""
-    urls = []
-    pods = k8s_get(f"/api/v1/namespaces/{DCGM_NAMESPACE}/pods?labelSelector={DCGM_POD_SELECTOR}")
-    for p in (pods or {}).get("items", []):
-        st = p.get("status", {})
-        if st.get("phase") == "Running" and st.get("podIP"):
-            urls.append(f"http://{st['podIP']}:{DCGM_PORT}/metrics")
-    return ddcgm.scrape(urls, DCGM_URL)[0]
+        return None
 
 
 def _bedrock_models_from_config() -> list:
-    """Static Bedrock models declared in the litellm-config ConfigMap (none by default)."""
-    if not HAVE_YAML:
+    """Static Bedrock models declared in the litellm-config ConfigMap."""
+    try:
+        import yaml
+    except ImportError:
         return []
-    cm = k8s_get(f"/api/v1/namespaces/{LITELLM_NAMESPACE}/configmaps/{LITELLM_CONFIG_CM}")
+    s = config.load()
+    cm = k8s_get(f"/api/v1/namespaces/{s.litellm_namespace}/configmaps/{s.litellm_config_cm}")
     if not cm:
         return []
     try:
-        return dmodels.bedrock_from_config(_yaml.safe_load((cm.get("data") or {}).get("config.yaml", "")) or {})
-    except Exception:
+        return models.bedrock_from_config(yaml.safe_load((cm.get("data") or {}).get("config.yaml", "")) or {})
+    except yaml.YAMLError:
         return []
-
-
-def _bedrock_models_from_crs() -> list:
-    """Bedrock models enrolled as BedrockModel CRs (`platformctl new-model --source bedrock`)."""
-    return dmodels.bedrock_from_crs((k8s_get("/apis/bedrock.ai-platform/v1alpha1/bedrockmodels") or {}).get("items", []))
 
 
 def _bedrock_models() -> list:
     """Static litellm-config entries plus BedrockModel CRs; a CR wins on a name clash."""
-    return dmodels.merge_bedrock(_bedrock_models_from_config(), _bedrock_models_from_crs())
-
-
-def _events_list(path: str, kind: str = "") -> list:
-    """Flattened Kubernetes Events at `path`, optionally of one involved kind."""
-    items = (k8s_get(path) or {}).get("items", [])
-    if kind:
-        return dmodels.events_of_kind(items, kind)
-    return [dmodels.event_record(e) for e in items]
-
-
-AUTOSCALING_PROM_URL = os.environ.get(
-    "AUTOSCALING_PROM_URL", "http://autoscaling-prometheus.inference.svc.cluster.local:9090")
-
-
-def _prom_query(promql: str) -> list:
-    """Instant query against the autoscaling Prometheus; [] on any failure."""
-    try:
-        return dprom.query(AUTOSCALING_PROM_URL, promql)
-    except Exception:
-        return []
-
-
-def _autoscaling_status(endpoints: list, hpa_events: list) -> list:
-    hpas = k8s_get("/apis/autoscaling/v2/namespaces/inference/horizontalpodautoscalers")
-    if not hpas:
-        return []
-    q = "histogram_quantile(0.95, sum by (le,pool,role) (rate({}_bucket[5m])))"
-    ttft = dmodels.quantile_map(_prom_query(q.format("vllm:time_to_first_token_seconds")))
-    itl = dmodels.quantile_map(_prom_query(q.format("vllm:inter_token_latency_seconds")))
-    return dmodels.autoscaling_status(endpoints, hpas.get("items", []), hpa_events, ttft, itl)
-
-
-def _deploy_diagnostics(models: list, pods: list) -> list:
-    provisioning = dmodels.provisioning_warnings(
-        _events_list("/api/v1/events?fieldSelector=involvedObject.kind=NodeClaim", "NodeClaim"))
-    pod_events = _events_list("/api/v1/namespaces/inference/events?fieldSelector=involvedObject.kind=Pod", "Pod")
-    dmodels.deploy_diagnostics(
-        models, pods, pod_events, provisioning,
-        pod_status=lambda name: (k8s_get(f"/api/v1/namespaces/inference/pods/{name}") or {}).get("status"),
-        log_tail=lambda name, c: k8s_get_text(
-            f"/api/v1/namespaces/inference/pods/{name}/log?tailLines=14&container={c}"))
-    return provisioning
-
-
-def _build_metrics(nodes: list, pods: list) -> dict:
-    endpoints = _fetch_endpoints()
-    src: dict = {}
-    try:
-        met = _litellm_metrics()
-        src["litellm"] = True
-    except Exception:
-        met = dict(dmodels.EMPTY_LITELLM)
-        src["litellm"] = False
-    try:
-        bedrock = _bedrock_models()
-        src["bedrock"] = True
-    except Exception:
-        bedrock = []
-        src["bedrock"] = False
-    models = dmodels.build_models(endpoints, bedrock, met, pods, nodes)
-
-    gpu = []
-    try:
-        gpu = dmodels.gpu_records(nodes, pods, endpoints, _dcgm_util())
-        src["dcgm"] = True
-    except Exception:
-        src["dcgm"] = False
-
-    argo = []
-    try:
-        d = k8s_get("/apis/argoproj.io/v1alpha1/namespaces/argocd/applications")
-        src["argocd"] = d is not None
-        if d is not None:
-            argo = dmodels.argocd_records(d.get("items", []))
-    except Exception:
-        src["argocd"] = False
-
-    try:
-        provisioning = _deploy_diagnostics(models, pods)
-    except Exception:
-        provisioning = []
-    ext = dmodels.cost_ext(models, met)
-    try:
-        hpa_events = _events_list("/api/v1/namespaces/inference/events", "HorizontalPodAutoscaler")
-        autoscaling = _autoscaling_status(endpoints, hpa_events)
-        src["autoscaling"] = True
-    except Exception:
-        autoscaling, src["autoscaling"] = [], False
-    dmodels.attach_scale(models, autoscaling)
-
-    return {"models": models, "teams": met.get("teams", []), "gpu": gpu, "argocd": argo,
-            "autoscaling": autoscaling,
-            "costExt": ext, "provisioning": provisioning, "sources": src, "mts": time.time()}
-
-
-def metrics_loop() -> None:
-    global metrics
-    while True:
-        try:
-            with snapshot_lock:
-                nodes = list(snapshot.get("nodes", []))
-                pods = list(snapshot.get("pods", []))
-            m = _build_metrics(nodes, pods)
-            with metrics_lock:
-                metrics = m
-        except Exception:
-            pass
-        time.sleep(METRICS_INTERVAL)
-
-
-def poll_loop() -> None:
-    global snapshot
-    while True:
-        try:
-            new_snapshot = _build_k8s_snapshot()
-            with snapshot_lock:
-                snapshot = new_snapshot
-        except Exception:
-            pass
-        time.sleep(POLL_INTERVAL)
+    crs = (k8s_get("/apis/bedrock.ai-platform/v1alpha1/bedrockmodels") or {}).get("items", [])
+    return models.merge_bedrock(_bedrock_models_from_config(), models.bedrock_from_crs(crs))
 
 
 # ---------------------------------------------------------------------------
-# Approvals API
+# Start
 # ---------------------------------------------------------------------------
-
-def _db_configured() -> bool:
-    return bool(HAVE_PSYCOPG and DB_USER and DB_PASSWORD)
-
-
-def list_pending_investigations() -> list[dict]:
-    """Investigations awaiting approval (newest first)."""
-    if not _db_configured():
-        return []
-    try:
-        with DB.connect() as conn:
-            return pha_db.pending_investigations(conn)
-    except Exception:
-        return []
-
-
-def list_all_investigations(limit: int = 20) -> list[dict]:
-    """Recent investigations (any status), newest first, for the History tab."""
-    if not _db_configured():
-        return []
-    try:
-        with DB.connect() as conn:
-            return pha_db.recent_investigations(conn, limit, STALE_INVESTIGATION_MINUTES)
-    except Exception:
-        return []
-
-
-def get_investigation_detail(investigation_id: str) -> dict | None:
-    """Full row for one investigation (post-approve polling)."""
-    if not _db_configured():
-        return None
-    try:
-        with DB.connect() as conn:
-            return pha_db.get_investigation(conn, investigation_id)
-    except Exception:
-        return None
-
-
-def approve_investigation(investigation_id: str, approver: str) -> tuple[int, dict]:
-    """Start the Remediator Job for an investigation awaiting approval.
-    Returns (HTTP status, response body)."""
-    if not _db_configured():
-        return 503, {"error": "approvals db unavailable"}
-    try:
-        with DB.connect() as conn, conn.cursor(row_factory=pha_db.dict_rows()) as cur:
-            inv = pha_db.load_for_approval(cur, investigation_id)
-            if not inv:
-                return 404, {"error": "not found"}
-            if inv["status"] != "awaiting_approval":
-                return 409, {"error": f"status is {inv['status']}, cannot approve"}
-            if (time.time() - inv["created_at"].timestamp()) / 3600 > APPROVAL_EXPIRY_HOURS:
-                pha_db.expire(cur, investigation_id)
-                return 409, {"error": "expired"}
-            today = pha_db.remediations_today(cur)
-            if today >= MAX_REMEDIATIONS_PER_DAY:
-                return 429, {"error": f"daily remediation budget exceeded ({today}/{MAX_REMEDIATIONS_PER_DAY})"}
-            status, body = k8s_post(
-                f"/apis/batch/v1/namespaces/{PLATFORM_HEALTH_AGENT_NAMESPACE}/jobs",
-                build_remediator_job(investigation_id))
-            if status not in (200, 201, 202):
-                return 502, {"error": "job create failed", "status": status,
-                             "body": (body or {}).get("message") or str(body)[:500]}
-            pha_db.mark_remediating(cur, investigation_id, approver)
-        return 200, {"ok": True, "investigation_id": investigation_id, "status": "remediating"}
-    except Exception as e:
-        return 500, {"error": str(e)}
-
-
-def dismiss_investigation(investigation_id: str, approver: str) -> tuple[int, dict]:
-    """Mark an investigation dismissed. Allowed for rows awaiting approval (the
-    user declined the fix) and for in-flight rows older than
-    STALE_INVESTIGATION_MINUTES (their Job died without a result). A fresh
-    in-flight row is never dismissed."""
-    if not _db_configured():
-        return 503, {"error": "approvals db unavailable"}
-    try:
-        with DB.connect() as conn, conn.cursor(row_factory=pha_db.dict_rows()) as cur:
-            inv = pha_db.load_for_dismiss(cur, investigation_id)
-            if not inv:
-                return 404, {"error": "not found"}
-            status = inv["status"]
-            if status in pha_db.IN_FLIGHT:
-                if (time.time() - inv["created_at"].timestamp()) / 60 < STALE_INVESTIGATION_MINUTES:
-                    return 409, {"error": "investigation still in progress"}
-            elif status != "awaiting_approval":
-                return 409, {"error": f"status is {status}, cannot dismiss"}
-            pha_db.mark_dismissed(cur, investigation_id, approver)
-        return 200, {"ok": True, "investigation_id": investigation_id, "status": "dismissed"}
-    except Exception as e:
-        return 500, {"error": str(e)}
-
-
-def delete_investigation(investigation_id: str) -> tuple[int, dict]:
-    """Permanently delete one terminal investigation (History tab)."""
-    if not _db_configured():
-        return 503, {"error": "approvals db unavailable"}
-    try:
-        with DB.connect() as conn:
-            if not pha_db.delete_investigation(conn, investigation_id):
-                return 409, {"error": "not deletable (in-flight or not found)"}
-        return 200, {"ok": True, "investigation_id": investigation_id, "deleted": True}
-    except Exception as e:
-        return 500, {"error": str(e)}
-
-
-def delete_all_investigations() -> tuple[int, dict]:
-    """Permanently delete every terminal investigation (History tab, Dismiss all)."""
-    if not _db_configured():
-        return 503, {"error": "approvals db unavailable"}
-    try:
-        with DB.connect() as conn:
-            return 200, {"ok": True, "deleted": pha_db.delete_terminal(conn)}
-    except Exception as e:
-        return 500, {"error": str(e)}
-
-
-# ---------------------------------------------------------------------------
-# HTTP handler
-# ---------------------------------------------------------------------------
-
-class Handler(http.server.SimpleHTTPRequestHandler):
-    def __init__(self, *args: object, **kwargs: object) -> None:
-        super().__init__(*args, directory=HTML_DIR, **kwargs)  # type: ignore[arg-type]
-
-    def _json(self, status: int, body: object) -> None:
-        data = json.dumps(body).encode("utf-8")
-        self.send_response(status)
-        self.send_header("Content-Type", "application/json")
-        self.send_header("Cache-Control", "no-cache")
-        self.send_header("Content-Length", str(len(data)))
-        self.end_headers()
-        self.wfile.write(data)
-
-    def _authorize_mutation(self) -> str | None:
-        """Gate a mutating request. Returns the approver identity if allowed;
-        otherwise writes the error response and returns None (caller must stop).
-
-        Two independent checks:
-        1. CSRF: require the custom `X-Requested-With` header. A cross-origin page
-           cannot set it on a "simple" request, and setting it forces a CORS
-           preflight this server never approves — so a browser CSRF (even one
-           riding a valid oauth2-proxy session cookie) is blocked. Same-origin
-           dashboard JS sets it explicitly.
-        2. AuthN/AuthZ: a verified, in-group OIDC token (see verify_identity).
-        """
-        if not self.headers.get("X-Requested-With"):
-            self._json(403, {"error": "missing X-Requested-With header (CSRF protection)"})
-            return None
-        if not DASHBOARD_AUTH_REQUIRED:
-            # Explicit, deliberate opt-out (trusted network, SSO disabled).
-            approver = (self.headers.get("X-Forwarded-Email")
-                        or self.headers.get("X-Auth-Request-Email")
-                        or "auth-disabled")
-            print(f"WARNING: DASHBOARD_AUTH_REQUIRED=false — mutation allowed unauthenticated (approver={approver})", flush=True)
-            return approver
-        if not _AUTH_CONFIGURED:
-            self._json(503, {"error": "dashboard auth is required but not configured "
-                                      "(need OIDC_ISSUER_URL, OIDC_CLIENT_ID, and PyJWT); "
-                                      "set DASHBOARD_AUTH_REQUIRED=false to override on a trusted network"})
-            return None
-        identity, reason = verify_identity(self.headers.get("Authorization", ""))
-        if identity is None:
-            self._json(401, {"error": f"unauthorized: {reason}"})
-            return None
-        return identity
-
-    def do_GET(self) -> None:  # type: ignore[override]
-        # Root → cluster-topology.html (no Apache-style directory listing).
-        if self.path == "/" or self.path == "":
-            self.path = "/cluster-topology.html"
-            return super().do_GET()
-
-        if self.path == "/data.json":
-            with snapshot_lock:
-                base = dict(snapshot)
-            with metrics_lock:
-                base.update(metrics)
-            data = json.dumps(base, default=_json_default).encode("utf-8")
-            self.send_response(200)
-            self.send_header("Content-Type", "application/json")
-            self.send_header("Cache-Control", "no-cache")
-            self.send_header("Content-Length", str(len(data)))
-            self.end_headers()
-            self.wfile.write(data)
-            return
-
-        if self.path == "/investigations":
-            return self._json(200, {"items": list_pending_investigations()})
-
-        if self.path == "/investigations/all" or self.path.startswith("/investigations/all?"):
-            return self._json(200, {"items": list_all_investigations(limit=20)})
-
-        # /investigations/<uuid> — for post-approve polling
-        m = re.match(r"^/investigations/([0-9a-f-]{36})$", self.path)
-        if m:
-            inv = get_investigation_detail(m.group(1))
-            if not inv:
-                return self._json(404, {"error": "not found"})
-            return self._json(200, inv)
-
-        super().do_GET()
-
-    def do_POST(self) -> None:  # type: ignore[override]
-        # Endpoints: /investigations/<id>/approve and /investigations/<id>/dismiss
-        parsed = urlparse(self.path)
-        parts = [p for p in parsed.path.split("/") if p]
-        if len(parts) == 3 and parts[0] == "investigations" and parts[2] in ("approve", "dismiss"):
-            investigation_id = parts[1]
-            try:
-                uuid.UUID(investigation_id)
-            except ValueError:
-                return self._json(400, {"error": "invalid investigation id"})
-            # Gate on a verified admin identity (approve spawns a cluster-mutating
-            # Remediator Job). The verified token subject is the audit approver —
-            # unspoofable, unlike the former X-Forwarded-For.
-            approver = self._authorize_mutation()
-            if approver is None:
-                return  # error already written
-            if parts[2] == "approve":
-                status, body = approve_investigation(investigation_id, approver)
-            else:
-                status, body = dismiss_investigation(investigation_id, approver)
-            return self._json(status, body)
-
-        self.send_response(404)
-        self.end_headers()
-
-    def do_DELETE(self) -> None:  # type: ignore[override]
-        # DELETE /investigations/<id> — permanently removes the row from postgres.
-        # Used by the dashboard's History tab to clear noise. NOT recoverable.
-        parsed = urlparse(self.path)
-        parts = [p for p in parsed.path.split("/") if p]
-        # Deleting audit history is destructive and unrecoverable — same admin
-        # gate as approve/dismiss.
-        if parts[:1] == ["investigations"] and len(parts) in (1, 2):
-            if self._authorize_mutation() is None:
-                return  # error already written
-        # DELETE /investigations — bulk "dismiss all" of terminal rows.
-        if len(parts) == 1 and parts[0] == "investigations":
-            status, body = delete_all_investigations()
-            return self._json(status, body)
-        if len(parts) == 2 and parts[0] == "investigations":
-            investigation_id = parts[1]
-            try:
-                uuid.UUID(investigation_id)
-            except ValueError:
-                return self._json(400, {"error": "invalid investigation id"})
-            status, body = delete_investigation(investigation_id)
-            return self._json(status, body)
-        self.send_response(404)
-        self.end_headers()
-
-    def log_message(self, format: str, *args: object) -> None:  # type: ignore[override]
-        pass
-
-
-# ---------------------------------------------------------------------------
-# Main
-# ---------------------------------------------------------------------------
-
-class _ThreadingHTTPServer(http.server.ThreadingHTTPServer):
-    """Allow concurrent requests so a slow approval doesn't block /data.json."""
-    daemon_threads = True
-    allow_reuse_address = True
-
 
 def main() -> int:
-    threading.Thread(target=poll_loop, daemon=True).start()
-    threading.Thread(target=metrics_loop, daemon=True).start()
-    time.sleep(3)  # wait for first snapshot
-    print(f"dashboard backend on :{PORT} (psycopg={'yes' if HAVE_PSYCOPG else 'no'}, db={DB_NAME})", flush=True)
-    _ThreadingHTTPServer(("", PORT), Handler).serve_forever()
+    pha_log.setup("cluster-dashboard")
+    settings = config.load()
+    found = deps.check(settings.pydeps_dir)
+
+    from dashboard.app import App
+    from dashboard.api import serve
+
+    kube, kube_error = None, None
+    if found.has("kubernetes"):
+        try:
+            from dashboard.k8s import KubeClient
+            kube = KubeClient()
+        except Exception as e:  # no in-cluster config: run without Kubernetes data
+            kube_error = f"kubernetes client unavailable: {type(e).__name__}: {e}"[:300]
+            log.exception("kubernetes client unavailable")
+    yaml_load = None
+    if found.has("yaml"):
+        import yaml
+        yaml_load = yaml.safe_load
+    boto3_client = None
+    if found.has("boto3"):
+        import boto3
+        boto3_client = lambda: boto3.client("pricing", region_name=settings.pricing_endpoint_region)  # noqa: E731
+
+    app = App(settings, found, kube=kube, kube_error=kube_error, yaml_load=yaml_load, boto3_client=boto3_client,
+              remediator_job=lambda inv_id: build_remediator_job(inv_id, settings))
+    app.start()
+    log.info("startup", extra={"port": settings.port, "degraded": found.degraded(),
+                               "kubernetes": kube is not None, "approvals": app.approvals.available})
+    serve(app, settings.port, settings.html_dir)
     return 0
 
 

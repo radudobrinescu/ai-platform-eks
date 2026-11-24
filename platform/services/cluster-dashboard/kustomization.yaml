@@ -36,11 +36,22 @@ configMapGenerator:
       - scripts/backend.py
       # Package `dashboard`, flat keys <package>__<file> (see the pha note below).
       - dashboard____init__.py=scripts/dashboard/__init__.py
+      - dashboard__api.py=scripts/dashboard/api.py
+      - dashboard__app.py=scripts/dashboard/app.py
+      - dashboard__approvals.py=scripts/dashboard/approvals.py
+      - dashboard__auth.py=scripts/dashboard/auth.py
       - dashboard__config.py=scripts/dashboard/config.py
       - dashboard__cost.py=scripts/dashboard/cost.py
       - dashboard__dcgm.py=scripts/dashboard/dcgm.py
+      - dashboard__deps.py=scripts/dashboard/deps.py
+      - dashboard__derive.py=scripts/dashboard/derive.py
+      - dashboard__k8s.py=scripts/dashboard/k8s.py
+      - dashboard__litellm.py=scripts/dashboard/litellm.py
       - dashboard__models.py=scripts/dashboard/models.py
+      - dashboard__pricing.py=scripts/dashboard/pricing.py
       - dashboard__prom.py=scripts/dashboard/prom.py
+      - dashboard__snapshot.py=scripts/dashboard/snapshot.py
+      - dashboard__sources.py=scripts/dashboard/sources.py
   # Platform Health Agent scripts. Mounted by the event-watcher AND by every
   # Investigator/Remediator Job (the Job specs in event_watcher.py / backend.py
   # reference this ConfigMap by HARDCODED name) → keep the name stable, no hash.
