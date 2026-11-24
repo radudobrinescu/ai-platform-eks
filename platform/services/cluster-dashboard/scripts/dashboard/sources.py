@@ -16,6 +16,12 @@ from dataclasses import dataclass
 log = logging.getLogger("dashboard.sources")
 
 
+class SourceUnavailable(Exception):
+    """Raised by a source run when a prerequisite is missing for now (for
+    example a Secret not created yet). The source shows as `disabled` with
+    the message and keeps running, so it recovers on its own."""
+
+
 @dataclass(frozen=True)
 class SourceStatus:
     name: str
@@ -40,6 +46,7 @@ class Tracker:
         self._last_error: str | None = None
         self._failing = False
         self._disabled: str | None = None
+        self._paused: str | None = None
         self._detail: str | None = None
         self._last_tick: float = clock()
         self._logged_state = "new"
@@ -52,6 +59,7 @@ class Tracker:
         with self._lock:
             self._last_success = self._clock()
             self._failing = False
+            self._paused = None
             self._last_error = None
             self._detail = detail
         self._log_transition()
@@ -59,7 +67,14 @@ class Tracker:
     def fail(self, error: str) -> None:
         with self._lock:
             self._failing = True
+            self._paused = None
             self._last_error = (error or "error")[:300]
+        self._log_transition()
+
+    def pause(self, reason: str) -> None:
+        """Disabled for now; the next ok() or fail() clears it."""
+        with self._lock:
+            self._paused = reason
         self._log_transition()
 
     def disable(self, reason: str) -> None:
@@ -77,8 +92,8 @@ class Tracker:
     def status(self) -> SourceStatus:
         with self._lock:
             now = self._clock()
-            if self._disabled is not None:
-                state, detail = "disabled", self._disabled
+            if self._disabled is not None or self._paused is not None:
+                state, detail = "disabled", self._disabled or self._paused
             elif self._failing:
                 state, detail = "error", self._detail
             elif self._last_success is None:
@@ -116,6 +131,8 @@ class PolledSource:
             return
         try:
             detail = self.fn()
+        except SourceUnavailable as e:
+            self.tracker.pause(str(e))
         except Exception as e:  # any failure becomes this source's status
             self.tracker.fail(f"{type(e).__name__}: {e}")
         else:
