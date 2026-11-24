@@ -1240,6 +1240,8 @@ const minsSince = (iso) => {
   return isNaN(t) ? 0 : Math.max(0, (Date.now() - t) / 60000);
 };
 const usd = (v) => '$' + (Number(v) || 0).toFixed(2);
+// EKS node groups say ON_DEMAND, Karpenter says on-demand.
+const capName = (c) => String(c || '').toLowerCase().replace('_', '-');
 const pctOf = (a, b) => (b ? Math.round((100 * (a || 0)) / b) : 0);
 // Write a panel only when its content changed, so selection and scroll survive
 // the stream's updates.
@@ -1283,7 +1285,7 @@ function infraModel() {
       cpuReq: pctOf(pods.reduce((a, p) => a + (p.cpuReqM || 0), 0), n.cpuAllocM),
       memReq: pctOf(pods.reduce((a, p) => a + (p.memReqMi || 0), 0), n.memAllocMi),
       stats: (D.gpu || []).find((g) => g.node === host),
-      hay: [n.name, n.instance, poolName(n.pool), n.zone, n.capacity, n.gpuProduct]
+      hay: [n.name, n.instance, poolName(n.pool), n.zone, capName(n.capacity), n.gpuProduct]
         .concat(gpuPods.map((p) => p.model || p.name))
         .join(' ')
         .toLowerCase(),
@@ -1444,7 +1446,7 @@ function infraGpu(m, shown) {
       const util = n.stats && n.stats.util && n.stats.util.length ? Math.round(Math.max.apply(null, n.stats.util.map((x) => x || 0))) + '%' : '—';
       rows +=
         `<tr data-toggle="${esc(n.name)}" onclick="infraToggle(this.dataset.toggle)" aria-expanded="${open}"><td><span class="dot ${n.gpu ? 'ok' : 'bad'}"></span><button class="nlink" data-node="${esc(n.name)}" onclick="event.stopPropagation();openNode(this.dataset.node)">${esc(n.host)}</button></td>` +
-        `<td><span class="m-id">${esc(n.instance)}</span>${n.gpuProduct ? ' <span class="muted">' + esc(n.gpuProduct) + '</span>' : ''}</td><td>${esc(String(n.zone).slice(-2))}</td><td>${esc(n.capacity || '')}</td>` +
+        `<td><span class="m-id">${esc(n.instance)}</span>${n.gpuProduct ? ' <span class="muted">' + esc(n.gpuProduct) + '</span>' : ''}</td><td>${esc(String(n.zone).slice(-2))}</td><td>${esc(capName(n.capacity))}</td>` +
         `<td><span class="mslots" title="${n.taken} of ${n.gpu || 0} in use">${mini || '<span class="muted">—</span>'}</span></td><td>${names.length ? esc(names.join(', ')) : '<span class="muted">empty</span>'}</td>` +
         `<td class="num">${util}</td><td class="num">${usd(n.hourly)}</td></tr>`;
       if (open) rows += `<tr class="exp"><td colspan="8">${infraGpuDetail(n, m)}</td></tr>`;
@@ -1481,7 +1483,7 @@ function infraPlatform(m, shown) {
         .map(
           (n) =>
             `<tr class="${n.memPct >= INFRA.memWarn || n.cpuPct >= INFRA.cpuWarn ? 'hot' : ''}" data-node="${esc(n.name)}" onclick="openNode(this.dataset.node)"><td><span class="m-id" style="color:var(--text);font-weight:700">${esc(n.host)}</span></td>` +
-            `<td><span class="m-id">${esc(n.instance)}</span> <span class="muted">${esc(n.capacity || '')}</span></td><td>${esc(poolName(n.pool))}</td><td>${esc(String(n.zone).slice(-2))}</td>` +
+            `<td><span class="m-id">${esc(n.instance)}</span> <span class="muted">${esc(capName(n.capacity))}</span></td><td>${esc(poolName(n.pool))}</td><td>${esc(String(n.zone).slice(-2))}</td>` +
             `<td>${ubar(n.cpuPct, n.cpuReq, INFRA.cpuWarn)}</td><td>${ubar(n.memPct, n.memReq, INFRA.memWarn, INFRA.memBad)}</td>` +
             `<td class="num">${n.pods.length}</td><td>${relTime(n.created)}</td><td class="num">${usd(n.hourly)}</td></tr>`,
         )
@@ -1520,7 +1522,7 @@ function infraPools(m) {
       const zones = {};
       mine.forEach((n) => (zones[String(n.zone).slice(-2)] = (zones[String(n.zone).slice(-2)] || 0) + 1));
       const zoneText = Object.keys(zones).sort().map((z) => `${esc(z)}: ${zones[z]}`).join(', ');
-      const kinds = name === '__mng__' ? 'on-demand' : (p.capacityTypes || [...new Set(mine.map((n) => n.capacity))]).join(' or ');
+      const kinds = name === '__mng__' ? 'on-demand' : (p.capacityTypes || [...new Set(mine.map((n) => capName(n.capacity)))]).join(' or ');
       const refuses = (p.excludedFamilies || []).join(', ');
       return (
         `<tr class="nolink"><td><span class="dot ${mine.length ? 'ok' : ''}" style="${mine.length ? '' : 'background:var(--border-light)'}"></span><span class="m-name">${esc(poolName(name))}</span><div class="m-id" style="margin-left:15px">${esc(POOLMAP[name] || p.workload || '')}</div></td>` +
