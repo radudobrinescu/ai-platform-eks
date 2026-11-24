@@ -218,7 +218,7 @@
           },
           {
             "args": [
-              "set -eu; pip install --no-cache-dir --target=/pydeps psycopg[binary]==3.3.9 awslabs.eks-mcp-server"
+              "set -eu; pip install --no-cache-dir --target=/pydeps psycopg[binary]==3.3.9 awslabs.eks-mcp-server==0.2.3"
             ],
             "command": [
               "/bin/sh",

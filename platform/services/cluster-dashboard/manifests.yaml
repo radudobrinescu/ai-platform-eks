@@ -142,11 +142,17 @@ spec:
           command: ["/bin/sh", "-c"]
           args:
             - |
-              set -eu
-              # psycopg is optional from the backend's POV — if pip fails
-              # (e.g. air-gapped), the dashboard still serves the topology
-              # view, just without approvals.
-              pip install --no-cache-dir --target=/pydeps psycopg[binary]==3.3.9 pyyaml==6.0.3 'boto3>=1.34,<2' 'pyjwt[crypto]==2.15.1' || true
+              set -u
+              # The dashboard must start even when this fails (no PyPI access,
+              # for example). The error goes to /pydeps/INSTALL_FAILED; the
+              # backend reads it, runs degraded and names what is missing in
+              # the UI, the logs and its health response. Exact pins only,
+              # kept on this line for automated dependency updates.
+              if ! pip install --no-cache-dir --target=/pydeps psycopg[binary]==3.3.9 pyyaml==6.0.3 boto3==1.44.10 'pyjwt[crypto]==2.15.1' 2>/tmp/pip.err; then
+                tail -c 4000 /tmp/pip.err > /pydeps/INSTALL_FAILED
+                echo "pip install failed, starting degraded:" >&2
+                cat /pydeps/INSTALL_FAILED >&2
+              fi
           volumeMounts:
             - name: pydeps
               mountPath: /pydeps

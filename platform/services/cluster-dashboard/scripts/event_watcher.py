@@ -194,7 +194,7 @@ def record_trigger(conn: psycopg.Connection, kind: str, namespace: str, name: st
 # awslabs.eks-mcp-server for kiro-cli's read-only Kubernetes tools. The exact
 # `name==version` pins stay in this file: automated dependency updates look for
 # them here.
-INVESTIGATOR_PIP_PACKAGES = "psycopg[binary]==3.3.9 awslabs.eks-mcp-server"
+INVESTIGATOR_PIP_PACKAGES = "psycopg[binary]==3.3.9 awslabs.eks-mcp-server==0.2.3"
 
 
 def build_investigator_job(investigation_id: str, event_payload: dict) -> dict:

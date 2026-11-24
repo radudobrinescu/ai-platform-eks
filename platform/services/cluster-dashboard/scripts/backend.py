@@ -290,7 +290,7 @@ class DB:
 
 # Python packages for the Remediator Job. The exact `name==version` pins stay
 # in this file: automated dependency updates look for them here.
-REMEDIATOR_PIP_PACKAGES = "psycopg[binary]==3.3.9 awslabs.eks-mcp-server"
+REMEDIATOR_PIP_PACKAGES = "psycopg[binary]==3.3.9 awslabs.eks-mcp-server==0.2.3"
 
 
 def build_remediator_job(investigation_id: str) -> dict:
