@@ -556,5 +556,254 @@
     ]
    }
   }
+ },
+ "/apis/karpenter.sh/v1/nodepools": {
+  "items": [
+   {
+    "metadata": {
+     "name": "default",
+     "creationTimestamp": "2026-11-20T08:00:00Z"
+    },
+    "spec": {
+     "template": {
+      "metadata": {
+       "labels": {}
+      },
+      "spec": {
+       "requirements": [
+        {
+         "key": "karpenter.sh/capacity-type",
+         "operator": "In",
+         "values": [
+          "spot",
+          "on-demand"
+         ]
+        }
+       ],
+       "taints": []
+      }
+     }
+    },
+    "status": {
+     "resources": {
+      "nodes": "4"
+     }
+    }
+   },
+   {
+    "metadata": {
+     "name": "gpu-inference",
+     "creationTimestamp": "2026-11-20T08:00:00Z"
+    },
+    "spec": {
+     "template": {
+      "metadata": {
+       "labels": {
+        "workload-type": "gpu-inference"
+       }
+      },
+      "spec": {
+       "requirements": [
+        {
+         "key": "karpenter.sh/capacity-type",
+         "operator": "In",
+         "values": [
+          "spot",
+          "on-demand"
+         ]
+        },
+        {
+         "key": "karpenter.k8s.aws/instance-family",
+         "operator": "NotIn",
+         "values": [
+          "g4dn",
+          "g7",
+          "g7e"
+         ]
+        }
+       ],
+       "taints": [
+        {
+         "key": "nvidia.com/gpu",
+         "effect": "NoSchedule"
+        }
+       ]
+      }
+     },
+     "limits": {
+      "nvidia.com/gpu": "16"
+     }
+    },
+    "status": {
+     "resources": {
+      "nodes": "1",
+      "nvidia.com/gpu": "1"
+     }
+    }
+   },
+   {
+    "metadata": {
+     "name": "gpu-shared",
+     "creationTimestamp": "2026-11-20T08:00:00Z"
+    },
+    "spec": {
+     "template": {
+      "metadata": {
+       "labels": {
+        "workload-type": "gpu-shared"
+       }
+      },
+      "spec": {
+       "requirements": [
+        {
+         "key": "karpenter.sh/capacity-type",
+         "operator": "In",
+         "values": [
+          "spot",
+          "on-demand"
+         ]
+        },
+        {
+         "key": "karpenter.k8s.aws/instance-family",
+         "operator": "NotIn",
+         "values": [
+          "g4dn",
+          "g7",
+          "g7e"
+         ]
+        }
+       ],
+       "taints": [
+        {
+         "key": "nvidia.com/gpu",
+         "effect": "NoSchedule"
+        }
+       ]
+      }
+     },
+     "limits": {
+      "nvidia.com/gpu": "32"
+     }
+    },
+    "status": {
+     "resources": {
+      "nodes": "0",
+      "nvidia.com/gpu": "0"
+     }
+    }
+   }
+  ]
+ },
+ "/apis/karpenter.sh/v1/nodeclaims": {
+  "items": [
+   {
+    "metadata": {
+     "name": "default-a1b2c",
+     "creationTimestamp": "2026-11-20T09:30:00Z",
+     "labels": {
+      "karpenter.sh/nodepool": "default",
+      "node.kubernetes.io/instance-type": "c7a.large",
+      "topology.kubernetes.io/zone": "eu-central-1b",
+      "karpenter.sh/capacity-type": "spot"
+     }
+    },
+    "status": {
+     "nodeName": "ip-10-10-1-11.eu-central-1.compute.internal",
+     "conditions": [
+      {
+       "type": "Launched",
+       "status": "True"
+      },
+      {
+       "type": "Registered",
+       "status": "True"
+      },
+      {
+       "type": "Initialized",
+       "status": "True"
+      },
+      {
+       "type": "Ready",
+       "status": "True"
+      }
+     ]
+    }
+   },
+   {
+    "metadata": {
+     "name": "gpu-inference-d4e5f",
+     "creationTimestamp": "2026-11-20T09:30:00Z",
+     "labels": {
+      "karpenter.sh/nodepool": "gpu-inference",
+      "node.kubernetes.io/instance-type": "g6.4xlarge",
+      "topology.kubernetes.io/zone": "eu-central-1b",
+      "karpenter.sh/capacity-type": "spot"
+     }
+    },
+    "status": {
+     "nodeName": "ip-10-10-7-165.eu-central-1.compute.internal",
+     "conditions": [
+      {
+       "type": "Launched",
+       "status": "True"
+      },
+      {
+       "type": "Registered",
+       "status": "True"
+      },
+      {
+       "type": "Initialized",
+       "status": "True"
+      },
+      {
+       "type": "Ready",
+       "status": "True"
+      }
+     ]
+    }
+   },
+   {
+    "metadata": {
+     "name": "gpu-shared-x2bfn",
+     "creationTimestamp": "2026-11-20T09:48:00Z",
+     "labels": {
+      "karpenter.sh/nodepool": "gpu-shared",
+      "node.kubernetes.io/instance-type": "g7.2xlarge",
+      "topology.kubernetes.io/zone": "eu-central-1c",
+      "karpenter.sh/capacity-type": "spot"
+     }
+    },
+    "status": {
+     "nodeName": "ip-10-10-31-201.eu-central-1.compute.internal",
+     "conditions": [
+      {
+       "type": "Launched",
+       "status": "True"
+      },
+      {
+       "type": "Registered",
+       "status": "True"
+      },
+      {
+       "type": "Initialized",
+       "status": "Unknown",
+       "reason": "ResourceNotRegistered",
+       "message": "Resource \"nvidia.com/gpu\" was requested but not registered"
+      },
+      {
+       "type": "Drifted",
+       "status": "True",
+       "reason": "RequirementsDrifted"
+      },
+      {
+       "type": "Ready",
+       "status": "Unknown",
+       "reason": "ReconcilingDependents",
+       "message": "Initialized=Unknown"
+      }
+     ]
+    }
+   }
+  ]
  }
 }

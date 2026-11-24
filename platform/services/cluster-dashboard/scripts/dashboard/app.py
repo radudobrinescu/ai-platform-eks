@@ -18,7 +18,7 @@ from dashboard.approvals import Approvals
 from dashboard.config import Settings
 from dashboard.deps import Deps
 from dashboard.k8s import (ApiError, KubeClient, WatchCache, project_argo, project_configmap, project_cr,
-                           project_event, project_ingress, project_node, project_pod)
+                           project_event, project_ingress, project_karpenter, project_node, project_pod)
 from dashboard.models import SERVING_KINDS
 from dashboard.snapshot import Store
 from dashboard.sources import PolledSource, Scheduler, SourceStatus
@@ -54,6 +54,11 @@ def cache_specs(s: Settings) -> list[tuple]:
         ("events-nodeclaim", "/api/v1/events", project_event,
          {"fieldSelector": "involvedObject.kind=NodeClaim"}, EVENT_RETENTION, EVENT_MAX),
         ("events-inference", "/api/v1/namespaces/inference/events", project_event, None, EVENT_RETENTION, EVENT_MAX),
+        # Karpenter: pools (also the empty ones) and how far each node got. A
+        # cluster without Karpenter answers 404, which the cache treats as
+        # "not installed": the sections stay empty.
+        ("nodepools", "/apis/karpenter.sh/v1/nodepools", project_karpenter, None, None, None),
+        ("nodeclaims", "/apis/karpenter.sh/v1/nodeclaims", project_karpenter, None, None, None),
     ]
     for plural, mode in SERVING_KINDS:
         specs.append((mode, f"/apis/kro.run/v1alpha1/namespaces/inference/{plural}", project_cr, None, None, None))

@@ -76,6 +76,8 @@ def compute(view: dict, inputs: dict, settings, yaml_load=None) -> tuple[dict, l
         "models": models, "teams": met.get("teams", []), "gpu": gpu,
         "argocd": m.argocd_records(view.get("argocd", [])), "autoscaling": autoscaling,
         "costExt": ext, "provisioning": provisioning,
+        "nodePools": m.nodepool_records(view.get("nodepools", [])),
+        "nodeClaims": m.nodeclaim_records(view.get("nodeclaims", [])),
         "approvals": {"available": available, "pending": pending},
         "meta": {"cluster": settings.cluster_name, "region": cost.get("region", "") or settings.aws_region,
                  "links": links},

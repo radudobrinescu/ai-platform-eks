@@ -142,6 +142,13 @@ def project_cr(o: dict) -> dict:
     return {"metadata": _meta(o), "spec": o.get("spec", {}) or {}, "status": o.get("status", {}) or {}}
 
 
+def project_karpenter(o: dict) -> dict:
+    """NodePools and NodeClaims: the labels say which pool, instance type, zone
+    and capacity type a claim is for, and deletionTimestamp that it is leaving."""
+    return {"metadata": _meta(o, "labels", "deletionTimestamp"), "spec": o.get("spec", {}) or {},
+            "status": o.get("status", {}) or {}}
+
+
 def project_argo(o: dict) -> dict:
     st = o.get("status", {}) or {}
     return {"metadata": _meta(o), "status": {"sync": {"status": (st.get("sync") or {}).get("status")},
