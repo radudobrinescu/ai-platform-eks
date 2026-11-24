@@ -216,6 +216,7 @@ spec:
               - { key: pha__db.py, path: pha/db.py }
               - { key: pha__jobs.py, path: pha/jobs.py }
               - { key: pha__log.py, path: pha/log.py }
+              - { key: pha__triggers.py, path: pha/triggers.py }
         - name: pydeps
           emptyDir: {}
         - name: tmp

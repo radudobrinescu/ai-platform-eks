@@ -2,13 +2,12 @@
 JSON shape (as `kubectl get -o json` prints them) and the trigger each one
 must produce. Shared by tests/test_pha_triggers.py.
 
-Times are relative to "now" so the age rules can be exercised; `as_client_object`
-turns a case into the attribute objects the `kubernetes` client returns
-(snake_case names, datetimes, None for absent fields).
+Times are relative to NOW so the age rules can be exercised. Objects carry
+the fields the kubernetes client's models require, so the same cases also
+run through the real client (tests/test_pha_triggers.py).
 """
 from __future__ import annotations
 
-import re
 from datetime import datetime, timedelta, timezone
 
 NOW = datetime.now(timezone.utc)
@@ -28,7 +27,7 @@ def pod(name="qwen-7d9f8c6b5d-abcde", ns="inference", owner=("ReplicaSet", "qwen
     if labels is not None:
         meta["labels"] = labels
     if owner:
-        meta["ownerReferences"] = [{"kind": owner[0], "name": owner[1]}]
+        meta["ownerReferences"] = [{"apiVersion": "apps/v1", "kind": owner[0], "name": owner[1], "uid": "u-1"}]
     status = {"phase": phase, "containerStatuses": list(containers)}
     if init:
         status["initContainerStatuses"] = list(init)
@@ -36,11 +35,11 @@ def pod(name="qwen-7d9f8c6b5d-abcde", ns="inference", owner=("ReplicaSet", "qwen
         status["conditions"] = conditions
     if start:
         status["startTime"] = start
-    return {"metadata": meta, "spec": {"nodeName": node}, "status": status}
+    return {"metadata": meta, "spec": {"nodeName": node, "containers": [{"name": "vllm"}]}, "status": status}
 
 
 def cs(name="vllm", restarts=0, waiting=None, terminated=None, last_terminated=None):
-    out = {"name": name, "restartCount": restarts, "state": {}}
+    out = {"name": name, "restartCount": restarts, "state": {}, "image": "img", "imageID": "", "ready": False}
     if waiting:
         out["state"]["waiting"] = {"reason": waiting[0], "message": waiting[1]}
     if terminated:
@@ -51,8 +50,8 @@ def cs(name="vllm", restarts=0, waiting=None, terminated=None, last_terminated=N
 
 
 def event(reason, type_="Warning", kind="Pod", name="qwen-7d9f8c6b5d-abcde", ns="inference", message="m", count=3):
-    return {"type": type_, "reason": reason, "message": message, "count": count,
-            "involvedObject": {"kind": kind, "name": name, "namespace": ns}}
+    return {"metadata": {"name": "ev-1", "namespace": ns}, "type": type_, "reason": reason, "message": message,
+            "count": count, "involvedObject": {"kind": kind, "name": name, "namespace": ns}}
 
 
 def node(conditions=(), unschedulable=None, deleting=False, name="ip-10-0-1-1.ec2.internal"):
@@ -193,43 +192,3 @@ STUCK_CASES = [
     ("llmd-not-ready", "LLMDEndpoint", {"metadata": {"name": "e", "creationTimestamp": ago(minutes=30)},
                                         "status": {"ready": "False", "routerHealth": "Healthy"}}, True),
 ]
-
-
-# ---------------------------------------------------------------------------
-# Kubernetes client object stand-in
-# ---------------------------------------------------------------------------
-
-def _snake(name: str) -> str:
-    return re.sub(r"(?<!^)(?=[A-Z])", "_", name).lower()
-
-
-class ClientObject:
-    """Attribute access like the `kubernetes` client's models: snake_case
-    names, None for absent fields, datetimes for *Time/*Timestamp."""
-
-    def __init__(self, data: dict):
-        self._data = {}
-        for k, v in data.items():
-            key = _snake(k)
-            if k == "labels":
-                self._data[key] = dict(v)
-            elif isinstance(v, dict):
-                self._data[key] = ClientObject(v)
-            elif isinstance(v, list):
-                self._data[key] = [ClientObject(x) if isinstance(x, dict) else x for x in v]
-            elif isinstance(v, str) and (k.endswith("Time") or k.endswith("Timestamp")):
-                self._data[key] = datetime.fromisoformat(v.replace("Z", "+00:00"))
-            else:
-                self._data[key] = v
-
-    def __getattr__(self, name):
-        if name.startswith("_"):
-            raise AttributeError(name)
-        return self._data.get(name)
-
-    def __str__(self):
-        return repr({k: str(v) for k, v in self._data.items()})
-
-
-def as_client_object(data: dict) -> ClientObject:
-    return ClientObject(data)

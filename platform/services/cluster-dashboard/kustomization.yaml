@@ -94,3 +94,4 @@ configMapGenerator:
       - pha__db.py=scripts/pha/db.py
       - pha__jobs.py=scripts/pha/jobs.py
       - pha__log.py=scripts/pha/log.py
+      - pha__triggers.py=scripts/pha/triggers.py
