@@ -57,7 +57,11 @@ class Approvals:
 
     # -- mutations -------------------------------------------------------------------
     def approve(self, inv_id: str, approver: str) -> tuple[int, dict]:
-        """Start the Remediator Job for an investigation awaiting approval."""
+        """Start the Remediator Job for an investigation awaiting approval.
+
+        The row is claimed (awaiting_approval -> remediating) before the Job is
+        created, so two concurrent approvals cannot both start a Job; a failed
+        Job create releases the claim so the operator can retry."""
         if not self.available:
             return UNAVAILABLE
         with self.connect() as conn, conn.cursor(row_factory=pha_db.dict_rows()) as cur:
@@ -69,15 +73,24 @@ class Approvals:
             if (self._clock() - inv["created_at"].timestamp()) / 3600 > self.s.approval_expiry_hours:
                 pha_db.expire(cur, inv_id)
                 return 409, {"error": "expired"}
+            # Read-then-act: two approvals racing for the last slot can both
+            # pass. Accepted: this is a daily budget, not a safety limit.
             today = pha_db.remediations_today(cur)
             if today >= self.s.max_remediations_per_day:
                 return 429, {"error": f"daily remediation budget exceeded ({today}/{self.s.max_remediations_per_day})"}
+            if not pha_db.claim_for_remediation(cur, inv_id, approver):
+                return 409, {"error": "already approved"}
             try:
                 self.create_job(self.remediator_job(inv_id))
             except ApiError as e:
-                return 502, {"error": "job create failed", "status": e.status, "body": str(e)[:500]}
-            pha_db.mark_remediating(cur, inv_id, approver)
-        log.info("approval", extra={"investigation": inv_id, "action": "approve", "approver": approver})
+                if e.status != 409:            # 409: the Job exists, so it is running
+                    pha_db.release_claim(cur, inv_id)
+                    log.warning("approval", extra={"investigation": inv_id, "action": "approve",
+                                                   "approver": approver, "result": f"job create failed: {e}"})
+                    return 502, {"error": "job create failed", "status": e.status, "body": str(e)[:500]}
+            pha_db.count_remediation(cur)
+        log.info("approval", extra={"investigation": inv_id, "action": "approve", "approver": approver,
+                                    "result": "remediating"})
         return 200, {"ok": True, "investigation_id": inv_id, "status": "remediating"}
 
     def dismiss(self, inv_id: str, approver: str) -> tuple[int, dict]:
@@ -87,17 +100,15 @@ class Approvals:
         if not self.available:
             return UNAVAILABLE
         with self.connect() as conn, conn.cursor(row_factory=pha_db.dict_rows()) as cur:
-            inv = pha_db.load_for_dismiss(cur, inv_id)
-            if not inv:
-                return 404, {"error": "not found"}
-            status = inv["status"]
-            if status in pha_db.IN_FLIGHT:
-                if (self._clock() - inv["created_at"].timestamp()) / 60 < self.s.stale_investigation_minutes:
+            if not pha_db.dismiss_if_allowed(cur, inv_id, approver, self.s.stale_investigation_minutes):
+                inv = pha_db.load_for_dismiss(cur, inv_id)
+                if not inv:
+                    return 404, {"error": "not found"}
+                if inv["status"] in pha_db.IN_FLIGHT:
                     return 409, {"error": "investigation still in progress"}
-            elif status != "awaiting_approval":
-                return 409, {"error": f"status is {status}, cannot dismiss"}
-            pha_db.mark_dismissed(cur, inv_id, approver)
-        log.info("approval", extra={"investigation": inv_id, "action": "dismiss", "approver": approver})
+                return 409, {"error": f"status is {inv['status']}, cannot dismiss"}
+        log.info("approval", extra={"investigation": inv_id, "action": "dismiss", "approver": approver,
+                                    "result": "dismissed"})
         return 200, {"ok": True, "investigation_id": inv_id, "status": "dismissed"}
 
     def delete(self, inv_id: str | None) -> tuple[int, dict]:

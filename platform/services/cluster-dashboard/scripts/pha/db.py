@@ -232,15 +232,29 @@ def remediations_today(cur) -> int:
     return (cur.fetchone() or {}).get("remediations", 0) or 0
 
 
-def mark_remediating(cur, inv_id: str, approver: str) -> None:
+def claim_for_remediation(cur, inv_id: str, approver: str) -> bool:
+    """Move the row from awaiting_approval to remediating in one conditional
+    update. Only one of two concurrent approvals can win."""
     cur.execute(
         """UPDATE investigations
-              SET status='remediating',
-                  approved_by=%s,
-                  approved_at=now()
-            WHERE id=%s""",
+              SET status='remediating', approved_by=%s, approved_at=now()
+            WHERE id=%s AND status='awaiting_approval'""",
         (approver, inv_id),
     )
+    return cur.rowcount == 1
+
+
+def release_claim(cur, inv_id: str) -> None:
+    """Undo a claim whose Remediator Job could not be created."""
+    cur.execute(
+        """UPDATE investigations
+              SET status='awaiting_approval', approved_by=NULL, approved_at=NULL
+            WHERE id=%s AND status='remediating'""",
+        (inv_id,),
+    )
+
+
+def count_remediation(cur) -> None:
     cur.execute(
         """INSERT INTO daily_counters (day, remediations) VALUES (CURRENT_DATE, 1)
            ON CONFLICT (day) DO UPDATE SET remediations = daily_counters.remediations + 1""",
@@ -252,16 +266,20 @@ def load_for_dismiss(cur, inv_id: str) -> dict | None:
     return cur.fetchone()
 
 
-def mark_dismissed(cur, inv_id: str, approver: str) -> None:
+def dismiss_if_allowed(cur, inv_id: str, approver: str, stale_minutes: int) -> bool:
+    """Dismiss in one conditional update: allowed while awaiting approval, or
+    for an in-flight row older than `stale_minutes` (its Job died without a
+    result). False when the row is missing or not dismissable."""
     cur.execute(
         """UPDATE investigations
-              SET status='dismissed',
-                  approved_by=%s,
-                  approved_at=now(),
-                  completed_at=now()
-            WHERE id=%s""",
-        (approver, inv_id),
+              SET status='dismissed', approved_by=%s, approved_at=now(), completed_at=now()
+            WHERE id=%s
+              AND (status='awaiting_approval'
+                   OR (status IN ('pending','running','remediating')
+                       AND created_at < now() - make_interval(mins => %s)))""",
+        (approver, inv_id, stale_minutes),
     )
+    return cur.rowcount == 1
 
 
 def delete_investigation(conn, inv_id: str) -> bool:

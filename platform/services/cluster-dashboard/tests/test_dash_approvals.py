@@ -75,29 +75,42 @@ def test_approve_daily_cap(approvals):
     assert approvals.posted == []
 
 
-def test_approve_job_create_failure_leaves_row_untouched(approvals):
-    c = approvals.conn([
-        ("SELECT * FROM investigations", [{"status": "awaiting_approval", "created_at": _ago(minutes=5)}]),
-        ("today_counters", [{"remediations": 0}]),
-    ])
-    approvals.state["post"] = (500, "boom")
-    status, body = approvals.api.approve(INV, "admin")
-    assert status == 502 and "boom" in body["body"]
-    assert not any("remediating" in s for s in c.sql())
+def _ready(script_extra=()):
+    return [("SELECT * FROM investigations", [{"status": "awaiting_approval", "created_at": _ago(minutes=5)}]),
+            ("today_counters", [{"remediations": 3}]), *script_extra]
 
 
-def test_approve_success(approvals):
-    c = approvals.conn([
-        ("SELECT * FROM investigations", [{"status": "awaiting_approval", "created_at": _ago(minutes=5)}]),
-        ("today_counters", [{"remediations": 3}]),
-    ])
+def test_approve_success_claims_before_creating_the_job(approvals):
+    c = approvals.conn(_ready([("SET status='remediating'", 1)]))
     status, body = approvals.api.approve(INV, "alice@example.com")
     assert status == 200 and body["status"] == "remediating"
-    _path, job = approvals.posted[0]
-    assert job["metadata"]["name"] == f"remediator-{INV[:8]}"
-    update = [(s, p) for s, p in c.executed if "SET status='remediating'" in s]
-    assert update and update[0][1] == ("alice@example.com", INV)
+    assert approvals.posted[0][1]["metadata"]["name"] == f"remediator-{INV[:8]}"
+    claim = [(s, p) for s, p in c.executed if "SET status='remediating'" in s]
+    assert claim[0][1] == ("alice@example.com", INV)
+    assert "WHERE id=%s AND status='awaiting_approval'" in claim[0][0]
     assert any("INSERT INTO daily_counters" in s for s in c.sql())
+
+
+def test_concurrent_approval_loses_the_claim(approvals):
+    approvals.conn(_ready([("SET status='remediating'", 0)]))
+    assert approvals.api.approve(INV, "bob") == (409, {"error": "already approved"})
+    assert approvals.posted == [], "the loser must not create a Job"
+
+
+def test_existing_job_counts_as_success(approvals):
+    c = approvals.conn(_ready([("SET status='remediating'", 1)]))
+    approvals.state["post"] = (409, "jobs.batch already exists")
+    assert approvals.api.approve(INV, "alice")[0] == 200
+    assert not any("SET status='awaiting_approval'" in s for s in c.sql())
+
+
+def test_failed_job_create_releases_the_claim(approvals):
+    c = approvals.conn(_ready([("SET status='remediating'", 1)]))
+    approvals.state["post"] = (500, "boom")
+    status, body = approvals.api.approve(INV, "alice")
+    assert status == 502 and "boom" in body["body"]
+    assert any("SET status='awaiting_approval', approved_by=NULL" in s for s in c.sql())
+    assert not any("INSERT INTO daily_counters" in s for s in c.sql())
 
 
 def test_db_unavailable(approvals):
@@ -108,22 +121,22 @@ def test_db_unavailable(approvals):
 
 # --- dismiss -----------------------------------------------------------------
 
-@pytest.mark.parametrize("status,age,expected", [
-    ("awaiting_approval", {"minutes": 1}, 200),
-    ("running", {"minutes": 2}, 409),        # still in progress
-    ("running", {"minutes": 20}, 200),       # stuck past STALE_INVESTIGATION_MINUTES
-    ("remediating", {"minutes": 20}, 200),
-    ("done", {"minutes": 1}, 409),
+def test_dismiss_is_one_conditional_update(approvals):
+    c = approvals.conn([("SET status='dismissed'", 1)])
+    assert approvals.api.dismiss(INV, "admin")[0] == 200
+    sql, params = c.executed[0]
+    assert "status='awaiting_approval'" in sql and "status IN ('pending','running','remediating')" in sql
+    assert params == ("admin", INV, 15), "stale threshold comes from STALE_INVESTIGATION_MINUTES"
+
+
+@pytest.mark.parametrize("row,expected", [
+    (None, (404, {"error": "not found"})),
+    ({"status": "running"}, (409, {"error": "investigation still in progress"})),
+    ({"status": "done"}, (409, {"error": "status is done, cannot dismiss"})),
 ])
-def test_dismiss(approvals, status, age, expected):
-    c = approvals.conn([("SELECT status, created_at", [{"status": status, "created_at": _ago(**age)}])])
-    assert approvals.api.dismiss(INV, "admin")[0] == expected
-    assert any("SET status='dismissed'" in s for s in c.sql()) == (expected == 200)
-
-
-def test_dismiss_not_found(approvals):
-    approvals.conn([("SELECT status, created_at", [])])
-    assert approvals.api.dismiss(INV, "admin")[0] == 404
+def test_dismiss_refused_explains_why(approvals, row, expected):
+    approvals.conn([("SET status='dismissed'", 0), ("SELECT status, created_at", [row] if row else [])])
+    assert approvals.api.dismiss(INV, "admin") == expected
 
 
 # --- delete and lists ----------------------------------------------------------
