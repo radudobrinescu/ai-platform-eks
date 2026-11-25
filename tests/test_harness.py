@@ -1057,3 +1057,20 @@ def test_the_two_checks_are_registered_and_the_dashboard_one_runs_last():
     names = [n for _d, n, _f, _w in checks.CHECKS]
     assert names[-1] == "cluster-dashboard-sources-ok", "last: its LiteLLM key comes from a job that runs every 15 minutes"
     assert names.index("autoscaling-scrape-targets-up") > names.index("litellm-ready")
+
+
+def test_pin_rejects_anything_but_an_instance_type():
+    import pytest
+    import checks
+    c = checks.Ctx(subject=None, cluster="x", gpu_instance_type="g7.2xlarge; rm -rf /")
+    with pytest.raises(ValueError):
+        checks.pin_gpu_model(c, "m")
+    assert checks.INSTANCE_TYPE_RX.match("g7.2xlarge") and checks.INSTANCE_TYPE_RX.match("g7e.12xlarge")
+
+
+def test_pin_adds_instance_type_to_the_generated_vllm_file():
+    import yaml
+    import checks
+    body = GENERATED_LLMD.replace("kind: LLMDEndpoint", "kind: VLLMEndpoint") + '  extraArgs:\n    - "--foo"\n'
+    spec = yaml.safe_load(checks._set_spec_lines(body, {"instanceType": "g7.2xlarge"}, "pin"))["spec"]
+    assert spec["instanceType"] == "g7.2xlarge" and spec["extraArgs"] == ["--foo"]

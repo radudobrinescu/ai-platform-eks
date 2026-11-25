@@ -72,6 +72,10 @@ on:
         description: "Exercise the llm-d tier and KEDA autoscaling (adds GPU nodes, ~20 min per job)"
         type: boolean
         default: true
+      gpu_instance_type:
+        description: "Pin the vLLM GPU smoke model to this EC2 instance type, e.g. g7.2xlarge (empty: Karpenter picks)"
+        type: string
+        default: ""
       note:
         description: "Shown first in the run's name: what is being tested, in a few words (the factory fills it in)"
         type: string
@@ -193,6 +197,7 @@ jobs:
       BASE_REF: ${{ inputs.base }}
       KEEP: ${{ inputs.keep }}
       WITH_LLMD: ${{ inputs.with_llmd }}
+      GPU_INSTANCE_TYPE: ${{ inputs.gpu_instance_type }}
       E2E_REGION: ${{ vars.E2E_REGION || 'eu-central-1' }}
       CONTEXT: e2e/${{ matrix.mode }}-${{ matrix.profile }}
       RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
@@ -329,6 +334,12 @@ jobs:
           args=()
           if [ "$KEEP" = true ]; then args+=(--keep); fi
           if [ "$WITH_LLMD" = true ]; then args+=(--with-llmd); fi
+          if [ -n "${GPU_INSTANCE_TYPE:-}" ]; then
+            if ! [[ "$GPU_INSTANCE_TYPE" =~ ^[a-z][a-z0-9-]*\.[a-z0-9]+$ ]]; then
+              echo "::error::gpu_instance_type is not an EC2 instance type: $GPU_INSTANCE_TYPE"; exit 2
+            fi
+            args+=(--gpu-instance-type "$GPU_INSTANCE_TYPE")
+          fi
           # Report-only: lists fixable HIGH/CRITICAL CVEs of every running image.
           if [ "$MODE" = fresh ]; then args+=(--image-scan); fi
           if [ "$MODE" = upgrade ]; then refs=("$BASE_SHA" "$STATUS_SHA"); else refs=("$STATUS_SHA"); fi

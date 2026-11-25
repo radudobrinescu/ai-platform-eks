@@ -101,6 +101,9 @@ class Ctx:
     gpu_started: bool = False
     gpu_created: bool = False
     gpu_start_error: str | None = None
+    # --gpu-instance-type: pin the vLLM smoke model to this EC2 type (a family
+    # the GPU NodePools newly allow, e.g. g7.2xlarge). Empty: Karpenter picks.
+    gpu_instance_type: str = ""
     _sso: object = None
 
     @property
@@ -430,8 +433,13 @@ def chk_gpu_model_roundtrip(c: Ctx):
         created, c.gpu_started = c.gpu_created, False
     else:
         created = deploy_model(c, name, GPU_SMOKE_MODEL, "--tier", "vllm", "--users", "1", "--seq", "2048")
+        if c.gpu_instance_type and created:
+            pin_gpu_model(c, name)
     try:
         wait_endpoint_ready(c, "vllmendpoint", name)
+        on = model_instance_types(name)
+        if c.gpu_instance_type and on != [c.gpu_instance_type]:
+            return False, f"{name} Ready on {', '.join(on) or 'no node'}, expected {c.gpu_instance_type}"
         claims = kubectl_json("get", "nodeclaims").get("items", [])
         c.gpu_node_seen = any(
             any(cond.get("type") == "Ready" and cond.get("status") == "True"
@@ -439,7 +447,8 @@ def chk_gpu_model_roundtrip(c: Ctx):
             for cl in claims)
         wait_alias(c, name, c.timeouts["bedrock"])
         code, body = chat_via_service(c.litellm_key(), name)
-        return code == 200, f"{name} Ready on GPU; chat HTTP {code}" + ("" if code == 200 else f": {body[:160]}")
+        return code == 200, (f"{name} Ready on GPU ({', '.join(on) or '?'}); chat HTTP {code}"
+                             + ("" if code == 200 else f": {body[:160]}"))
     finally:
         if created:
             undeploy_model(c, name)
@@ -628,16 +637,43 @@ def tune_llmd_for_scale_to_zero(text: str) -> str:
     return _set_spec_lines(text, {"scaleToZeroAfterSeconds": SCALE_TO_ZERO_IDLE_SEC}, "scale-to-zero check")
 
 
-def push_model_edit(c: Ctx, rel: str, message: str) -> None:
+def push_model_edit(c: Ctx, rel: str, message: str, app: str = "scale-models") -> None:
     """Commit one model file and push it to the env branch, then ask Argo CD to
-    sync the scale-models app at that commit (what `platformctl new-model` does)."""
+    sync its app at that commit (what `platformctl new-model` does)."""
     c.subject.git("add", "--", rel)
     c.subject.git("commit", "--quiet", "-m", message, "--", rel)
     c.subject.git("push", "--quiet")
     sha = c.subject.head()
     op = {"operation": {"initiatedBy": {"username": "e2e"}, "sync": {"prune": True, "revision": sha}}}
-    sh(["kubectl", "patch", "application", "scale-models", "-n", NS_ARGOCD, "--type", "merge",
+    sh(["kubectl", "patch", "application", app, "-n", NS_ARGOCD, "--type", "merge",
         "-p", json.dumps(op)], check=False)
+
+
+INSTANCE_TYPE_RX = re.compile(r"^[a-z][a-z0-9-]*\.[a-z0-9]+$")
+
+
+def pin_gpu_model(c: Ctx, name: str) -> None:
+    """Pin the vLLM smoke model to c.gpu_instance_type (VLLMEndpoint
+    instanceType -> a node.kubernetes.io/instance-type nodeSelector)."""
+    if not INSTANCE_TYPE_RX.match(c.gpu_instance_type):
+        raise ValueError(f"not an EC2 instance type: {c.gpu_instance_type!r}")
+    rel = c.subject.find_model_file(name)
+    if not rel:
+        raise RuntimeError(f"no model file for {name}")
+    with open(c.subject.path(rel), encoding="utf-8") as fh:
+        pinned = _set_spec_lines(fh.read(), {"instanceType": c.gpu_instance_type}, "GPU instance type under test")
+    with open(c.subject.path(rel), "w", encoding="utf-8") as fh:
+        fh.write(pinned)
+    ns = os.path.relpath(rel, "workloads/models").split(os.sep)[0]
+    push_model_edit(c, rel, f"e2e: pin {name} to {c.gpu_instance_type}", app=f"models-{ns}")
+
+
+def model_instance_types(name: str) -> list[str]:
+    """Instance types of the nodes the model's pods run on."""
+    nodes = {(p.get("spec") or {}).get("nodeName") for p in kubectl_json(
+        "get", "pods", "-n", NS_INFERENCE, "-l", f"app.kubernetes.io/name={name}").get("items", [])} - {None}
+    return sorted({((kubectl_json("get", "node", n).get("metadata") or {}).get("labels") or {})
+                   .get("node.kubernetes.io/instance-type", "?") for n in nodes})
 
 
 def llmd_deployment(name: str) -> dict:
@@ -672,6 +708,8 @@ def start_gpu_models(c: Ctx) -> None:
         name = model_name_from_id(GPU_SMOKE_MODEL)
         c.gpu_created = deploy_model(c, name, GPU_SMOKE_MODEL, "--tier", "vllm", "--users", "1", "--seq", "2048")
         c.gpu_started = True
+        if c.gpu_instance_type and c.gpu_created:
+            pin_gpu_model(c, name)
     except (Exception, subprocess.SubprocessError) as e:  # noqa: BLE001 - reported by the GPU check
         c.gpu_start_error = f"{type(e).__name__}: {e}"
     if c.with_llmd and not c.llmd_model:

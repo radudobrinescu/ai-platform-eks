@@ -172,7 +172,9 @@ class TestE2EWorkflow:
         on = _on(wf)
         assert list(on) == ["workflow_dispatch"]
         assert set(on["workflow_dispatch"]["inputs"]) == {"modes", "subject", "base", "profiles", "keep", "with_llmd",
-                                                          "note"}
+                                                          "gpu_instance_type", "note"}
+        pin = on["workflow_dispatch"]["inputs"]["gpu_instance_type"]
+        assert pin["type"] == "string" and pin["default"] == ""
         note = on["workflow_dispatch"]["inputs"]["note"]
         assert note["type"] == "string" and note["default"] == "" and not note.get("required")
         assert on["workflow_dispatch"]["inputs"]["modes"]["options"] == ["fresh", "upgrade", "fresh,upgrade"]

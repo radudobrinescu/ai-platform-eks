@@ -265,7 +265,8 @@ class Runner:
 
     def make_ctx(self) -> checks.Ctx:
         if self.ctx is None:
-            self.ctx = checks.Ctx(self.subject, self.cluster, self.a.profile, self.a.with_llmd)
+            self.ctx = checks.Ctx(self.subject, self.cluster, self.a.profile, self.a.with_llmd,
+                                  gpu_instance_type=self.a.gpu_instance_type)
         return self.ctx
 
     def smoke(self, prefix: str = "") -> None:
@@ -507,7 +508,7 @@ def run_check_only(a: argparse.Namespace) -> int:
         log(LONG_LIVED_NOTE)
     subject.run("aws", "eks", "update-kubeconfig", "--name", cluster, "--region", a.region, "--alias", a.env)
     rep = Report("check", a.profile, a.env, {"env": a.env})
-    ctx = checks.Ctx(subject, cluster, a.profile, a.with_llmd)
+    ctx = checks.Ctx(subject, cluster, a.profile, a.with_llmd, gpu_instance_type=a.gpu_instance_type)
     if a.survival:
         t0 = time.time()
         try:
@@ -549,6 +550,8 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     c.add_argument("--survival", action="store_true", help="also seed, snapshot twice and run the survival rules")
     c.add_argument("--report-dir", default=os.path.join(os.getcwd(), "reports"))
     for p in (f, u, c):
+        p.add_argument("--gpu-instance-type", default="", metavar="TYPE",
+                       help="pin the vLLM smoke model to this EC2 instance type, e.g. g7.2xlarge (default: Karpenter picks)")
         p.add_argument("--image-scan", action="store_true",
                        help="scan every running image with Trivy after the checks (fresh mode and check)")
         p.add_argument("--image-scan-fail-on", choices=imagescan.SEVERITIES, default=None,
