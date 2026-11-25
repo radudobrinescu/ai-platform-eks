@@ -237,6 +237,9 @@ itself is out of scope).
 workloads, commit an `LLMDEndpoint` (see `workloads/scale-models/`) and the
 optional llm-d tier schedules requests across vLLM replicas using live KV-cache,
 prefix, and queue-depth signals, and supports prefill/decode disaggregation.
+[docs/demos/prefix-cache-routing.md](docs/demos/prefix-cache-routing.md) shows the
+effect: the same GPUs and traffic through the llm-d router and through plain round
+robin, measured with inference-perf and compared in llm-d's Prism.
 
 **Fast cold starts (opt-in).** New GPU deployments can shave the multi-minute cold
 start via three layers, wired through Terraform's image optimization and switched on
@@ -388,7 +391,7 @@ platformctl         The unified CLI (use · up · status · tunnel · allow-ip �
 ops/                platformctl implementation: ops/lib/ (helpers) · ops/image/ (cold-start build helpers)
 terraform/          Infrastructure modules (VPC → IAM → EKS → observability)
 releases/           One manifest per release, read by ./platformctl upgrade
-docs/               cloudfront-edge · validated-versions · releases/ (notes per release)
+docs/               cloudfront-edge · validated-versions · releases/ (notes per release) · demos/
 tests/              Unit tests for platformctl, the ops helpers and repo-wide guards
 UPGRADING.md        How to upgrade an environment to a newer release
 .github/workflows/  ci (pre-merge validation) · addon-freshness (weekly report-only EKS-addon drift check)
