@@ -20,13 +20,27 @@
 #   -s VOLUME_SIZE      Data volume size in GiB (default: 200)
 #   --fsr AZ1[,AZ2]    Enable Fast Snapshot Restore in specified AZs
 #   --write-tfvars      Write snapshot ID to terraform/30.eks/30.cluster/snapshot.auto.tfvars
+#   --reuse             If this account already has a completed snapshot of the
+#                       same images and volume size (tags Purpose + Images), use
+#                       it instead of building a new one
+#   --patch-nodeclasses NC1[,NC2]
+#                       Set the snapshot on these Karpenter EC2NodeClasses' /dev/xvdb
+#                       mapping right away (Terraform renders it on the next apply)
+#
+# Images: a reference with a registry host (docker.io/..., <acct>.dkr.ecr...)
+# is pulled as given; docker.io images are pulled anonymously, so no Docker Hub
+# account is needed. A short reference (vllm/vllm-openai:tag) is expanded to
+# this account's ECR pull-through cache (docker-hub/...), as before.
 #
 # Examples:
+#   # From Docker Hub, no credentials:
+#   ./ops/image/create-data-volume-snapshot.sh docker.io/vllm/vllm-openai:v0.33.0
+#
 #   # Using ECR pull-through cache URI:
-#   ./ops/image/create-data-volume-snapshot.sh <account-id>.dkr.ecr.<region>.amazonaws.com/docker-hub/vllm/vllm-openai:v0.24.0
+#   ./ops/image/create-data-volume-snapshot.sh <account-id>.dkr.ecr.<region>.amazonaws.com/docker-hub/vllm/vllm-openai:v0.33.0
 #
 #   # Short form (auto-prefixes with account ECR pull-through cache):
-#   ./ops/image/create-data-volume-snapshot.sh vllm/vllm-openai:v0.24.0
+#   ./ops/image/create-data-volume-snapshot.sh vllm/vllm-openai:v0.33.0
 #
 #   # With FSR and auto-tfvars:
 #   ./ops/image/create-data-volume-snapshot.sh --fsr eu-central-1a,eu-central-1b --write-tfvars vllm/vllm-openai:v0.24.0
@@ -38,6 +52,8 @@ INSTANCE_TYPE="c5.xlarge"
 VOLUME_SIZE=200
 FSR_AZS=""
 WRITE_TFVARS=false
+REUSE=false
+PATCH_NODECLASSES=""
 REGION=""
 CLUSTER_NAME=""
 IMAGES=()
@@ -50,6 +66,8 @@ while [[ $# -gt 0 ]]; do
     -s) VOLUME_SIZE="$2"; shift 2 ;;
     --fsr) FSR_AZS="$2"; shift 2 ;;
     --write-tfvars) WRITE_TFVARS=true; shift ;;
+    --reuse) REUSE=true; shift ;;
+    --patch-nodeclasses) PATCH_NODECLASSES="$2"; shift 2 ;;
     -h|--help) sed -n '2,/^set -euo/p' "$0" | sed 's/^# \?//'; exit 0 ;;
     -*) echo "Unknown option: $1" >&2; exit 1 ;;
     *) IMAGES+=("$1"); shift ;;
@@ -65,6 +83,11 @@ fi
 # --- Input validation ---------------------------------------------------------
 if ! [[ "$VOLUME_SIZE" =~ ^[0-9]+$ ]] || [[ "$VOLUME_SIZE" -lt 50 || "$VOLUME_SIZE" -gt 16384 ]]; then
   echo "Error: volume size must be an integer between 50-16384 GiB" >&2
+  exit 1
+fi
+
+if [[ -n "$PATCH_NODECLASSES" && ! "$PATCH_NODECLASSES" =~ ^[a-z0-9.,-]+$ ]]; then
+  echo "Error: --patch-nodeclasses takes comma-separated Kubernetes names" >&2
   exit 1
 fi
 
@@ -102,7 +125,9 @@ fi
 # Skipping it keeps the no-Docker path working (the vLLM image still bakes).
 FULL_IMAGES=()
 for img in "${IMAGES[@]}"; do
-  if [[ "$img" != *".dkr.ecr."* ]]; then
+  # A first path component with a dot, a colon or "localhost" is a registry host.
+  first="${img%%/*}"
+  if [[ "$img" != */* || ( "$first" != *.* && "$first" != *:* && "$first" != "localhost" ) ]]; then
     img="${ACCOUNT}.dkr.ecr.${REGION}.amazonaws.com/docker-hub/${img}"
   fi
   # For private-ECR images (not the pull-through cache), verify the tag exists.
@@ -121,6 +146,60 @@ done
 if [[ ${#FULL_IMAGES[@]} -eq 0 ]]; then
   echo "Error: none of the requested images are present in ECR — nothing to bake." >&2
   exit 1
+fi
+
+# Tag-safe form of the image list for the Images tag (see the snapshot step):
+# space-joined, at most 255 characters. Reuse looks snapshots up by it.
+IMAGE_LIST_TAG="${IMAGES[*]}"
+IMAGE_LIST_TAG="${IMAGE_LIST_TAG:0:255}"
+
+# Point the given Karpenter EC2NodeClasses' /dev/xvdb volume at the snapshot.
+# Terraform's next apply renders the same value, so this only makes it take
+# effect in the apply that built the snapshot.
+patch_nodeclasses() {
+  local snap="$1" nc devices idx current
+  [[ -z "$PATCH_NODECLASSES" ]] && return 0
+  [[ "$snap" =~ ^snap-[0-9a-f]+$ ]] || { echo "  ⚠ not a snapshot id: $snap" >&2; return 0; }
+  IFS=',' read -ra ncs <<< "$PATCH_NODECLASSES"
+  for nc in "${ncs[@]}"; do
+    if ! devices=$(kubectl get ec2nodeclass "$nc" \
+        -o jsonpath='{range .spec.blockDeviceMappings[*]}{.deviceName}{"\n"}{end}' 2>/dev/null); then
+      echo "  - EC2NodeClass $nc: not found, skipped"
+      continue
+    fi
+    idx=$(awk '$0 == "/dev/xvdb" {print NR - 1; exit}' <<< "$devices")
+    if [[ -z "$idx" ]]; then
+      echo "  - EC2NodeClass $nc: no /dev/xvdb volume, skipped"
+      continue
+    fi
+    current=$(kubectl get ec2nodeclass "$nc" -o jsonpath="{.spec.blockDeviceMappings[${idx}].ebs.snapshotID}" 2>/dev/null || true)
+    if [[ "$current" == "$snap" ]]; then
+      echo "  - EC2NodeClass $nc: already uses $snap"
+      continue
+    fi
+    if kubectl patch ec2nodeclass "$nc" --type json \
+        -p "[{\"op\":\"add\",\"path\":\"/spec/blockDeviceMappings/${idx}/ebs/snapshotID\",\"value\":\"${snap}\"}]" >/dev/null; then
+      echo "  ✓ EC2NodeClass $nc now boots GPU nodes from $snap"
+    else
+      echo "  ⚠ EC2NodeClass $nc: patch failed (the next apply sets it)" >&2
+    fi
+  done
+}
+
+if [[ "$REUSE" == "true" ]]; then
+  EXISTING=$(aws ec2 describe-snapshots --region "$REGION" --owner-ids self \
+    --filters "Name=tag:Purpose,Values=bottlerocket-data-volume" \
+              "Name=tag:Images,Values=${IMAGE_LIST_TAG}" \
+              "Name=volume-size,Values=${VOLUME_SIZE}" \
+              "Name=status,Values=completed" \
+    --query "reverse(sort_by(Snapshots, &StartTime))[0].SnapshotId" --output text 2>/dev/null || true)
+  if [[ "$EXISTING" =~ ^snap-[0-9a-f]+$ ]]; then
+    echo "→ Reusing snapshot $EXISTING (already holds: ${IMAGE_LIST_TAG})"
+    patch_nodeclasses "$EXISTING"
+    echo "$EXISTING"
+    exit 0
+  fi
+  echo "→ No snapshot of ${IMAGE_LIST_TAG} yet: building one (about 15 minutes)."
 fi
 
 echo "╭──────────────────────────────────────────────────────────────────╮"
@@ -355,12 +434,11 @@ fi
 TIMESTAMP=$(date -u +%Y%m%d-%H%M%S)
 # Comma-joined form for the human-readable summary + tfvars comment below.
 IMAGE_LIST=$(IFS=,; echo "${IMAGES[*]}")
-# Tag-safe form for the Images tag: the AWS CLI shorthand --tag-specifications
-# uses COMMA as its delimiter, so a comma-joined multi-image value corrupts the
-# parse (only single-image runs worked before). Space-join instead (spaces are
-# valid inside a shorthand value) and cap at the 256-char tag-value limit.
-IMAGE_LIST_TAG="${IMAGES[*]}"
-IMAGE_LIST_TAG="${IMAGE_LIST_TAG:0:255}"
+# IMAGE_LIST_TAG (set above) is the tag-safe form for the Images tag: the AWS
+# CLI shorthand --tag-specifications uses COMMA as its delimiter, so a
+# comma-joined multi-image value corrupts the parse (only single-image runs
+# worked before). Space-joined instead (spaces are valid inside a shorthand
+# value) and capped at the 256-char tag-value limit.
 
 SNAPSHOT_ID=$(aws ec2 create-snapshot --region "$REGION" \
   --volume-id "$VOLUME_ID" \
@@ -406,6 +484,8 @@ gpu_data_volume_snapshot_id = "${SNAPSHOT_ID}"
 EOF
   echo "  ✓ Written to terraform/30.eks/30.cluster/snapshot.auto.tfvars"
 fi
+
+patch_nodeclasses "$SNAPSHOT_ID"
 
 # --- Done (trap still fires to terminate instance) ----------------------------
 echo ""
