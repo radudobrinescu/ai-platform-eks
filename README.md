@@ -244,7 +244,8 @@ and the model stops after 10 minutes without requests; Karpenter then removes it
 GPU node, so an idle model costs nothing. The next request waits in the llm-d router
 while a GPU node and the model start (a few minutes; up to 10 by default), then is
 answered as usual. Tune it per model with `scaleToZeroAfterSeconds` and
-`coldStartTimeoutSeconds`. Models default to `minReplicas: 1` (always warm).
+`coldStartTimeoutSeconds`. Models default to `minReplicas: 1` (always warm). Demo:
+[docs/demos/scale-to-zero.md](docs/demos/scale-to-zero.md).
 
 **Fast cold starts.** The vLLM serving image (about 10 GB) is baked into an EBS
 snapshot that every new GPU node boots from, so a node does not download it. The
