@@ -752,9 +752,10 @@ COLD_REQUEST_PY = """
 import json, os, time, urllib.error, urllib.request
 body = json.dumps({"model": MODEL, "max_tokens": 8,
                    "messages": [{"role": "user", "content": "Reply with the single word: pong"}]}).encode()
-req = urllib.request.Request("http://127.0.0.1:4000/v1/chat/completions", data=body, method="POST",
-                             headers={"Authorization": "Bearer " + os.environ["LITELLM_MASTER_KEY"],
-                                      "Content-Type": "application/json"})
+req = urllib.request.Request("http://litellm.ai-platform.svc.cluster.local:4000/v1/chat/completions", data=body,
+                             method="POST", headers={"Authorization": "Bearer " + os.environ["LITELLM_MASTER_KEY"],
+                                                     "Content-Type": "application/json"})
+print("sending", flush=True)
 t0 = time.time()
 try:
     with urllib.request.urlopen(req, timeout=TIMEOUT) as r:
@@ -763,27 +764,87 @@ except urllib.error.HTTPError as e:
     code, text = e.code, e.read().decode(errors="replace")
 except Exception as e:
     code, text = 0, type(e).__name__ + ": " + str(e)
-print(json.dumps({"code": code, "seconds": round(time.time() - t0, 1), "body": text[:300]}))
+print("RESULT " + json.dumps({"code": code, "seconds": round(time.time() - t0, 1), "body": text[:300]}), flush=True)
 """
+COLD_POD = "e2e-cold-start"
+
+
+def cold_request_pod(name: str, image: str) -> dict:
+    """The short-lived pod that sends the cold-start chat. It runs the LiteLLM
+    image (Python, already in the cluster) and gets the master key from its
+    Secret, so the key never leaves the cluster; do-not-disrupt keeps Karpenter
+    from moving it while it waits."""
+    code = COLD_REQUEST_PY.replace("MODEL", json.dumps(name)).replace("TIMEOUT", str(COLD_REQUEST_TIMEOUT))
+    return {
+        "apiVersion": "v1", "kind": "Pod",
+        "metadata": {"name": COLD_POD, "namespace": NS_PLATFORM, "labels": {"app.kubernetes.io/part-of": "e2e"},
+                     "annotations": {"karpenter.sh/do-not-disrupt": "true"}},
+        "spec": {
+            "restartPolicy": "Never",
+            "activeDeadlineSeconds": COLD_REQUEST_TIMEOUT + 120,
+            "containers": [{
+                "name": "chat", "image": image, "command": ["python", "-c", code],
+                "env": [{"name": "LITELLM_MASTER_KEY",
+                         "valueFrom": {"secretKeyRef": {"name": "litellm-secrets", "key": "master-key"}}}],
+                "resources": {"requests": {"cpu": "50m", "memory": "128Mi"}, "limits": {"memory": "256Mi"}},
+            }],
+        },
+    }
 
 
 def cold_request(name: str) -> dict:
-    """One chat for `name` that may wait minutes for the model to start. Sent from
-    inside a LiteLLM pod (in the background, polled): a port-forward that carries
-    no bytes for minutes can be cut on the way to the API server, and the pod
-    already holds the master key, so the key never leaves the cluster."""
-    pod = sorted(litellm_pods())[0]
-    out = f"/tmp/e2e-cold-{int(time.time())}.json"
-    code = COLD_REQUEST_PY.replace("MODEL", json.dumps(name)).replace("TIMEOUT", str(COLD_REQUEST_TIMEOUT))
-    sh(["kubectl", "exec", "-i", "-n", NS_PLATFORM, pod, "-c", "litellm", "--", "sh", "-c",
-        f"cat > {out}.py"], input_=code)
-    sh(["kubectl", "exec", "-n", NS_PLATFORM, pod, "-c", "litellm", "--", "sh", "-c",
-        f"(command -v python3 >/dev/null && P=python3 || P=python; nohup $P {out}.py > {out} 2>&1 &)"])
+    """One chat for `name` that may wait minutes while the model starts, sent by
+    a pod in the cluster; the result is read from its log once it ends.
+    Not through a port-forward: one that carries no bytes for minutes can be cut
+    on the way to the EKS API. Not as a background process exec'd into a
+    LiteLLM pod either: in both fresh jobs of run 45679060534 that request never
+    reached LiteLLM (no GPU node was asked for in 16 min) and left nothing to read."""
+    image = kubectl_json("get", "deployment", "litellm", "-n", NS_PLATFORM)["spec"]["template"]["spec"][
+        "containers"][0]["image"]
+    sh(["kubectl", "delete", "pod", "-n", NS_PLATFORM, COLD_POD, "--ignore-not-found", "--wait=true"], check=False)
+    sh(["kubectl", "apply", "-f", "-"], input_=json.dumps(cold_request_pod(name, image)))
 
-    def done():
-        r = sh(["kubectl", "exec", "-n", NS_PLATFORM, pod, "-c", "litellm", "--", "cat", out], check=False)
-        return json.loads(r.stdout) if r.returncode == 0 and r.stdout.strip().startswith("{") else None
-    return wait_for(f"the cold-start chat to {name}", done, COLD_REQUEST_TIMEOUT + 60, 15)
+    def ended():
+        phase = (kubectl_json("get", "pod", "-n", NS_PLATFORM, COLD_POD).get("status") or {}).get("phase")
+        return phase if phase in ("Succeeded", "Failed") else None
+
+    def output() -> str:
+        return sh(["kubectl", "logs", "-n", NS_PLATFORM, COLD_POD], check=False).stdout.strip()
+    try:
+        # + time for the image on a node that does not have it yet
+        phase = wait_for(f"the cold-start chat to {name}", ended, COLD_REQUEST_TIMEOUT + 300, 15)
+        out = output()
+        line = next((ln for ln in reversed(out.splitlines()) if ln.startswith("RESULT ")), "")
+        if not line:
+            return {"code": None, "seconds": None, "body": f"pod {phase}, no result; log: {out[-300:]}"}
+        return json.loads(line[len("RESULT "):])
+    except TimeoutError as e:
+        raise TimeoutError(f"{e}; pod log: {output()[-300:] or 'empty'}") from None
+    finally:
+        sh(["kubectl", "delete", "pod", "-n", NS_PLATFORM, COLD_POD, "--ignore-not-found", "--wait=false"],
+           check=False)
+
+
+def wake_state(name: str) -> str:
+    """What the autoscaler saw, for a failed wake: replicas, the ScaledObject's
+    Active condition, and the two wake signals in the autoscaling Prometheus."""
+    parts = []
+    try:
+        parts.append(f"replicas {(llmd_deployment(name).get('spec') or {}).get('replicas')}")
+        so = kubectl_json("get", "scaledobject", "-n", NS_INFERENCE, f"{name}-llmd")
+        conds = {cd.get("type"): cd.get("status") for cd in (so.get("status") or {}).get("conditions", [])}
+        parts.append(f"ScaledObject Active={conds.get('Active')} Ready={conds.get('Ready')}")
+        with PortForward(NS_INFERENCE, "deploy/autoscaling-prometheus", 9090) as pf:
+            for label, q in (("router held", f'sum(llm_d_epp_flow_control_queue_size{{pool="{name}"}})'),
+                             ("router running", f'sum(llm_d_epp_request_running{{pool="{name}"}})'),
+                             ("LiteLLM req/s", f'sum(rate(litellm_proxy_total_requests_metric_total'
+                                               f'{{requested_model="{name}"}}[5m]))')):
+                code, body = http("GET", f"{pf.base}/api/v1/query?" + urllib.parse.urlencode({"query": q}))
+                res = (json.loads(body).get("data") or {}).get("result") or [] if code == 200 else []
+                parts.append(f"{label} {res[0]['value'][1] if res else 'none'}")
+    except Exception as e:  # noqa: BLE001 - diagnostics only
+        parts.append(f"state unreadable: {type(e).__name__}: {e}")
+    return "; ".join(parts)
 
 
 def _scale_to_zero_and_back(c: Ctx, name: str) -> tuple[bool, str]:
@@ -821,10 +882,14 @@ def _scale_to_zero_and_back(c: Ctx, name: str) -> tuple[bool, str]:
         gone.append(node)
     t_nodes = time.time() - t0
 
-    res = cold_request(name)
+    try:
+        res = cold_request(name)
+    except TimeoutError as e:
+        raise TimeoutError(f"{e} || wake state: {wake_state(name)}") from None
     if res.get("code") != 200:
         return False, (f"scaled to zero after {t_zero:.0f}s, GPU node(s) gone after {t_nodes:.0f}s; the chat that "
-                       f"should wake it answered HTTP {res.get('code')} after {res.get('seconds')}s: {res.get('body')}")
+                       f"should wake it answered HTTP {res.get('code')} after {res.get('seconds')}s: "
+                       f"{res.get('body')} || wake state: {wake_state(name)}")
     replicas = (llmd_deployment(name).get("spec") or {}).get("replicas")
     return True, (f"0 replicas {t_zero:.0f}s after the idle time was set to {SCALE_TO_ZERO_IDLE_SEC}s; "
                   f"GPU node removed: {', '.join(gone) or 'none'}" + (f"; kept: {'; '.join(kept)}" if kept else "")
@@ -854,6 +919,7 @@ class Load:
         import threading
         self.key, self.model, self.stop_ev = key, model, threading.Event()
         self.sent = self.ok = 0
+        self.failed: dict[str, int] = {}   # non-200 answers and transport errors, by kind
         self.threads = [threading.Thread(target=self._run, daemon=True) for _ in range(LOAD_STREAMS)]
 
     def _run(self):
@@ -866,9 +932,21 @@ class Load:
                         self.sent += 1
                         code, _ = http("POST", f"{pf.base}/v1/chat/completions", body=body, timeout=300,
                                        headers={"Authorization": f"Bearer {self.key}"})
-                        self.ok += code == 200
-            except Exception:  # noqa: BLE001 - port-forward dropped: reopen and keep loading
+                        if code == 200:
+                            self.ok += 1
+                        else:
+                            self.failed[f"HTTP {code}"] = self.failed.get(f"HTTP {code}", 0) + 1
+            except Exception as e:  # noqa: BLE001 - port-forward dropped: reopen and keep loading
+                self.failed[type(e).__name__] = self.failed.get(type(e).__name__, 0) + 1
                 time.sleep(2)
+
+    def summary(self) -> str:
+        """Answered, failed, and still in flight when the check reads it (the
+        streams keep sending until stop(), so up to LOAD_STREAMS are in flight)."""
+        failed = sum(self.failed.values())
+        in_flight = max(self.sent - self.ok - failed, 0)
+        why = f" ({', '.join(f'{k} x{v}' for k, v in sorted(self.failed.items()))})" if failed else ""
+        return f"{self.ok} requests answered 200, {failed} failed{why}, {in_flight} in flight at the end"
 
     def __enter__(self):
         for t in self.threads:
@@ -944,7 +1022,7 @@ def _keda_scale(c: Ctx, name: str, so_name: str) -> tuple[bool, str]:
         t_ready = time.time() - t0
     return True, (f"{so_name}: replicas {before} -> {KEDA_MAX_REPLICAS} after {t_scale:.0f}s of load "
                   f"(scale metric per pod {metric or 'n/a'}); {KEDA_MAX_REPLICAS}/{KEDA_MAX_REPLICAS} Ready after "
-                  f"{t_ready:.0f}s (Karpenter added GPU capacity); {load.ok}/{load.sent} requests 200"
+                  f"{t_ready:.0f}s (Karpenter added GPU capacity); {load.summary()}"
                   + (f"; waited for GPU capacity ({short})" if short else ""))
 
 
