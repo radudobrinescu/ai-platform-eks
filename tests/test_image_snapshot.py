@@ -112,3 +112,67 @@ class TestTerraform:
         block = block[:block.index("\n}\n")]
         assert "--reuse" in block and "--patch-nodeclasses" in block
         assert "kubectl_manifest.karpenter_manifests" in block   # NodeClasses exist first
+
+
+BUILD_AWS = r"""#!/bin/bash
+echo "aws $*" >> "$CALLS"
+case "$*" in
+  *"sts get-caller-identity"*) echo 111122223333 ;;
+  *"describe-snapshots"*) echo None ;;
+  *"describe-subnets"*) echo subnet-1 ;;
+  *"describe-cluster"*"clusterSecurityGroupId"*) echo sg-1 ;;
+  *"describe-cluster"*"cluster.version"*) echo 1.37 ;;
+  *"describe-cluster"*"endpoint"*) echo https://api.example ;;
+  *"describe-cluster"*"certificateAuthority"*) echo Q0E= ;;
+  *"list-instance-profiles-for-role"*) echo c1_123 ;;
+  *"ssm get-parameter"*) echo ami-1 ;;
+  *"run-instances"*)
+    n=$(grep -c "run-instances" "$CALLS")
+    if [ "$n" -le "${PROFILE_ERRORS:-0}" ]; then
+      echo "An error occurred (InvalidParameterValue) when calling the RunInstances operation: Value (c1_123) for parameter iamInstanceProfile.name is invalid. Invalid IAM Instance Profile name" >&2
+      exit 254
+    fi
+    if [ -n "${OTHER_ERROR:-}" ]; then echo "$OTHER_ERROR" >&2; exit 254; fi
+    echo i-0abc ;;
+  *"describe-instances"*) echo vol-1 ;;
+  *"create-snapshot"*) echo snap-0new ;;
+esac
+"""
+
+BUILD_KUBECTL = r"""#!/bin/bash
+echo "kubectl $*" >> "$CALLS"
+case "$*" in
+  *"get nodes"*) echo node-1 ;;
+esac
+"""
+
+
+def _build(tmp_path, **env):
+    for name, body in (("aws", BUILD_AWS), ("kubectl", BUILD_KUBECTL)):
+        f = tmp_path / name
+        f.write_text(body)
+        f.chmod(0o755)
+    calls = tmp_path / "calls"
+    calls.write_text("")
+    e = {**os.environ, "PATH": f"{tmp_path}:{os.environ['PATH']}", "CALLS": str(calls),
+         "LAUNCH_RETRY_SECONDS": "0", **env}
+    r = subprocess.run(["bash", SCRIPT, "-r", "eu-central-1", "-n", "c1", "--reuse",
+                        "docker.io/vllm/vllm-openai:v0.33.0"], capture_output=True, text=True, env=e, timeout=60)
+    return r, calls.read_text()
+
+
+def test_builder_launch_waits_for_a_new_instance_profile(tmp_path):
+    # E2E: Karpenter created the node role's instance profiles 6 s before the
+    # launch and EC2 rejected the name; the build was skipped.
+    r, calls = _build(tmp_path, PROFILE_ERRORS="2")
+    assert r.returncode == 0, r.stdout + r.stderr
+    assert calls.count("run-instances") == 3
+    assert "Snapshot ID:  snap-0new" in r.stdout
+    assert "terminate-instances --instance-ids i-0abc" in calls   # the builder never outlives the script
+    assert "Key=Images,Value=docker.io/vllm/vllm-openai:v0.33.0" in calls
+
+
+def test_builder_launch_does_not_retry_other_errors(tmp_path):
+    r, calls = _build(tmp_path, OTHER_ERROR="An error occurred (UnauthorizedOperation)")
+    assert r.returncode == 1 and calls.count("run-instances") == 1
+    assert "UnauthorizedOperation" in r.stderr

@@ -290,7 +290,12 @@ TOML
 
 # --- Launch builder instance --------------------------------------------------
 echo "→ Launching builder instance..."
-INSTANCE_ID=$(aws ec2 run-instances --region "$REGION" \
+# Karpenter creates the node role's instance profiles when it reconciles the
+# EC2NodeClasses, seconds before this runs in a fresh apply, and IAM is
+# eventually consistent: EC2 then answers "Invalid IAM Instance Profile name"
+# for a while (seen in E2E 6 s after creation). Retry that error only.
+launch_builder() {
+  aws ec2 run-instances --region "$REGION" \
   --image-id "$BR_AMI" \
   --instance-type "$INSTANCE_TYPE" \
   --subnet-id "$SUBNET" \
@@ -305,7 +310,25 @@ INSTANCE_ID=$(aws ec2 run-instances --region "$REGION" \
     {Key=Name,Value=${CLUSTER_NAME}-snapshot-builder},
     {Key=Purpose,Value=data-volume-snapshot}
   ]" \
-  --query "Instances[0].InstanceId" --output text)
+  --query "Instances[0].InstanceId" --output text
+}
+INSTANCE_ID=""
+for attempt in $(seq 1 "${LAUNCH_ATTEMPTS:-18}"); do
+  if out=$(launch_builder 2>&1); then
+    INSTANCE_ID="$out"
+    break
+  fi
+  if [[ "$out" != *"iamInstanceProfile"* ]]; then
+    echo "Error: run-instances failed: $out" >&2
+    exit 1
+  fi
+  echo "  instance profile not visible to EC2 yet (attempt ${attempt}); retrying in 10s"
+  sleep "${LAUNCH_RETRY_SECONDS:-10}"
+done
+if [[ ! "$INSTANCE_ID" =~ ^i-[0-9a-f]+$ ]]; then
+  echo "Error: builder instance not launched: ${out:-no output}" >&2
+  exit 1
+fi
 
 echo "  Instance: $INSTANCE_ID"
 
