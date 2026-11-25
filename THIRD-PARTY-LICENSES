@@ -46,29 +46,37 @@ SOFTWARE DEPLOYED / FETCHED AT RUNTIME (referenced, not redistributed)
    Copyright The Kubernetes Authors. License: Apache-2.0.
 
 
-Container images (pinned tags in platform/services/**):
+Container images (pinned tags in platform/** and terraform/**):
 
   ** vLLM — https://github.com/vllm-project/vllm
      image: vllm/vllm-openai (the serving engine behind all three tiers)
-     License: Apache-2.0
+     License: Apache-2.0. The image is built on NVIDIA's CUDA base image, so the
+     bundled CUDA libraries are under the NVIDIA CUDA license terms.
 
   ** LiteLLM — https://github.com/BerriAI/litellm
      image: litellm/litellm:<tag>
-     License: MIT
+     License: MIT, except the "enterprise/" directory, which is under the
+     proprietary BerriAI Enterprise license. See "Licensing notes" below: the
+     official image installs that package, and some features are documented as
+     Enterprise-only.
 
   ** Open WebUI — https://github.com/open-webui/open-webui
      image: ghcr.io/open-webui/open-webui:<tag>
      License: Open WebUI License (BSD-3-Clause + branding-protection clause).
-     ** NOT a standard OSI license. ** Removing/altering the "Open WebUI"
-     branding is a material breach for deployments over 50 users; deployments of
-     50 or fewer users may rebrand. Operators who run this sample pull that image
-     and are subject to these terms.
+     ** NOT a standard OSI license. ** Removing, altering or co-branding the
+     "Open WebUI" branding (name, logo, adding your own name or logo next to it)
+     is a material breach for deployments with more than 50 end users in any
+     rolling 30 days, unless you have written permission or an Open WebUI
+     enterprise license. This project does not change the branding. Older parts
+     of the code base are MIT or BSD-3 (see LICENSE_NOTICE in that repository).
+     Operators who run this sample pull that image and are subject to these terms.
 
   ** Langfuse — https://github.com/langfuse/langfuse
-     deployed via the langfuse Helm chart (observability/tracing)
-     License: MIT for the core; some enterprise ("ee") features are under a
-     separate commercial license. This project deploys the OSS core (no "ee"
-     feature is enabled by default).
+     deployed via the langfuse Helm chart (observability/tracing); copyright
+     ClickHouse, Inc.
+     License: MIT, except the "ee" directories, which are under a commercial
+     license. The image contains that code; it stays inactive without a
+     LANGFUSE_EE_LICENSE_KEY, and this project sets none and uses no "ee" feature.
 
   ** ClickHouse — https://github.com/ClickHouse/ClickHouse
      image: clickhouse/clickhouse-server (Langfuse's trace store,
@@ -84,22 +92,114 @@ Container images (pinned tags in platform/services/**):
      (S3-compatible blob storage for Langfuse)
      License: Apache License 2.0
 
+  ** PostgreSQL — https://www.postgresql.org
+     image: postgres:<tag>-alpine (the shared platform database)
+     License: PostgreSQL License; the Docker packaging is MIT; the Alpine base
+     contains GPL-licensed userland packages.
+
+  ** Prometheus — https://github.com/prometheus/prometheus
+     image: prom/prometheus (the autoscaling Prometheus KEDA reads)
+     License: Apache-2.0
+
   ** oauth2-proxy — https://github.com/oauth2-proxy/oauth2-proxy
      image: quay.io/oauth2-proxy/oauth2-proxy:<tag>
+     License: MIT
+
+  ** Python — https://www.python.org
+     image: python:<tag>-slim (dashboard, litellm-sync, Platform Health Agent jobs)
+     License: PSF License; Debian packages under their own licenses.
+
+  ** alpine/k8s — https://github.com/alpine-docker/k8s
+     image: alpine/k8s (kubectl helper jobs)
+     License: MIT for the image build; the bundled tools keep their own licenses.
+
+  ** AWS CLI — https://github.com/aws/aws-cli
+     image: amazon/aws-cli (helper jobs)
+     License: Apache-2.0
+
+  ** s5cmd — https://github.com/peak/s5cmd
+     image: peakcom/s5cmd (model cache copy)
      License: MIT
 
   ** curl (container) — https://github.com/curl/curl-container ; https://curl.se
      image: curlimages/curl (health/probe helpers)
      License: curl license (MIT/X-style)
 
+  ** llm-d routing sidecar — https://github.com/llm-d/llm-d-routing-sidecar
+     image: ghcr.io/llm-d/llm-d-routing-sidecar (disaggregated tier)
+     License: Apache-2.0
+
 Helm charts / platform components (pulled at deploy time):
 
-  ** NVIDIA GPU Operator — https://github.com/NVIDIA/gpu-operator          License: Apache-2.0
+  ** NVIDIA GPU Operator — https://github.com/NVIDIA/gpu-operator
+     Chart and source: Apache-2.0. The container images it runs (operator,
+     validator, DCGM, dcgm-exporter, node-feature-discovery and others) are
+     distributed by NVIDIA under the NVIDIA Software License Agreement and the
+     Product-Specific Terms for NVIDIA AI Products (no-cost "community" terms for
+     the public NGC images): https://docs.nvidia.com/datacenter/cloud-native/gpu-operator/latest/overview.html
+     Installing the GPU Operator accepts those terms. The GPU driver comes from
+     the Bottlerocket NVIDIA AMI, under NVIDIA's driver license.
   ** Argo CD (argo-helm) — https://github.com/argoproj/argo-cd             License: Apache-2.0
-  ** KRO (Kube Resource Orchestrator) — https://github.com/kro-run/kro     License: Apache-2.0
+  ** KRO (Kube Resource Orchestrator) — https://github.com/kubernetes-sigs/kro  License: Apache-2.0
+  ** KEDA — https://github.com/kedacore/keda                               License: Apache-2.0
   ** Karpenter — https://github.com/aws/karpenter-provider-aws             License: Apache-2.0
-  ** llm-d (llm-d-router-standalone) — https://github.com/llm-d/llm-d      License: Apache-2.0
+  ** AWS Load Balancer Controller — https://github.com/kubernetes-sigs/aws-load-balancer-controller  License: Apache-2.0
+  ** llm-d router (llm-d-router-standalone) — https://github.com/llm-d/llm-d-router  License: Apache-2.0
+  ** Langfuse chart — https://github.com/langfuse/langfuse-k8s             License: MIT
+  ** Valkey chart — https://github.com/valkey-io/valkey-helm               License: BSD-3-Clause
+  ** SeaweedFS chart — https://github.com/seaweedfs/seaweedfs              License: Apache-2.0
   ** AWS EKS Blueprints Addons — https://github.com/aws-ia/terraform-aws-eks-blueprints-addons  License: Apache-2.0
+  ** Grafana Operator (optional OSS observability stage) — https://github.com/grafana/grafana-operator  License: Apache-2.0
+
+Services and optional components:
+
+  ** Amazon Bedrock, Amazon Managed Grafana and Amazon Managed Service for
+     Prometheus are AWS services, used under your AWS agreement. Amazon Managed
+     Grafana is created without a Grafana Enterprise license.
+  ** Kiro (the optional Platform Health Agent) is a proprietary service with paid
+     tiers (https://kiro.dev/pricing/). It is off unless you set
+     platform_health_agent_enabled and provide an API key.
+
+================================================================================
+LICENSING NOTES (read before running this in production)
+================================================================================
+
+Nothing in this project needs a paid license to run as shipped. The following
+points are disclosed so that you can decide for your own deployment.
+
+  LiteLLM
+  - The official image installs the "litellm-enterprise" Python package
+    (proprietary, BerriAI Enterprise license; its terms say production use
+    requires a BerriAI subscription). LiteLLM's open-source proxy imports it and
+    calls into it on every request even when no license is set; LiteLLM
+    publishes this image as its free, self-hostable gateway. If this matters for
+    you, confirm with BerriAI (info@berri.ai).
+  - Admin UI single sign-on is free for up to 5 users. LiteLLM counts the rows
+    of its own user table (people who signed in to the LiteLLM UI, plus the
+    dashboard's viewer account); from the 6th, an SSO login to the LiteLLM UI is
+    refused with HTTP 403 unless LITELLM_LICENSE is set. Open WebUI users are
+    end users in LiteLLM and do not count; chat is not affected.
+  - Per-team logging ("./platformctl onboard-team --langfuse-secret", which
+    calls POST /team/<id>/callback) is documented by LiteLLM as an Enterprise
+    feature. In the pinned version the code is MIT and has no license check.
+  - These are documented as Enterprise-only and are not used by this project:
+    guardrails or policies per key/team, team admins, organizations,
+    model_max_budget, tag budgets, key regeneration, team-scoped models, JWT/OIDC
+    authentication of API calls, audit logs. Check
+    https://docs.litellm.ai/docs/enterprise before enabling them.
+  - GET /health/license on the proxy shows the license state ("community"
+    without a license).
+
+  Data sent to third parties by default
+  - Langfuse sends anonymous usage telemetry to Langfuse (PostHog) every 12
+    hours: version, counts of projects, traces and observations, and up to 30
+    user email domains with their counts. Set TELEMETRY_ENABLED=false in
+    platform/services/langfuse/helm-values.yaml (langfuse.additionalEnv) to stop it.
+  - vLLM sends anonymous usage statistics to stats.vllm.ai unless
+    VLLM_NO_USAGE_STATS=1 is set on the model server.
+  - ClickHouse's default server configuration sends crash reports to
+    crash.clickhouse.com.
+  - Open WebUI's image turns its telemetry off.
 
 Infrastructure baseline:
 

@@ -415,3 +415,10 @@ See [THIRD-PARTY-LICENSES](THIRD-PARTY-LICENSES) for attribution.
 > branding-retention clause). It is pulled at runtime by image reference and is
 > not part of this sample's source; operators who deploy the sample pull that
 > image and are subject to its terms.
+
+Nothing in this sample needs a paid license to run as shipped. A few points are
+worth knowing before production use: the LiteLLM image includes a proprietary
+package, LiteLLM's admin UI SSO is free for up to 5 users, per-team logging is
+documented by LiteLLM as an Enterprise feature, and Langfuse, vLLM and
+ClickHouse send telemetry by default. Details and opt-outs:
+[THIRD-PARTY-LICENSES](THIRD-PARTY-LICENSES), "Licensing notes".
