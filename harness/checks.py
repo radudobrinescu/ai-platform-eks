@@ -567,37 +567,65 @@ def chk_scrape_targets(c: Ctx):
     return True, f"{len(seen['jobs'])} scrape target{'' if len(seen['jobs']) == 1 else 's'} up ({', '.join(jobs)})"
 
 
-# KEDA autoscaling (see platform/config/kro/llmd-endpoint.yaml, ScaledObject):
-# the pool scales on sum(vllm:num_requests_waiting) / targetQueueDepth. A 0.5B
-# model on a GPU never queues under a light load, so the test edits the model
-# file the way a user would: maxReplicas 2, targetQueueDepth 2, and vLLM limited
-# to 2 concurrent sequences, so LOAD_STREAMS parallel requests keep ~10 waiting.
+# KEDA autoscaling (see platform/config/kro/llmd-endpoint.yaml, ScaledObject).
+# Since scale to zero the pool scales on the requests in flight that the llm-d
+# router reports, per replica targetInflight; before, on
+# sum(vllm:num_requests_waiting) / targetQueueDepth. A 0.5B model on a GPU never
+# queues under a light load, so the test edits the model file the way a user
+# would: maxReplicas 2, the per-replica target 2, and vLLM limited to 2
+# concurrent sequences, so LOAD_STREAMS parallel requests keep ~10 waiting.
+# The generated file names the target the subject uses (targetInflight or
+# targetQueueDepth); that one is set.
 KEDA_MAX_REPLICAS = 2
-KEDA_TARGET_QUEUE_DEPTH = 2
+KEDA_TARGET_PER_REPLICA = 2
 KEDA_MAX_NUM_SEQS = 2
 LOAD_STREAMS = 12
 SCALE_DECISION_TIMEOUT = 600   # KEDA polls every 30 s, HPA scale-up window 30 s, metric over 1 m
 
 
-def tune_llmd_for_autoscale(text: str) -> str:
-    """Return the LLMDEndpoint YAML with the KEDA test settings, edited line by
-    line so the file still reads like the generated one."""
+def _set_spec_lines(text: str, values: dict, note: str, refuse: tuple[str, ...] = ()) -> str:
+    """Set top-level spec keys of a model file line by line (append missing
+    ones), so the file still reads like the generated one."""
     out, seen = [], set()
     for line in text.splitlines():
-        m = re.match(r"^  (maxReplicas|targetQueueDepth):", line)
-        if m:
-            key = m.group(1)
-            seen.add(key)
-            val = KEDA_MAX_REPLICAS if key == "maxReplicas" else KEDA_TARGET_QUEUE_DEPTH
-            line = f"  {key}: {val}   # E2E: KEDA autoscaling check"
-        if re.match(r"^  extraArgs:", line):
-            raise ValueError("model file already sets extraArgs; refusing to overwrite them")
+        m = re.match(r"^  ([A-Za-z]+):", line)
+        if m and m.group(1) in refuse:
+            raise ValueError(f"model file already sets {m.group(1)}; refusing to overwrite it")
+        if m and m.group(1) in values:
+            seen.add(m.group(1))
+            line = f"  {m.group(1)}: {values[m.group(1)]}   # E2E: {note}"
         out.append(line)
-    for key, val in (("maxReplicas", KEDA_MAX_REPLICAS), ("targetQueueDepth", KEDA_TARGET_QUEUE_DEPTH)):
-        if key not in seen:
-            out.append(f"  {key}: {val}   # E2E: KEDA autoscaling check")
-    out.append(f'  extraArgs: ["--max-num-seqs", "{KEDA_MAX_NUM_SEQS}"]   # E2E: make a small load queue')
+    out += [f"  {k}: {v}   # E2E: {note}" for k, v in values.items() if k not in seen]
     return "\n".join(out) + "\n"
+
+
+def tune_llmd_for_autoscale(text: str) -> str:
+    """Return the LLMDEndpoint YAML with the KEDA test settings."""
+    target = "targetInflight" if re.search(r"^  targetInflight:", text, re.M) else "targetQueueDepth"
+    out = _set_spec_lines(text, {"maxReplicas": KEDA_MAX_REPLICAS, target: KEDA_TARGET_PER_REPLICA},
+                          "KEDA autoscaling check", refuse=("extraArgs",))
+    return out + f'  extraArgs: ["--max-num-seqs", "{KEDA_MAX_NUM_SEQS}"]   # E2E: make a small load queue\n'
+
+
+# Scale to zero (LLMDEndpoint minReplicas 0). The smoke model is deployed with
+# --min-replicas 0 when the subject has it; the check then shortens the idle
+# time so the model stops within minutes, waits for its GPU node to go, and
+# sends one chat that has to wake it.
+SCALE_TO_ZERO_IDLE_SEC = 60          # the schema's minimum
+SCALE_TO_ZERO_TIMEOUT = 600          # last request -> 0 replicas (1 m metric window + idle + polling)
+GPU_NODE_GONE_TIMEOUT = 900          # Karpenter removes an empty node after 5 min
+COLD_REQUEST_TIMEOUT = 900           # router hold (10 min) + answer; LiteLLM gives it 12 min
+
+
+def subject_scales_to_zero(c: Ctx) -> bool:
+    try:
+        return "scaleToZeroAfterSeconds" in c.subject.read("platform/config/kro/llmd-endpoint.yaml")
+    except OSError:
+        return False
+
+
+def tune_llmd_for_scale_to_zero(text: str) -> str:
+    return _set_spec_lines(text, {"scaleToZeroAfterSeconds": SCALE_TO_ZERO_IDLE_SEC}, "scale-to-zero check")
 
 
 def push_model_edit(c: Ctx, rel: str, message: str) -> None:
@@ -622,8 +650,9 @@ def start_llmd_model(c: Ctx) -> None:
     name = model_name_from_id(LLMD_SMOKE_MODEL)
     if c.subject.find_model_file(name):
         raise RuntimeError(f"a model named {name} is already deployed; cannot add the llm-d copy under the same name")
+    zero = ["--min-replicas", "0"] if subject_scales_to_zero(c) else []
     c.llmd_created = deploy_model(c, name, LLMD_SMOKE_MODEL, "--tier", "llm-d", "--users", "4", "--seq", "2048",
-                                  under="workloads/scale-models")
+                                  *zero, under="workloads/scale-models")
     c.llmd_model = name
     rel = c.subject.find_model_file(name, "workloads/scale-models")
     with open(c.subject.path(rel), encoding="utf-8") as fh:
@@ -665,6 +694,118 @@ def chk_llmd_roundtrip(c: Ctx):
     wait_alias(c, name, c.timeouts["bedrock"])
     code, _body = chat_via_service(c.litellm_key(), name)
     return code == 200, f"{name} routed via llm-d; chat HTTP {code}"
+
+
+def llmd_pods(name: str) -> list[dict]:
+    """The model's vLLM pods that are not being deleted."""
+    return [p for p in kubectl_json("get", "pods", "-n", NS_INFERENCE, "-l", f"llm-d.ai/pool={name}").get("items", [])
+            if not (p.get("metadata") or {}).get("deletionTimestamp")]
+
+
+def _gpu_pods_on(node: str) -> list[str]:
+    pods = kubectl_json("get", "pods", "-A", "--field-selector", f"spec.nodeName={node}").get("items", [])
+    return [f"{p['metadata']['namespace']}/{p['metadata']['name']}" for p in pods
+            if any("nvidia.com/gpu" in ((ct.get("resources") or {}).get("requests") or {})
+                   for ct in (p.get("spec") or {}).get("containers") or [])
+            and (p.get("status") or {}).get("phase") not in ("Succeeded", "Failed")]
+
+
+COLD_REQUEST_PY = """
+import json, os, time, urllib.error, urllib.request
+body = json.dumps({"model": MODEL, "max_tokens": 8,
+                   "messages": [{"role": "user", "content": "Reply with the single word: pong"}]}).encode()
+req = urllib.request.Request("http://127.0.0.1:4000/v1/chat/completions", data=body, method="POST",
+                             headers={"Authorization": "Bearer " + os.environ["LITELLM_MASTER_KEY"],
+                                      "Content-Type": "application/json"})
+t0 = time.time()
+try:
+    with urllib.request.urlopen(req, timeout=TIMEOUT) as r:
+        code, text = r.status, r.read().decode()
+except urllib.error.HTTPError as e:
+    code, text = e.code, e.read().decode(errors="replace")
+except Exception as e:
+    code, text = 0, type(e).__name__ + ": " + str(e)
+print(json.dumps({"code": code, "seconds": round(time.time() - t0, 1), "body": text[:300]}))
+"""
+
+
+def cold_request(name: str) -> dict:
+    """One chat for `name` that may wait minutes for the model to start. Sent from
+    inside a LiteLLM pod (in the background, polled): a port-forward that carries
+    no bytes for minutes can be cut on the way to the API server, and the pod
+    already holds the master key, so the key never leaves the cluster."""
+    pod = sorted(litellm_pods())[0]
+    out = f"/tmp/e2e-cold-{int(time.time())}.json"
+    code = COLD_REQUEST_PY.replace("MODEL", json.dumps(name)).replace("TIMEOUT", str(COLD_REQUEST_TIMEOUT))
+    sh(["kubectl", "exec", "-i", "-n", NS_PLATFORM, pod, "-c", "litellm", "--", "sh", "-c",
+        f"cat > {out}.py"], input_=code)
+    sh(["kubectl", "exec", "-n", NS_PLATFORM, pod, "-c", "litellm", "--", "sh", "-c",
+        f"(command -v python3 >/dev/null && P=python3 || P=python; nohup $P {out}.py > {out} 2>&1 &)"])
+
+    def done():
+        r = sh(["kubectl", "exec", "-n", NS_PLATFORM, pod, "-c", "litellm", "--", "cat", out], check=False)
+        return json.loads(r.stdout) if r.returncode == 0 and r.stdout.strip().startswith("{") else None
+    return wait_for(f"the cold-start chat to {name}", done, COLD_REQUEST_TIMEOUT + 60, 15)
+
+
+def _scale_to_zero_and_back(c: Ctx, name: str) -> tuple[bool, str]:
+    rel = c.subject.find_model_file(name, "workloads/scale-models")
+    if not rel:
+        return False, f"no model file for {name}"
+    spec = (kubectl_json("get", "llmdendpoint", "-n", NS_INFERENCE, name).get("spec") or {})
+    if spec.get("minReplicas") != 0:
+        return False, f"{name} has minReplicas {spec.get('minReplicas')}, expected 0 (deployed with --min-replicas 0)"
+    nodes = sorted({(p.get("spec") or {}).get("nodeName") for p in llmd_pods(name)} - {None})
+    with open(c.subject.path(rel), encoding="utf-8") as fh:
+        tuned = tune_llmd_for_scale_to_zero(fh.read())
+    with open(c.subject.path(rel), "w", encoding="utf-8") as fh:
+        fh.write(tuned)
+    push_model_edit(c, rel, f"e2e: {name} idles to zero after {SCALE_TO_ZERO_IDLE_SEC}s")
+
+    t0 = time.time()
+    def at_zero():
+        d = llmd_deployment(name)
+        return ((d.get("spec") or {}).get("replicas") == 0 and not llmd_pods(name)) or None
+    wait_for(f"{name} scaled to zero", at_zero, SCALE_TO_ZERO_TIMEOUT, 15)
+    t_zero = time.time() - t0
+    st = kubectl_json("get", "llmdendpoint", "-n", NS_INFERENCE, name).get("status") or {}
+    if st.get("ready") != "True" or st.get("scaledToZero") is not True:
+        return False, f"at zero replicas the endpoint reports ready={st.get('ready')} scaledToZero={st.get('scaledToZero')}"
+
+    gone, kept = [], []
+    for node in nodes:
+        others = _gpu_pods_on(node)
+        if others:
+            kept.append(f"{node} (also runs {', '.join(others[:2])})")
+            continue
+        wait_for(f"GPU node {node} removed", lambda n=node: not kubectl_json(
+            "get", "node", "--ignore-not-found", n) or None, GPU_NODE_GONE_TIMEOUT, 20)
+        gone.append(node)
+    t_nodes = time.time() - t0
+
+    res = cold_request(name)
+    if res.get("code") != 200:
+        return False, (f"scaled to zero after {t_zero:.0f}s, GPU node(s) gone after {t_nodes:.0f}s; the chat that "
+                       f"should wake it answered HTTP {res.get('code')} after {res.get('seconds')}s: {res.get('body')}")
+    replicas = (llmd_deployment(name).get("spec") or {}).get("replicas")
+    return True, (f"0 replicas {t_zero:.0f}s after the idle time was set to {SCALE_TO_ZERO_IDLE_SEC}s; "
+                  f"GPU node removed: {', '.join(gone) or 'none'}" + (f"; kept: {'; '.join(kept)}" if kept else "")
+                  + f"; cold start: one chat answered 200 after {res.get('seconds')}s; replicas now {replicas}")
+
+
+def chk_llmd_scale_to_zero(c: Ctx):
+    name = c.llmd_model
+    if not name:
+        return False, "no llm-d endpoint was deployed (see llmdendpoint-routed-chat)"
+    try:
+        return _scale_to_zero_and_back(c, name)
+    except TimeoutError as e:
+        short = capacity_shortage(f"{name}-llmd", time.time() - CAPACITY_LOOKBACK)
+        return False, f"{e}" + (f"; the cloud had no GPU capacity: {short}" if short else "")
+
+
+def _only_scale_to_zero(c: Ctx) -> str | None:
+    return _only_llmd(c) or (None if subject_scales_to_zero(c) else "the subject has no llm-d scale to zero")
 
 
 class Load:
@@ -764,7 +905,7 @@ def _keda_scale(c: Ctx, name: str, so_name: str) -> tuple[bool, str]:
         wait_for(f"{KEDA_MAX_REPLICAS} ready replicas of {so_name}", all_ready, c.timeouts["gpu"], 20)
         t_ready = time.time() - t0
     return True, (f"{so_name}: replicas {before} -> {KEDA_MAX_REPLICAS} after {t_scale:.0f}s of load "
-                  f"(queue metric per pod {metric or 'n/a'}); {KEDA_MAX_REPLICAS}/{KEDA_MAX_REPLICAS} Ready after "
+                  f"(scale metric per pod {metric or 'n/a'}); {KEDA_MAX_REPLICAS}/{KEDA_MAX_REPLICAS} Ready after "
                   f"{t_ready:.0f}s (Karpenter added GPU capacity); {load.ok}/{load.sent} requests 200"
                   + (f"; waited for GPU capacity ({short})" if short else ""))
 
@@ -858,6 +999,7 @@ CHECKS: list[tuple[str, str, object, object]] = [
     ("inference", "dcgm-gpu-metrics",               chk_dcgm_metrics,       None),
     ("inference", "autoscaling-scrape-targets-up",  chk_scrape_targets,     None),
     ("inference", "llmdendpoint-routed-chat",       chk_llmd_roundtrip,     _only_llmd),
+    ("inference", "llmd-scales-to-zero-and-back",   chk_llmd_scale_to_zero, _only_scale_to_zero),
     ("inference", "keda-autoscales-llmd-on-queue-depth", chk_keda_autoscaling, _only_llmd),
     # Last: on a new cluster its LiteLLM sources wait for the key job (see above).
     ("gateway",   "cluster-dashboard-sources-ok",   chk_dashboard_sources,  None),

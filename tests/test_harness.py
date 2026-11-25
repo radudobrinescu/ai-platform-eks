@@ -37,9 +37,9 @@ class TestRegistry:
         assert want, "could not parse domains from COMPATIBILITY.md"
         assert want <= set(checks.DOMAINS), f"domains without a check: {want - set(checks.DOMAINS)}"
 
-    def test_twenty_four_unique_checks(self):
+    def test_twenty_five_unique_checks(self):
         names = [n for _, n, _, _ in checks.CHECKS]
-        assert len(names) == 24 and len(set(names)) == 24
+        assert len(names) == 25 and len(set(names)) == 25
         assert all(callable(fn) for _, _, fn, _ in checks.CHECKS)
 
     def test_gpu_check_runs_before_its_dependents(self):
@@ -359,11 +359,37 @@ def test_tune_llmd_sets_the_keda_test_knobs_and_keeps_the_rest():
     spec = yaml.safe_load(out)["spec"]
     assert spec["minReplicas"] == 1
     assert spec["maxReplicas"] == checks.KEDA_MAX_REPLICAS == 2
-    assert spec["targetQueueDepth"] == checks.KEDA_TARGET_QUEUE_DEPTH
+    assert spec["targetQueueDepth"] == checks.KEDA_TARGET_PER_REPLICA
+    assert "targetInflight" not in spec   # a subject without it: keep to the field it has
     assert spec["extraArgs"] == ["--max-num-seqs", str(checks.KEDA_MAX_NUM_SEQS)]
     assert spec["routingProfile"] == "balanced" and spec["maxModelLen"] == 2048
     # enough parallel streams to keep a queue above the target on one replica
-    assert checks.LOAD_STREAMS - checks.KEDA_MAX_NUM_SEQS > checks.KEDA_TARGET_QUEUE_DEPTH * checks.KEDA_MAX_REPLICAS
+    assert checks.LOAD_STREAMS - checks.KEDA_MAX_NUM_SEQS > checks.KEDA_TARGET_PER_REPLICA * checks.KEDA_MAX_REPLICAS
+
+
+GENERATED_LLMD_SCALE_TO_ZERO = GENERATED_LLMD.replace(
+    "  minReplicas: 1\n", "  minReplicas: 0   # scale to zero when idle\n"
+                          "  scaleToZeroAfterSeconds: 600   # idle time before the last replica stops\n"
+                          "  coldStartTimeoutSeconds: 600\n").replace(
+    "  targetQueueDepth: 20\n", "  targetInflight: 16   # requests in flight per replica before KEDA adds one\n")
+
+
+def test_tune_llmd_sets_targetinflight_when_the_subject_has_it():
+    import yaml
+    import checks
+    spec = yaml.safe_load(checks.tune_llmd_for_autoscale(GENERATED_LLMD_SCALE_TO_ZERO))["spec"]
+    assert spec["targetInflight"] == checks.KEDA_TARGET_PER_REPLICA and "targetQueueDepth" not in spec
+    assert spec["minReplicas"] == 0 and spec["maxReplicas"] == checks.KEDA_MAX_REPLICAS
+
+
+def test_scale_to_zero_tune_shortens_only_the_idle_time():
+    import yaml
+    import checks
+    out = checks.tune_llmd_for_scale_to_zero(checks.tune_llmd_for_autoscale(GENERATED_LLMD_SCALE_TO_ZERO))
+    spec = yaml.safe_load(out)["spec"]
+    assert spec["scaleToZeroAfterSeconds"] == checks.SCALE_TO_ZERO_IDLE_SEC == 60
+    assert spec["coldStartTimeoutSeconds"] == 600 and spec["maxReplicas"] == checks.KEDA_MAX_REPLICAS
+    assert out.count("scaleToZeroAfterSeconds") == 1
 
 
 def test_tune_llmd_adds_missing_keys_and_refuses_existing_extra_args():
@@ -380,9 +406,41 @@ def test_tune_llmd_adds_missing_keys_and_refuses_existing_extra_args():
 def test_keda_check_runs_after_the_llmd_check_with_the_same_gate():
     import checks
     names = [n for _d, n, _f, _w in checks.CHECKS]
-    i, j = names.index("llmdendpoint-routed-chat"), names.index("keda-autoscales-llmd-on-queue-depth")
-    assert j == i + 1
+    i, z, j = (names.index("llmdendpoint-routed-chat"), names.index("llmd-scales-to-zero-and-back"),
+               names.index("keda-autoscales-llmd-on-queue-depth"))
+    # scale to zero runs on the warm model, before the KEDA check removes it
+    assert i < z < j and j == z + 1 == i + 2
     assert checks.CHECKS[j][3] is checks.CHECKS[i][3] is checks._only_llmd
+    assert checks.CHECKS[z][3] is checks._only_scale_to_zero
+
+
+class _Subject:
+    def __init__(self, rgd: str | None):
+        self.rgd = rgd
+
+    def read(self, rel):
+        if self.rgd is None:
+            raise FileNotFoundError(rel)
+        return self.rgd
+
+
+def test_scale_to_zero_check_skips_a_subject_without_it():
+    import checks
+    old = checks.Ctx(subject=_Subject("      minReplicas: \"integer | default=1 minimum=1\""), cluster="x", with_llmd=True)
+    new = checks.Ctx(subject=_Subject("      scaleToZeroAfterSeconds: \"integer | default=600\""), cluster="x",
+                     with_llmd=True)
+    assert "no llm-d scale to zero" in checks._only_scale_to_zero(old)
+    assert checks._only_scale_to_zero(new) is None
+    assert checks._only_scale_to_zero(checks.Ctx(subject=_Subject(None), cluster="x", with_llmd=True))
+    assert "llm-d tier not requested" in checks._only_scale_to_zero(checks.Ctx(subject=new.subject, cluster="x"))
+
+
+def test_cold_request_script_is_valid_python_with_the_model_inlined():
+    import ast
+    import checks
+    code = checks.COLD_REQUEST_PY.replace("MODEL", '"qwen2-0-5b-instruct"').replace("TIMEOUT", "900")
+    ast.parse(code)
+    assert '"model": "qwen2-0-5b-instruct"' in code and "timeout=900" in code
 
 
 def test_keda_check_reports_a_missing_llmd_endpoint_instead_of_crashing():
