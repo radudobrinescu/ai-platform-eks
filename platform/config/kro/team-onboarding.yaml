@@ -37,6 +37,8 @@ spec:
       # Name of a Secret in the `ai-platform` namespace holding this team's
       # Langfuse project keys under data keys `public-key` and `secret-key`.
       # Optional — leave as "none" (default) to skip per-team Langfuse routing.
+      # LiteLLM documents per-team logging (POST /team/<id>/callback) as an
+      # Enterprise feature; see THIRD-PARTY-LICENSES, "Licensing notes".
       langfuseSecretName: "string | default=none"
     status:
       namespace:      "${teamNamespace.metadata.name}"

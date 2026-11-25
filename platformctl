@@ -1058,7 +1058,9 @@ cmd_onboard_team() {
   e.g. platformctl onboard-team search --gpu 4 --budget 500 --models qwen3-3b,claude-opus-4-8 --deploy
   flags: --models a,b (default *)  --budget USD (100.0)  --budget-duration 30d
          --rpm 100  --tpm 100000  --cpu 4  --memory 8Gi  --gpu 0
-         --langfuse-secret NAME  --deploy  -y  --force"
+         --langfuse-secret NAME  --deploy  -y  --force
+  --langfuse-secret routes the team's traces to its own Langfuse project; LiteLLM
+  documents per-team logging as an Enterprise feature (THIRD-PARTY-LICENSES)."
 
   # Schema: teamName is ALSO the team-<name> namespace, so it must be a DNS-1123
   # label (<=40 chars) — reject here instead of failing namespace creation later.
