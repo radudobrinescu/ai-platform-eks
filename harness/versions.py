@@ -15,6 +15,7 @@ import glob
 import json
 import os
 import re
+import subprocess
 
 # (key, file relative to the product root, regex with one group = the version)
 NAMED_PINS: list[tuple[str, str, str]] = [
@@ -139,6 +140,23 @@ def release_manifests(root: str) -> dict[str, dict]:
         with open(path, encoding="utf-8") as fh:
             out[name] = json.load(fh)
     return out
+
+
+def release_at(root: str, ref: str) -> str:
+    """Highest release whose manifest is in `ref`'s tree, or 'baseline'. Reads
+    git objects, so `ref` need not be checked out."""
+    r = subprocess.run(["git", "-C", root, "ls-tree", "--name-only", f"{ref}:releases"],
+                       capture_output=True, text=True)
+    names = [n[:-5] for n in r.stdout.split() if n.endswith(".json") and VERSION_RX.match(n[:-5])] \
+        if r.returncode == 0 else []
+    return max(names, key=version_key) if names else "baseline"
+
+
+def is_newer_release(candidate: str, base: str) -> bool:
+    """'baseline' (no manifest) is older than any release."""
+    if candidate == "baseline":
+        return False
+    return base == "baseline" or version_key(candidate) > version_key(base)
 
 
 def current_release(root: str) -> tuple[str, dict | None]:

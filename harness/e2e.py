@@ -357,6 +357,11 @@ class Runner:
     def run_upgrade(self) -> None:
         if not self.step("branch", lambda: self.prepare_branch(self.a.base)):
             return
+        # Before anything is built: `./platformctl upgrade` applies only a newer
+        # release, so a candidate on the base's release would fail its upgrade
+        # step after ~35 min of provisioning and seeding.
+        if not self.step("candidate-is-newer", self.candidate_is_newer):
+            return
         if not self.dry:
             self.report.versions["base"] = versions.read_versions(self.subject.root)
         if not self.step("tfvars", self.render_tfvars) or not self.step("provision", self.provision):
@@ -405,6 +410,19 @@ class Runner:
         if upgraded:
             self.smoke()
             self.kubernetes_bump()
+
+    def candidate_is_newer(self) -> tuple[bool, str]:
+        if self.dry:
+            self.subject.plan(f"compare the release manifests of {self.a.base} and {self.a.candidate}")
+            return True, ""
+        self.subject.git("fetch", "--quiet", self.a.remote, self.a.candidate)
+        base = versions.current_release(self.subject.root)[0]
+        cand = versions.release_at(self.subject.root, "FETCH_HEAD")
+        if versions.is_newer_release(cand, base):
+            return True, f"candidate carries {cand}, the base is on {base}"
+        return False, (f"the candidate carries release {cand} and the base is on {base}: upgrade mode tests a "
+                       f"release candidate (a newer releases/<version>.json). Run a feature branch with modes=fresh, "
+                       f"and test its upgrade path through a release cut.")
 
     def merge_candidate(self) -> tuple[bool, str]:
         g = self.subject.git
