@@ -437,12 +437,24 @@ def test_scale_to_zero_check_skips_a_subject_without_it():
     assert "llm-d tier not requested" in checks._only_scale_to_zero(checks.Ctx(subject=new.subject, cluster="x"))
 
 
-def test_cold_request_script_is_valid_python_with_the_model_inlined():
+def test_cold_request_pod_sends_one_chat_from_inside_the_cluster():
     import ast
     import checks
-    code = checks.COLD_REQUEST_PY.replace("MODEL", '"qwen2-0-5b-instruct"').replace("TIMEOUT", "900")
+    pod = checks.cold_request_pod("qwen2-0-5b-instruct", "litellm/litellm:v1.108.10-lts")
+    spec = pod["spec"]
+    c = spec["containers"][0]
+    assert c["command"][:2] == ["python", "-c"]
+    code = c["command"][2]
     ast.parse(code)
-    assert '"model": "qwen2-0-5b-instruct"' in code and "timeout=900" in code
+    assert '"model": "qwen2-0-5b-instruct"' in code and f"timeout={checks.COLD_REQUEST_TIMEOUT}" in code
+    assert "http://litellm.ai-platform.svc.cluster.local:4000/v1/chat/completions" in code
+    assert 'print("RESULT "' in code
+    # the key comes from the Secret, never from the harness
+    assert c["env"] == [{"name": "LITELLM_MASTER_KEY",
+                         "valueFrom": {"secretKeyRef": {"name": "litellm-secrets", "key": "master-key"}}}]
+    assert spec["restartPolicy"] == "Never" and spec["activeDeadlineSeconds"] > checks.COLD_REQUEST_TIMEOUT
+    assert pod["metadata"]["annotations"]["karpenter.sh/do-not-disrupt"] == "true"
+    assert pod["metadata"]["namespace"] == "ai-platform"
 
 
 def test_keda_check_reports_a_missing_llmd_endpoint_instead_of_crashing():
@@ -925,6 +937,7 @@ def _keda_fakes(monkeypatch, capacity_events, scales_after_extension=True):
     class FakeLoad:
         ok, sent = 9, 10
         def __init__(self, *a): pass
+        def summary(self): return "9 requests answered 200, 0 failed, 1 in flight at the end"
         def __enter__(self): return self
         def __exit__(self, *a): return False
     monkeypatch.setattr(checks, "Load", FakeLoad)
@@ -1118,3 +1131,15 @@ class TestCandidateRelease:
     def test_is_newer_release(self, cand, base, newer):
         import versions
         assert versions.is_newer_release(cand, base) is newer
+
+
+def test_load_summary_separates_in_flight_from_failed():
+    # Run 45679060534 reported "44/56 requests 200": the 12 missing were the 12
+    # streams' requests still in flight, not failures.
+    import checks
+    load = checks.Load.__new__(checks.Load)
+    load.sent, load.ok, load.failed = 56, 44, {}
+    assert load.summary() == "44 requests answered 200, 0 failed, 12 in flight at the end"
+    load.failed = {"HTTP 503": 2, "TimeoutError": 1}
+    assert load.summary() == ("44 requests answered 200, 3 failed (HTTP 503 x2, TimeoutError x1), "
+                              "9 in flight at the end")
