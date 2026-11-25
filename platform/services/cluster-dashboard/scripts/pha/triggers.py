@@ -293,5 +293,32 @@ def stuck_llmd(ep: dict, rules: Rules, now: datetime) -> bool:
     return age_seconds(ep, now) >= rules.stuck_sec
 
 
+# A scale-to-zero LLMDEndpoint (minReplicas 0) is not Ready while its first
+# replica starts; that is a cold start, not a stuck resource, for as long as the
+# llm-d router holds requests (coldStartTimeoutSeconds) plus this margin.
+WAKE_MARGIN_SEC = 120
+
+
+def waking_from_zero(ep: dict, deployment: dict | None, now: datetime) -> bool:
+    """True while a minReplicas-0 LLMDEndpoint starts a replica from zero: its
+    Deployment's Available condition turned False (0 -> 1 replicas) less than
+    coldStartTimeoutSeconds + WAKE_MARGIN_SEC ago."""
+    spec = ep.get("spec") or {}
+    if str(spec.get("minReplicas", 1)) != "0" or not deployment:
+        return False
+    cond = next((c for c in (deployment.get("status") or {}).get("conditions") or []
+                 if c.get("type") == "Available"), None)
+    if not cond or cond.get("status") != "False":
+        return False
+    since = _parse_time(cond.get("lastTransitionTime"))
+    if since is None:
+        return False
+    try:
+        budget = int(spec.get("coldStartTimeoutSeconds", 600)) + WAKE_MARGIN_SEC
+    except (TypeError, ValueError):
+        budget = 600 + WAKE_MARGIN_SEC
+    return (now - since).total_seconds() < budget
+
+
 def utcnow() -> datetime:
     return datetime.now(timezone.utc)

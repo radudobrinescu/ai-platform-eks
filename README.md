@@ -237,6 +237,14 @@ itself is out of scope).
 workloads, commit an `LLMDEndpoint` (see `workloads/scale-models/`) and the
 optional llm-d tier schedules requests across vLLM replicas using live KV-cache,
 prefix, and queue-depth signals, and supports prefill/decode disaggregation.
+KEDA adds replicas as requests pile up and removes them when load drops.
+
+**Scale to zero (llm-d).** Deploy with `./platformctl new-model <model> --min-replicas 0`
+and the model stops after 10 minutes without requests; Karpenter then removes its
+GPU node, so an idle model costs nothing. The next request waits in the llm-d router
+while a GPU node and the model start (a few minutes; up to 10 by default), then is
+answered as usual. Tune it per model with `scaleToZeroAfterSeconds` and
+`coldStartTimeoutSeconds`. Models default to `minReplicas: 1` (always warm).
 
 **Fast cold starts (opt-in).** New GPU deployments can shave the multi-minute cold
 start via three layers, wired through Terraform's image optimization and switched on

@@ -171,14 +171,21 @@ def test_watch_loop_replaces_a_broken_connection(pha_watch, monkeypatch):
 # ---------------------------------------------------------------------------
 
 class Custom:
-    def __init__(self, items=None, errors=None):
+    def __init__(self, items=None, errors=None, deployments=None):
         self.items, self.errors, self.calls = items or {}, errors or {}, 0
+        self.deployments = deployments or {}
 
     def list_namespaced_custom_object(self, group, version, namespace, plural):
         self.calls += 1
         if plural in self.errors:
             raise self.errors[plural]
         return {"items": self.items.get(plural, [])}
+
+    def get_namespaced_custom_object(self, group, version, namespace, plural, name):
+        assert (group, version, plural) == ("apps", "v1", "deployments")
+        if name not in self.deployments:
+            raise LookupError(name)
+        return self.deployments[name]
 
 
 def _scan(watch, monkeypatch, custom, cycles=1, between=None, **agent_kw):
@@ -237,6 +244,26 @@ def test_stuck_scan_spawns_only_stuck_items(pha_watch, monkeypatch, stub_modules
     assert payloads[0]["model"] == "m" and payloads[0]["ready"] == "False" and payloads[0]["age_seconds"] >= 1800
     assert payloads[1]["phase"] == "Pending" and payloads[1]["message"] == "waiting"
     assert len(batch.created) == 2
+
+
+def test_stuck_scan_skips_a_model_waking_from_zero(pha_watch, monkeypatch):
+    """A minReplicas-0 llm-d model starting its first replica is a cold start;
+    once that has lasted longer than the router holds requests, it is stuck."""
+    watch, _ = pha_watch
+    old = ago(minutes=30)
+
+    def ep(name):
+        return {"metadata": {"name": name, "namespace": "inference", "creationTimestamp": old},
+                "spec": {"model": "m", "minReplicas": 0, "coldStartTimeoutSeconds": 600},
+                "status": {"ready": "False", "routerHealth": "Healthy"}}
+
+    def deploy(minutes):
+        return {"status": {"conditions": [{"type": "Available", "status": "False",
+                                            "lastTransitionTime": ago(minutes=minutes)}]}}
+    custom = Custom(items={"llmdendpoints": [ep("waking"), ep("too-long"), ep("unreadable")]},
+                    deployments={"waking-llmd": deploy(3), "too-long-llmd": deploy(20)})
+    _, seen, _ = _scan(watch, monkeypatch, custom)
+    assert [p["name"] for _, p in seen["jobs"]] == ["too-long", "unreadable"]
 
 
 def test_stuck_scan_disabled_exits(pha_watch, monkeypatch):

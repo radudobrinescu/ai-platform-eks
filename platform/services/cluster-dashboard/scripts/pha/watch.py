@@ -174,12 +174,28 @@ def _list(custom, namespace: str, plural: str) -> list[dict]:
         return []
 
 
+def _model_deployment(custom, ep: dict) -> dict | None:
+    """The LLMDEndpoint's vLLM Deployment (<name>-llmd), or None if unreadable.
+    Read through the generic API so it comes back as a plain dict."""
+    meta = ep.get("metadata") or {}
+    try:
+        return custom.get_namespaced_custom_object(group="apps", version="v1", namespace=meta.get("namespace", ""),
+                                                   plural="deployments", name=f"{meta.get('name', '')}-llmd")
+    except Exception as e:  # noqa: BLE001 - no Deployment to judge by: fall back to the age rule
+        log.debug("read deployment for %s: %s", meta.get("name"), e)
+        return None
+
+
 def stuck_incidents(custom, rules: triggers.Rules, now) -> list[dict]:
-    """Payloads of kro resources not healthy STUCK_RESOURCE_THRESHOLD_SEC after creation."""
+    """Payloads of kro resources not healthy STUCK_RESOURCE_THRESHOLD_SEC after creation.
+    A scale-to-zero LLMDEndpoint starting from zero is skipped while its cold start lasts."""
     out = []
     for plural, kind, stuck in ENDPOINTS:
         for ep in _list(custom, "inference", plural):
             if not stuck(ep, rules, now):
+                continue
+            if (plural == "llmdendpoints" and str((ep.get("spec") or {}).get("minReplicas", 1)) == "0"
+                    and triggers.waking_from_zero(ep, _model_deployment(custom, ep), now)):
                 continue
             st = ep.get("status") or {}
             out.append({"kind": kind, "namespace": ep["metadata"].get("namespace", ""),
