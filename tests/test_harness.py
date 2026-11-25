@@ -228,6 +228,8 @@ class TestDryRun:
         if mode == "upgrade":
             assert f"./platformctl upgrade {env_name} --yes" in out and "git merge --no-edit FETCH_HEAD" in out
             assert "./platformctl onboard-team e2e" in out
+            # the release check comes before anything is built
+            assert out.index("- step candidate-is-newer") < out.index("- step tfvars") < out.index("- step provision")
         assert not os.listdir(tmp_path), "dry run must not write reports"
         after = subprocess.run(["git", "-C", subject_root, "status", "--porcelain"], capture_output=True, text=True).stdout
         assert before == after, "dry run changed the subject tree"
@@ -1074,3 +1076,45 @@ def test_pin_adds_instance_type_to_the_generated_vllm_file():
     body = GENERATED_LLMD.replace("kind: LLMDEndpoint", "kind: VLLMEndpoint") + '  extraArgs:\n    - "--foo"\n'
     spec = yaml.safe_load(checks._set_spec_lines(body, {"instanceType": "g7.2xlarge"}, "pin"))["spec"]
     assert spec["instanceType"] == "g7.2xlarge" and spec["extraArgs"] == ["--foo"]
+
+
+class TestCandidateRelease:
+    """Upgrade mode needs a candidate on a newer release than the base: a
+    feature branch on the base's release failed after ~35 min of provisioning."""
+
+    @staticmethod
+    def _repo(tmp_path, versions_per_commit):
+        root = str(tmp_path / "r")
+        subprocess.run(["git", "init", "-q", root], check=True)
+        shas = []
+        for vs in versions_per_commit:
+            os.makedirs(os.path.join(root, "releases"), exist_ok=True)
+            for v in vs:
+                with open(os.path.join(root, "releases", f"{v}.json"), "w", encoding="utf-8") as fh:
+                    fh.write("{}")
+            with open(os.path.join(root, "f"), "a", encoding="utf-8") as fh:
+                fh.write("x")
+            subprocess.run(["git", "-C", root, "add", "-A"], check=True)
+            subprocess.run(["git", "-C", root, "-c", "user.name=t", "-c", "user.email=t@t", "commit", "-q", "-m", "c"],
+                           check=True)
+            shas.append(subprocess.run(["git", "-C", root, "rev-parse", "HEAD"], capture_output=True,
+                                       text=True).stdout.strip())
+        return root, shas
+
+    def test_release_at_reads_a_ref_without_checking_it_out(self, tmp_path):
+        import versions
+        root, (first, second) = self._repo(tmp_path, [["v2026.11.8"], ["v2026.12.0"]])
+        assert versions.release_at(root, first) == "v2026.11.8"
+        assert versions.release_at(root, second) == "v2026.12.0"
+        assert versions.release_at(root, "no-such-ref") == "baseline"
+
+    @pytest.mark.parametrize("cand,base,newer", [
+        ("v2026.12.0", "baseline", True),
+        ("v2026.12.1", "v2026.12.0", True),
+        ("v2026.12.0", "v2026.12.0", False),     # a feature branch on the base's release
+        ("v2026.11.8", "v2026.12.0", False),
+        ("baseline", "baseline", False),
+    ])
+    def test_is_newer_release(self, cand, base, newer):
+        import versions
+        assert versions.is_newer_release(cand, base) is newer
