@@ -20,6 +20,7 @@ import re
 import pytest
 import yaml
 
+from test_litellm_metrics_scrape import assert_revision_follows_config
 from test_litellm_sync_delete import sync  # noqa: F401 - module fixture (stubs kubernetes)
 
 REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -47,6 +48,13 @@ schedulingProfiles:
   - pluginRef: no-hit-lru-scorer
     weight: ${string((schema.spec.routingProfile == 'prefix' || schema.spec.routingProfile == 'latency') ? 1 : 2)}
 """
+
+# Revision on the autoscaling Prometheus pod template -> hash of the scrape
+# config it stands for (test_litellm_metrics_scrape.config_hash). A change to
+# the scrape config needs a new revision: add a line here, never edit one.
+PROMETHEUS_CONFIG_REVISIONS = {
+    "1": "9c95428e157b94c7e306fd4dcdc2bc6aeee078d7e745e08976973d3802b7256a",   # router (llmd-epp) job added
+}
 
 FLOW_CONTROL_RX = re.compile(
     r'^\$\{schema\.spec\.minReplicas == 0 \? (".*") \+ string\(schema\.spec\.coldStartTimeoutSeconds\) \+ (".*") : ""\}$')
@@ -190,6 +198,24 @@ class TestPrometheus:
                                         "credentials_file": "/var/run/secrets/kubernetes.io/serviceaccount/token"}
         pool = next(r for r in job["relabel_configs"] if r.get("target_label") == "pool")
         assert re.fullmatch(pool["regex"], "qwen2-0-5b-instruct-epp").group(1) == "qwen2-0-5b-instruct"
+
+    def test_pod_restarts_when_the_scrape_config_changes(self, docs):
+        """Prometheus reads prometheus.yml at start, and nothing reloads it: a
+        changed ConfigMap alone left the old scrape jobs running (no llmd-epp
+        series, the KEDA query read 0, llm-d models stopped scaling out)."""
+        cm = next(d for d in docs if d["kind"] == "ConfigMap")
+        deploy = next(d for d in docs if d["kind"] == "Deployment")
+        mounted = [v["configMap"]["name"] for v in deploy["spec"]["template"]["spec"]["volumes"] if "configMap" in v]
+        assert mounted == [cm["metadata"]["name"]]
+        assert_revision_follows_config(PROMETHEUS_CONFIG_REVISIONS, deploy, cm["data"]["prometheus.yml"])
+
+    def test_lifecycle_api_is_off(self, docs):
+        """--web.enable-lifecycle lets any pod that reaches :9090 stop or reload
+        Prometheus (POST /-/quit, /-/reload). Nothing in the platform calls it."""
+        deploy = next(d for d in docs if d["kind"] == "Deployment")
+        args = deploy["spec"]["template"]["spec"]["containers"][0]["args"]
+        assert "--web.enable-lifecycle" not in args
+        assert "--config.file=/etc/prometheus/prometheus.yml" in args
 
     def test_cluster_wide_grant_is_only_get_metrics(self, docs):
         role = next(d for d in docs if d["kind"] == "ClusterRole")

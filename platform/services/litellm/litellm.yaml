@@ -22,7 +22,9 @@ spec:
       annotations:
         # LiteLLM reads litellm-config at start only. These are plain manifests,
         # so nothing rolls the pods when the ConfigMap changes: raise this number
-        # in the same commit as any change to config.yaml below.
+        # in the same commit as any change to the settings in config.yaml below
+        # (comments do not count; tests/test_litellm_metrics_scrape.py records
+        # the config each revision stands for and fails otherwise).
         ai-platform/config-revision: "2"
     spec:
       # ServiceAccount carries the Bedrock IRSA role when enable_bedrock=true

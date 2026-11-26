@@ -9,6 +9,7 @@ target was down, scale-up under load still worked, waking from zero could not).
 Turning the key off makes the endpoint open to whoever reaches the gateway, so
 the gateway's ingress answers /metrics itself instead of forwarding it.
 """
+import hashlib
 import pathlib
 import json
 
@@ -16,9 +17,42 @@ import yaml
 
 ROOT = pathlib.Path(__file__).resolve().parents[1]
 
+REVISION_ANNOTATION = "ai-platform/config-revision"
+
+# Revision on the litellm pod template -> hash of the config it stands for (see
+# config_hash). A change to the settings needs a new revision: add a line here,
+# never edit one.
+LITELLM_CONFIG_REVISIONS = {
+    "2": "6cc73df136c82f9a89bb04ec2d022fcbae2ec7bfe3fda007a3b1dabd50d2dfbc",
+}
+
 
 def _docs(rel):
     return [d for d in yaml.safe_load_all((ROOT / rel).read_text()) if d]
+
+
+def config_hash(text: str) -> str:
+    """sha256 of the parsed config: comments and layout do not count, every
+    setting does."""
+    return hashlib.sha256(json.dumps(yaml.safe_load(text), sort_keys=True).encode()).hexdigest()
+
+
+def assert_revision_follows_config(revisions: dict, deployment: dict, config_text: str) -> None:
+    """The pods read their ConfigMap at start only and the manifests are plain
+    files (no generated checksum), so the revision on the pod template is what
+    restarts them. `revisions` records which config each revision stands for: a
+    config edited without a new revision no longer matches its hash."""
+    name = deployment["metadata"]["name"]
+    revision = deployment["spec"]["template"]["metadata"].get("annotations", {}).get(REVISION_ANNOTATION)
+    assert revision is not None, f"{name}: the pod template has no {REVISION_ANNOTATION} annotation"
+    assert revision == max(revisions, key=int), (
+        f"{name}: the pod template carries revision {revision!r}, the newest recorded one is "
+        f"{max(revisions, key=int)!r}")
+    assert len(set(revisions.values())) == len(revisions), "two revisions record the same config"
+    assert config_hash(config_text) == revisions[revision], (
+        f"The config of {name} changed and its pods read it at start only. Raise {REVISION_ANNOTATION} "
+        f"on the pod template and record the new revision in this test with the hash "
+        f"{config_hash(config_text)} (add a line, keep the old ones).")
 
 
 def test_litellm_serves_metrics_without_a_key():
@@ -33,9 +67,27 @@ def test_pods_restart_when_the_config_changes():
     """LiteLLM reads its ConfigMap at start only, and the manifests are plain
     files (no generated checksum): the revision on the pod template is what
     rolls the pods. It must be bumped with the ConfigMap."""
-    deploy = next(d for d in _docs("platform/services/litellm/litellm.yaml")
-                  if d["kind"] == "Deployment" and d["metadata"]["name"] == "litellm")
-    assert deploy["spec"]["template"]["metadata"]["annotations"]["ai-platform/config-revision"] == "2"
+    docs = _docs("platform/services/litellm/litellm.yaml")
+    deploy = next(d for d in docs if d["kind"] == "Deployment" and d["metadata"]["name"] == "litellm")
+    cm = next(d for d in docs if d["kind"] == "ConfigMap" and d["metadata"]["name"] == "litellm-config")
+    assert_revision_follows_config(LITELLM_CONFIG_REVISIONS, deploy, cm["data"]["config.yaml"])
+
+
+def test_a_config_change_without_a_new_revision_is_caught():
+    """The guard itself: same revision, one setting changed."""
+    docs = _docs("platform/services/litellm/litellm.yaml")
+    deploy = next(d for d in docs if d["kind"] == "Deployment" and d["metadata"]["name"] == "litellm")
+    cm = next(d for d in docs if d["kind"] == "ConfigMap" and d["metadata"]["name"] == "litellm-config")
+    text = cm["data"]["config.yaml"]
+    assert_revision_follows_config(LITELLM_CONFIG_REVISIONS, deploy, text + "\n# a comment changes nothing\n")
+    changed = text.replace("request_timeout: 120", "request_timeout: 121")
+    assert changed != text
+    try:
+        assert_revision_follows_config(LITELLM_CONFIG_REVISIONS, deploy, changed)
+    except AssertionError as e:
+        assert REVISION_ANNOTATION in str(e)
+    else:
+        raise AssertionError("a changed setting passed with the old revision")
 
 
 def test_prometheus_scrapes_the_litellm_service():
