@@ -86,6 +86,24 @@ cluster_of() { local p; p="$(tfvar_prefix "$1")"; echo "${p:+${p}-}$1"; }
 # + kubeconfig all target the same region instead of ambient AWS config.
 pin_region() { local r; r="$(tfvar_region "${1}")"; [ -n "$r" ] && export AWS_REGION="$r" || true; }
 
+# True when the kubectl context named ENV points at CLUSTER (in AWS_REGION, when
+# set). `down` and `upgrade` act through that context, and its name alone proves
+# nothing: another fork's environment, or this one in another region, can own a
+# context with the same name. Compared exactly, so a sibling such as <cluster>2
+# never passes.
+_context_is_cluster() {
+  local env="$1" cluster="$2" target
+  target="$(kubectl config view -o jsonpath="{.contexts[?(@.name==\"${env}\")].context.cluster}" 2>/dev/null || true)"
+  case "$target" in
+    "$cluster") return 0 ;;
+    arn:*:cluster/"$cluster") ;;
+    *) return 1 ;;
+  esac
+  [ -n "${AWS_REGION:-}" ] || return 0
+  case "$target" in arn:*:eks:"${AWS_REGION}":*) return 0 ;; esac
+  return 1
+}
+
 # Warn (never switch — safest) when the current kubectl context is not the
 # resolved env's cluster. status/tunnel act on the CURRENT context.
 warn_context_mismatch() {
@@ -321,8 +339,10 @@ _teardown_watchdog() {
   local env="$1" cluster="$2" vpc="$3" region="${AWS_REGION:-$(aws configure get region 2>/dev/null)}"
   while aws eks describe-cluster --name "$cluster" --region "$region" >/dev/null 2>&1; do
     _delete_cluster_albs "$cluster" "$vpc"
-    _strip_teardown_finalizers "$env"
-    _force_delete_stranded_pods "$env"
+    if _context_is_cluster "$env" "$cluster"; then
+      _strip_teardown_finalizers "$env"
+      _force_delete_stranded_pods "$env"
+    fi
     sleep 8
   done
   # Cluster is gone. Karpenter's controller went with it, so nothing will ever
@@ -564,6 +584,12 @@ _predown_drain() {
   local env="$1" cluster; cluster="$(cluster_of "$env")"
   command -v kubectl >/dev/null 2>&1 || { warn "kubectl not found — skipping in-cluster drain (destroy may fail on the ALB security group)."; return 0; }
   command -v aws >/dev/null 2>&1 && aws eks update-kubeconfig --name "$cluster" --region "${AWS_REGION:-}" --alias "$env" >/dev/null 2>&1 || true
+  # If that failed (the cluster is already gone, say), a context named '${env}'
+  # may still exist and belong to another cluster. Never drain that one.
+  if ! _context_is_cluster "$env" "$cluster"; then
+    warn "the kubectl context '${env}' does not point at cluster '${cluster}' — skipping in-cluster drain (Terraform will destroy what it can; sweep orphans afterward)."
+    return 0
+  fi
   if ! kubectl --context "$env" get namespace argocd >/dev/null 2>&1; then
     warn "cluster '${cluster}' not reachable — skipping in-cluster drain (Terraform will destroy what it can; sweep orphans afterward)."
     return 0
@@ -1449,6 +1475,7 @@ $("${g[@]}" diff --name-only --diff-filter=U 2>/dev/null | sed 's/^/    /')
   if [ "$plan_only" -eq 0 ]; then
     need kubectl
     kubectl config get-contexts "$env" >/dev/null 2>&1 || die "no kubectl context named '${env}'. Run:  ./platformctl use ${env}"
+    _context_is_cluster "$env" "$(cluster_of "$env")" || die "the kubectl context '${env}' does not point at cluster '$(cluster_of "$env")'. Run:  ./platformctl use ${env}"
     [ "$(kubectl config current-context 2>/dev/null)" = "$env" ] || die "the current kubectl context is not '${env}' (status --check runs against it). Run:  ./platformctl use ${env}"
     [ "$(kubectl --context "$env" --request-timeout=10s get --raw /readyz 2>/dev/null)" = "ok" ] \
       || die "cannot reach the '${env}' cluster API (your IP is probably not allowlisted). Run:  ./platformctl allow-ip ${env}"
