@@ -967,8 +967,9 @@ def resolve_kind(tier: str, args, scaling) -> str:
 
 
 # HuggingFace architecture (config.json `architectures[0]`) -> vLLM
-# `--tool-call-parser` id (vLLM v0.24.0 registered names). Ordered most-specific
-# first (llama4 before llama, gemma4 before gemma). Only high-confidence,
+# `--tool-call-parser` id. The names are the ones vLLM registers and are
+# version-specific: re-check them when the platform's vllmImage changes. Ordered
+# most-specific first (llama4 before llama, gemma4 before gemma). Only high-confidence,
 # tool-capable families are listed; anything else returns "" so the model
 # deploys chat-only — the operator can still set toolCallParser by hand. This is
 # the ONE place that knows the mapping, and the choice is written into the
@@ -1121,11 +1122,9 @@ def build_endpoint_yaml(
     if scaling:
         best_scaling = scaling[0]
         min_replicas = best_scaling.replicas
-        max_replicas = max(min_replicas, math.ceil(min_replicas * 1.5))
         max_num_seqs = max(64, math.ceil(best_scaling.effective_capacity * 1.5))
     else:
         min_replicas = 1
-        max_replicas = 2
         max_num_seqs = max(64, args.users * 2)
 
     lines: list[str] = [
