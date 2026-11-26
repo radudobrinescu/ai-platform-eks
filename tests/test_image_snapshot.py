@@ -13,7 +13,9 @@ name, and only took effect from the second apply. Now:
 
 import os
 import re
+import signal
 import subprocess
+import time
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 SCRIPT = os.path.join(ROOT, "ops/image/create-data-volume-snapshot.sh")
@@ -25,6 +27,7 @@ case "$*" in
   *"sts get-caller-identity"*) echo 111122223333 ;;
   *"describe-snapshots"*) echo "${EXISTING_SNAPSHOT:-None}" ;;
   *"describe-subnets"*) echo None ;;
+  *"describe-instances"*"instance-state-name"*) printf '%b\n' "${LEFTOVER_BUILDERS:-}" ;;
 esac
 """
 
@@ -43,7 +46,7 @@ esac
 """
 
 
-def _run(tmp_path, *args, **env):
+def _run(tmp_path, *args, cluster="c1", **env):
     for name, body in (("aws", FAKE_AWS), ("kubectl", FAKE_KUBECTL)):
         f = tmp_path / name
         f.write_text(body)
@@ -51,7 +54,7 @@ def _run(tmp_path, *args, **env):
     calls = tmp_path / "calls"
     calls.write_text("")
     e = {**os.environ, "PATH": f"{tmp_path}:{os.environ['PATH']}", "CALLS": str(calls), **env}
-    r = subprocess.run(["bash", SCRIPT, "-r", "eu-central-1", "-n", "c1", *args],
+    r = subprocess.run(["bash", SCRIPT, "-r", "eu-central-1", "-n", cluster, *args],
                        capture_output=True, text=True, env=e, timeout=30)
     return r, calls.read_text()
 
@@ -135,21 +138,40 @@ case "$*" in
       exit 254
     fi
     if [ -n "${OTHER_ERROR:-}" ]; then echo "$OTHER_ERROR" >&2; exit 254; fi
+    if [ -n "${LAUNCH_WARNING:-}" ]; then echo "$LAUNCH_WARNING" >&2; fi
     echo i-0abc ;;
+  # Builders an interrupted earlier run left behind (looked up by tags + state).
+  *"describe-instances"*"instance-state-name"*) printf '%b\n' "${LEFTOVER_BUILDERS:-}" ;;
   *"describe-instances"*) echo vol-1 ;;
+  *"terminate-instances"*)
+    if [ -n "${TERMINATE_FAILS:-}" ]; then
+      echo "An error occurred (UnauthorizedOperation) when calling the TerminateInstances operation" >&2
+      exit 254
+    fi ;;
   *"create-snapshot"*) echo snap-0new ;;
 esac
 """
 
+# KUBECTL_BREAKS: every call fails from the node readiness wait on (the cluster
+# became unreachable, or the context changed, in the middle of a build).
 BUILD_KUBECTL = r"""#!/bin/bash
 echo "kubectl $*" >> "$CALLS"
+if [ -n "${KUBECTL_BREAKS:-}" ]; then
+  case "$*" in *"wait --for=condition=Ready"*) touch "$CALLS.kubectl-broken" ;; esac
+  if [ -e "$CALLS.kubectl-broken" ]; then echo "Unable to connect to the server" >&2; exit 1; fi
+fi
 case "$*" in
   *"get nodes"*) echo node-1 ;;
+  *"wait --for=jsonpath"*) if [ -n "${PULL_HANGS:-}" ]; then sleep "$PULL_HANGS"; fi ;;
 esac
 """
 
 
-def _build(tmp_path, **env):
+BUILD_ARGS = ("--reuse", "docker.io/vllm/vllm-openai:v0.33.0")
+
+
+def _build_env(tmp_path, **env):
+    """Put the fake aws and kubectl first on PATH; returns (environment, calls file)."""
     for name, body in (("aws", BUILD_AWS), ("kubectl", BUILD_KUBECTL)):
         f = tmp_path / name
         f.write_text(body)
@@ -158,8 +180,13 @@ def _build(tmp_path, **env):
     calls.write_text("")
     e = {**os.environ, "PATH": f"{tmp_path}:{os.environ['PATH']}", "CALLS": str(calls),
          "LAUNCH_RETRY_SECONDS": "0", **env}
-    r = subprocess.run(["bash", SCRIPT, "-r", "eu-central-1", "-n", "c1", "--reuse",
-                        "docker.io/vllm/vllm-openai:v0.33.0"], capture_output=True, text=True, env=e, timeout=60)
+    return e, calls
+
+
+def _build(tmp_path, args=BUILD_ARGS, **env):
+    e, calls = _build_env(tmp_path, **env)
+    r = subprocess.run(["bash", SCRIPT, "-r", "eu-central-1", "-n", "c1", *args],
+                       capture_output=True, text=True, env=e, timeout=60)
     return r, calls.read_text()
 
 
@@ -187,3 +214,95 @@ def test_builder_waits_for_karpenter_to_create_the_instance_profile(tmp_path):
     assert r.returncode == 0, r.stdout + r.stderr
     assert calls.count("list-instance-profiles-for-role") == 3
     assert "Snapshot ID:  snap-0new" in r.stdout
+
+
+# --- The builder never outlives the script -----------------------------------
+
+TERMINATE = "terminate-instances --instance-ids i-0abc"
+
+
+def test_builder_is_terminated_when_kubectl_fails_during_cleanup(tmp_path):
+    # The cleanup looked the builder node up with kubectl before terminating the
+    # instance; with the cluster unreachable it stopped there and the c5.xlarge
+    # with its 200 GiB volume kept running, with nothing printed about it.
+    r, calls = _build(tmp_path, KUBECTL_BREAKS="1")
+    assert r.returncode != 0
+    assert TERMINATE in calls, r.stdout + r.stderr
+
+
+def test_builder_is_terminated_when_the_script_is_killed(tmp_path):
+    # Terraform cancelled, CI job timed out: SIGTERM in the middle of the pull.
+    e, calls = _build_env(tmp_path, PULL_HANGS="3")
+    with open(tmp_path / "out", "w") as out:
+        p = subprocess.Popen(["bash", SCRIPT, "-r", "eu-central-1", "-n", "c1", *BUILD_ARGS],
+                             stdout=out, stderr=subprocess.STDOUT, env=e)
+        deadline = time.time() + 20
+        while "wait --for=jsonpath" not in calls.read_text() and time.time() < deadline:
+            time.sleep(0.05)
+        p.send_signal(signal.SIGTERM)
+        rc = p.wait(timeout=20)
+    assert TERMINATE in calls.read_text(), (tmp_path / "out").read_text()
+    assert "create-snapshot" not in calls.read_text()
+    assert rc in (-signal.SIGTERM, 128 + signal.SIGTERM)
+
+
+def test_a_warning_on_a_successful_launch_does_not_lose_the_instance(tmp_path):
+    # stderr was captured with the instance id: any warning line made the id
+    # check fail, and the script left before its cleanup was installed.
+    r, calls = _build(tmp_path, LAUNCH_WARNING="Warning: the CLI will drop this option soon")
+    assert TERMINATE in calls, r.stdout + r.stderr
+    assert r.returncode == 0, r.stdout + r.stderr
+    assert "Snapshot ID:  snap-0new" in r.stdout
+    assert "the CLI will drop this option soon" in r.stderr   # still shown
+
+
+def test_a_failed_termination_is_reported_with_the_command_to_run(tmp_path):
+    r, calls = _build(tmp_path, TERMINATE_FAILS="1")
+    assert TERMINATE in calls
+    assert "terminated." not in r.stdout and "terminated." not in r.stderr
+    assert "i-0abc" in r.stderr
+    assert "aws ec2 terminate-instances --instance-ids i-0abc --region eu-central-1" in r.stderr
+    assert r.returncode != 0   # an instance is still billed: not a success
+
+
+def test_a_successful_termination_names_the_instance(tmp_path):
+    r, _ = _build(tmp_path)
+    assert "Builder instance i-0abc terminated." in r.stdout
+
+
+def test_builder_volumes_are_deleted_with_the_instance(tmp_path):
+    _, calls = _build(tmp_path)
+    launch = calls[calls.index("run-instances"):calls.index("--tag-specifications")]
+    assert launch.count('"DeleteOnTermination":true') == 2, launch
+
+
+def test_leftover_builders_of_this_cluster_are_terminated_before_launching(tmp_path):
+    # A run killed between launch and cleanup (closed terminal, CI timeout)
+    # leaves its builder running; the next run removes it.
+    r, calls = _build(tmp_path, LEFTOVER_BUILDERS=r"i-0dead1\ti-0dead2")
+    assert r.returncode == 0, r.stdout + r.stderr
+    lookup = calls[calls.index("describe-instances"):]
+    lookup = lookup[:lookup.index("\naws ", 1)]
+    # Exact tag values: this cluster's builders only, and only live states.
+    assert "Name=tag:Name,Values=c1-snapshot-builder " in lookup
+    assert "Name=tag:Purpose,Values=data-volume-snapshot " in lookup
+    assert "Name=instance-state-name,Values=pending,running,stopping,stopped " in lookup
+    assert "*" not in lookup and "?" not in lookup
+    sweep = calls.index("terminate-instances --instance-ids i-0dead1 i-0dead2")
+    assert sweep < calls.index("run-instances")
+    assert "i-0dead1" in r.stdout   # said, not silent
+
+
+def test_leftover_builders_are_also_removed_when_a_snapshot_is_reused(tmp_path):
+    r, calls = _run(tmp_path, "--reuse", "docker.io/vllm/vllm-openai:v0.33.0",
+                    EXISTING_SNAPSHOT="snap-0abc123", LEFTOVER_BUILDERS="i-0dead1")
+    assert r.returncode == 0, r.stderr
+    assert "terminate-instances --instance-ids i-0dead1" in calls
+
+
+def test_a_cluster_name_that_could_match_other_clusters_is_rejected(tmp_path):
+    # EC2 tag filters treat * and ? as wildcards.
+    for name in ("c*", "c?", "c1 x"):
+        r, calls = _run(tmp_path, "docker.io/vllm/vllm-openai:v0.33.0", cluster=name)
+        assert r.returncode == 1 and "cluster name" in r.stderr, (name, r.stderr)
+        assert calls == ""   # nothing was called

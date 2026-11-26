@@ -103,7 +103,14 @@ done
 
 # --- Resolve cluster context --------------------------------------------------
 if [[ -z "$CLUSTER_NAME" ]]; then
-  CLUSTER_NAME=$(kubectl config view --minify -o jsonpath='{.clusters[0].name}' 2>/dev/null | awk -F/ '{print $NF}')
+  CLUSTER_NAME=$(kubectl config view --minify -o jsonpath='{.clusters[0].name}' 2>/dev/null | awk -F/ '{print $NF}') || true
+fi
+# EKS cluster names are letters, digits, "-" and "_". Checked because the name
+# goes into EC2 tag filters, where "*" and "?" are wildcards: the leftover
+# builder lookup below must match this cluster only.
+if [[ ! "$CLUSTER_NAME" =~ ^[A-Za-z0-9][A-Za-z0-9_-]*$ ]]; then
+  echo "Error: no valid EKS cluster name ('${CLUSTER_NAME}'). Pass -n <cluster-name>." >&2
+  exit 1
 fi
 if [[ -z "$REGION" ]]; then
   REGION="${AWS_REGION:-$(aws configure get region 2>/dev/null || true)}"
@@ -113,11 +120,103 @@ if [[ -z "$REGION" ]]; then
   exit 1
 fi
 
+# --- Builder lifecycle --------------------------------------------------------
+# The only billable thing this script creates is the builder EC2 instance (its
+# volumes are deleted with it). The EXIT trap is installed here, before the
+# launch, and terminating the instance is the first thing it does: that step
+# needs only the AWS CLI, never kubectl.
+INSTANCE_ID=""
+NODE_NAME=""
+LAUNCH_STARTED=false
+BUILDER_NAME_TAG="${CLUSTER_NAME}-snapshot-builder"
+BUILDER_PURPOSE_TAG="data-volume-snapshot"
+RETRY_SECONDS="${LAUNCH_RETRY_SECONDS:-10}"
+WORK_DIR=$(mktemp -d)
+
+# terminate_instances ID... — 0 once EC2 has accepted the termination (3 tries).
+terminate_instances() {
+  local attempt
+  for attempt in 1 2 3; do
+    if aws ec2 terminate-instances --instance-ids "$@" --region "$REGION" \
+        >/dev/null 2>"$WORK_DIR/terminate.err"; then
+      return 0
+    fi
+    if [[ "$attempt" -lt 3 ]]; then sleep "$RETRY_SECONDS"; fi
+  done
+  echo "ERROR: could not terminate builder instance(s) $* - still running, and billed." >&2
+  sed 's/^/  /' "$WORK_DIR/terminate.err" >&2
+  echo "  Terminate by hand:" >&2
+  echo "    aws ec2 terminate-instances --instance-ids $* --region $REGION" >&2
+  return 1
+}
+
+# Terminate the builders of THIS cluster that are still alive: the ones an
+# interrupted earlier run left behind. Found by the tags launch_builder sets,
+# as exact values, so another cluster's builder is never matched.
+terminate_leftover_builders() {
+  local out id ids=()
+  if ! out=$(aws ec2 describe-instances --region "$REGION" \
+      --filters "Name=tag:Name,Values=${BUILDER_NAME_TAG}" \
+                "Name=tag:Purpose,Values=${BUILDER_PURPOSE_TAG}" \
+                "Name=instance-state-name,Values=pending,running,stopping,stopped" \
+      --query "Reservations[].Instances[].InstanceId" --output text 2>"$WORK_DIR/describe.err"); then
+    echo "  ⚠ could not look for leftover builder instances of $CLUSTER_NAME:" >&2
+    sed 's/^/    /' "$WORK_DIR/describe.err" >&2
+    return 1
+  fi
+  while read -r id; do
+    if [[ "$id" =~ ^i-[0-9a-f]+$ ]]; then ids+=("$id"); fi
+  done < <(tr -s '[:space:]' '\n' <<< "$out")
+  if [[ ${#ids[@]} -eq 0 ]]; then return 0; fi
+  echo "→ Terminating builder instance(s) of $CLUSTER_NAME left running: ${ids[*]}"
+  terminate_instances "${ids[@]}"
+}
+
+# Terminate the builder, then remove its pods and node. Safe to call twice.
+# Returns 1 if an instance may still be running.
+release_builder() {
+  local rc=0
+  if [[ -n "$INSTANCE_ID" ]]; then
+    echo ""
+    echo "→ Cleaning up..."
+    if terminate_instances "$INSTANCE_ID"; then
+      echo "  Builder instance $INSTANCE_ID terminated."
+    else
+      rc=1
+    fi
+    INSTANCE_ID=""
+    kubectl delete pods -n kube-system -l app=snapshot-puller --ignore-not-found \
+      --wait=false --request-timeout=30s >/dev/null 2>&1 || true
+    if [[ -n "$NODE_NAME" ]]; then
+      kubectl delete node "$NODE_NAME" --ignore-not-found \
+        --wait=false --request-timeout=30s >/dev/null 2>&1 || true
+    fi
+  elif [[ "$LAUNCH_STARTED" == "true" ]]; then
+    # A launch was attempted but no instance id was recorded: look by tags.
+    terminate_leftover_builders || rc=1
+  fi
+  LAUNCH_STARTED=false
+  return "$rc"
+}
+
+cleanup() {
+  local rc=$?
+  set +e +o pipefail
+  if ! release_builder && [[ "$rc" -eq 0 ]]; then rc=1; fi
+  rm -rf "$WORK_DIR"
+  exit "$rc"
+}
+trap cleanup EXIT
+
 ACCOUNT=$(aws sts get-caller-identity --query Account --output text)
 if [[ -z "$ACCOUNT" || "$ACCOUNT" == "None" ]]; then
   echo "Error: failed to get AWS account ID. Check credentials and IAM permissions." >&2
   exit 1
 fi
+
+# An earlier run that was killed (closed terminal, CI timeout) may have left its
+# builder running. A failure here is reported and does not stop this run.
+terminate_leftover_builders || true
 
 # Expand short image references to full ECR pull-through cache URIs, and drop
 # any private-ECR image that isn't pushed yet — baking such an image would hang
@@ -246,7 +345,7 @@ for _ in $(seq 1 "${LAUNCH_ATTEMPTS:-18}"); do
     --query "InstanceProfiles[0].InstanceProfileName" --output text 2>/dev/null || true)
   [[ -n "$INSTANCE_PROFILE" && "$INSTANCE_PROFILE" != "None" ]] && break
   echo "  no instance profile for $ROLE_NAME yet; retrying in 10s"
-  sleep "${LAUNCH_RETRY_SECONDS:-10}"
+  sleep "$RETRY_SECONDS"
 done
 
 if [[ -z "$INSTANCE_PROFILE" || "$INSTANCE_PROFILE" == "None" ]]; then
@@ -279,7 +378,7 @@ CA_DATA=$(aws eks describe-cluster --name "$CLUSTER_NAME" --region "$REGION" \
 # Write userdata to a temp file — AWS CLI v2 auto-base64-encodes --user-data,
 # so we pass raw TOML. Using a file avoids shell quoting issues with the
 # multi-line certificate data. Cleaned up by the EXIT trap.
-USERDATA_FILE=$(mktemp)
+USERDATA_FILE="$WORK_DIR/userdata.toml"
 cat > "$USERDATA_FILE" <<TOML
 [settings.kubernetes]
 cluster-name = "${CLUSTER_NAME}"
@@ -311,49 +410,38 @@ launch_builder() {
   --iam-instance-profile Name="$INSTANCE_PROFILE" \
   --user-data "file://${USERDATA_FILE}" \
   --block-device-mappings "[
-    {\"DeviceName\":\"/dev/xvda\",\"Ebs\":{\"VolumeSize\":4,\"VolumeType\":\"gp3\",\"Encrypted\":true}},
-    {\"DeviceName\":\"/dev/xvdb\",\"Ebs\":{\"VolumeSize\":${VOLUME_SIZE},\"VolumeType\":\"gp3\",\"Iops\":6000,\"Throughput\":500,\"Encrypted\":true}}
+    {\"DeviceName\":\"/dev/xvda\",\"Ebs\":{\"VolumeSize\":4,\"VolumeType\":\"gp3\",\"Encrypted\":true,\"DeleteOnTermination\":true}},
+    {\"DeviceName\":\"/dev/xvdb\",\"Ebs\":{\"VolumeSize\":${VOLUME_SIZE},\"VolumeType\":\"gp3\",\"Iops\":6000,\"Throughput\":500,\"Encrypted\":true,\"DeleteOnTermination\":true}}
   ]" \
   --tag-specifications "ResourceType=instance,Tags=[
-    {Key=Name,Value=${CLUSTER_NAME}-snapshot-builder},
-    {Key=Purpose,Value=data-volume-snapshot}
+    {Key=Name,Value=${BUILDER_NAME_TAG}},
+    {Key=Purpose,Value=${BUILDER_PURPOSE_TAG}}
   ]" \
   --query "Instances[0].InstanceId" --output text
 }
-INSTANCE_ID=""
+# stderr goes to a file, not into the captured id: a warning printed on a
+# successful launch must not hide the instance id (the instance would be lost).
+LAUNCH_STARTED=true
 for attempt in $(seq 1 "${LAUNCH_ATTEMPTS:-18}"); do
-  if out=$(launch_builder 2>&1); then
-    INSTANCE_ID="$out"
+  if out=$(launch_builder 2>"$WORK_DIR/launch.err"); then
+    cat "$WORK_DIR/launch.err" >&2
+    if [[ "$out" =~ ^i-[0-9a-f]+$ ]]; then INSTANCE_ID="$out"; fi
     break
   fi
+  out=$(cat "$WORK_DIR/launch.err")
   if [[ "$out" != *"iamInstanceProfile"* ]]; then
     echo "Error: run-instances failed: $out" >&2
     exit 1
   fi
   echo "  instance profile not visible to EC2 yet (attempt ${attempt}); retrying in 10s"
-  sleep "${LAUNCH_RETRY_SECONDS:-10}"
+  sleep "$RETRY_SECONDS"
 done
-if [[ ! "$INSTANCE_ID" =~ ^i-[0-9a-f]+$ ]]; then
+if [[ -z "$INSTANCE_ID" ]]; then
   echo "Error: builder instance not launched: ${out:-no output}" >&2
   exit 1
 fi
 
 echo "  Instance: $INSTANCE_ID"
-
-cleanup() {
-  echo ""
-  echo "→ Cleaning up..."
-  rm -f "$USERDATA_FILE" 2>/dev/null || true
-  kubectl delete pods -n kube-system -l app=snapshot-puller --ignore-not-found 2>/dev/null || true
-  NODE_TO_DELETE=$(kubectl get nodes -l node.kubernetes.io/purpose=snapshot-builder \
-    --no-headers -o custom-columns=':metadata.name' 2>/dev/null | head -1)
-  if [[ -n "$NODE_TO_DELETE" ]]; then
-    kubectl delete node "$NODE_TO_DELETE" --ignore-not-found 2>/dev/null || true
-  fi
-  aws ec2 terminate-instances --instance-ids "$INSTANCE_ID" --region "$REGION" > /dev/null 2>&1 || true
-  echo "  Builder instance terminated."
-}
-trap cleanup EXIT
 
 # --- Wait for node to join cluster --------------------------------------------
 echo "→ Waiting for builder node to join the cluster..."
@@ -489,6 +577,10 @@ echo "→ Waiting for snapshot to complete (2-5 min for 200 GiB volume)..."
 aws ec2 wait snapshot-completed --snapshot-ids "$SNAPSHOT_ID" --region "$REGION"
 echo "  ✓ Snapshot ready"
 
+# The builder is no longer needed: terminate it now rather than at exit. (The
+# EXIT trap still covers every earlier way out.)
+release_builder || exit 1
+
 # --- Fast Snapshot Restore (optional) -----------------------------------------
 if [[ -n "$FSR_AZS" ]]; then
   echo "→ Enabling Fast Snapshot Restore in: $FSR_AZS"
@@ -518,7 +610,7 @@ fi
 
 patch_nodeclasses "$SNAPSHOT_ID"
 
-# --- Done (trap still fires to terminate instance) ----------------------------
+# --- Done ---------------------------------------------------------------------
 echo ""
 echo "╭──────────────────────────────────────────────────────────────────╮"
 echo "│  Snapshot created successfully                                   │"
