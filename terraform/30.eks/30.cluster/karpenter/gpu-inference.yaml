@@ -74,8 +74,12 @@ spec:
           effect: NoSchedule
       # All NVIDIA-backed AWS GPU instance categories (G and P families).
       # Karpenter's scheduler already bin-packs to cheapest-fit, so we don't
-      # enumerate families — new ones become eligible automatically, except
-      # those excluded below because the node image cannot drive them.
+      # enumerate families — new ones become eligible automatically. Excluded
+      # below are only GPUs older than Ampere, which current vLLM model defaults
+      # cannot run on: the families g4dn, g4ad, p3, p3dn and p2 by name, backed
+      # by a floor on the instance generation (>= 5). Non-NVIDIA GPUs are out
+      # through the manufacturer requirement. No family is excluded because of
+      # the node image any more (g7/g7e were; see the note further down).
       # Cost blast-radius is bounded by `limits.nvidia.com/gpu` below.
       requirements:
         - key: kubernetes.io/arch

@@ -18,8 +18,10 @@
 #                 -> prefill pod (KV producer) --NIXL--> decode pod (KV consumer)
 #
 # ── EXPERIMENTAL — GPU smoke-test findings (2026-07) ────────────────────────
-#   1. [PASS] NIXL is bundled in vllm/vllm-openai:v0.24.0 — both pools init the
-#      NixlPullConnector + NIXL Scheduler with no extra image work.
+#   1. [PASS] NIXL is bundled in the stock vllm/vllm-openai image (found on the
+#      version tested then; the image now shipped is the `vllmImage` default
+#      below) — both pools init the NixlPullConnector + NIXL Scheduler with no
+#      extra image work.
 #   2. [PASS] Deploys + serves end to end: both role-labeled pools become Ready,
 #      the model registers in LiteLLM, and requests return correct completions.
 #   3. [DONE] TRUE P/D routing. The EPP runs the `disagg-profile-handler` with
@@ -47,8 +49,9 @@ spec:
       # drop schema properties in place).
       prefillReplicas:         "integer | default=1 minimum=1"
       decodeReplicas:          "integer | default=2 minimum=1"
-      # Prefill pool (compute-bound): autoscaled on queue depth.
-      prefillMinReplicas:      "integer | default=1 minimum=1"   # floor (>=1; scale-to-zero parked)
+      # Prefill pool (compute-bound): autoscaled on queue depth. Both pools
+      # keep at least one replica: scale to zero exists on LLMDEndpoint only.
+      prefillMinReplicas:      "integer | default=1 minimum=1"   # floor (>=1)
       prefillMaxReplicas:      "integer | default=2 minimum=1"   # ceiling; > min enables autoscaling
       prefillTargetQueueDepth: "integer | default=20"            # per-pod vllm:num_requests_waiting target
       # Decode pool (KV-cache/bandwidth-bound): autoscaled on KV-cache utilization.
@@ -87,6 +90,10 @@ spec:
       decodeNodePool:       "string  | default=gpu-inference"   # or gpu-decode
     status:
       ready:             "${decodedeployment.status.?availableReplicas.orValue(0) > 0 ? 'True' : 'False'}"
+      # Available model-server replicas of both pools together. The other tiers
+      # report the same field and the health agent reads it for every endpoint
+      # kind; here it was missing, so the agent always saw 0.
+      availableReplicas: ${prefilldeployment.status.?availableReplicas.orValue(0) + decodedeployment.status.?availableReplicas.orValue(0)}
       prefillReplicas:   ${prefilldeployment.status.?availableReplicas.orValue(0)}
       decodeReplicas:    ${decodedeployment.status.?availableReplicas.orValue(0)}
       routerHealth:      "${routerapp.status.?health.?status.orValue('Unknown')}"
@@ -568,6 +575,15 @@ spec:
                           - pluginRef: prefix-cache-scorer
                             weight: ${string(schema.spec.routingProfile == 'prefix' ? 4 : 2)}
                           - pluginRef: max-score-picker
+                    # Same as the single-pool tier (llmd-endpoint.yaml). Left
+                    # out, the chart's default applies: 8 CPU / 8Gi requested
+                    # for the EPP container alone (chart v1.0.0).
+                    resources:
+                      requests:
+                        cpu: "1"
+                        memory: 2Gi
+                      limits:
+                        memory: 4Gi
                   inferencePool:
                     failureMode: "FailOpen"
                   modelServers:

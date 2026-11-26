@@ -9,7 +9,8 @@
 # replica — recovery is automatic (the watch re-lists current state on
 # reconnect and the reconcile loop repairs any drift).
 #
-# Image strategy: python:3.12-slim base + initContainer that pip-installs the
+# Image strategy: stock python slim image (the `image:` lines below) + an
+# initContainer that pip-installs the
 # kubernetes client into an emptyDir shared with the main container. No custom
 # image to build/push, matching the platform-health-agent event-watcher.
 ---
