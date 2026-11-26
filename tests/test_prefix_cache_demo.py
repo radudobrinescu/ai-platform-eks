@@ -143,3 +143,25 @@ def test_table_puts_the_two_runs_side_by_side():
     slow = {**row, "ttft_p50": 3.1, "hit": 0.2}
     out = bench.table({"direct": [slow], "router": [row]})
     assert "3.10s" in out and "0.25s" in out and "20%" in out and "88%" in out
+
+
+class TestRunsOnTheDocumentedPrerequisites:
+    """The README asks for python3 with boto3; the driver must not need PyYAML."""
+
+    def test_the_driver_does_not_import_the_report_module(self):
+        with open(os.path.join(ROOT, "ops/demos/prefix_cache_bench.py"), encoding="utf-8") as fh:
+            source = fh.read()
+        assert "import yaml" not in source
+        assert "from prefix_cache_report import" not in source and "import prefix_cache_report" not in source
+
+
+class TestCleanup:
+    def test_removes_every_direct_service_also_without_a_model_name(self, monkeypatch):
+        calls = []
+        monkeypatch.setattr(bench, "kubectl", lambda *args, **kw: calls.append(args))
+        monkeypatch.setattr(bench, "log", lambda *args, **kw: None)
+        assert bench.cleanup(bench.argparse.Namespace(model=None)) == 0
+        services = [c for c in calls if c[:2] == ("delete", "service")]
+        assert services, calls
+        assert "-l" in services[0] and "app.kubernetes.io/part-of=prefix-cache-demo" in services[0]
+        assert bench.MODEL_NS in services[0]

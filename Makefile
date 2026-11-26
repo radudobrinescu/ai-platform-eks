@@ -38,7 +38,7 @@ check-py: ## Byte-compile the Python sources, then run unit tests
 
 test: ## Unit tests (pytest); self-skips if pytest is not installed
 	@if python3 -c 'import pytest' 2>/dev/null; then \
-		echo "==> pytest"; python3 -m pytest -q tests; \
+		echo "==> pytest"; python3 -m pytest -q; \
 	else \
 		echo "!! pytest not installed — skipping unit tests (pip install pytest)"; \
 	fi

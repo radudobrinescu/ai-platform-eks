@@ -26,7 +26,8 @@ NS_PLATFORM="ai-platform"
 STATE_DIR="${REPO_ROOT}/.platformctl"
 ACTIVE_ENV_FILE="${STATE_DIR}/active-env"
 
-# UI -> local tunnel port (matches ops/lib/tunnel.sh and the ALB listener ports).
+# UI -> local tunnel port (the ALB listener ports; ops/lib/tunnel.sh forwards
+# these and Argo CD on 8090).
 UI_PORTS=("Open WebUI:8080" "LiteLLM:4000" "Langfuse:3000" "Dashboard:9090")
 
 c_bold=$'\033[1m'; c_dim=$'\033[2m'; c_grn=$'\033[32m'; c_red=$'\033[31m'; c_ylw=$'\033[33m'; c_rst=$'\033[0m'
@@ -150,13 +151,18 @@ _up_record_release() {
 
 cmd_up() {
   local env; env=$(need_env "${1:-}" "up")
-  need terraform; need aws; need make; require_tfvars "$env"; check_tfvars_filled "$env"; check_env_name_length "$env"; pin_region "$env"
+  # kubectl: the image snapshot build and the release record below both use it.
+  need terraform; need aws; need make; need kubectl; require_tfvars "$env"; check_tfvars_filled "$env"; check_env_name_length "$env"; pin_region "$env"
   log "Provisioning '${env}' — EKS + capabilities + Karpenter (takes a while)"
   # Explicit checks: when cmd_up is invoked in a `||` context
   # bash suppresses errexit inside the function, so a failed make would
   # otherwise fall through to the "Done" banner and return 0.
   make -C "$TF_DIR" bootstrap ENVIRONMENT="$env" || { warn "state backend bootstrap failed"; return 1; }
   make -C "$TF_DIR" apply-all ENVIRONMENT="$env" || { warn "terraform apply failed (see above)"; return 1; }
+  # Terraform's own update-kubeconfig names the context after the cluster ARN.
+  # The release record, `status --check` and `upgrade` look for one named after
+  # the environment, so create it (and make this the active environment).
+  cmd_use "$env"
   _up_record_release "$env"
   echo
   ok "Done. Next:"
@@ -1046,8 +1052,8 @@ cmd_new_model() {
 # Scaffold an AITeam manifest into workloads/teams/<name>.yaml — the GitOps
 # self-service path for onboarding a team (creates a team-<name> namespace with a
 # GPU quota, RBAC, namespace isolation, and a scoped LiteLLM key). Mirrors
-# new-model: without --deploy it writes the file locally + prints it for review
-# (nothing pushed); with --deploy it also git-commits + pushes so ArgoCD applies
+# new-model: without --deploy it prints the manifest for review (nothing is
+# written or pushed); with --deploy it writes the file, commits and pushes so ArgoCD applies
 # it. Input is validated against the AITeam schema (platform/config/kro/
 # team-onboarding.yaml) so bad values are caught here, not deep in the onboarding
 # Job. This is a workloads-layer change only — it never touches infra or OSS
@@ -1159,7 +1165,7 @@ EOF
     warn "About to git commit + push '${out#"$REPO_ROOT"/}' to branch '${branch}'."
     echo "    Pushing to the GitOps branch triggers ArgoCD to onboard team '${team}' (creates its namespace, quota, and LiteLLM key)."
     read -r -p "Proceed with commit + push? Type 'yes' to continue (anything else = write only, no push): " go
-    [ "$go" = "yes" ] || { warn "Left the file staged locally, nothing pushed. Commit it yourself when ready."; return 0; }
+    [ "$go" = "yes" ] || { warn "The file is written but not committed, and nothing is pushed. Commit it yourself when ready."; return 0; }
   fi
   git -C "$REPO_ROOT" add "$out"
   git -C "$REPO_ROOT" commit -m "Onboard team '${team}' (AITeam: gpu=${gpu}, budget=${budget}/${dur})" >/dev/null \
@@ -1622,6 +1628,15 @@ cmd_list_envs() {
 
 main() {
   local cmd="${1:-}"; shift || true
+  # These commands take an environment name and have no help of their own: without
+  # this, `tunnel --help` restarts the tunnel and `up --help` looks for --help.tfvars.
+  case "$cmd" in
+    up|use|down|status|tunnel|edge|list-envs|envs)
+      local arg
+      for arg in "$@"; do
+        case "$arg" in -h|--help) usage; return 0 ;; esac
+      done ;;
+  esac
   case "$cmd" in
     up)        cmd_up "$@" ;;
     use)       cmd_use "$@" ;;
