@@ -87,6 +87,10 @@ spec:
       decodeNodePool:       "string  | default=gpu-inference"   # or gpu-decode
     status:
       ready:             "${decodedeployment.status.?availableReplicas.orValue(0) > 0 ? 'True' : 'False'}"
+      # Available model-server replicas of both pools together. The other tiers
+      # report the same field and the health agent reads it for every endpoint
+      # kind; here it was missing, so the agent always saw 0.
+      availableReplicas: ${prefilldeployment.status.?availableReplicas.orValue(0) + decodedeployment.status.?availableReplicas.orValue(0)}
       prefillReplicas:   ${prefilldeployment.status.?availableReplicas.orValue(0)}
       decodeReplicas:    ${decodedeployment.status.?availableReplicas.orValue(0)}
       routerHealth:      "${routerapp.status.?health.?status.orValue('Unknown')}"
