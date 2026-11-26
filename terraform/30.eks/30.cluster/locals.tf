@@ -13,10 +13,12 @@ locals {
   vllm_image     = "vllm/vllm-openai:${local.vllm_image_tag}"
 
   # HuggingFace model-weights cache.
-  # S3 bucket is populated automatically by the vLLM
-  # worker's sidecar after first successful load (automatic). The initContainer
-  # in the serving-tier RGDs (VLLMEndpoint/LLMDEndpoint/LLMDDisaggEndpoint) syncs
-  # from here on pod startup — falling back to a live HF download on cache miss.
+  # The hf-cache-download initContainer in the serving-tier RGDs
+  # (VLLMEndpoint/LLMDEndpoint/LLMDDisaggEndpoint) only READS it: on pod startup
+  # it syncs s3://<bucket>/hf/<org>/<model>/ to local disk when that prefix
+  # exists, and otherwise vLLM downloads from HuggingFace. Nothing fills the
+  # bucket automatically: a model's weights are served from the cache only if
+  # someone put them under that prefix.
   # S3 bucket names are global, so "<cluster>-model-cache" collides with any other
   # account using the same prefix/env (BucketAlreadyExists, 409). The account ID
   # makes the name unique per account. Used for a new bucket only: an existing

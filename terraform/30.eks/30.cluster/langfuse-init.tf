@@ -52,9 +52,11 @@ locals {
 
 # (1) Headless-init values consumed by the Langfuse chart via additionalEnv.
 #     A Secret (not ConfigMap) because it carries the project keys + admin
-#     password. NEXTAUTH_URL is included so the browser-facing URL is
-#     Terraform-controlled (var.langfuse_nextauth_url) instead of a manual
-#     post-install edit to the git-tracked helm values.
+#     password. The NEXTAUTH_URL key (var.langfuse_nextauth_url) is kept for
+#     back-compat only: the chart does not consume it. The browser-facing URL
+#     comes from nextauth.url in platform/services/langfuse/helm-values.yaml
+#     and is reconciled at runtime by the langfuse-nextauth-url CronJob
+#     (platform/config/langfuse-nextauth-url.yaml).
 resource "kubernetes_secret" "langfuse_init" {
   count = local.capabilities.gitops ? 1 : 0
 
