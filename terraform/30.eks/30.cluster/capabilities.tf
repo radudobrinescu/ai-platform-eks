@@ -232,7 +232,7 @@ resource "kubernetes_config_map" "platform_config" {
     # plain Docker Hub ref when no ECR cache is configured). The serving-tier RGDs
     # (VLLMEndpoint/LLMDEndpoint/LLMDDisaggEndpoint) read this via externalRef,
     # falling back to their schema default.
-    vllmImage        = var.docker_hub_username != "" ? "${data.aws_caller_identity.current.account_id}.dkr.ecr.${local.region}.amazonaws.com/docker-hub/${local.vllm_image}" : local.vllm_image
+    vllmImage        = var.docker_hub_username != "" ? "${local.ecr_registry}/docker-hub/${local.vllm_image}" : local.vllm_image
     modelCacheBucket = local.capabilities.gitops ? aws_s3_bucket.model_cache[0].bucket : ""
   }
 

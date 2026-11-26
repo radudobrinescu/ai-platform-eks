@@ -28,7 +28,7 @@
 locals {
   # Full ECR (pull-through cache) image URI for the vLLM serving image. Empty
   # when no Docker Hub creds are configured.
-  vllm_ecr_image = var.docker_hub_username != "" ? "${data.aws_caller_identity.current.account_id}.dkr.ecr.${local.region}.amazonaws.com/docker-hub/${local.vllm_image}" : ""
+  vllm_ecr_image = var.docker_hub_username != "" ? "${local.ecr_registry}/docker-hub/${local.vllm_image}" : ""
 
   # The reference GPU nodes pull (platform-config vllmImage, capabilities.tf),
   # with the registry spelled out so the snapshot builder takes it as given.
