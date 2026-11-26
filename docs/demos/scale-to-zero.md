@@ -20,9 +20,8 @@ The model is an `LLMDEndpoint` with `minReplicas: 0`.
   last replica, and Karpenter removes the empty GPU node.
 - **Waking up.** A request that arrives while no replica runs waits in the
   llm-d router, for up to `coldStartTimeoutSeconds`. The waiting request
-  tells KEDA to start a replica. Karpenter brings up a GPU node, which boots
-  from a disk snapshot that already holds the vLLM image. The model loads,
-  and the router sends the request on.
+  tells KEDA to start a replica. Karpenter brings up a GPU node, which pulls
+  the vLLM image. The model loads, and the router sends the request on.
 - **Clients.** Callers use the same LiteLLM `/v1` endpoint as for any other
   model.
 
@@ -97,8 +96,7 @@ The wait is the sum of these steps:
 - KEDA notices the request: up to about 30 s.
 - Karpenter gets a GPU node and it joins the cluster: about 1-2 minutes.
 - The GPU driver and device plugin start.
-- The image is already on the node's disk, from the snapshot, so it is not
-  downloaded.
+- The node pulls the vLLM image (about 10 GB).
 - The weights download (from the S3 model cache when it is pre-seeded,
   otherwise from Hugging Face).
 - vLLM starts.

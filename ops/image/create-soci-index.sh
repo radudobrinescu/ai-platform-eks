@@ -11,8 +11,8 @@
 # unless that role was granted ECR write).
 #
 # Networking + cluster name resolve HERMETICALLY from AWS APIs (no kubectl): the
-# subnet is found by the `karpenter.sh/discovery=<cluster>` tag, matching
-# create-data-volume-snapshot.sh. This avoids racing the host kubeconfig during a
+# subnet is found by the `karpenter.sh/discovery=<cluster>` tag. This avoids
+# racing the host kubeconfig during a
 # `terraform apply` on a brand-new cluster (where the host context may still
 # point elsewhere). Pass -n/-r explicitly from Terraform; both fall back to the
 # kubeconfig / AWS_REGION / the image URI when omitted (manual ad-hoc use).
@@ -38,7 +38,7 @@ IMAGE="${1:?Usage: $0 [-p <instance-profile>] [-n <cluster>] [-r <region>] <ecr-
 # runs as ROOT on the temporary builder (via `aws ssm send-command`), so a URI
 # containing shell metacharacters (;, $(), backticks, spaces) would be command
 # injection under a push-capable ECR role. Restrict to the characters a real
-# image reference uses. (Matches create-data-volume-snapshot.sh.)
+# image reference uses.
 IMAGE_PATTERN='^[a-zA-Z0-9._:/@-]+$'
 if [[ ! "$IMAGE" =~ $IMAGE_PATTERN ]]; then
   echo "Error: invalid characters in image URI: $IMAGE" >&2
@@ -114,8 +114,8 @@ if [ -z "$INSTANCE_PROFILE" ]; then
   echo "⚠ No -p given; using node profile '$INSTANCE_PROFILE' (ECR read-only — 'soci push' may 403)." >&2
 fi
 
-# Subnet: resolved hermetically via the Karpenter discovery tag (no kubectl), the
-# same way create-data-volume-snapshot.sh does — robust on a fresh-cluster apply.
+# Subnet: resolved hermetically via the Karpenter discovery tag (no kubectl) —
+# robust on a fresh-cluster apply.
 SUBNET=$(aws ec2 describe-subnets --region "$REGION" \
   --filters "Name=tag:karpenter.sh/discovery,Values=$CLUSTER_NAME" \
   --query "Subnets[0].SubnetId" --output text)

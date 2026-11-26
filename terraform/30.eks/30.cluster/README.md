@@ -12,9 +12,9 @@ provides compute, networking and storage instead.
 
 Node provisioning: Karpenter (controller, CRDs, node role) and the NodePools and
 EC2NodeClasses in [`karpenter/`](./karpenter): `default` for general workloads
-and the GPU pools for model serving. GPU nodes boot from an EBS snapshot that
-already holds the vLLM serving image; `image-optimization.tf` builds that
-snapshot once per image, account and region (its header describes how).
+and the GPU pools for model serving. GPU nodes pull the vLLM serving image when
+they start; with Docker Hub credentials set, `image-optimization.tf` builds a
+SOCI index for it in this account's ECR.
 
 GitOps: Argo CD and kro, either as EKS Managed Capabilities
 (`cluster_config.capabilities.eks_capabilities = true`, needs IAM Identity
@@ -74,8 +74,8 @@ European Sovereign Cloud).
 - `gitops_repo_url`, `gitops_revision`, `gitops_workloads_repo_url` - the
   repository Argo CD syncs from.
 - `enable_bedrock`, `enable_sso`, `enable_cloudfront_edge`, `sso_public_urls`.
-- `gpu_data_volume_snapshot_id`, `gpu_capacity_reservation_ids`,
-  `gpu_node_volume_size_gib` - optional GPU node settings.
+- `gpu_capacity_reservation_ids`, `gpu_node_volume_size_gib` - optional GPU
+  node settings.
 - `ack_service_controllers` - a top-level variable (not a key of
   `cluster_config`): ACK controllers to install when Argo CD and kro are
   self-managed and `capabilities.ack = true`.

@@ -5,7 +5,7 @@ is not the same everywhere: `amazonaws.com` in the commercial and GovCloud
 partitions, `amazonaws.com.cn` in China, `amazonaws.eu` in the AWS European
 Sovereign Cloud. The pull-through cache path (Docker Hub credentials set) wrote
 `amazonaws.com` into the image reference, so in another partition the model
-pods and the image snapshot pointed at a registry host that does not exist.
+pods pointed at a registry host that does not exist.
 """
 from __future__ import annotations
 
@@ -18,7 +18,6 @@ import pytest
 
 ROOT = Path(__file__).resolve().parents[1]
 CLUSTER_STAGE = ROOT / "terraform/30.eks/30.cluster"
-SNAPSHOT = ROOT / "ops/image/create-data-volume-snapshot.sh"
 SOCI = ROOT / "ops/image/create-soci-index.sh"
 ESC_IMAGE = "111122223333.dkr.ecr.eusc-de-east-1.amazonaws.eu/docker-hub/vllm/vllm-openai:v1"
 
@@ -44,27 +43,6 @@ class TestTerraform:
     def test_both_image_references_use_it(self, name: str, key: str) -> None:
         line = next(ln for ln in _code(CLUSTER_STAGE / name).splitlines() if re.match(rf"\s*{key}\s*=", ln))
         assert "${local.ecr_registry}/docker-hub/" in line, line
-
-
-class TestSnapshotScript:
-    @pytest.mark.parametrize("region, suffix", [
-        ("eu-central-1", "amazonaws.com"),
-        ("us-gov-west-1", "amazonaws.com"),
-        ("cn-north-1", "amazonaws.com.cn"),
-        ("eusc-de-east-1", "amazonaws.eu"),
-    ])
-    def test_the_suffix_follows_the_region(self, region: str, suffix: str) -> None:
-        text = SNAPSHOT.read_text(encoding="utf-8")
-        m = re.search(r"^ecr_dns_suffix\(\) \{\n.*?^\}\n", text, flags=re.S | re.M)
-        assert m, "ecr_dns_suffix is not defined"
-        out = subprocess.run(["bash", "-c", m.group(0) + f'ecr_dns_suffix "{region}"\n'],
-                             capture_output=True, text=True, timeout=30)
-        assert out.stdout.strip() == suffix
-
-    def test_a_short_reference_is_expanded_with_that_suffix(self) -> None:
-        code = _code(SNAPSHOT)
-        assert ".amazonaws.com/docker-hub/" not in code
-        assert re.search(r'\$\{ACCOUNT\}\.dkr\.ecr\.\$\{REGION\}\.\$\(ecr_dns_suffix "\$REGION"\)/docker-hub/', code)
 
 
 class TestSociScript:
@@ -96,10 +74,3 @@ class TestSociScript:
         assert "--password-stdin $IMAGE_HOST" in code
         assert ".amazonaws.com\\\"" not in code and "$REGION.amazonaws.com" not in code
 
-
-class TestSovereignCloudExample:
-    def test_the_image_snapshot_is_off_there(self) -> None:
-        """The snapshot build has not been run in that partition. With it off,
-        the example behaves as it did before the build became automatic."""
-        text = (ROOT / "terraform/00.global/vars/example-esc.tfvars").read_text(encoding="utf-8")
-        assert re.search(r"^gpu_image_snapshot\s*=\s*false\b", text, flags=re.M)
