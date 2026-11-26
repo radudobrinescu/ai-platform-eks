@@ -5,7 +5,8 @@
 # Use this instead of VLLMEndpoint when you need high-throughput
 # or long multi-turn/agentic serving: llm-d spreads requests across replicas using
 # live KV-cache, prefix-reuse, and queue-depth signals (Endpoint Picker), all still
-# behind the same LiteLLM /v1 API.
+# behind the same LiteLLM /v1 API. KEDA scales the replicas with the load, down to
+# zero if you set minReplicas: 0.
 # For independent prefill/decode scaling, use LLMDDisaggEndpoint (DISAGG-TEMPLATE).
 #
 # The llm-d substrate (GIE CRDs + the llm-d OCI Helm repo registered in ArgoCD)
@@ -21,15 +22,22 @@ metadata:
   namespace: inference
 spec:
   model: "org/model-id"       # REQUIRED — HuggingFace model ID (e.g. Qwen/Qwen3-32B)
-  # replicas: 2               # vLLM replicas the EPP routes across (scale tier → 2+)
+  # minReplicas: 1            # fewest replicas KEDA keeps. 0 = scale to zero when idle:
+  #                           #   the model stops after scaleToZeroAfterSeconds without
+  #                           #   requests and its GPU node goes away; the next request
+  #                           #   waits (up to coldStartTimeoutSeconds) while it starts.
+  # maxReplicas: 3            # most replicas KEDA adds under load
+  # targetInflight: 16        # requests in flight per replica before KEDA adds one
+  # scaleToZeroAfterSeconds: 600
+  # coldStartTimeoutSeconds: 600
   # gpuCount: 1               # GPUs per replica (tensor parallelism). 1, 2, 4, or 8.
   # tensorParallelSize: 0     # 0 = use gpuCount; set explicitly to override
   # maxModelLen: 8192         # Max sequence length. Lower = less GPU memory.
   # minVramPerGpuGiB: 0       # Min per-GPU VRAM in GiB (Karpenter hint). 0 = no floor.
   # workerMemory: "16Gi"      # Memory per replica
   # workerCpu: "8"            # CPU per replica
-  # vllmImage: "vllm/vllm-openai:v0.24.0"      # Override only if needed
-  # routerChartVersion: "v0.9.0"               # llm-d-router-standalone chart version
+  # vllmImage: "vllm/vllm-openai:v0.33.0"      # Override only if needed
+  # routerChartVersion: "v1.0.0"               # llm-d-router-standalone chart version
 #
 # Unsure what size GPU / how many GPUs your model needs?
 # Run: ./platformctl new-model org/model-id --seq 8192 --users 4

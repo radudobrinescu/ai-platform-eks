@@ -219,6 +219,20 @@ def list_db_model_ids() -> dict[str, list[tuple[str, dict]]] | None:
 # always report drift and churn.
 _DRIFT_KEYS = ("model", "api_base", "aws_bedrock_runtime_endpoint",
                "input_cost_per_token", "output_cost_per_token")
+# Keys set only for some models (scale-to-zero llm-d models, see
+# _cold_start_params). For these an absent key means "not set": LiteLLM echoes a
+# litellm_param it holds and omits an unset one (exclude_none), so a model
+# turned to or from scale to zero must count as drift even though one side has
+# no key. Compared as numbers (the DB may hand them back as strings).
+_OPTIONAL_DRIFT_KEYS = ("timeout", "num_retries")
+
+# A request to a scale-to-zero llm-d model may wait in the llm-d router while
+# the model starts (spec.coldStartTimeoutSeconds). LiteLLM's global
+# request_timeout (120 s) would cut it and its 5 retries would start the wait
+# again, so such a model gets its own timeout (the hold plus time to answer)
+# and one retry.
+COLD_START_ANSWER_SEC = 120
+COLD_START_NUM_RETRIES = 1
 
 
 def _params_drifted(current: dict, desired: dict) -> bool:
@@ -232,6 +246,16 @@ def _params_drifted(current: dict, desired: dict) -> bool:
     counts. Costs compared with a small relative tolerance; other keys exact.
     """
     current = current or {}
+    for k in _OPTIONAL_DRIFT_KEYS:
+        dv, cv = desired.get(k), current.get(k)
+        if dv is None and cv is None:
+            continue
+        try:
+            if dv is None or cv is None or float(cv) != float(dv):
+                return True
+        except (TypeError, ValueError):
+            if str(cv) != str(dv):
+                return True
     for k in _DRIFT_KEYS:
         if k not in desired or k not in current:
             continue
@@ -419,7 +443,23 @@ def _litellm_params_for(plural: str, obj: dict) -> dict | None:
         "model": f"openai/{model}",
         "api_base": _api_base(plural, meta.get("name", ""), meta.get("namespace", "")),
         "api_key": "no-key",
+        **_cold_start_params(plural, spec),
     }
+
+
+def _cold_start_params(plural: str, spec: dict) -> dict:
+    """timeout/num_retries for an llm-d model that scales to zero (minReplicas 0),
+    else nothing. The CRD fills the defaults, so the fields are normally present;
+    the fallbacks match the LLMDEndpoint schema defaults."""
+    if plural != "llmdendpoints":
+        return {}
+    try:
+        if int(spec.get("minReplicas", 1)) != 0:
+            return {}
+        hold = int(spec.get("coldStartTimeoutSeconds", 600))
+    except (TypeError, ValueError):
+        return {}
+    return {"timeout": hold + COLD_START_ANSWER_SEC, "num_retries": COLD_START_NUM_RETRIES}
 
 
 def _patch_finalizers(custom: client.CustomObjectsApi, plural: str, ns: str, name: str,

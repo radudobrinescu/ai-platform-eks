@@ -72,10 +72,12 @@ gitops_revision = "main"
 # that repo only, never the platform repo. See workloads/README.md.
 # gitops_workloads_repo_url = "https://github.com/YOUR-ORG/ai-platform-workloads.git"
 
-# GPU cold-start optimization (optional) — pre-pulled container images on EBS snapshot.
-# Created by: ./ops/image/create-data-volume-snapshot.sh <ecr-image-uri>
-# When set, GPU nodes boot with the vLLM serving image already on disk (~0s image pull).
-# When empty (default), nodes fall back to SOCI lazy-loading or full image pull.
+# GPU cold-start optimization — the vLLM serving image pre-pulled on an EBS snapshot.
+# On by default: the first apply in an account and region builds the snapshot
+# (about 15 minutes, once per vLLM image; no Docker Hub account needed) and GPU
+# nodes boot with the image already on disk. Later clusters reuse it. Set this
+# only to pin a snapshot you built yourself with
+# ./ops/image/create-data-volume-snapshot.sh <image>.
 # gpu_data_volume_snapshot_id = "snap-0123456789abcdef0"
 
 # EC2 Capacity Blocks / Capacity Reservations (optional) — frontier GPU capacity.

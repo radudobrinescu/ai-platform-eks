@@ -890,6 +890,8 @@ def pick_tier(args, best, scaling) -> str:
     t = (getattr(args, "tier", "auto") or "auto")
     if t != "auto":
         return t
+    if getattr(args, "min_replicas", None) is not None:
+        return "llm-d"   # --min-replicas (scale to zero) exists on the llm-d tier only
     pp = getattr(best, "pp_degree", 1) or 1
     if scaling and scaling[0].replicas >= 2 and pp <= 1:
         return "llm-d"
@@ -940,6 +942,8 @@ def resolve_kind(tier: str, args, scaling) -> str:
     aggregated (LLMDEndpoint) vs disaggregated (LLMDDisaggEndpoint): a
     long-context fleet benefits from prefill/decode disaggregation."""
     if tier == "llm-d":
+        if getattr(args, "min_replicas", None) is not None:
+            return "LLMDEndpoint"   # minReplicas / scale to zero: aggregated tier only
         return "LLMDDisaggEndpoint" if (scaling and should_disaggregate(args)) else "LLMDEndpoint"
     return TIER_KIND[tier]
 
@@ -1137,7 +1141,7 @@ def build_endpoint_yaml(
         # bandwidth-bound) autoscale independently on their own signals. Size the
         # *max* per pool from the target load — decode holds the sessions so it
         # gets the majority (~1/3 prefill : 2/3 decode); min stays 1 (elastic;
-        # scale-to-zero parked).
+        # scale to zero exists on LLMDEndpoint only).
         profile = pick_routing_profile(args)
         total = llmd_replicas(min_replicas, profile) if scaling else 3
         decode_max = max(1, math.ceil(total * 0.66))
@@ -1158,16 +1162,25 @@ def build_endpoint_yaml(
             lines.append("  prefillNodePool: gpu-prefill   # compute-optimized (prefill is FLOP-bound)")
             lines.append("  decodeNodePool: gpu-decode     # bandwidth-optimized (decode is HBM-bound)")
     elif is_llmd:
-        # Scale tier: KEDA autoscales the pool on vLLM queue depth and the EPP
-        # routes across the live replicas. The recommender sizes the *peak*
-        # (maxReplicas) for the target load; minReplicas stays at 1 for cost
-        # (scale up on demand — raise it for a warm baseline). targetQueueDepth is
-        # the per-pod scale trigger (matches the RGD default).
+        # Scale tier: KEDA autoscales the pool on the requests in flight that the
+        # EPP reports, and the EPP routes across the live replicas. The
+        # recommender sizes the *peak* (maxReplicas) for the target load;
+        # minReplicas stays at 1 for cost (scale up on demand — raise it for a
+        # warm baseline, or --min-replicas 0 to scale to zero when idle).
+        # targetInflight is the per-replica scale target (the RGD default).
         profile = pick_routing_profile(args)
         peak = llmd_replicas(min_replicas, profile) if scaling else max(2, min_replicas)
-        lines.append("  minReplicas: 1")
+        floor = getattr(args, "min_replicas", None)
+        floor = 1 if floor is None else floor
+        peak = max(peak, floor, 1)
+        if floor == 0:
+            lines.append("  minReplicas: 0   # scale to zero when idle; the first request after that waits for a cold start")
+            lines.append("  scaleToZeroAfterSeconds: 600   # idle time before the last replica stops")
+            lines.append("  coldStartTimeoutSeconds: 600   # how long a request waits for the model to start")
+        else:
+            lines.append(f"  minReplicas: {floor}")
         lines.append(f"  maxReplicas: {peak}")
-        lines.append("  targetQueueDepth: 20")
+        lines.append("  targetInflight: 16   # requests in flight per replica before KEDA adds one")
         lines.append(f"  routingProfile: {profile}   # EPP KV/prefix/load-aware weights for this workload")
     elif kind == "VLLMEndpoint":
         # vLLM is the fixed-size tier — no built-in autoscaler, so a single

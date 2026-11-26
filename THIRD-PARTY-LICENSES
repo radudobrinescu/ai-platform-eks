@@ -129,6 +129,20 @@ Container images (pinned tags in platform/** and terraform/**):
      image: ghcr.io/llm-d/llm-d-routing-sidecar (disaggregated tier)
      License: Apache-2.0
 
+  Used only by the prefix-cache demo (ops/demos/prefix_cache_bench.py), when you run it:
+
+  ** inference-perf — https://github.com/kubernetes-sigs/inference-perf
+     image: quay.io/inference-perf/inference-perf (load generator)
+     License: Apache-2.0. Downloads the model's tokenizer from Hugging Face.
+  ** Prism — https://github.com/llm-d/llm-d-prism
+     image: ghcr.io/llm-d/llm-d-prism (benchmark viewer)
+     License: Apache-2.0. Its Google Analytics and GitHub sign-in stay off
+     without their settings, which the demo does not set. By default it also
+     offers llm-d's public benchmark results, read from a public Google Cloud
+     Storage bucket (llm-d-benchmarks).
+  ** llm-d-benchmark workload profile (shared_prefix_multi_turn_chat) —
+     https://github.com/llm-d/llm-d-benchmark  License: Apache-2.0
+
 Helm charts / platform components (pulled at deploy time):
 
   ** NVIDIA GPU Operator — https://github.com/NVIDIA/gpu-operator
