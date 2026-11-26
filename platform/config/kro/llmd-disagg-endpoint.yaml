@@ -572,6 +572,15 @@ spec:
                           - pluginRef: prefix-cache-scorer
                             weight: ${string(schema.spec.routingProfile == 'prefix' ? 4 : 2)}
                           - pluginRef: max-score-picker
+                    # Same as the single-pool tier (llmd-endpoint.yaml). Left
+                    # out, the chart's default applies: 8 CPU / 8Gi requested
+                    # for the EPP container alone (chart v1.0.0).
+                    resources:
+                      requests:
+                        cpu: "1"
+                        memory: 2Gi
+                      limits:
+                        memory: 4Gi
                   inferencePool:
                     failureMode: "FailOpen"
                   modelServers:
