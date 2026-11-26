@@ -333,3 +333,69 @@ class TestMinReplicasEdgeCases:
         assert code == 0
         doc = _manifest(out)
         assert doc["kind"] == "VLLMEndpoint" and doc["spec"]["pipelineParallelSize"] == 2
+
+
+def _deploy_command(out: str) -> list[str]:
+    """The arguments of the printed "Deploy it" command, after `new-model`."""
+    line = next(ln for ln in out.splitlines() if "Deploy it:" in ln)
+    words = shlex.split(line.split("./platformctl new-model", 1)[1])
+    assert words[-1] == "--deploy", line
+    return words[:-1]
+
+
+class TestTheDeployCommandIsTheOneThatWasPreviewed:
+    """The preview ends with the command to deploy it. Running that command must
+    deploy what was previewed: it used to drop most options, so a
+    `--min-replicas 0` preview told the user to deploy an always-on model."""
+
+    @pytest.mark.parametrize("argv", [
+        ["org/m"],
+        ["org/m", "--min-replicas", "0"],
+        ["org/m", "--tier", "llm-d", "--users", "120", "--target-tok-s", "25", "--avg-context", "2048"],
+        ["org/m", "--tp", "2", "--worker-memory", "40Gi", "--tool-call-parser", "hermes"],
+        ["org/m", "--quant", "fp8", "--seq", "16384", "--workload", "rag", "--users", "30"],
+        ["org/m", "--extra-arg=--enable-prefix-caching", "--extra-arg", '["--kv-cache-dtype","fp8"]'],
+        ["org/m", "--instance-type", "g6.2xlarge", "--tier", "vllm", "--in-cluster-only", "--max-price", "5"],
+        ["org/m", "--model-name", "my-alias", "--safety-margin", "0.2", "--utilization", "0.5"],
+    ])
+    def test_the_printed_command_reproduces_the_manifest(self, new_model, argv):
+        code, out, _err = new_model(argv)
+        assert code == 0
+        code_again, out_again, _err = new_model(_deploy_command(out))
+        assert code_again == 0
+        assert _manifest(out_again) == _manifest(out)
+
+    def test_a_token_is_never_printed(self, new_model):
+        code, out, err = new_model(["org/m", "--hf-token", "hf_secretvalue123", "--min-replicas", "0"])
+        assert code == 0
+        assert "hf_secretvalue123" not in out + err
+        words = _deploy_command(out)
+        assert "--hf-token" in words and "--min-replicas" in words
+
+    def test_a_token_given_with_an_equals_sign_is_never_printed(self, new_model):
+        code, out, err = new_model(["org/m", "--hf-token=hf_secretvalue123"])
+        assert code == 0
+        assert "hf_secretvalue123" not in out + err
+
+
+class TestPipelineParallelismNeverReachesTheLlmdTier:
+    """The llm-d tiers run a model on one node with tensor parallelism only. A
+    layout that needs pipeline parallelism must stay on vLLM, also when it is the
+    fleet's layout and not only the single-instance pick."""
+
+    MODEL = dict(params_b=70.0, num_heads=25)      # 25 heads: no tensor-parallel split fits
+
+    def test_an_automatic_fleet_stays_on_vllm(self, new_model):
+        code, out, _err = new_model(["org/m", "--users", "100"], model=_model(**self.MODEL))
+        assert code == 0
+        assert "PP=" in out, "the fixture model was expected to need pipeline parallelism"
+        assert _manifest(out)["kind"] == "VLLMEndpoint"
+
+    @pytest.mark.parametrize("tier", ["llm-d", "llm-d-disagg"])
+    def test_an_explicit_llmd_tier_is_refused(self, new_model, tier):
+        code, out, err = new_model(["org/m", "--tier", tier, "--users", "100"], model=_model(**self.MODEL))
+        chose_pp = "PP=" in out or "pipeline" in (out + err).lower()
+        assert chose_pp, "the fixture model was expected to need pipeline parallelism"
+        assert code != 0
+        assert "pipeline parallelism" in err
+        assert "You'll deploy this" not in out

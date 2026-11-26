@@ -180,6 +180,8 @@ def build_parser() -> argparse.ArgumentParser:
 def main(argv: list[str] | None = None) -> int:
     p = build_parser()
     args = p.parse_args(argv)
+    # Kept for the preview's "Deploy it" line, which repeats the command as given.
+    args.argv = list(sys.argv[1:] if argv is None else argv)
     if args.min_replicas is not None:
         if args.min_replicas < 0:
             p.error("--min-replicas must be 0 or more")
@@ -334,19 +336,22 @@ def main(argv: list[str] | None = None) -> int:
                 target_tok_s=args.target_tok_s,
             )
 
-    # --min-replicas under --tier auto forces the llm-d tier (pick_tier), whose
-    # LLMDEndpoint runs a model on one node with tensor parallelism only. If the
-    # option that goes into the manifest needs pipeline parallelism, that
-    # manifest cannot work: stop here instead of emitting it.
-    if best is not None and args.tier == "auto" and args.min_replicas is not None:
+    # The llm-d tiers run a model on one node with tensor parallelism only. If
+    # the layout that goes into the manifest needs pipeline parallelism, an llm-d
+    # manifest cannot work: stop here instead of emitting it. (--tier auto keeps
+    # such a layout on vLLM by itself, unless --min-replicas forces llm-d.)
+    if best is not None:
+        from .render import pick_tier
         chosen = scaling[0].option if scaling else best
-        if chosen.pp_degree > 1:
+        tier = pick_tier(args, best, scaling)
+        if tier != "vllm" and chosen.pp_degree > 1:
+            asked = "--min-replicas needs" if args.tier == "auto" else f"--tier {args.tier} is"
             sys.exit(
-                f"error: --min-replicas needs the llm-d tier, which cannot run pipeline "
+                f"error: {asked} the llm-d tier, which cannot run pipeline "
                 f"parallelism, but {args.model} on {chosen.instance.name} needs it "
-                f"({chosen.parallelism_label}). Drop --min-replicas to deploy on the vllm "
-                f"tier, or make the model fit a tensor-parallel layout (--tp N, or a "
-                f"smaller --quant such as int4).")
+                f"({chosen.parallelism_label}). Deploy on the vllm tier (--tier vllm, "
+                f"without --min-replicas), or make the model fit a tensor-parallel "
+                f"layout (--tp N, or a smaller --quant such as int4).")
 
     if args.json:
         print_json(model, vram, opts, best, args, price_src, scaling)

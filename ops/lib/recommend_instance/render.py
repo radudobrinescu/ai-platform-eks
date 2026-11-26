@@ -6,6 +6,7 @@ import argparse
 import json
 import math
 import re
+import shlex
 import sys
 
 from .catalog import CATALOG_PRICING_REGION, TIME_SLICE_REPLICAS, nodepool_refusal
@@ -360,24 +361,28 @@ def _int4_savings_hint(
             f"(~{saved_mo}/mo saved){C.DIM}; ~1-2% quality loss on benchmarks{C.RESET}")
 
 
-def _deploy_flags(args: argparse.Namespace) -> str:
-    """Reconstruct the non-default flags for a faithful `--deploy` re-run line."""
-    parts: list[str] = []
-    if args.quant != "bf16":
-        parts.append(f"--quant {args.quant}")
-    if args.kv_quant != "fp16":
-        parts.append(f"--kv-quant {args.kv_quant}")
-    if args.seq != 8192:
-        parts.append(f"--seq {args.seq}")
-    if args.workload:
-        parts.append(f"--workload {args.workload}")
-    elif args.users > 1:
-        parts.append(f"--users {args.users}")
-    if getattr(args, "tier", "auto") not in (None, "auto"):
-        parts.append(f"--tier {args.tier}")
-    if getattr(args, "instance_type", None):
-        parts.append(f"--instance-type {args.instance_type}")
-    return (" " + " ".join(parts)) if parts else ""
+HF_TOKEN_PLACEHOLDER = "<your-hf-token>"
+
+
+def _deploy_command(args: argparse.Namespace, model_id: str) -> str:
+    """The arguments of the command that deploys what this preview shows: the
+    ones the preview was run with, so no option can be lost on the way. A
+    Hugging Face token is replaced by a placeholder; it must not be printed."""
+    given = list(getattr(args, "argv", None) or [model_id])
+    shown: list[str] = []
+    skip_value = False
+    for word in given:
+        if skip_value:
+            shown.append(HF_TOKEN_PLACEHOLDER)
+            skip_value = False
+        elif word == "--hf-token":
+            shown.append(word)
+            skip_value = True
+        elif word.startswith("--hf-token="):
+            shown.append(f"--hf-token={HF_TOKEN_PLACEHOLDER}")
+        else:
+            shown.append(word)
+    return shlex.join(shown)
 
 
 def print_human(
@@ -910,7 +915,9 @@ def pick_tier(args, best, scaling) -> str:
         return t
     if getattr(args, "min_replicas", None) is not None:
         return "llm-d"   # --min-replicas (scale to zero) exists on the llm-d tier only
-    pp = getattr(best, "pp_degree", 1) or 1
+    # The layout that goes into the manifest: the fleet's when there is one.
+    chosen = scaling[0].option if scaling else best
+    pp = getattr(chosen, "pp_degree", 1) or 1
     if scaling and scaling[0].replicas >= 2 and pp <= 1:
         return "llm-d"
     return "vllm"
@@ -1313,9 +1320,8 @@ def _print_yaml_snippet(model: ModelSpec, vram: VramEstimate, best: Option,
         print(f"  {C.DIM}│{C.RESET} {ln}")
 
     # Primary path: the native one-liner (previews + confirms before it commits).
-    flags = _deploy_flags(args)
     print(f"\n{C.BOLD}Deploy it:{C.RESET}  "
-          f"{C.CYAN}./platformctl new-model {model.model_id}{flags} --deploy{C.RESET}")
+          f"{C.CYAN}./platformctl new-model {_deploy_command(args, model.model_id)} --deploy{C.RESET}")
     print(f"  {C.DIM}writes the manifest, commits, pushes, and triggers an ArgoCD "
           f"sync — you preview + confirm first.{C.RESET}")
     print(f"  {C.DIM}Remove it later:  ./platformctl new-model --undeploy {name}{C.RESET}")
