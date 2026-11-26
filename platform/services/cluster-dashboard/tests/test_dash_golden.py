@@ -2,15 +2,19 @@
 script) read.
 
 The recorded inputs in fixtures/ describe a small cluster: a GPU node serving a
-vLLM model, an llm-d model stuck on GPU capacity, a kro endpoint in ERROR, a
-node under memory pressure, a NotReady node, a node Karpenter is removing, a
-Bedrock CR plus a static Bedrock entry, LiteLLM traffic and team spend, DCGM
-utilization and one KEDA autoscaler.
+vLLM model, an llm-d model stuck on GPU capacity, a kro endpoint in ERROR, an
+llm-d model scaled to zero, one waking from zero (its pod is 3 minutes old and
+waits for a GPU node), a node under memory pressure, a NotReady node, a node
+Karpenter is removing, a Bedrock CR plus a static Bedrock entry, LiteLLM
+traffic and team spend, DCGM utilization and three KEDA autoscalers.
 
 fixtures/data.json.golden was produced by the pre-rebuild backend (U1). The
 rebuilt backend (watch caches, sources, derive loop, store) must produce the
 same document from the same inputs; the fields added by the rebuild
-(`sourceStatus`, `degraded`) are checked separately.
+(`sourceStatus`, `degraded`) are checked separately. Changed since, on purpose:
+the model states "scaled-to-zero" and "waking", the endpoint fields
+`minReplicas`, `scaledToZero` and `coldStartSec`, and the autoscaling signal
+of an llm-d model ("requests in flight").
 """
 from dash_testlib import check_golden, fixture_app
 
@@ -45,6 +49,12 @@ def test_golden_covers_the_interesting_cases():
     assert models["gemma-12b"]["status"] == "deploying"
     assert models["gemma-12b"]["deploy"]["provisioning"], "GPU capacity warning expected"
     assert models["broken"]["status"] == "error"
+    zero, waking = models["phi-4-mini"], models["mistral-7b"]
+    assert (zero["status"], zero["replicas"], zero["availableReplicas"], zero["costHr"]) == ("scaled-to-zero", 0, 0, 0.0)
+    assert "deploy" not in zero and zero["scale"][0]["min"] == 0
+    assert waking["status"] == "waking" and waking["deploy"]["phase"] == "Pending"
+    assert {a["pool"]: a["signal"] for a in data["autoscaling"]} == {
+        "gemma-12b": "requests in flight", "mistral-7b": "requests in flight", "phi-4-mini": "requests in flight"}
     assert {"nova-lite", "claude-static"} <= set(models)
     alerts = {(a["node"], a["issue"]) for a in data["nodeAlerts"]}
     assert ("ip-10-10-1-12.eu-central-1.compute.internal", "MemoryPressure") in alerts

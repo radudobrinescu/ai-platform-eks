@@ -212,8 +212,7 @@ All knobs are in [`pha-config.yaml`](./pha-config.yaml). Most useful:
 | `APPROVAL_EXPIRY_HOURS` | Approve buttons disabled after this |
 | `DEBOUNCE_WINDOW_SEC` | Suppress repeat investigations for the same resource |
 
-The watcher reads the ConfigMap when it starts. After editing it and pushing, run
-`kubectl rollout restart deployment event-watcher -n ai-platform`. In-flight Jobs keep their original env.
+The ConfigMap keeps its name (kustomize adds no hash suffix to it), so editing it and pushing restarts nothing: the event watcher and the dashboard read it when they start. Apply a change with `kubectl rollout restart deployment event-watcher cluster-dashboard -n ai-platform`. In-flight Jobs keep their original env.
 
 ---
 

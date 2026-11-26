@@ -2,13 +2,16 @@
 #
 # Mounted as env vars on event-watcher and inherited by every
 # Investigator/Remediator Job it spawns. The cluster-dashboard
-# (which hosts the approvals UI) reads APPROVAL_EXPIRY_HOURS via
-# its own ConfigMap or hardcoded default.
+# (which hosts the approvals UI and creates the Remediator Job) reads
+# PYTHON_IMAGE and KUBECTL_VERSION from here; its other settings
+# (APPROVAL_EXPIRY_HOURS, ...) are env values in manifests.yaml.
 #
 # To change config:
 # - Edit values here, push, ArgoCD applies.
-# - Kustomize rolls the ConfigMap (hash suffix changes), Deployments
-#   pick up new env vars automatically (pod restart).
+# - The ConfigMap keeps its name (it is a plain resource, kustomize adds no
+#   hash suffix), so no pod restarts by itself. The event watcher and the
+#   dashboard read the values when they start; to apply a change:
+#   kubectl rollout restart deployment event-watcher cluster-dashboard -n ai-platform
 # - In-flight Jobs keep the env they were spawned with — no harm.
 ---
 apiVersion: v1
@@ -94,7 +97,14 @@ data:
   DB_PORT: "5432"
   DB_NAME: "platform_health_agent"
 
-  # Image pinning. Bumping these forces all components to redeploy.
+  # Versions for the Investigator and Remediator Jobs. The event watcher and
+  # the dashboard read them when their pod starts and create the Jobs with
+  # them, so a change here reaches new Jobs once those two pods have restarted.
   KIRO_CLI_VERSION: "latest"          # kiro.dev installer fetches latest by default
-  KUBECTL_VERSION: "v1.32.5"          # match cluster minor version
+  # kubectl, fetched from dl.k8s.io/release/<version>/. Within one minor of the
+  # cluster's Kubernetes version (kubernetes_version in the tfvars); the same
+  # release as the alpine/k8s image the rest of the platform uses.
+  KUBECTL_VERSION: "v1.37.2"
+  # Same Python as the `image:` lines of this directory: the pip pins of the
+  # Jobs (backend.py, event_watcher.py) must have wheels for it.
   PYTHON_IMAGE: "python:3.15-slim"

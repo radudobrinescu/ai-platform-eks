@@ -9,7 +9,8 @@ import sys
 
 import pytest
 
-from pha_cases import ANY, EVENT_CASES, NODE_CASES, NOW, POD_CASES, STUCK_CASES, WAKE_CASES, ago, cs, event, node, pod
+from pha_cases import (ANY, COLD_START_CASES, EVENT_CASES, LLMD_POD, NODE_CASES, NOW, POD_CASES, STUCK_CASES, WAKE_CASES,
+                       ago, cs, event, node, pod)
 from pha import triggers
 
 RULES = triggers.Rules()
@@ -65,6 +66,23 @@ def test_stuck_rules(case):
 def test_waking_from_zero(case):
     ep = {"metadata": {"name": "e", "creationTimestamp": ago(minutes=60)}, "spec": case[1]}
     assert triggers.waking_from_zero(ep, case[2], NOW) is case[3]
+
+
+@pytest.mark.parametrize("case", COLD_START_CASES, ids=_ids(COLD_START_CASES))
+def test_failed_scheduling_during_a_cold_start(case):
+    """Every wake from zero makes a new pod that is unschedulable until its GPU
+    node arrives; the debounce key is the pod name, so each wake used to start
+    an investigation."""
+    _, ev, endpoint, deployment, expected = case
+    _check(triggers.detect_event(ev, RULES, NOW, endpoint, deployment), expected)
+
+
+def test_llmd_pod_endpoint_names_the_endpoint_to_look_up():
+    assert triggers.llmd_pod_endpoint(event("FailedScheduling", name=LLMD_POD)) == ("inference", "sleepy")
+    assert triggers.llmd_pod_endpoint(event("FailedScheduling", name="my-llmd-model-llmd-6c8f9d7b5-x2k4q")) == (
+        "inference", "my-llmd-model")
+    assert triggers.llmd_pod_endpoint(event("FailedScheduling")) is None, "a vLLM-tier pod"
+    assert triggers.llmd_pod_endpoint(event("FailedScheduling", kind="Job", name=LLMD_POD)) is None
 
 
 def test_disabled_trigger_is_ignored():
