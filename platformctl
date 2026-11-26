@@ -1219,7 +1219,7 @@ usage: platformctl upgrade [ENV] [--to TAG] [--plan-only] [--yes] [--allow-repla
   Steps per release: checks -> release notes -> plan guard on every stage ->
   apply each stage from its saved plan -> git push -> wait for Argo CD ->
   status --check.
-  --to TAG         stop at this release (e.g. v2026.11.3) instead of the newest
+  --to TAG         stop at this release (e.g. v2026.12.0) instead of the newest
   --plan-only      run the checks and the plan guard for the next release, change nothing
   --yes, -y        do not ask for confirmation after the release notes
   --allow-replace  accept a guarded delete/replace at this Terraform address
@@ -1304,7 +1304,7 @@ cmd_upgrade() {
     case "$1" in
       --plan-only) plan_only=1 ;;
       --to)
-        shift; [ $# -gt 0 ] && [ -n "$1" ] || die "--to needs a release tag (e.g. v2026.11.3)"
+        shift; [ $# -gt 0 ] && [ -n "$1" ] || die "--to needs a release tag (e.g. v2026.12.0)"
         to="$1" ;;
       --to=*)      to="${1#--to=}" ;;
       -y|--yes)    yes=1 ;;
@@ -1342,7 +1342,7 @@ $(printf '%s\n' "$dirty" | sed 's/^/    /')
   "${g[@]}" merge-base --is-ancestor '@{u}' HEAD || die "HEAD does not contain ${upstream} (someone pushed since you merged, or the branches diverged).
   Bring it in first (git merge ${upstream}), then rerun."
   local ahead; ahead="$("${g[@]}" rev-list --count '@{u}..HEAD')"
-  case "$to" in ""|v[0-9][0-9][0-9][0-9].[0-9][0-9].[0-9]*) ;; *) die "--to takes a release tag (vYYYY.MM.N, e.g. v2026.11.3), not '${to}'." ;; esac
+  case "$to" in ""|v[0-9][0-9][0-9][0-9].[0-9][0-9].[0-9]*) ;; *) die "--to takes a release tag (vYYYY.MM.N, e.g. v2026.12.0), not '${to}'." ;; esac
 
   # -- 2. release path ------------------------------------------------------ #
   # Deployed = what the cluster recorded; without a record, what Argo CD syncs.

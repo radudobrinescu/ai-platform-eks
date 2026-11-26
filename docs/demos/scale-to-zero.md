@@ -101,9 +101,9 @@ The wait is the sum of these steps:
   otherwise from Hugging Face).
 - vLLM starts.
 
-The E2E check `llmd-scales-to-zero-and-back` measures this wait on every
-release for a 0.5B model. Measure your model once before the demo, and pick a
-small one if the wait matters.
+The wait depends on the model: the larger the weights, the longer vLLM takes to
+load them. Measure your model once before the demo, and pick a small one if the
+wait matters.
 
 ## Limits to mention if asked
 

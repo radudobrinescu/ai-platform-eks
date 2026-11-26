@@ -69,7 +69,7 @@ gitops_revision = "main"
 # Self-service workloads repo (optional). Leave empty (default) to keep models/,
 # teams/, scale-models/ in the SAME repo above (single-repo, simplest). Set to a
 # separate, tenant-owned repo for multi-team self-service — teams get write to
-# that repo only, never the platform repo. See workloads/README.md.
+# that repo only, never the platform repo. See workloads/models/README.md.
 # gitops_workloads_repo_url = "https://github.com/YOUR-ORG/ai-platform-workloads.git"
 
 # GPU cold-start optimization — the vLLM serving image pre-pulled on an EBS snapshot.
@@ -77,7 +77,7 @@ gitops_revision = "main"
 # (about 15 minutes, once per vLLM image; no Docker Hub account needed) and GPU
 # nodes boot with the image already on disk. Later clusters reuse it. Set this
 # only to pin a snapshot you built yourself with
-# ./ops/image/create-data-volume-snapshot.sh <image>.
+# ./ops/image/create-data-volume-snapshot.sh docker.io/vllm/vllm-openai:<tag>.
 # gpu_data_volume_snapshot_id = "snap-0123456789abcdef0"
 
 # EC2 Capacity Blocks / Capacity Reservations (optional) — frontier GPU capacity.
@@ -130,12 +130,11 @@ gitops_revision = "main"
 #     open-webui = "https://webui.your-domain.com"
 #     litellm    = "https://litellm.your-domain.com"
 #     langfuse   = "https://langfuse.your-domain.com"
+#     oauth2-proxy = "https://dashboard.your-domain.com"   # the cluster dashboard
 #   }
 # To federate your own enterprise IdP, add it to the Cognito pool (SAML/OIDC).
 
 # Langfuse first-boot init (tracing live on the first call — no manual setup).
-# Default URL works with the SSM tunnel (./platformctl tunnel). For ALB access use
-# e.g. http://k8s-aiplatform-<hash>.<region>.elb.amazonaws.com:3000, or
-# https://langfuse.<your-domain> behind a domain + cert.
-# langfuse_nextauth_url    = "http://localhost:3000"
+# Langfuse's sign-in URL follows the front door by itself: the tunnel, the
+# CloudFront edge, or sso_public_urls.langfuse. Only the admin's email is set here.
 # langfuse_init_user_email = "admin@ai-platform.local"

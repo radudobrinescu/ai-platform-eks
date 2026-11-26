@@ -1,6 +1,6 @@
 # Upgrading to a new release
 
-Releases are git tags named `vYYYY.MM.N` (for example `v2026.11.0`). Each one
+Releases are git tags named `vYYYY.MM.N` (for example `v2026.12.0`). Each one
 ships a manifest, `releases/<version>.json`, and release notes,
 `docs/releases/<version>.md`. You upgrade one environment at a time, one
 release at a time.
@@ -31,7 +31,7 @@ Useful variations:
 
 ```bash
 ./platformctl upgrade <env> --plan-only        # show what the next release would change; change nothing
-./platformctl upgrade <env> --to v2026.11.3    # stop at this release instead of the newest
+./platformctl upgrade <env> --to v2026.12.0    # stop at this release instead of the newest
 ./platformctl upgrade <env> --yes              # do not ask after each release's notes
 ```
 
@@ -51,7 +51,7 @@ exactly the release you merged:
 
 ```bash
 git fetch upstream --tags
-git merge v2026.11.0            # the next release after the one you run; do NOT push
+git merge v2026.12.0            # the next release after the one you run; do NOT push
 ./platformctl upgrade <env>
 ```
 
@@ -153,7 +153,7 @@ shows it as `allowed` with that reason, and you do not need the flag.
 ## Several releases behind
 
 Nothing special: `./platformctl upgrade <env>` prints the path (for example
-`v2026.10.0 -> v2026.11.0 -> v2026.12.0`) and applies the releases one after
+`v2026.12.0 -> v2026.12.1 -> v2027.01.0`) and applies the releases one after
 the other. Each release shows its own notes and manual steps, and each must
 leave the platform healthy before the next one starts. If one stops, fix the
 cause and run the command again; it continues from the release the

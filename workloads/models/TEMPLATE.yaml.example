@@ -27,7 +27,9 @@ spec:
   # minVramPerGpuGiB: 0       # Min per-GPU VRAM in GiB (Karpenter hint). 0 = no floor.
   #                           # Set this to exclude T4 (16 GB) if you need L4/A10G (24+) —
   #                           # `platformctl new-model` emits the right value automatically.
-  # vllmImage: "vllm/vllm-openai:v0.24.0"  # Override only if needed
+  # vllmImage: the vLLM version is platform-wide (vllm_image_tag in
+  #   terraform/30.eks/30.cluster/locals.tf). This field is only a fallback for a
+  #   cluster without the platform-config ConfigMap; setting it has no effect otherwise.
 #
 # Unsure what size GPU / how many GPUs your model needs?
 # Run: ./platformctl new-model org/model-id --seq 8192 --users 4

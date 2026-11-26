@@ -71,7 +71,7 @@ variable "gitops_revision" {
 }
 
 variable "gitops_workloads_repo_url" {
-  description = "Git repository URL for the SELF-SERVICE WORKLOADS (models/, teams/, scale-models/). Leave empty (default) to keep workloads in the same repo as the platform (gitops_repo_url) — simplest, single-repo. Set this to a separate, tenant-owned repo for multi-team self-service, so teams get write access to the workloads repo ONLY (never the platform repo). See workloads/README.md."
+  description = "Git repository URL for the SELF-SERVICE WORKLOADS (models/, teams/, scale-models/). Leave empty (default) to keep workloads in the same repo as the platform (gitops_repo_url) — simplest, single-repo. Set this to a separate, tenant-owned repo for multi-team self-service, so teams get write access to the workloads repo ONLY (never the platform repo). See workloads/models/README.md."
   type        = string
   default     = ""
 }

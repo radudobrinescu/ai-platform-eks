@@ -17,7 +17,7 @@
 #
 # Paired requirement: ArgoCD's selfHeal would otherwise revert NEXTAUTH_URL to
 # the chart placeholder every sync (flapping the pod). An `ignoreDifferences`
-# rule on the langfuse app (argocd/bootstrap/platform.yaml) tells ArgoCD to leave
+# rule on the langfuse app (argocd/bootstrap/templates/platform.yaml) tells ArgoCD to leave
 # that env value alone — so once set, it sticks and this CronJob no-ops forever.
 #
 # Operator override: if you pin a real domain by editing `nextauth.url` in

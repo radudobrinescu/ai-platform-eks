@@ -50,7 +50,8 @@ model's architecture and writes `toolCallParser: <parser>` into the generated
 `VLLMEndpoint` (e.g. `gemma4`, `hermes` for Qwen, `mistral`, `llama3_json`). The
 model then answers `tool_choice: auto` requests — from Open WebUI or the API —
 out of the box instead of erroring. It's written explicitly so you can see and
-change it: delete the line for chat-only, or adjust it if you pin a different
-`vllmImage` (parser names are vLLM-version-specific). Models from unrecognized
+change it: delete the line for chat-only, or adjust it after a platform release
+moves vLLM to a version that renames the parser (parser names are
+vLLM-version-specific). Models from unrecognized
 families deploy chat-only (no `toolCallParser`) — add one if the model
 supports tools. For any other vLLM flag, use `--extra-arg`.
