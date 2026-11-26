@@ -484,7 +484,9 @@ spec:
       template:
         metadata:
           labels:
-            app: cluster-dashboard
+            # Not `app: cluster-dashboard`: that is the selector of the dashboard
+            # Service, and this pod listens on nothing.
+            app: cluster-dashboard-litellm-key
             ai-platform/job: litellm-viewer-key
           annotations:
             instrumentation.opentelemetry.io/inject-python: "false"

@@ -234,6 +234,42 @@ def test_rendered_pod_template_changes_with_the_code_the_dashboard_imports(tmp_p
 
 
 # ---------------------------------------------------------------------------
+# Service selectors
+# ---------------------------------------------------------------------------
+
+def _pod_templates():
+    """(kind, name, pod labels) of every workload the directory ships, and of
+    the Jobs the agent and the dashboard create at run time."""
+    from pha import jobs
+    docs = [d for name in _load("kustomization.yaml")[0]["resources"] for d in _load(name)]
+    docs.append(jobs.investigator_job("0b6c2f3e-8a51-4f7d-9c1e-2a3b4c5d6e7f", {}, namespace="ai-platform",
+                                      python_image="p", kubectl_version="v", pip_packages="x"))
+    docs.append(jobs.remediator_job("0b6c2f3e-8a51-4f7d-9c1e-2a3b4c5d6e7f", namespace="ai-platform",
+                                    python_image="p", kubectl_version="v", pip_packages="x"))
+    for doc in docs:
+        spec = doc.get("spec") or {}
+        template = (spec.get("jobTemplate") or {}).get("spec", {}).get("template") or spec.get("template")
+        if isinstance(template, dict) and "spec" in template:
+            yield doc["kind"], doc["metadata"]["name"], (template.get("metadata") or {}).get("labels") or {}
+
+
+def test_a_service_selects_only_the_pods_of_its_deployment():
+    """The viewer-key CronJob's pods carried `app: cluster-dashboard`, the
+    Service's selector: every 15 minutes a pod that listens on nothing was an
+    endpoint of the dashboard Service (and an ALB target) for a few seconds."""
+    services = [d for name in _load("kustomization.yaml")[0]["resources"] for d in _load(name)
+                if d.get("kind") == "Service"]
+    assert {s["metadata"]["name"] for s in services} >= {"cluster-dashboard", "oauth2-proxy"}
+    templates = list(_pod_templates())
+    assert {"Deployment", "CronJob", "Job"} <= {kind for kind, _name, _labels in templates}
+    for svc in services:
+        selector = svc["spec"]["selector"]
+        matching = [(kind, name) for kind, name, labels in templates
+                    if all(labels.get(k) == v for k, v in selector.items())]
+        assert matching == [("Deployment", svc["metadata"]["name"])], svc["metadata"]["name"]
+
+
+# ---------------------------------------------------------------------------
 # Comments in the shipped code point only at things that exist
 # ---------------------------------------------------------------------------
 
