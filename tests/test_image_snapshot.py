@@ -141,6 +141,46 @@ class TestTerraform:
         assert "--reuse" in block and "--patch-nodeclasses" in block
         assert "kubectl_manifest.karpenter_manifests" in block   # NodeClasses exist first
 
+    def _block(self, header):
+        tf = self._tf()
+        block = tf[tf.index(header):]
+        return block[:block.index("\n}\n")]
+
+    def _code(self, block):
+        """The block without its comments."""
+        return "\n".join(line.split("#")[0] for line in block.splitlines())
+
+    def test_a_failed_build_runs_again_on_the_next_apply(self):
+        # With on_failure = continue a failed build was recorded as done: it ran
+        # again only when the vLLM version changed, and nothing said so.
+        block = self._code(self._block('resource "null_resource" "gpu_data_volume_snapshot"'))
+        triggers = block[block.index("triggers = {"):]
+        triggers = triggers[:triggers.index("}")]
+        m = re.search(r'(\w+)\s*=\s*local\.resolved_snapshot_id\s*(==|!=)\s*""\s*\?\s*(.+?)\s*:\s*(.+)', triggers)
+        assert m, triggers
+        missing, found = (m.group(3), m.group(4)) if m.group(2) == "==" else (m.group(4), m.group(3))
+        # No snapshot: a value that differs at every apply, so the builder runs again.
+        assert missing.strip() == "timestamp()"
+        # A snapshot exists: a constant, so there is no diff from then on.
+        assert re.fullmatch(r'"[a-z-]+"', found.strip()), found
+        # The two triggers that were there still are.
+        assert "local.snapshot_image" in triggers and "local.cluster_name" in triggers
+
+    def test_a_failed_build_still_never_fails_the_apply(self):
+        block = self._code(self._block('resource "null_resource" "gpu_data_volume_snapshot"'))
+        assert re.search(r"on_failure\s*=\s*continue", block)
+
+    def test_snapshot_lookup_does_not_depend_on_the_builder(self):
+        # The trigger reads the lookup; the lookup must not wait for the builder
+        # (a cycle), nor be deferred to apply time by a depends_on (the trigger
+        # would then be unknown at every plan: a diff for ever).
+        block = self._code(self._block('data "aws_ebs_snapshot_ids" "gpu_data_volume"'))
+        assert "null_resource" not in block and "depends_on" not in block
+        tf = self._tf()
+        m = re.search(r"^\s*resolved_snapshot_id\s*=\s*(.+)", tf, re.M)
+        assert m and "null_resource" not in m.group(1)
+        assert "data.aws_ebs_snapshot_ids.gpu_data_volume[0].ids[0]" in m.group(1)
+
 
 BUILD_AWS = r"""#!/bin/bash
 echo "aws $*" >> "$CALLS"

@@ -1,7 +1,9 @@
 ################################################################################
 # GPU Image Optimization — EBS data volume snapshot (+ SOCI index)
 #
-# Automatically triggered when vllm_image_tag changes in locals.tf.
+# Automatically triggered when vllm_image_tag changes in locals.tf, and again on
+# every apply for as long as no snapshot of the image exists (a failed build is
+# retried; see the snapshot_missing trigger below).
 #   1. EBS snapshot with the vLLM image pre-pulled (no image pull on new GPU
 #      nodes). On every cluster with Karpenter. Without a Docker Hub account the
 #      image comes from docker.io anonymously; with docker_hub_username set it
@@ -94,6 +96,17 @@ resource "null_resource" "gpu_data_volume_snapshot" {
   triggers = {
     vllm_image   = local.snapshot_image
     cluster_name = local.cluster_name
+    # Retry a failed build. The provisioner is on_failure = continue, so a build
+    # that failed is recorded as done and, with only the two triggers above,
+    # would not run again until the vLLM version changes. While the lookup
+    # below finds no snapshot this value differs at every apply (timestamp() is
+    # only known at apply time), so the resource is replaced and the builder
+    # runs again. Once a snapshot exists it is the constant "no": the resource
+    # is replaced one last time (the script then only reuses the snapshot, a few
+    # seconds) and from then on there is no diff.
+    # No cycle: the lookup (data.aws_ebs_snapshot_ids.gpu_data_volume) is read
+    # at plan time from tags alone and depends on nothing in this resource.
+    snapshot_missing = local.resolved_snapshot_id == "" ? timestamp() : "no"
   }
 
   provisioner "local-exec" {
@@ -101,7 +114,9 @@ resource "null_resource" "gpu_data_volume_snapshot" {
     # --patch-nodeclasses: the GPU NodeClasses use it at once (this apply).
     command     = "${path.module}/../../../ops/image/create-data-volume-snapshot.sh --reuse --patch-nodeclasses ${local.gpu_snapshot_nodeclasses} -r ${local.region} -n ${local.cluster_name} -s ${local.snapshot_volume_gib} ${local.snapshot_images}"
     interpreter = ["bash", "-c"]
-    # Best-effort cold-start optimization — never abort the platform apply.
+    # Best-effort cold-start optimization — never abort the platform apply. The
+    # script exits non-zero on a real failure (Terraform prints its message and
+    # goes on); the snapshot_missing trigger runs it again at the next apply.
     on_failure = continue
     environment = {
       AWS_REGION = local.region
