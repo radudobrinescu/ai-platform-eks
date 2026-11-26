@@ -157,6 +157,7 @@ case "$*" in
     n=$(grep -c "list-instance-profiles-for-role" "$CALLS")
     if [ "$n" -le "${PROFILE_MISSING:-0}" ]; then echo None; else echo c1_123; fi ;;
   *"ssm get-parameter"*) echo ami-1 ;;
+  *"ecr describe-images"*) if [ -n "${ECR_MISSING:-}" ]; then echo "An error occurred (ImageNotFoundException)" >&2; exit 254; fi ;;
   *"run-instances"*)
     n=$(grep -c "run-instances" "$CALLS")
     if [ "$n" -le "${PROFILE_ERRORS:-0}" ]; then
@@ -192,7 +193,11 @@ case "$*" in
   # name <tab> providerID, one builder node per line (NODES overrides).
   *"get nodes"*) printf '%b' "${NODES:-node-1\\taws:///eu-central-1a/i-0abc\\n}" ;;
   *"apply -f -"*) cat >> "$CALLS" ;;
-  *"wait --for=jsonpath"*) if [ -n "${PULL_HANGS:-}" ]; then sleep "$PULL_HANGS"; fi ;;
+  *"wait --for=jsonpath"*)
+    if [ -n "${PULL_HANGS:-}" ]; then sleep "$PULL_HANGS"; fi
+    if [ -n "${PULL_FAILS:-}" ]; then echo "error: timed out waiting for the condition on pods/snapshot-puller-0" >&2; exit 1; fi ;;
+  *"get pod "*"waiting"*) if [ -n "${PULL_FAILS:-}" ]; then echo "ImagePullBackOff"; fi ;;
+  *"get pod "*"status.phase"*) echo "${POD_PHASE:-Pending}" ;;
 esac
 """
 
@@ -443,3 +448,51 @@ def test_build_fails_when_only_another_runs_builder_node_is_there(tmp_path):
     assert "i-0abc" in r.stderr and "did not join" in r.stderr
     assert "apply -f -" not in calls and "create-snapshot" not in calls
     assert TERMINATE in calls
+
+
+# --- A snapshot is only made, and only tagged, for images that were baked -----
+
+PRIVATE_IMAGE = "111122223333.dkr.ecr.eu-central-1.amazonaws.com/platform/trainer:v1"
+
+
+def test_a_failed_image_pull_makes_no_snapshot(tmp_path):
+    # It was a warning: the empty volume was snapshotted and tagged with the
+    # image, and since reuse and Terraform find snapshots by that tag, every
+    # later cluster in the account and region booted GPU nodes from it.
+    r, calls = _build(tmp_path, args=("--reuse", "--patch-nodeclasses", "gpu-inference", IMAGE), PULL_FAILS="1")
+    assert r.returncode == 1, r.stdout + r.stderr
+    assert "create-snapshot" not in calls
+    assert "patch ec2nodeclass" not in calls
+    assert TERMINATE in calls
+    assert "vllm-openai:v0.33.0" in r.stderr and "ImagePullBackOff" in r.stderr
+    assert "No snapshot was created" in r.stderr
+    assert "snap-" not in r.stdout
+
+
+def test_a_pod_that_started_counts_as_pulled(tmp_path):
+    # The wait can time out on a pod that is already running: the image is there.
+    r, calls = _build(tmp_path, PULL_FAILS="1", POD_PHASE="Running")
+    assert r.returncode == 0, r.stdout + r.stderr
+    assert "create-snapshot" in calls
+
+
+def test_images_tag_lists_only_what_was_baked(tmp_path):
+    # An image skipped as "not built yet" was still in the tag: the snapshot was
+    # then reused as if it held that image.
+    r, calls = _build(tmp_path, args=("--reuse", IMAGE, PRIVATE_IMAGE), ECR_MISSING="1")
+    assert r.returncode == 0, r.stdout + r.stderr
+    assert "skipping " + PRIVATE_IMAGE in r.stderr
+    snapshot = calls[calls.index("create-snapshot"):]
+    snapshot = snapshot[:snapshot.index("\naws ", 1)]
+    assert "{Key=Images,Value=" + IMAGE + "}" in snapshot
+    assert "platform/trainer" not in snapshot
+    # ... and reuse looks for exactly that list.
+    assert f"Name=tag:Images,Values={IMAGE} Name=volume-size" in calls
+    assert "platform/trainer" not in r.stdout[r.stdout.index("Snapshot ID:"):]
+
+
+def test_nothing_left_to_bake_fails_without_building(tmp_path):
+    r, calls = _build(tmp_path, args=("--reuse", PRIVATE_IMAGE), ECR_MISSING="1")
+    assert r.returncode == 1
+    assert "nothing to bake" in r.stderr
+    assert "run-instances" not in calls and "describe-snapshots" not in calls

@@ -226,8 +226,12 @@ terminate_leftover_builders || true
 # any private-ECR image that isn't pushed yet — baking such an image would hang
 # the puller pod in ImagePullBackOff, so the script skips images absent from ECR.
 # Skipping it keeps the no-Docker path working (the vLLM image still bakes).
+# FULL_IMAGES: what is pulled. BAKED_IMAGES: the same images as they were given
+# on the command line — the spelling the Images tag and the lookup by it use.
 FULL_IMAGES=()
+BAKED_IMAGES=()
 for img in "${IMAGES[@]}"; do
+  requested="$img"
   # A first path component with a dot, a colon or "localhost" is a registry host.
   first="${img%%/*}"
   if [[ "$img" != */* || ( "$first" != *.* && "$first" != *:* && "$first" != "localhost" ) ]]; then
@@ -244,6 +248,7 @@ for img in "${IMAGES[@]}"; do
     fi
   fi
   FULL_IMAGES+=("$img")
+  BAKED_IMAGES+=("$requested")
 done
 
 if [[ ${#FULL_IMAGES[@]} -eq 0 ]]; then
@@ -252,8 +257,9 @@ if [[ ${#FULL_IMAGES[@]} -eq 0 ]]; then
 fi
 
 # Tag-safe form of the image list for the Images tag (see the snapshot step):
-# space-joined, at most 255 characters. Reuse looks snapshots up by it.
-IMAGE_LIST_TAG="${IMAGES[*]}"
+# space-joined, at most 255 characters. Reuse looks snapshots up by it, so it
+# lists only the images that are baked — never one skipped above.
+IMAGE_LIST_TAG="${BAKED_IMAGES[*]}"
 IMAGE_LIST_TAG="${IMAGE_LIST_TAG:0:255}"
 
 # --- kubectl talks to the named cluster only ----------------------------------
@@ -567,14 +573,20 @@ for i in "${!FULL_IMAGES[@]}"; do
     if [[ "$PHASE" == "Running" || "$PHASE" == "Succeeded" ]]; then
       echo "  ✓ $(basename "$img") (phase: $PHASE)"
     else
-      echo "  ✗ $(basename "$img") (phase: $PHASE — image may not be fully cached)"
+      REASON=$(kubectl get pod "$pod_name" -n kube-system \
+        -o jsonpath='{.status.containerStatuses[0].state.waiting.reason}' 2>/dev/null || true)
+      echo "  ✗ $img was not pulled (waited up to 15 min; pod phase: ${PHASE:-Unknown}${REASON:+, $REASON})" >&2
       ALL_PULLED=false
     fi
   fi
 done
 
+# A snapshot of a volume without the image would still carry the Images tag, and
+# every cluster in this account and region finds snapshots by that tag: stop
+# here. The EXIT trap terminates the builder; the next run builds again.
 if [[ "$ALL_PULLED" != "true" ]]; then
-  echo "Warning: not all images pulled successfully. Snapshot may be incomplete." >&2
+  echo "Error: not every image was pulled onto the builder. No snapshot was created." >&2
+  exit 1
 fi
 
 # --- Clean up pods and stop instance ------------------------------------------
@@ -601,7 +613,7 @@ fi
 
 TIMESTAMP=$(date -u +%Y%m%d-%H%M%S)
 # Comma-joined form for the human-readable summary + tfvars comment below.
-IMAGE_LIST=$(IFS=,; echo "${IMAGES[*]}")
+IMAGE_LIST=$(IFS=,; echo "${BAKED_IMAGES[*]}")
 # IMAGE_LIST_TAG (set above) is the tag-safe form for the Images tag: the AWS
 # CLI shorthand --tag-specifications uses COMMA as its delimiter, so a
 # comma-joined multi-image value corrupts the parse (only single-image runs
