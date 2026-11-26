@@ -217,13 +217,14 @@ data:
       # OpenTelemetry (<LANGFUSE_HOST>/api/public/otel). Not the older "langfuse"
       # callback: it uses the Langfuse Python SDK v2, which Langfuse 4 rejects.
       success_callback: ["langfuse_otel"]
-      # Prometheus metrics (per-model request counters) power llm-d scale-to-zero.
-      # LiteLLM is the front door: it sees every request BEFORE it reaches the
-      # llm-d EPP, so its request counter increments even when the pool is scaled
-      # to zero (the EPP 503s before it would count anything). The autoscaling
-      # Prometheus scrapes /metrics and KEDA uses the per-model arrival rate to
-      # wake a zero'd pool. `callbacks` applies to success AND failure, so a
-      # request that arrives while the pool is cold is still counted.
+      # Prometheus metrics (per-model request counters): the second wake signal
+      # for an llm-d model scaled to zero (the first is the request the llm-d
+      # router holds). LiteLLM is the front door: it counts every request BEFORE
+      # it reaches the router, so the counter moves even if the router could not
+      # hold it. The autoscaling Prometheus scrapes /metrics and KEDA uses the
+      # per-model arrival rate to wake a zero'd pool. `callbacks` applies to
+      # success AND failure, so a request that arrives while the pool is cold is
+      # still counted.
       callbacks: ["prometheus"]
       # From the long-term-support line LiteLLM asks for a key on /metrics unless
       # told otherwise. The autoscaling Prometheus scrapes it from inside the
@@ -238,9 +239,9 @@ data:
       # break down per user without issuing per-user API keys. Inert when the
       # headers are absent (e.g. direct API calls).
       extra_spend_tag_headers: ["x-openwebui-user-id", "x-openwebui-user-email"]
-      # Cold-start hold: when a pool is at zero, the request that triggers the
-      # wake-up retries while KEDA scales it up (Karpenter node + model load,
-      # ~1-2 min) — turning the cold start into added latency rather than an error.
+      # Defaults for every model. An llm-d model that scales to zero gets its own
+      # timeout and retry count from litellm-sync (the llm-d router holds its
+      # first request while the model starts; see platform/config/kro/llmd-endpoint.yaml).
       num_retries: 5
       request_timeout: 120
       # --- Per-user budgets & rate limits (self-service governance) ---

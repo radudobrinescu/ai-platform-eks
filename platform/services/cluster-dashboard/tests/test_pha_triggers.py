@@ -9,7 +9,7 @@ import sys
 
 import pytest
 
-from pha_cases import ANY, EVENT_CASES, NODE_CASES, NOW, POD_CASES, STUCK_CASES, cs, event, node, pod
+from pha_cases import ANY, EVENT_CASES, NODE_CASES, NOW, POD_CASES, STUCK_CASES, WAKE_CASES, ago, cs, event, node, pod
 from pha import triggers
 
 RULES = triggers.Rules()
@@ -59,6 +59,12 @@ STUCK_FNS = {"AITeam": triggers.stuck_aiteam, "VLLMEndpoint": triggers.stuck_vll
 @pytest.mark.parametrize("case", STUCK_CASES, ids=_ids(STUCK_CASES))
 def test_stuck_rules(case):
     assert STUCK_FNS[case[1]](case[2], RULES, NOW) is case[3]
+
+
+@pytest.mark.parametrize("case", WAKE_CASES, ids=_ids(WAKE_CASES))
+def test_waking_from_zero(case):
+    ep = {"metadata": {"name": "e", "creationTimestamp": ago(minutes=60)}, "spec": case[1]}
+    assert triggers.waking_from_zero(ep, case[2], NOW) is case[3]
 
 
 def test_disabled_trigger_is_ignored():

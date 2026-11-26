@@ -112,13 +112,13 @@ spec:
         # guard — it's numeric and immune to family-name spelling — kept both for
         # defense in depth and because the family list still narrows the search
         # space Karpenter considers.
-        # g7/g7e (Blackwell RTX PRO) are excluded too: the Bottlerocket NVIDIA
-        # driver rejects them (open kernel modules required,
-        # bottlerocket-os/bottlerocket#4889), so the node never joins. See
-        # gpu-shared.yaml.
+        # g7/g7e (Blackwell RTX PRO) are allowed: they were excluded while
+        # Bottlerocket's NVIDIA variants picked the proprietary driver, which
+        # rejects these GPUs (bottlerocket-os/bottlerocket#4889, now closed).
+        # See gpu-shared.yaml.
         - key: karpenter.k8s.aws/instance-family
           operator: NotIn
-          values: ["g4dn", "g4ad", "p3", "p3dn", "p2", "g7", "g7e"]
+          values: ["g4dn", "g4ad", "p3", "p3dn", "p2"]
         # Ampere is generation 5 in G-family numbering (g5/g6/g6e/g7e are all
         # >= 5); P3(dn) is generation 3, P2 is generation 2 — both correctly
         # excluded by this floor regardless of what AWS names the variant.

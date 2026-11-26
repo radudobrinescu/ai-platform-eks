@@ -134,6 +134,12 @@ def main(argv: list[str] | None = None) -> int:
                         "(scale tier), llm-d-disagg=LLMDDisaggEndpoint (prefill/decode split). "
                         "Default auto: single->vllm, fleet->llm-d, "
                         "long-context fleet->llm-d-disagg.")
+    p.add_argument("--min-replicas", type=int, default=None, metavar="N",
+                   help="llm-d tier only (implies --tier llm-d): the fewest replicas "
+                        "KEDA keeps running. 0 = scale to zero: after 10 minutes "
+                        "without requests the model stops and its GPU node is "
+                        "removed; the next request waits while the model starts "
+                        "again (a few minutes). Default 1.")
     p.add_argument("--deploy", action="store_true",
                    help="Write the recommended endpoint YAML under workloads/, then "
                         "git commit + push so ArgoCD deploys it (instead of only "
@@ -168,6 +174,11 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--output-cost", type=float, default=None, metavar="USD_PER_TOKEN",
                    help="With --source bedrock: override output $/token. See --input-cost.")
     args = p.parse_args(argv)
+    if args.min_replicas is not None:
+        if args.min_replicas < 0:
+            p.error("--min-replicas must be 0 or more")
+        if args.tier in ("vllm", "llm-d-disagg"):
+            p.error(f"--min-replicas applies to the llm-d tier only (got --tier {args.tier})")
 
     # --undeploy is a pure file/git operation: short-circuit before any HF fetch
     # or pricing call (no model metadata needed to delete a manifest).
