@@ -1127,12 +1127,56 @@ DOMAINS = sorted({d for d, *_ in CHECKS})
 DIAG_NAMESPACES = ("ai-platform", "inference", "argocd", "keda", "gpu-operator", "kro-system", "kube-system")
 
 
+CRASH_LOG_PODS = 3
+CRASH_LOG_LINES = 20
+CRASH_LOG_CHARS = 600
+
+
+def crash_looping(pods: list[dict]) -> list[tuple[str, str, str]]:
+    """(namespace, pod, container) of containers in CrashLoopBackOff in the
+    namespaces diagnose() watches, at most CRASH_LOG_PODS."""
+    out = []
+    for p in pods:
+        meta, st = p.get("metadata") or {}, p.get("status") or {}
+        if meta.get("namespace") not in DIAG_NAMESPACES:
+            continue
+        for cs in (st.get("initContainerStatuses") or []) + (st.get("containerStatuses") or []):
+            if ((cs.get("state") or {}).get("waiting") or {}).get("reason") == "CrashLoopBackOff":
+                out.append((meta["namespace"], meta["name"], cs["name"]))
+    return out[:CRASH_LOG_PODS]
+
+
+# Container logs can carry credentials (database URLs, API keys, tokens); the
+# E2E log is readable by everyone with access to the repository's Actions.
+_LOG_SECRETS = [
+    (re.compile(r"(\w+://)[^/\s:@]+:[^@\s]+@"), r"\1***:***@"),
+    (re.compile(r"\bsk-[A-Za-z0-9_-]{6,}"), "sk-***"),
+    (re.compile(r"(?i)\b(bearer|basic)\s+[A-Za-z0-9._~+/=-]+"), r"\1 ***"),
+    (re.compile(r"(?i)\b([a-z_]*(password|passwd|secret|token|key)[a-z_]*)(\s*[=:]\s*)[^\s,;\"']+"), r"\1\3***"),
+]
+
+
+def scrub_log(text: str) -> str:
+    for rx, repl in _LOG_SECRETS:
+        text = rx.sub(repl, text)
+    return redact(text)
+
+
+def previous_log(ns: str, pod: str, container: str) -> str:
+    """The last lines the crashed container wrote, on one line, credentials scrubbed."""
+    r = sh(["kubectl", "logs", "-n", ns, pod, "-c", container, "--previous", f"--tail={CRASH_LOG_LINES}"],
+           check=False, timeout=30)
+    text = " / ".join(ln.strip() for ln in (r.stdout or r.stderr).splitlines() if ln.strip())
+    return scrub_log(text)[-CRASH_LOG_CHARS:] or "no log"
+
+
 def diagnose(limit: int = 2400) -> str:
     """What is stuck right now: Argo CD apps that are not Synced+Healthy (with their
     unhealthy resources), pods that are not Ready (with the waiting/termination
     reason and the scheduling message), and the latest Warning events. Added
     because a converge timeout left nothing to go on once the cluster was gone."""
     parts = []
+    pods: list[dict] = []
     try:
         for a in kubectl_json("get", "applications", "-n", NS_ARGOCD).get("items", []):
             st = a.get("status") or {}
@@ -1147,7 +1191,8 @@ def diagnose(limit: int = 2400) -> str:
     except Exception as e:  # noqa: BLE001 - diagnostics must never fail the check further
         parts.append(f"apps unreadable: {e}")
     try:
-        for p in kubectl_json("get", "pods", "-A").get("items", []):
+        pods = kubectl_json("get", "pods", "-A").get("items", [])
+        for p in pods:
             meta, st = p.get("metadata") or {}, p.get("status") or {}
             if meta.get("namespace") not in DIAG_NAMESPACES or st.get("phase") == "Succeeded":
                 continue
@@ -1207,6 +1252,15 @@ def diagnose(limit: int = 2400) -> str:
                 break
     except Exception as e:  # noqa: BLE001
         parts.append(f"events unreadable: {e}")
+    # Last: what a crash-looping container said before it died. In run
+    # 45703427807 langfuse-web crash-looped in both jobs and nothing showed why
+    # once the clusters were gone. The full text goes to the log; the check's
+    # detail keeps only its first `limit` characters.
+    for ns, pod, container in crash_looping(pods):
+        try:
+            parts.append(f"crash log {ns}/{pod} {container}: {previous_log(ns, pod, container)}")
+        except Exception as e:  # noqa: BLE001
+            parts.append(f"crash log {ns}/{pod} {container} unreadable: {e}")
     text = " | ".join(parts) or "nothing unhealthy found"
     log(f"[diagnose] {text}")
     return text if len(text) <= limit else text[:limit] + " ..."
