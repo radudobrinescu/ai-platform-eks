@@ -1252,6 +1252,17 @@ def build_endpoint_yaml(
     return name, yaml_path, yaml_body, commit_msg
 
 
+def _tier_reason(kind: str, args: argparse.Namespace) -> str:
+    """Why this serving tier, for the "Serving tier:" line."""
+    if kind == "LLMDEndpoint" and getattr(args, "min_replicas", None) == 0:
+        # May well be a single replica: the tier is chosen for scale to zero.
+        return ("scale to zero (--min-replicas 0) -> needs the llm-d scale tier "
+                "(the vLLM tier has a fixed replica count)")
+    return {"LLMDDisaggEndpoint": "long-context fleet -> disaggregated llm-d (prefill/decode split + KV/prefix routing)",
+            "LLMDEndpoint": "fleet of 2+ replicas -> llm-d scale tier (KV/prefix/load-aware routing)",
+            "VLLMEndpoint": "single replica -> plain vLLM (simplest, no router)"}.get(kind, kind)
+
+
 def _print_yaml_snippet(model: ModelSpec, vram: VramEstimate, best: Option,
                         args: argparse.Namespace, C: type,
                         scaling: list[ScalingRecommendation] | None = None) -> None:
@@ -1260,9 +1271,7 @@ def _print_yaml_snippet(model: ModelSpec, vram: VramEstimate, best: Option,
     name, yaml_path, yaml_body, commit_msg = build_endpoint_yaml(
         kind, model, vram, best, args, scaling)
 
-    why = {"LLMDDisaggEndpoint": "long-context fleet -> disaggregated llm-d (prefill/decode split + KV/prefix routing)",
-           "LLMDEndpoint": "fleet of 2+ replicas -> llm-d scale tier (KV/prefix/load-aware routing)",
-           "VLLMEndpoint": "single replica -> plain vLLM (simplest, no router)"}.get(kind, kind)
+    why = _tier_reason(kind, args)
     print(f"\n{C.BOLD}Serving tier:{C.RESET} {C.BOLD}{kind}{C.RESET} {C.DIM}- {why}{C.RESET}")
     override = getattr(args, "tool_call_parser", None)
     if override is not None:
@@ -1403,6 +1412,16 @@ def print_json(
             "quant_warning":        best.quant_warning,
         },
     }
+    if best:
+        # The CRD the manifest would use, and the replica floor on the llm-d
+        # scale tier (the only one with minReplicas; null elsewhere).
+        kind = resolve_kind(pick_tier(args, best, scaling), args, scaling)
+        floor = 1 if args.min_replicas is None else args.min_replicas
+        payload["serving"] = {
+            "tier":         next(t for t, k in TIER_KIND.items() if k == kind),
+            "kind":         kind,
+            "min_replicas": floor if kind == "LLMDEndpoint" else None,
+        }
     if scaling:
         best_s = scaling[0]
         payload["scaling"] = {

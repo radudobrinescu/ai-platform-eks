@@ -250,3 +250,86 @@ class TestHelpExamples:
 
     def test_every_workload_preset_has_a_routing_profile_and_no_other(self):
         assert set(render.ROUTING_PROFILE_BY_WORKLOAD) == set(scaling.WORKLOAD_PRESETS)
+
+
+def _big_model(num_heads: int) -> ModelSpec:
+    """70B: needs two GPUs. 25 attention heads do not divide by 2, so the two
+    GPUs can only be used with pipeline parallelism (PP=2)."""
+    return ModelSpec(model_id="org/m", params=int(70e9), num_layers=80, hidden_size=8192,
+                     num_heads=num_heads, num_kv_heads=8, head_dim=128, vocab_size=128256,
+                     max_position=131072, architecture="LlamaForCausalLM")
+
+
+class TestMinReplicasEdgeCases:
+    @pytest.mark.parametrize("argv,called", [
+        (["--source", "bedrock", "amazon.nova-lite-v1:0", "--min-replicas", "0"], "bedrock.run_bedrock"),
+        (["--undeploy", "some-model", "--min-replicas", "0"], "gitops.undeploy_model"),
+    ])
+    def test_it_is_an_error_where_it_cannot_apply(self, argv, called, monkeypatch, capsys):
+        import recommend_instance.bedrock
+        import recommend_instance.gitops
+        ran = []
+        module, func = called.split(".")
+        monkeypatch.setattr(getattr(recommend_instance, module), func, lambda *a, **k: ran.append(called) or 0)
+        with pytest.raises(SystemExit) as e:
+            cli.main(argv)
+        assert e.value.code == 2
+        assert "--min-replicas" in capsys.readouterr().err
+        assert ran == []   # refused before anything is enrolled or deleted
+
+    @pytest.mark.parametrize("argv,called", [
+        (["--source", "bedrock", "amazon.nova-lite-v1:0"], "bedrock.run_bedrock"),
+        (["--undeploy", "some-model"], "gitops.undeploy_model"),
+    ])
+    def test_those_paths_still_run_without_it(self, argv, called, monkeypatch):
+        import recommend_instance.bedrock
+        import recommend_instance.gitops
+        ran = []
+        module, func = called.split(".")
+        monkeypatch.setattr(getattr(recommend_instance, module), func, lambda *a, **k: ran.append(called) or 0)
+        assert cli.main(argv) == 0 and ran == [called]
+
+    def test_the_reason_for_a_scale_to_zero_model_is_scale_to_zero(self, new_model):
+        _code, out, _err = new_model(["org/m", "--min-replicas", "0"], model=_model(3.0))
+        tier = next(ln for ln in out.splitlines() if ln.startswith("Serving tier:"))
+        assert "LLMDEndpoint" in tier and "scale to zero" in tier and "llm-d" in tier
+        assert "fleet of 2+ replicas" not in tier
+        assert _manifest(out)["spec"]["minReplicas"] == 0
+
+    def test_the_reason_for_a_fleet_is_unchanged(self, new_model):
+        _code, out, _err = new_model(["org/m", "--users", "2000"])
+        assert _fleet_headline(out)[0] >= 2
+        tier = next(ln for ln in out.splitlines() if ln.startswith("Serving tier:"))
+        assert "LLMDEndpoint" in tier and "fleet of 2+ replicas" in tier
+
+    @pytest.mark.parametrize("argv,serving", [
+        (["org/m", "--min-replicas", "0"], {"tier": "llm-d", "kind": "LLMDEndpoint", "min_replicas": 0}),
+        (["org/m", "--tier", "llm-d"], {"tier": "llm-d", "kind": "LLMDEndpoint", "min_replicas": 1}),
+        (["org/m"], {"tier": "vllm", "kind": "VLLMEndpoint", "min_replicas": None}),
+    ])
+    def test_json_reports_the_serving_tier_and_min_replicas(self, new_model, argv, serving):
+        import json
+        code, out, _err = new_model(argv + ["--json"], model=_model(3.0))
+        assert code == 0
+        assert json.loads(out)["serving"] == serving
+
+    @pytest.mark.parametrize("extra", [[], ["--json"]])
+    def test_scale_to_zero_is_refused_when_the_model_needs_pipeline_parallelism(self, new_model, extra):
+        # --min-replicas forces the llm-d tier, which cannot run pipeline
+        # parallelism: no manifest must come out of this.
+        code, out, err = new_model(["org/m", "--min-replicas", "0"] + extra, model=_big_model(num_heads=25))
+        assert code == 1
+        assert "--min-replicas" in err and "pipeline parallelism" in err and "g7e.12xlarge" in err
+        assert out == ""
+
+    def test_scale_to_zero_works_when_the_model_runs_tensor_parallel(self, new_model):
+        code, out, _err = new_model(["org/m", "--min-replicas", "0"], model=_big_model(num_heads=64))
+        assert code == 0
+        spec = _manifest(out)["spec"]
+        assert (spec["gpuCount"], spec["tensorParallelSize"], spec["minReplicas"]) == (2, 2, 0)
+
+    def test_pipeline_parallelism_without_min_replicas_stays_on_vllm(self, new_model):
+        code, out, _err = new_model(["org/m"], model=_big_model(num_heads=25))
+        assert code == 0
+        doc = _manifest(out)
+        assert doc["kind"] == "VLLMEndpoint" and doc["spec"]["pipelineParallelSize"] == 2

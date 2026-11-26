@@ -185,6 +185,13 @@ def main(argv: list[str] | None = None) -> int:
             p.error("--min-replicas must be 0 or more")
         if args.tier in ("vllm", "llm-d-disagg"):
             p.error(f"--min-replicas applies to the llm-d tier only (got --tier {args.tier})")
+        # The two paths below never emit an llm-d manifest: refuse the flag
+        # instead of dropping it without a word.
+        if args.undeploy is not None:
+            p.error("--min-replicas applies to deploying an llm-d model (not with --undeploy)")
+        if args.source == "bedrock":
+            p.error("--min-replicas applies to self-hosted llm-d models only "
+                    "(not with --source bedrock)")
 
     # --undeploy is a pure file/git operation: short-circuit before any HF fetch
     # or pricing call (no model metadata needed to delete a manifest).
@@ -326,6 +333,20 @@ def main(argv: list[str] | None = None) -> int:
                 safety_margin=args.safety_margin,
                 target_tok_s=args.target_tok_s,
             )
+
+    # --min-replicas under --tier auto forces the llm-d tier (pick_tier), whose
+    # LLMDEndpoint runs a model on one node with tensor parallelism only. If the
+    # option that goes into the manifest needs pipeline parallelism, that
+    # manifest cannot work: stop here instead of emitting it.
+    if best is not None and args.tier == "auto" and args.min_replicas is not None:
+        chosen = scaling[0].option if scaling else best
+        if chosen.pp_degree > 1:
+            sys.exit(
+                f"error: --min-replicas needs the llm-d tier, which cannot run pipeline "
+                f"parallelism, but {args.model} on {chosen.instance.name} needs it "
+                f"({chosen.parallelism_label}). Drop --min-replicas to deploy on the vllm "
+                f"tier, or make the model fit a tensor-parallel layout (--tp N, or a "
+                f"smaller --quant such as int4).")
 
     if args.json:
         print_json(model, vram, opts, best, args, price_src, scaling)
