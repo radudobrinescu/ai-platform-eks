@@ -22,7 +22,13 @@
 #   -n CLUSTER_NAME     EKS cluster name (default: from current kubectl context)
 #   -i INSTANCE_TYPE    Builder instance type (default: c5.xlarge for fast network)
 #   -s VOLUME_SIZE      Data volume size in GiB (default: 200)
-#   --fsr AZ1[,AZ2]    Enable Fast Snapshot Restore in specified AZs
+#   --fsr AZ1[,AZ2]     Enable Fast Snapshot Restore (FSR) in these Availability
+#                       Zones. FSR is billed per snapshot, per Availability Zone,
+#                       per hour, for as long as it stays enabled - also after
+#                       the cluster is destroyed, because the snapshot is kept.
+#                       Turn it off with:
+#                         aws ec2 disable-fast-snapshot-restores \
+#                           --source-snapshot-ids <snap-id> --availability-zones <AZ> ...
 #   --write-tfvars      Pin the snapshot: write its ID (gpu_data_volume_snapshot_id)
 #                       to terraform/30.eks/30.cluster/snapshot.auto.tfvars. A pin
 #                       turns Terraform's automatic snapshot off: a later vLLM
@@ -75,7 +81,7 @@ while [[ $# -gt 0 ]]; do
     --write-tfvars) WRITE_TFVARS=true; shift ;;
     --reuse) REUSE=true; shift ;;
     --patch-nodeclasses) PATCH_NODECLASSES="$2"; shift 2 ;;
-    -h|--help) sed -n '2,/^set -euo/p' "$0" | sed 's/^# \?//'; exit 0 ;;
+    -h|--help) sed -n '2,/^set -euo/p' "$0" | sed -e '$d' -e 's/^# \{0,1\}//'; exit 0 ;;
     -*) echo "Unknown option: $1" >&2; exit 1 ;;
     *) IMAGES+=("$1"); shift ;;
   esac
@@ -722,6 +728,10 @@ if [[ -n "$FSR_AZS" ]]; then
     --source-snapshot-ids "$SNAPSHOT_ID" \
     --availability-zones "${AZ_ARRAY[@]}" > /dev/null
   echo "  ✓ FSR enabled (optimization takes 15-60 min)"
+  echo "  FSR is billed per snapshot, per Availability Zone, per hour, until it is"
+  echo "  disabled - also after the cluster is destroyed (the snapshot is kept)."
+  echo "  To disable it:"
+  echo "    aws ec2 disable-fast-snapshot-restores --region $REGION --source-snapshot-ids $SNAPSHOT_ID --availability-zones ${AZ_ARRAY[*]}"
 fi
 
 # --- Write tfvars (optional) --------------------------------------------------
