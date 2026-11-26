@@ -4,12 +4,13 @@
 # on observability being enabled.
 #
 # Scope: scrapes only the `inference` namespace: llm-d model-server pods (by the
-# `llm-d.ai/pool` label, `modelserver` port 8000; vLLM metrics) and llm-d router
-# (EPP) pods (by the `llm-d-router-gateway: <pool>-epp` label, `metrics` port
-# 9090; requests in flight and held, which drive KEDA), plus every LiteLLM pod
-# (namespace `ai-platform`, found through a headless Service). Ephemeral
-# storage, 2h retention (KEDA only needs recent values). KEDA's built-in
-# Prometheus scaler queries the Service below.
+# `llm-d.ai/pool` label, the `modelserver` port; vLLM metrics, on which KEDA
+# sizes the two pools of an LLMDDisaggEndpoint) and llm-d router (EPP) pods (by
+# the `llm-d-router-gateway: <pool>-epp` label, `metrics` port 9090; requests in
+# flight and held, on which KEDA sizes an LLMDEndpoint and wakes it from zero),
+# plus every LiteLLM pod (namespace `ai-platform`, found through a headless
+# Service). Ephemeral storage, 2h retention (KEDA only needs recent values).
+# KEDA's built-in Prometheus scaler queries the Service below.
 ---
 apiVersion: v1
 kind: ServiceAccount
@@ -86,7 +87,10 @@ data:
       scrape_interval: 15s
       evaluation_interval: 15s
     scrape_configs:
-      # llm-d model-server (vLLM) pods — saturation signals for KEDA.
+      # llm-d model-server (vLLM) pods — saturation signals. KEDA sizes the
+      # two pools of an LLMDDisaggEndpoint on these (prefill on
+      # vllm:num_requests_waiting, decode on vllm:kv_cache_usage_perc). An
+      # LLMDEndpoint is sized on the router job below, not on these.
       - job_name: llmd-vllm
         kubernetes_sd_configs:
           - role: pod
@@ -115,7 +119,9 @@ data:
             target_label: pod
       # llm-d router (EPP) pods — requests in flight (llm_d_epp_request_running)
       # and requests held while no replica runs (llm_d_epp_flow_control_queue_size).
-      # KEDA sizes each pool on these and wakes a pool at zero. The EPP's
+      # KEDA sizes the pool of an LLMDEndpoint on these and wakes it from zero.
+      # The router of an LLMDDisaggEndpoint is scraped too, but KEDA does not
+      # use its series: that tier is sized on the vLLM job above. The EPP's
       # /metrics needs a bearer token: this Prometheus sends its own service
       # account token (granted `get /metrics` above). Plain HTTP inside the
       # cluster, as for vLLM: the EPP serves metrics without TLS by default.

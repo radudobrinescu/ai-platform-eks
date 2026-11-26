@@ -93,7 +93,8 @@ langfuse:
     #     the ingress and sets NEXTAUTH_URL=http://<alb-host>:3000 on the
     #     Deployment, so UI sign-in works behind the load balancer with zero
     #     manual steps. ArgoCD selfHeal is told to ignore that env value
-    #     (ignoreDifferences in argocd/bootstrap/platform.yaml) so it sticks.
+    #     (ignoreDifferences in argocd/bootstrap/templates/platform.yaml) so
+    #     it sticks.
     #
     #   - Custom domain (production): pin a real URL here, e.g.
     #     https://langfuse.example.com (behind Route53 + ACM). The reconciler

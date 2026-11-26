@@ -1,9 +1,9 @@
 # Platform — ArgoCD ApplicationSet defining all platform services.
 #
-# Eight applications (by default) in two shapes:
+# Nine applications (by default) in two shapes:
 #   - Plain-directory sources (platform-config, inference-gateway, litellm,
-#     open-webui, cluster-dashboard, litellm-sync): manifests live in this repo
-#     and are applied as-is.
+#     open-webui, langfuse-clickhouse, cluster-dashboard, litellm-sync):
+#     manifests live in this repo and are applied as-is.
 #   - Helm multi-source (gpu-operator, langfuse): chart pulled from upstream,
 #     values file pulled from this repo.
 #

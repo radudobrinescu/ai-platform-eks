@@ -58,6 +58,10 @@ metadata:
     # LiteLLM serves /metrics without a key so the in-cluster Prometheus can
     # scrape it (see litellm-config). The load balancer answers that path itself:
     # usage figures by model, team and user are not for whoever reaches the gateway.
+    # This closes the load balancer only. Inside the cluster any workload that
+    # reaches the LiteLLM pods on port 4000 still reads /metrics without a key
+    # (usage per model, team, key alias and user): see the note at
+    # require_auth_for_metrics_endpoint in platform/services/litellm/litellm.yaml.
     alb.ingress.kubernetes.io/actions.metrics-not-served: >-
       {"type":"fixed-response","fixedResponseConfig":{"contentType":"text/plain","statusCode":"404","messageBody":"not found"}}
 spec:

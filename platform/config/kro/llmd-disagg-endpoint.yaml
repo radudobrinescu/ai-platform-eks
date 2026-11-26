@@ -18,8 +18,10 @@
 #                 -> prefill pod (KV producer) --NIXL--> decode pod (KV consumer)
 #
 # ── EXPERIMENTAL — GPU smoke-test findings (2026-07) ────────────────────────
-#   1. [PASS] NIXL is bundled in vllm/vllm-openai:v0.24.0 — both pools init the
-#      NixlPullConnector + NIXL Scheduler with no extra image work.
+#   1. [PASS] NIXL is bundled in the stock vllm/vllm-openai image (found on the
+#      version tested then; the image now shipped is the `vllmImage` default
+#      below) — both pools init the NixlPullConnector + NIXL Scheduler with no
+#      extra image work.
 #   2. [PASS] Deploys + serves end to end: both role-labeled pools become Ready,
 #      the model registers in LiteLLM, and requests return correct completions.
 #   3. [DONE] TRUE P/D routing. The EPP runs the `disagg-profile-handler` with
@@ -47,8 +49,9 @@ spec:
       # drop schema properties in place).
       prefillReplicas:         "integer | default=1 minimum=1"
       decodeReplicas:          "integer | default=2 minimum=1"
-      # Prefill pool (compute-bound): autoscaled on queue depth.
-      prefillMinReplicas:      "integer | default=1 minimum=1"   # floor (>=1; scale-to-zero parked)
+      # Prefill pool (compute-bound): autoscaled on queue depth. Both pools
+      # keep at least one replica: scale to zero exists on LLMDEndpoint only.
+      prefillMinReplicas:      "integer | default=1 minimum=1"   # floor (>=1)
       prefillMaxReplicas:      "integer | default=2 minimum=1"   # ceiling; > min enables autoscaling
       prefillTargetQueueDepth: "integer | default=20"            # per-pod vllm:num_requests_waiting target
       # Decode pool (KV-cache/bandwidth-bound): autoscaled on KV-cache utilization.

@@ -2,11 +2,14 @@
 #
 # The high-throughput sibling of VLLMEndpoint. KRO renders the parts it owns well:
 #   - the vLLM model-server Deployment (N replicas, labeled for the InferencePool),
-#   - the LiteLLM registration Job (so the model answers through the same /v1 door),
+#   - the KEDA ScaledObject that owns the Deployment's replica count,
 #   - an ArgoCD Application that installs the OFFICIAL llm-d router chart
 #     (llm-d-router-standalone) — which supplies the EPP + InferencePool + Envoy
 #     proxy. Delegating the router to the upstream chart keeps us upgrade-safe
 #     instead of freezing ~500 lines of chart output in this RGD.
+# This graph has no LiteLLM registration Job: the litellm-sync controller
+# (platform/services/litellm-sync/) watches this CR and registers the model, so
+# it answers through the same /v1 door.
 #
 # Request path: LiteLLM -> llm-d router (Envoy + EPP) -> InferencePool -> vLLM pod.
 # The EPP scores pods by queue depth, KV-cache utilization, and prefix reuse.
@@ -20,6 +23,15 @@
 # The first answer then takes as long as a cold start (GPU node + image +
 # model load, a few minutes); later requests are fast until the model idles
 # again. Models with minReplicas >= 1 keep the router config they had.
+#
+# First load of a new minReplicas 0 model: its Deployment starts with one
+# replica, and KEDA does not stop it before `scaleToZeroAfterSeconds` have
+# passed since the model was created. That time runs from creation; it does
+# not wait for the model. A model that needs longer than that to load (GPU
+# node + image + weights) and gets no request meanwhile is stopped before it
+# ever served, and loads for the first time on its first request. So
+# `ready: True` with `scaledToZero: true` says the model is idle at zero; it
+# does not prove the model has ever loaded.
 #
 # Prereqs (shipped by default via the `inference-gateway` platform app — no
 # toggle): GIE CRDs installed + the ghcr.io/llm-d/charts OCI Helm repo registered
@@ -74,7 +86,8 @@ spec:
     status:
       # Ready = a replica serves, or the model is idle at zero replicas (a
       # request then waits in the router while a replica starts). While a
-      # replica starts from zero, ready is False.
+      # replica starts from zero, ready is False. Ready at zero replicas does
+      # not say the model has loaded before (see "First load" in the header).
       ready:             "${(vllmdeployment.status.?availableReplicas.orValue(0) > 0 || vllmdeployment.spec.?replicas.orValue(1) == 0) ? 'True' : 'False'}"
       availableReplicas: ${vllmdeployment.status.?availableReplicas.orValue(0)}
       replicas:          ${vllmdeployment.spec.?replicas.orValue(0)}
@@ -103,8 +116,10 @@ spec:
         spec:
           # NOTE: replicas is intentionally NOT set — the KEDA ScaledObject/HPA
           # owns the replica count. Setting it here makes KRO reconcile it back
-          # and fight the autoscaler. Initial count comes from the ScaledObject's
-          # minReplicaCount once KEDA reconciles.
+          # and fight the autoscaler. The Deployment starts with the Kubernetes
+          # default of one replica. With minReplicas above 1 KEDA's HPA then
+          # raises it to minReplicas; with minReplicas 0 it stays at one until
+          # KEDA stops it (see the ScaledObject below).
           selector:
             matchLabels:
               app.kubernetes.io/name: ${schema.metadata.name}
@@ -249,9 +264,12 @@ spec:
           minReplicaCount: ${schema.spec.minReplicas}
           maxReplicaCount: ${schema.spec.maxReplicas}
           pollingInterval: 15
-          # minReplicas 0 only: idle time before 1 -> 0. The initial period gives
-          # a new model the same time before its first stop, so it comes up once
-          # after deploy (proving it loads) instead of being stopped at once.
+          # minReplicas 0 only: idle time before 1 -> 0. The initial period keeps
+          # KEDA from stopping a new model before the same time has passed since
+          # the ScaledObject was created. It runs from creation and does not
+          # wait for the model: one that needs longer to load, with no request
+          # meanwhile, is stopped before it ever served and loads on its first
+          # request (see "First load" in the header).
           cooldownPeriod: ${schema.spec.scaleToZeroAfterSeconds}
           initialCooldownPeriod: ${schema.spec.scaleToZeroAfterSeconds}
           advanced:

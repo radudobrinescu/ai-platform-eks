@@ -27,7 +27,7 @@ spec:
   # minVramPerGpuGiB: 0       # Min per-GPU VRAM in GiB (Karpenter hint). 0 = no floor.
   #                           # Set this to exclude T4 (16 GB) if you need L4/A10G (24+) —
   #                           # `platformctl new-model` emits the right value automatically.
-  # vllmImage: "vllm/vllm-openai:v0.24.0"  # Override only if needed
+  # vllmImage: "vllm/vllm-openai:v0.33.0"  # Override only if needed
 #
 # Unsure what size GPU / how many GPUs your model needs?
 # Run: ./platformctl new-model org/model-id --seq 8192 --users 4

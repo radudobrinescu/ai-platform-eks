@@ -232,9 +232,17 @@ data:
       # told otherwise. The autoscaling Prometheus scrapes it from inside the
       # cluster without one (it runs in another namespace and holds no LiteLLM
       # key), and with a key required the scrape answered 401: the request rate
-      # that wakes a zero'd pool never arrived. The gateway's ingress does not
-      # forward /metrics (platform/config/ingress.yaml), so the endpoint stays
-      # reachable from inside the cluster only.
+      # that wakes a zero'd pool never arrived.
+      # What this exposes: /metrics on port 4000 of every LiteLLM pod answers
+      # without a key. The load balancer does not forward that path
+      # (platform/config/ingress.yaml answers 404 itself), so it is not served
+      # through the gateway's URL. Inside the cluster nothing protects it: any
+      # workload that reaches the LiteLLM pods or Services can read it, team
+      # namespaces included (no NetworkPolicy limits port 4000). The metrics
+      # are usage figures (requests, tokens, spend, latency, remaining budget)
+      # labelled per model, per team, per key alias and per user. To close it,
+      # set this to true and give the autoscaling Prometheus a LiteLLM key for
+      # its scrape (platform/config/autoscaling-prometheus.yaml).
       require_auth_for_metrics_endpoint: false
       # Per-user cost attribution: capture the identity Open WebUI forwards
       # (via ENABLE_FORWARD_USER_INFO_HEADERS) as spend tags, so spend reports
@@ -247,8 +255,10 @@ data:
       num_retries: 5
       request_timeout: 120
       # --- Per-user budgets & rate limits (self-service governance) ---
-      # 1a — Open WebUI chat path. Open WebUI authenticates to LiteLLM with the
-      # shared master key and forwards the signed-in identity as the
+      # 1a — Open WebUI chat path. Open WebUI authenticates to LiteLLM with one
+      # scoped, non-admin virtual key that all its users share (minted by the
+      # litellm-openwebui-key Job in platform/services/open-webui/open-webui.yaml;
+      # NOT the master key) and forwards the signed-in identity as the
       # x-openwebui-user-email header (see general_settings.user_header_mappings
       # below, which maps it to LiteLLM's "customer"/end-user). This applies a
       # per-person $ budget AND rpm/tpm throttle WITHOUT issuing per-user keys.
@@ -261,7 +271,7 @@ data:
       # 1b — direct API / virtual-key path. SSO users who sign in to the LiteLLM
       # UI are internal_users (role from custom:role — see GENERIC_USER_ROLE_ATTRIBUTE);
       # give them a default personal budget and cap any key they mint themselves.
-      # (Open WebUI traffic rides the master key, so these bound programmatic/API
+      # (Open WebUI traffic rides its one shared key, so these bound programmatic/API
       # use, not the chat path — that's what 1a above covers.) We deliberately do
       # NOT set default_internal_user_params.user_role here: role must stay driven
       # by custom:role, or the seed admin would be downgraded to internal_user.
