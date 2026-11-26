@@ -107,6 +107,8 @@ tbody tr:hover{background:var(--surface-2)}
 .dot.ok{background:var(--green);box-shadow:0 0 6px rgba(52,211,153,.5)}
 .dot.warn{background:var(--amber);animation:pulse 1.5s infinite}
 .dot.bad{background:var(--red)}
+.dot.info{background:var(--accent);animation:pulse 1.5s infinite}
+.dot.zero{background:var(--border-light)}
 /* Badges */
 .badge2{font-size:9.5px;font-weight:700;text-transform:uppercase;letter-spacing:.4px;padding:3px 7px;border-radius:5px;white-space:nowrap}
 .b-bedrock{background:var(--orange-soft);color:var(--orange)}
@@ -142,6 +144,8 @@ tbody tr:hover{background:var(--surface-2)}
 .st.ok{background:var(--green-soft);color:var(--green)}
 .st.warn{background:var(--amber-soft);color:var(--amber)}
 .st.bad{background:var(--red-soft);color:var(--red)}
+.st.info{background:var(--accent-soft);color:var(--accent)}
+.st.zero,.stag.zero{background:var(--border);color:var(--text-2)}
 .act{display:inline-flex;gap:5px}
 .act button{background:var(--surface-2);border:1px solid var(--border);border-radius:5px;color:var(--text-2);cursor:pointer;font-size:11px;padding:4px 7px}
 .act button:hover{border-color:var(--accent);color:var(--text)}
@@ -511,6 +515,24 @@ const tierBadge = (t) => {
   const x = TIERS[t] || ['?', 'b-ray'];
   return `<span class="badge2 ${x[1]}">${x[0]}</span>`;
 };
+// Model state -> [class of its dot and pill, words]. Two states are no
+// problem and never an alert: "scaled-to-zero" (an llm-d model idle at zero
+// replicas: holds no GPU, costs nothing, the next request starts it) and
+// "waking" (starting from zero within the time its router holds a request;
+// after that the backend reports "deploying").
+const mstate = (s) =>
+  s === 'running'
+    ? ['ok', 'running']
+    : s === 'error'
+      ? ['bad', 'error']
+      : s === 'waking'
+        ? ['info', 'waking']
+        : s === 'scaled-to-zero'
+          ? ['zero', 'scaled to zero']
+          : ['warn', 'deploying'];
+const mdot = (m) => `<span class="dot ${mstate(m.status)[0]}"></span>`;
+const mpill = (m) => `<span class="st ${mstate(m.status)[0]}">${mstate(m.status)[1]}</span>`;
+const mquiet = (m) => m.status === 'scaled-to-zero' || m.status === 'waking';
 const modeCls = (t) => (t === 'ft' ? 'b-ft' : (TIERS[t] || ['', 'b-ray'])[1]);
 const spark = (pts, c = 'var(--accent)', w = 54, h = 18) => {
   const p = (pts || []).filter((x) => x != null);
@@ -750,7 +772,7 @@ function pushHist() {
 function diffActivity() {
   const t = new Date().toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit', second: '2-digit' });
   const cur = {};
-  (D.models || []).forEach((m) => (cur[m.name] = m.status));
+  (D.models || []).forEach((m) => (cur[m.name] = mstate(m.status)[1]));
   for (const n in cur) {
     if (!(n in prevM)) activity.unshift([t, `Model "${n}" appeared → ${cur[n]}`]);
     else if (prevM[n] !== cur[n]) activity.unshift([t, `Model "${n}" → ${cur[n]}`]);
@@ -787,7 +809,10 @@ function diffActivity() {
 function alertList() {
   const out = [];
   (D.models || []).forEach((m) => {
-    if (m.status !== 'running') {
+    // Scaled to zero and waking from zero are no alerts. Their router still
+    // is (it must hold the request that wakes the model); a stored LiteLLM
+    // health check is not (no replica was there to answer it).
+    if (m.status !== 'running' && !mquiet(m)) {
       const d = m.deploy || {};
       let reason = '';
       if (m.reconcileError) reason = m.reconcileError;
@@ -816,7 +841,7 @@ function alertList() {
         d: 'llm-d EPP/router not yet Healthy',
         open: ['model', m.name],
       });
-    else if (m.health && m.health.toLowerCase() !== 'healthy')
+    else if (!mquiet(m) && m.health && m.health.toLowerCase() !== 'healthy')
       out.push({
         icon: '⚠',
         sev: 'warn',
@@ -915,12 +940,21 @@ function kpis() {
   const m = D.models || [],
     c = D.cost || {},
     s = { litellm: srcHasData('litellm-metrics'), dcgm: srcHasData('dcgm') };
+  // "live" = serving now. A model scaled to zero or waking from zero is
+  // neither live nor deploying; it gets its own count.
   const live = m.filter((x) => x.status === 'running').length,
-    dep = m.length - live;
+    zero = m.filter((x) => x.status === 'scaled-to-zero').length,
+    waking = m.filter((x) => x.status === 'waking').length,
+    dep = m.length - live - zero - waking;
   const al = alertList().length,
     ap = D.approvals_pending || 0;
   const cards = [
-    { l: 'Models', v: m.length, s: `${live} live${dep ? ` · ${dep} deploying` : ''}`, c: 'var(--accent)' },
+    {
+      l: 'Models',
+      v: m.length,
+      s: `${live} live${zero ? ` · ${zero} scaled to zero` : ''}${waking ? ` · ${waking} waking` : ''}${dep ? ` · ${dep} deploying` : ''}`,
+      c: 'var(--accent)',
+    },
     {
       l: 'Requests',
       v: s.litellm ? num(hist.rpm.at(-1) || 0) : '—',
@@ -972,7 +1006,7 @@ function ovModels() {
     ? rows
         .map(
           (m) =>
-            `<tr data-model="${esc(m.name)}" onclick="openModel(this.dataset.model)"><td><span class="dot ${m.status === 'running' ? 'ok' : m.status === 'error' ? 'bad' : 'warn'}"></span><span class="m-name">${esc(m.name)}</span></td><td>${tierBadge(m.tier)}</td><td class="num">${num(m.rpm)}</td><td class="num">${ms(m.p95)}</td><td class="num">$${(m.costHr || 0).toFixed(2)}</td></tr>`,
+            `<tr data-model="${esc(m.name)}" onclick="openModel(this.dataset.model)"><td>${mdot(m)}<span class="m-name">${esc(m.name)}</span></td><td>${tierBadge(m.tier)}</td><td class="num">${num(m.rpm)}</td><td class="num">${ms(m.p95)}</td><td class="num">$${(m.costHr || 0).toFixed(2)}</td></tr>`,
         )
         .join('')
     : '<tr><td colspan=5 class="muted" style="padding:16px">No models deployed</td></tr>';
@@ -1068,7 +1102,7 @@ function modelsBody() {
       ? rows
           .map(
             (m) =>
-              `<tr data-model="${esc(m.name)}" onclick="openModel(this.dataset.model)"><td><div class="m-name">${esc(m.name)}</div><div class="m-id">${esc(m.model)}</div></td><td>${tierBadge(m.tier)}</td><td>${m.status === 'running' ? '<span class="st ok">running</span>' : m.status === 'error' ? '<span class="st bad">error</span>' : '<span class="st warn">deploying</span>'}${scaleBadge(m)}</td><td class="num">${esc(m.gpu)}</td><td class="num">${mu ? num(m.rpm) : '—'}</td><td class="num">${mu ? (m.p50 == null ? '—' : m.p50 + ' / ' + m.p95 + 'ms') : '—'}</td><td class="num">${mu ? num(m.tps) : '—'}</td><td class="num">${mu && m.errPct != null ? m.errPct + '%' : '—'}</td><td class="num">$${(m.costHr || 0).toFixed(2)}</td><td><div class="act"><button title="Copy a ready-to-run curl for this model" onclick="event.stopPropagation();copyCurl(this.closest('tr').dataset.model,event)">⧉ curl</button><button title="Langfuse" onclick="event.stopPropagation();openLink('langfuse')">📊</button><button title="WebUI" onclick="event.stopPropagation();openLink('webui')">💬</button></div></td></tr>`,
+              `<tr data-model="${esc(m.name)}" onclick="openModel(this.dataset.model)"><td><div class="m-name">${esc(m.name)}</div><div class="m-id">${esc(m.model)}</div></td><td>${tierBadge(m.tier)}</td><td>${mpill(m)}${scaleBadge(m)}</td><td class="num">${esc(m.gpu)}</td><td class="num">${mu ? num(m.rpm) : '—'}</td><td class="num">${mu ? (m.p50 == null ? '—' : m.p50 + ' / ' + m.p95 + 'ms') : '—'}</td><td class="num">${mu ? num(m.tps) : '—'}</td><td class="num">${mu && m.errPct != null ? m.errPct + '%' : '—'}</td><td class="num">$${(m.costHr || 0).toFixed(2)}</td><td><div class="act"><button title="Copy a ready-to-run curl for this model" onclick="event.stopPropagation();copyCurl(this.closest('tr').dataset.model,event)">⧉ curl</button><button title="Langfuse" onclick="event.stopPropagation();openLink('langfuse')">📊</button><button title="WebUI" onclick="event.stopPropagation();openLink('webui')">💬</button></div></td></tr>`,
           )
           .join('')
       : '<tr><td colspan=10 class="muted" style="padding:20px">No models in this tier</td></tr>');
@@ -1264,8 +1298,12 @@ function infraModel() {
     (a, b) => b.length - a.length,
   );
   const modelOf = (pod) => names.find((n) => pod.startsWith(n + '-')) || null;
-  const rpm = {};
-  (D.models || []).forEach((m) => (rpm[m.name] = m.rpm));
+  const rpm = {},
+    state = {};
+  (D.models || []).forEach((m) => {
+    rpm[m.name] = m.rpm;
+    state[m.name] = m.status;
+  });
   const byNode = {};
   (D.pods || []).forEach((p) => (byNode[p.node] = byNode[p.node] || []).push(p));
   const nodes = (D.nodes || []).map((n) => {
@@ -1291,7 +1329,7 @@ function infraModel() {
         .toLowerCase(),
     });
   });
-  return { nodes, pools, claims, rpm };
+  return { nodes, pools, claims, rpm, state, modelOf };
 }
 function infraIssues(m) {
   const out = [];
@@ -1360,12 +1398,22 @@ function infraIssues(m) {
       });
   }
   for (const p of D.pods || [])
-    if (p.phase === 'Pending' && !p.node && minsSince(p.created) >= INFRA.pendingMin)
-      out.push({
-        lvl: 'warn',
-        what: `<span class="m-id">${esc(p.name)}</span> has waited ${relTime(p.created)} for a node`,
-        why: `namespace ${esc(p.namespace)}${p.gpu ? ' · needs a GPU' : ''}`,
-      });
+    if (p.phase === 'Pending' && !p.node && minsSince(p.created) >= INFRA.pendingMin) {
+      // The pod of a model waking from zero waits for the GPU node Karpenter adds.
+      const model = m.modelOf(p.name);
+      if (m.state[model] === 'waking')
+        out.push({
+          lvl: 'info',
+          what: `${esc(model)} is waking from zero`,
+          why: `<span class="m-id">${esc(p.name)}</span> waits for a GPU node · ${relTime(p.created)} so far`,
+        });
+      else
+        out.push({
+          lvl: 'warn',
+          what: `<span class="m-id">${esc(p.name)}</span> has waited ${relTime(p.created)} for a node`,
+          why: `namespace ${esc(p.namespace)}${p.gpu ? ' · needs a GPU' : ''}`,
+        });
+    }
   const rank = { crit: 0, warn: 1, info: 2 };
   return out.sort((a, b) => rank[a.lvl] - rank[b.lvl]);
 }
@@ -1394,7 +1442,14 @@ function infraSlots(n, m) {
   const share = (n.hourly || 0) / n.gpu;
   const used = n.gpuPods.map((p) => {
     const rate = m.rpm[p.model];
-    const load = rate == null ? 'load unknown' : rate > 0 ? num(rate) + ' req/min' : 'no requests right now';
+    const load =
+      m.state[p.model] === 'waking'
+        ? 'waking from zero'
+        : rate == null
+          ? 'load unknown'
+          : rate > 0
+            ? num(rate) + ' req/min'
+            : 'no requests right now';
     return (
       `<div class="gs ${p.model ? 'used' : 'none'}" style="flex:${Math.max(1, p.gpu)}" title="${esc(p.name)}"><b>${esc(p.model || p.name)}</b>` +
       `<small>${p.model ? load : 'not a platform model'}${p.gpu > 1 ? ' · ' + num(p.gpu) + ' GPUs' : ''} · ${usd(share * p.gpu)}/hr</small></div>`
@@ -1428,10 +1483,22 @@ function infraGpuDetail(n, m) {
 }
 const infraDefaultOpen = (total) => (infraUi.allOpen == null ? total <= INFRA.expandUpTo : infraUi.allOpen);
 const infraIsOpen = (name, total) => (infraUi.toggled.has(name) ? !infraDefaultOpen(total) : infraDefaultOpen(total));
+// Models scaled to zero hold no slot; said in words so they are not taken for missing.
+function infraZero(m) {
+  const names = Object.keys(m.state)
+    .filter((n) => m.state[n] === 'scaled-to-zero')
+    .sort();
+  return names.length
+    ? `<div class="infra-note" style="padding:0 10px 10px">Scaled to zero, holding no GPU: ${names.map((n) => `<b>${esc(n)}</b>`).join(', ')}. ${names.length === 1 ? 'It starts' : 'Each starts'} again on its next request, which takes a few minutes.</div>`
+    : '';
+}
 function infraGpu(m, shown) {
   const all = m.nodes.filter((n) => n.isGpu);
   if (!all.length)
-    return '<div class="infra-empty">No GPU nodes are running, which costs nothing. Deploying a model starts one; expect a few minutes for the node and its GPU software.</div>';
+    return (
+      '<div class="infra-empty">No GPU nodes are running, which costs nothing. Deploying a model starts one; expect a few minutes for the node and its GPU software.</div>' +
+      infraZero(m)
+    );
   const list = shown.filter((n) => n.isGpu && (!infraUi.free || n.free > 0));
   if (!list.length) return `<div class="infra-empty">No GPU node matches the filter. ${all.length} running.</div>`;
   const pools = [...new Set(list.map((n) => n.pool))].sort((a, b) => poolRank(a) - poolRank(b) || (a < b ? -1 : 1));
@@ -1457,7 +1524,7 @@ function infraGpu(m, shown) {
       if (open) rows += `<tr class="exp"><td colspan="8">${infraGpuDetail(n, m)}</td></tr>`;
     }
   }
-  return `<table><thead><tr><th>Node</th><th>Type</th><th>Zone</th><th>Capacity</th><th>Slots</th><th>Models</th><th class="num">GPU use</th><th class="num">$/hr</th></tr></thead><tbody>${rows}</tbody></table>`;
+  return `<table><thead><tr><th>Node</th><th>Type</th><th>Zone</th><th>Capacity</th><th>Slots</th><th>Models</th><th class="num">GPU use</th><th class="num">$/hr</th></tr></thead><tbody>${rows}</tbody></table>${infraZero(m)}`;
 }
 const INFRA_COLS = [
   ['name', 'Node', (n) => n.host],
@@ -1779,11 +1846,13 @@ function scaleHTML(m) {
     const span = Math.max(1, a.max - a.min),
       pct = Math.round(((a.current - a.min) / span) * 100);
     const col = a.atMax ? 'var(--red)' : a.saturated ? 'var(--amber)' : 'var(--green)';
-    const tag = a.atMax
-      ? '<span class="stag crit">at max · add capacity</span>'
-      : a.saturated
-        ? '<span class="stag warn">scaling up</span>'
-        : '<span class="stag ok">steady</span>';
+    const tag = mquiet(m)
+      ? `<span class="stag ${mstate(m.status)[0]}">${mstate(m.status)[1]}</span>`
+      : a.atMax
+        ? '<span class="stag crit">at max · add capacity</span>'
+        : a.saturated
+          ? '<span class="stag warn">scaling up</span>'
+          : '<span class="stag ok">steady</span>';
     h += `<div class="scale-pool"><div class="scale-hd"><b>${esc(label)}</b>${tag}<span class="cnt">${a.current} / ${a.max}${a.current !== a.desired ? ' → ' + a.desired : ''} · min ${a.min}</span></div>`;
     h += `<div class="scale-bar"><div class="scale-fill" style="width:${Math.min(100, Math.max(4, pct))}%;background:${col}"></div></div>`;
     h += `<div class="scale-sig">${esc(a.signal)} &nbsp;<b style="color:${col}">${a.value}</b> / ${a.target} ${esc(a.unit)} target</div>`;
@@ -1817,7 +1886,7 @@ function openModel(name, keep) {
   if (!keep) history.replaceState(null, '', '#models/model/' + encodeURIComponent(name));
   const s = srcHasData('litellm-metrics');
   $('drawer').innerHTML = `<button class="drawer-x" onclick="closeDrawer()">×</button>
-   <div style="display:flex;align-items:center;gap:10px"><span class="dot ${m.status === 'running' ? 'ok' : m.status === 'error' ? 'bad' : 'warn'}"></span><span style="font-size:19px;font-weight:800">${esc(m.name)}</span>${tierBadge(m.tier)}</div>
+   <div style="display:flex;align-items:center;gap:10px">${mdot(m)}<span style="font-size:19px;font-weight:800">${esc(m.name)}</span>${tierBadge(m.tier)}${mpill(m)}</div>
    <div class="m-id" style="margin-top:4px">${esc(m.model)}</div>
    <div class="mini-kpi"><div class="mk"><div class="mkv" style="color:var(--green)">${s ? num(m.rpm) : '—'}</div><div class="mkl">req/min</div></div><div class="mk"><div class="mkv">${s ? ms(m.p95) : '—'}</div><div class="mkl">p95</div></div><div class="mk"><div class="mkv">$${(m.costHr || 0).toFixed(2)}</div><div class="mkl">$/hr</div></div><div class="mk"><div class="mkv">${m.tokPerDollar != null ? num(m.tokPerDollar) : '—'}</div><div class="mkl">tok/$</div></div></div>
    <div class="sec-title">Configuration</div>
