@@ -81,21 +81,6 @@ gitops_revision = "main"
 # that repo only, never the platform repo. See workloads/models/README.md.
 # gitops_workloads_repo_url = "https://github.com/YOUR-ORG/ai-platform-workloads.git"
 
-# GPU cold-start optimization — the vLLM serving image pre-pulled on an EBS snapshot.
-# On by default: the first apply in an account and region builds the snapshot
-# (about 15 minutes, once per vLLM image; no Docker Hub account needed) and GPU
-# nodes boot with the image already on disk. Later clusters reuse it. Set this
-# only to pin a snapshot you built yourself with
-# ./ops/image/create-data-volume-snapshot.sh docker.io/vllm/vllm-openai:<tag>;
-# pinning turns the automatic build off, also for later vLLM versions.
-# gpu_data_volume_snapshot_id = "snap-0123456789abcdef0"
-# The build needs kubectl on this host and is retried at each apply until it
-# succeeds. It has not been run in the European Sovereign Cloud (it depends on
-# the Bottlerocket image parameter and on c5.xlarge being offered there), so it
-# is off in this example: GPU nodes pull the image at start, as before. Set it
-# to true to try it; a failed build does not fail the install.
-gpu_image_snapshot = false
-
 # EC2 Capacity Blocks / Capacity Reservations (optional) — frontier GPU capacity.
 # Instances like p6-b300.48xlarge (8x B300 — what trillion-param-class models such
 # as moonshotai/Kimi-K3 need) have no practical on-demand pool: reserve a Capacity
@@ -104,8 +89,8 @@ gpu_image_snapshot = false
 # on-demand/spot for everything else. Leave unset for the default (no reservations).
 # gpu_capacity_reservation_ids = ["cr-0123456789abcdef0"]
 
-# GPU node data-volume size in GiB (optional). Default 0 = the baked image
-# snapshot size (200 GiB). Model weights are staged on this volume (hf-cache),
+# GPU node data-volume size in GiB (optional). Default 0 = 200 GiB. Container
+# images and model weights are staged on this volume (hf-cache),
 # so raise it for very large models — Kimi-K3's ~1.5 TiB MXFP4 weights need >= 2000.
 # gpu_node_volume_size_gib = 2000
 
