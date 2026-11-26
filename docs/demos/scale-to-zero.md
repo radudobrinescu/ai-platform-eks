@@ -39,8 +39,10 @@ The model is an `LLMDEndpoint` with `minReplicas: 0`.
    `scaleToZeroAfterSeconds: 120`, then commit and push. The default is 600
    (10 minutes).
 
-3. The model starts once after deploy, which proves it loads. Then it waits
-   for the idle time and stops. Check:
+3. The model starts one replica when it is created and is not stopped before
+   the idle time has passed. With the short idle time of this demo it may be
+   stopped before it has finished loading; it then loads on its first request
+   (step 4). Check:
 
    ```bash
    kubectl get llmdendpoint qwen2-5-3b-instruct -n inference   # READY True
@@ -110,6 +112,15 @@ wait matters.
 - **Held requests live in router memory.** If the router pod restarts while
   requests are waiting, those requests are lost. The callers' retries still
   wake the model.
+- **The first start is not waited for.** The idle time runs from the moment the
+  model is created, not from the moment it is ready. A model that needs longer
+  than `scaleToZeroAfterSeconds` to load, and gets no request meanwhile, is
+  stopped before it has ever served and loads for the first time on its first
+  request. `READY True` with `scaledToZero: true` therefore means "idle at
+  zero", not "has loaded successfully": send one request after deploying.
+- **Load balancer timeout.** The internal load balancer keeps a silent
+  connection open for 1020 s, which covers the longest hold (900 s) plus the
+  answer. A longer `coldStartTimeoutSeconds` is not possible.
 - **Public edge timeout.** API clients that call through the public edge
   (CloudFront) are cut off when the origin sends nothing within the edge's
   timeout, 30 s by default. The model still wakes up, so a retry a few minutes
