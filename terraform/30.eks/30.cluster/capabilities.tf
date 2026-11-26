@@ -183,7 +183,7 @@ resource "aws_ecr_repository_creation_template" "docker_hub" {
 # images: a fresh-account first pull needs ecr:BatchImportUpstreamImage (and,
 # absent the creation template above, ecr:CreateRepository). The standard
 # read-only node policies (AmazonEC2ContainerRegistryReadOnly/PullOnly) lack it,
-# so without this the very first vLLM image pull — at apply time on the SOCI/snapshot
+# so without this the very first vLLM image pull — at apply time on the SOCI
 # builder, and at runtime on GPU nodes — 403s and breaks model serving.
 resource "aws_iam_policy" "ecr_pull_through" {
   count       = var.docker_hub_username != "" ? 1 : 0

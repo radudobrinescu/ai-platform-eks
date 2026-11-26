@@ -37,12 +37,10 @@ spec:
         encrypted: true
         throughput: 500
         iops: 6000
-        ${gpu_snapshot_id_line}
   userData: |
     [settings.container-runtime]
     snapshotter = "soci"
-    # Match gpu-inference: bare SOCI snapshotter (no parallel-pull-unpack) to
-    # match the baked EBS data-volume snapshot's content store.
+    # Match gpu-inference: bare SOCI snapshotter (no parallel-pull-unpack).
   tags:
     karpenter.sh/discovery: ${cluster_name}
     Environment: ${environment}

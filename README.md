@@ -77,9 +77,7 @@ a missing number is never mistaken for a zero.
 EKS cluster, IAM roles, security groups, a Cognito user pool, S3 buckets and KMS
 keys, so use an administrator role for the account or one with equivalent rights.
 It also needs cluster-admin access to the new cluster, which `up` grants to the
-identity that created it. The GPU image snapshot (see
-[Fast cold starts](#beyond-the-basics)) additionally launches and terminates one
-temporary EC2 instance, creates an EBS snapshot and reads one SSM parameter.
+identity that created it.
 
 **AWS account setup**:
 - (Optional) If using **Amazon Bedrock models**: enable the desired model(s) in the AWS console (one-time model-access toggle). You enroll them after the cluster is up with `./platformctl new-model --source bedrock` (nothing is pinned in git) - see the Quick start.
@@ -280,21 +278,14 @@ request after deploying to see it answer; and through the CloudFront edge a wait
 request is cut after 30 s (retry once the model is up). Demo and details:
 [docs/demos/scale-to-zero.md](docs/demos/scale-to-zero.md).
 
-**Fast cold starts.** The vLLM serving image (about 10 GB) is baked into an EBS
-snapshot that every new GPU node boots from, so a node does not download it. The
-first `apply` in an account and region builds the snapshot (about 15 minutes on one
-temporary c5.xlarge, once per vLLM version, no Docker Hub account needed); later
-clusters reuse it. The
-snapshot is kept when a cluster is destroyed, for the next one; its storage (the
-image data, roughly 20-30 GB) costs about $1-2 a month per vLLM version. A build
-that fails does not fail the install: GPU nodes pull the image as usual, and the
-build is tried again at the next `apply`. To turn it off, set
-`gpu_image_snapshot = false` in the tfvars. Two optional layers add to it: setting `docker_hub_username`
-turns on the ECR pull-through cache (images pulled through your ECR, plus SOCI
-lazy-loading), and the S3 model-weight cache - a model's HuggingFace weights
-under `s3://<cluster>-<account-id>-model-cache/hf/<org>/<model>/` are synced to the
-node's disk by the serving initContainer, so vLLM does not pull them from
-HuggingFace. Actual savings vary by model and instance.
+**Cold starts.** A new GPU node pulls the vLLM serving image (about 10 GB) when it
+starts, then loads the model's weights; from a new node to the first answer takes a
+few minutes, longer for large models. Two optional layers shorten it: setting
+`docker_hub_username` turns on the ECR pull-through cache (the image is pulled
+through your ECR, with SOCI lazy-loading), and the S3 model-weight cache - a model's
+HuggingFace weights under `s3://<cluster>-<account-id>-model-cache/hf/<org>/<model>/`
+are synced to the node's disk by the serving initContainer, so vLLM does not pull
+them from HuggingFace. Actual savings vary by model and instance.
 
 **Platform Health Agent.** The cluster dashboard can watch for failures, investigate
 them with an LLM, and propose a one-click fix - idle until you provide a Kiro key.
@@ -398,16 +389,6 @@ cluster that has been idle, it finishes in ~25 minutes. On a cluster that's
 been actively running models, expect **30–45 min**. The script does **not** touch
 the bootstrap state (S3 `tfstate-<account>` + DynamoDB `tfstate-lock`), so a
 subsequent `./platformctl up <env>` still works.
-
-One thing is kept on purpose: **the vLLM image snapshot**, for the next cluster in
-the account and region (about $1-2 a month). To delete it:
-
-```bash
-aws ec2 describe-snapshots --owner-ids self \
-  --filters Name=tag:Purpose,Values=bottlerocket-data-volume \
-  --query 'Snapshots[].[SnapshotId,Description]' --output text
-aws ec2 delete-snapshot --snapshot-id <id>
-```
 
 ### If `down` stops
 

@@ -169,7 +169,7 @@ _up_record_release() {
 
 cmd_up() {
   local env; env=$(need_env "${1:-}" "up")
-  # kubectl: the image snapshot build and the release record below both use it.
+  # kubectl: the release record below, and every command after `up`, use it.
   need terraform; need aws; need make; need kubectl; require_tfvars "$env"; check_tfvars_filled "$env"; check_env_name_length "$env"; pin_region "$env"
   log "Provisioning '${env}' — EKS + capabilities + Karpenter (takes a while)"
   # Explicit checks: when cmd_up is invoked in a `||` context

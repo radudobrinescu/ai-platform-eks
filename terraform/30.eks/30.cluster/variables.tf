@@ -100,18 +100,6 @@ variable "enable_bedrock" {
   default     = true
 }
 
-variable "gpu_data_volume_snapshot_id" {
-  description = "EBS snapshot ID containing the pre-pulled GPU container image (vLLM serving image), built with ops/image/create-data-volume-snapshot.sh. Leave empty (default): the snapshot is built and found automatically. Setting it pins that snapshot and turns the automatic build and lookup off, so a later vLLM version does not get a new one."
-  type        = string
-  default     = ""
-}
-
-variable "gpu_image_snapshot" {
-  description = "Bake the vLLM serving image into an EBS snapshot that GPU nodes boot from (default true). The first apply in an account and region builds it on a temporary instance, which needs kubectl on the apply host and a route from the cluster's private subnets to the image registry; a failed build is retried at each apply. Set false to turn the build and the lookup off: GPU nodes then pull the image at start."
-  type        = bool
-  default     = true
-}
-
 variable "gpu_capacity_reservation_ids" {
   description = "EC2 Capacity Reservation IDs (ODCRs or Capacity Blocks, e.g. cr-0123456789abcdef0) that GPU inference nodes may consume. Required for frontier accelerators with no practical on-demand pool (p6-b300 for Kimi-K3-class models) — create a Capacity Block for ML in the EC2 console, then list its reservation ID here. Karpenter (ReservedCapacity is on by default since v1.6) prioritizes this reserved capacity before falling back to on-demand/spot. Empty (default) = no reservations; the gpu-inference NodePool behaves exactly as before."
   type        = list(string)
@@ -124,13 +112,13 @@ variable "gpu_capacity_reservation_ids" {
 }
 
 variable "gpu_node_volume_size_gib" {
-  description = "Size (GiB) of the GPU nodes' Bottlerocket data volume (images + HuggingFace weight cache). 0 (default) = use the baked image-snapshot size (200 GiB). Raise for very large models — e.g. Kimi-K3's ~1.5 TiB MXFP4 weights need >= 2000. Must be >= the baked snapshot size; Bottlerocket grows the filesystem on boot."
+  description = "Size (GiB) of the GPU nodes' Bottlerocket data volume (images + HuggingFace weight cache). 0 (default) = 200 GiB. Raise for very large models — e.g. Kimi-K3's ~1.5 TiB MXFP4 weights need >= 2000. Must be at least 200; Bottlerocket grows the filesystem on boot."
   type        = number
   default     = 0
 
   validation {
     condition     = var.gpu_node_volume_size_gib == 0 || var.gpu_node_volume_size_gib >= 200
-    error_message = "gpu_node_volume_size_gib must be 0 (auto) or >= 200 (the baked snapshot volume size)."
+    error_message = "gpu_node_volume_size_gib must be 0 (the default, 200 GiB) or at least 200."
   }
 }
 
