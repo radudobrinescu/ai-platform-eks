@@ -146,20 +146,33 @@ def fetch_prices_from_aws(region: str, instance_types: list[str],
     return prices, completed
 
 
-def resolve_prices(region: str, refresh: bool, verbose: bool) -> tuple[dict[str, float], str]:
-    """Return (prices_by_instance_type, source_label)."""
+def _mark_unpriced(prices: dict[str, float], looked_up: list[str]) -> dict[str, float | None]:
+    """`prices` plus a None entry for every type that was looked up and has no
+    price in the region."""
+    return {**{it: None for it in looked_up}, **prices}
+
+
+def resolve_prices(region: str, refresh: bool, verbose: bool) -> tuple[dict[str, float | None], str]:
+    """Return (prices_by_instance_type, source_label).
+
+    With prices from the Pricing API or its cache, a type the API has no price
+    for in `region` maps to None: very likely the type is not offered there. A
+    type that is absent from the mapping was not looked up (a failed lookup);
+    callers fall back to the static catalog price for both, and flag the first.
+    """
     instance_types = [i.name for i in INSTANCES]
     if not refresh:
         cached = _load_cached_prices(region, instance_types)
         if cached:
-            return cached, f"cache ({region})"
+            # The cache is only used when it looked up every type.
+            return _mark_unpriced(cached, instance_types), f"cache ({region})"
 
     fetched, completed = fetch_prices_from_aws(region, instance_types, verbose=verbose)
     if fetched:
         # Record only the lookups that got an answer: a throttled one must be
         # asked again on the next run, not kept at the static price for 30 days.
         _save_cached_prices(region, fetched, completed)
-        return fetched, f"AWS Pricing API ({region})"
+        return _mark_unpriced(fetched, completed), f"AWS Pricing API ({region})"
 
     # Fall back to the static catalog, flagging if the user asked for a
     # different region than the catalog's baked-in one.

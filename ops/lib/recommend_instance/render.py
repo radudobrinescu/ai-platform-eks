@@ -8,7 +8,7 @@ import math
 import re
 import sys
 
-from .catalog import TIME_SLICE_REPLICAS, nodepool_refusal
+from .catalog import CATALOG_PRICING_REGION, TIME_SLICE_REPLICAS, nodepool_refusal
 from .model import ModelSpec
 from .paths import KIND_DIR, is_valid_hf_model_id, is_valid_model_name
 from .recommend import Option, find_options
@@ -27,6 +27,11 @@ def _fmt_params(p: int) -> str:
     if p >= 1e9:  return f"{p/1e9:.2f}B"
     if p >= 1e6:  return f"{p/1e6:.1f}M"
     return str(p)
+
+
+def _no_price_flag(region: str) -> str:
+    """Flag for a type the Pricing API has no price for in `region`."""
+    return f"no price in {region} — may not be offered there"
 
 
 def _mode_line(args: argparse.Namespace) -> str:
@@ -238,7 +243,7 @@ def _explain_recommendation(
 def _diagnose_no_fit(
     model: ModelSpec,
     args:  argparse.Namespace,
-    prices: dict[str, float] | None,
+    prices: dict[str, float | None] | None,
     C:     type,
 ) -> None:
     """Explain WHY nothing fits and, crucially, what config WOULD — so the user
@@ -323,7 +328,7 @@ def _int4_savings_hint(
     model: ModelSpec,
     best:  "Option",
     args:  argparse.Namespace,
-    prices: dict[str, float] | None,
+    prices: dict[str, float | None] | None,
     C:     type,
 ) -> str | None:
     """If switching to int4 would let a *cheaper* instance host the model, return
@@ -383,7 +388,7 @@ def print_human(
     args:        argparse.Namespace,
     price_src:   str,
     scaling:     list[ScalingRecommendation] | None = None,
-    prices:      dict[str, float] | None = None,
+    prices:      dict[str, float | None] | None = None,
 ) -> None:
     C      = _palette(_should_use_colour(args))
     ruler  = _ruler(71, C)
@@ -486,6 +491,10 @@ def print_human(
         if best.over_price_ceiling:
             print(f"    {C.YELLOW}Note: exceeds --max-price ${args.max_price:.2f}/hr. "
                   f"No cheaper option fits.{C.RESET}")
+    if banner_opt.no_regional_price:
+        print(f"    {C.YELLOW}⚠ {banner_opt.instance.name}: {_no_price_flag(args.region)} "
+              f"(${banner_opt.price_usd_h:.2f}/hr is the {CATALOG_PRICING_REGION} price). "
+              f"Check that {args.region} offers it before you deploy.{C.RESET}")
     if not banner_opt.in_cluster:
         print(f"    {C.YELLOW}⚠ {banner_opt.instance.name} cannot be launched by this cluster "
               f"(the gpu-inference NodePool requires "
@@ -599,12 +608,12 @@ def print_human(
               f"{'-'*12} {'-'*6}  {'-'*7}  {'-'*9}  {'-'*10}{C.RESET}")
 
         for o in within_budget[:display_limit]:
-            _print_table_row(o, C, over=False, users=args.users)
+            _print_table_row(o, C, over=False, users=args.users, region=args.region)
         if args.verbose and over_budget:
             remaining = display_limit - len(within_budget[:display_limit])
             if remaining > 0:
                 for o in over_budget[:remaining]:
-                    _print_table_row(o, C, over=True, users=args.users)
+                    _print_table_row(o, C, over=True, users=args.users, region=args.region)
 
     # -------- 6. Fleet scaling (when auto-fleet is triggered) ------------ #
     if scaling:
@@ -627,7 +636,7 @@ def print_human(
           f"Monthly = hourly × 730h. Prices: {price_src}{C.RESET}")
 
 
-def _print_table_row(o: Option, C: type, over: bool, users: int = 1) -> None:
+def _print_table_row(o: Option, C: type, over: bool, users: int = 1, region: str = "") -> None:
     strategy = o.parallelism_label or "1 GPU"
     usage  = f"{o.per_gpu_need_gb:.0f}/{o.instance.vram_gb} GB"
     tok_s  = (f"{per_user_tok_s(o.single_stream_tok_s, users):.0f}"
@@ -647,6 +656,8 @@ def _print_table_row(o: Option, C: type, over: bool, users: int = 1) -> None:
         note_parts.append(f"{C.YELLOW}⚠ quant{C.RESET}")
     if not o.in_cluster:
         note_parts.append(f"{C.DIM}out-of-cluster{C.RESET}")
+    if o.no_regional_price:
+        note_parts.append(f"{C.YELLOW}⚠ {_no_price_flag(region)}{C.RESET}")
     note = " · ".join(note_parts) if note_parts else ""
 
     print(f"  {o.instance.name:<15} {o.instance.gpu:<12} {strategy:<10} "
@@ -663,7 +674,7 @@ def _compute_alt_fleet_cost(
     target_tok_s:   float,
     utilization:    float,
     safety_margin:  float,
-    prices:         dict[str, float],
+    prices:         dict[str, float | None],
     max_price:      float,
     num_heads:      int,
 ) -> "ScalingRecommendation | None":
@@ -712,7 +723,7 @@ def _print_cost_levers(
     args:        argparse.Namespace,
     model:       ModelSpec,
     fleet_best:  "ScalingRecommendation",
-    prices:      dict[str, float],
+    prices:      dict[str, float | None],
     C:           type,
 ) -> None:
     """Print 'what if?' alternatives showing how cost changes with knob tweaks.
@@ -852,6 +863,8 @@ def _print_scaling_section(
             suffix = ""
             if s.option.quant_warning:
                 suffix = f" {C.YELLOW}⚠ quant{C.RESET}"
+            if s.option.no_regional_price:
+                suffix += f" {C.YELLOW}⚠ {_no_price_flag(args.region)}{C.RESET}"
             print(f"  {tone}{marker}{s.option.instance.name:<15} "
                   f"{s.option.instance.gpu:<12} {s_strat:<10} "
                   f"{s.effective_capacity:>9}  {s.replicas:>8}  "

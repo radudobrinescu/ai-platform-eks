@@ -66,11 +66,16 @@ def _cache() -> dict:
     return json.loads(pricing._pricing_cache_path(REGION).read_text())
 
 
+def _priced(prices: dict) -> dict:
+    """The types that have a price (a type the region has none for maps to None)."""
+    return {k: v for k, v in prices.items() if v is not None}
+
+
 class TestResolvePrices:
     def test_prices_come_from_the_pricing_api(self, aws):
         client = aws(_FakePricing({"g6.xlarge": 0.9, "g7e.2xlarge": 4.2}))
-        prices, source = pricing.resolve_prices(REGION, refresh=False, verbose=False)[:2]
-        assert prices == {"g6.xlarge": 0.9, "g7e.2xlarge": 4.2}
+        prices, source = pricing.resolve_prices(REGION, refresh=False, verbose=False)
+        assert _priced(prices) == {"g6.xlarge": 0.9, "g7e.2xlarge": 4.2}
         assert source == f"AWS Pricing API ({REGION})"
         assert sorted(client.calls) == sorted(ALL_TYPES)
 
@@ -85,22 +90,22 @@ class TestResolvePrices:
         aws(_FakePricing({"g6.xlarge": 0.9}))
         pricing.resolve_prices(REGION, refresh=False, verbose=False)
         second = aws(_FakePricing({"g6.xlarge": 5.0}))
-        prices, source = pricing.resolve_prices(REGION, refresh=False, verbose=False)[:2]
-        assert prices == {"g6.xlarge": 0.9} and source == f"cache ({REGION})"
+        prices, source = pricing.resolve_prices(REGION, refresh=False, verbose=False)
+        assert _priced(prices) == {"g6.xlarge": 0.9} and source == f"cache ({REGION})"
         assert second.calls == []
 
     def test_refresh_ignores_the_cache(self, aws):
         aws(_FakePricing({"g6.xlarge": 0.9}))
         pricing.resolve_prices(REGION, refresh=False, verbose=False)
         aws(_FakePricing({"g6.xlarge": 5.0}))
-        prices, source = pricing.resolve_prices(REGION, refresh=True, verbose=False)[:2]
-        assert prices == {"g6.xlarge": 5.0} and source == f"AWS Pricing API ({REGION})"
+        prices, source = pricing.resolve_prices(REGION, refresh=True, verbose=False)
+        assert _priced(prices) == {"g6.xlarge": 5.0} and source == f"AWS Pricing API ({REGION})"
 
     @pytest.mark.parametrize("error", [_Throttled, RuntimeError])
     def test_a_failed_lookup_is_not_recorded_as_done(self, aws, error):
         aws(_FakePricing({"g6.xlarge": 0.9, "g7e.2xlarge": 4.2}, failing={"g7e.2xlarge"}, error=error))
-        prices = pricing.resolve_prices(REGION, refresh=False, verbose=False)[0]
-        assert prices == {"g6.xlarge": 0.9}
+        prices, _source = pricing.resolve_prices(REGION, refresh=False, verbose=False)
+        assert _priced(prices) == {"g6.xlarge": 0.9}
         saved = _cache()
         assert "g7e.2xlarge" not in saved["queried"]
         assert saved["queried"] == sorted(set(ALL_TYPES) - {"g7e.2xlarge"})
@@ -111,7 +116,7 @@ class TestResolvePrices:
         # next run: the throttling is over. The cache is incomplete, so it is not
         # used and g7e.2xlarge gets its regional price, not the us-east-1 one.
         retry = aws(_FakePricing({"g6.xlarge": 0.9, "g7e.2xlarge": 4.2}))
-        prices, source = pricing.resolve_prices(REGION, refresh=False, verbose=False)[:2]
+        prices, source = pricing.resolve_prices(REGION, refresh=False, verbose=False)
         assert "g7e.2xlarge" in retry.calls
         assert prices["g7e.2xlarge"] == 4.2 and source == f"AWS Pricing API ({REGION})"
         # ... and now the cache is complete
@@ -126,13 +131,45 @@ class TestResolvePrices:
 
     def test_without_any_price_the_static_catalog_is_used_and_nothing_is_cached(self, aws):
         aws(_FakePricing({}, failing=set(ALL_TYPES)))
-        prices, source = pricing.resolve_prices(REGION, refresh=False, verbose=False)[:2]
+        prices, source = pricing.resolve_prices(REGION, refresh=False, verbose=False)
         assert prices == {i.name: i.price_usd_h for i in catalog.INSTANCES}
         assert source == f"⚠ static catalog (us-east-1, not {REGION})"
         assert not pricing._pricing_cache_path(REGION).exists()
 
     def test_static_catalog_in_its_own_region_is_not_flagged(self, aws, monkeypatch):
         monkeypatch.setitem(sys.modules, "boto3", None)   # import boto3 -> ImportError
-        prices, source = pricing.resolve_prices("us-east-1", refresh=False, verbose=False)[:2]
+        prices, source = pricing.resolve_prices("us-east-1", refresh=False, verbose=False)
         assert source == "static catalog (us-east-1)"
         assert prices["g6.xlarge"] == 0.805
+
+
+class TestTypesWithoutARegionalPrice:
+    """The Pricing API answered and has no price for the type in that region:
+    very likely the type is not offered there. resolve_prices says so (None)
+    instead of leaving the caller to fall back to the us-east-1 price unseen."""
+
+    def test_the_pricing_api_marks_them(self, aws):
+        aws(_FakePricing({"g6.xlarge": 0.9}))
+        prices, _source = pricing.resolve_prices(REGION, refresh=False, verbose=False)
+        assert prices["g6.xlarge"] == 0.9
+        assert prices["p6-b300.48xlarge"] is None and prices["g7e.2xlarge"] is None
+        assert set(prices) == set(ALL_TYPES)
+
+    def test_the_cache_marks_them_too(self, aws):
+        aws(_FakePricing({"g6.xlarge": 0.9}))
+        pricing.resolve_prices(REGION, refresh=False, verbose=False)
+        prices, source = pricing.resolve_prices(REGION, refresh=False, verbose=False)
+        assert source == f"cache ({REGION})"
+        assert prices["g6.xlarge"] == 0.9 and prices["p6-b300.48xlarge"] is None
+        assert _cache()["prices"] == {"g6.xlarge": 0.9}   # the file format is unchanged
+
+    def test_a_failed_lookup_is_not_marked(self, aws):
+        # could not ask is not the same as has no price there
+        aws(_FakePricing({"g6.xlarge": 0.9}, failing={"g7e.2xlarge"}))
+        prices, _source = pricing.resolve_prices(REGION, refresh=False, verbose=False)
+        assert "g7e.2xlarge" not in prices and prices["g7.2xlarge"] is None
+
+    def test_the_static_catalog_marks_nothing(self, aws):
+        aws(_FakePricing({}, failing=set(ALL_TYPES)))
+        prices, _source = pricing.resolve_prices(REGION, refresh=False, verbose=False)
+        assert None not in prices.values()

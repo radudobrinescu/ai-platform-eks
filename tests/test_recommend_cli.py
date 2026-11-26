@@ -158,3 +158,65 @@ class TestTypesTheNodePoolsRefuse:
         code, out, _err = new_model(self.SMALL_FP16, model=_model(3.0))
         assert code == 0 and "g4dn.xlarge" in out
         assert "cannot be launched by this cluster" in out and "instance-family NotIn" in out
+
+
+class TestTypesWithoutARegionalPrice:
+    """Prices came from the Pricing API (or its cache) and the region has none
+    for a type: it is flagged, and not recommended while a priced type fits."""
+
+    REGION = "eu-north-1"
+    SRC = "AWS Pricing API (eu-north-1)"
+    FLAG = "no price in eu-north-1 — may not be offered there"
+
+    def _prices(self, *unpriced_families):
+        """The regional price table: every type priced, except these families."""
+        return {name: (None if name.split(".")[0] in unpriced_families else price)
+                for name, price in STATIC_PRICES.items()}
+
+    def _run(self, new_model, argv, *unpriced_families, **kw):
+        return new_model(argv + ["--region", self.REGION], prices=self._prices(*unpriced_families),
+                         price_src=self.SRC, **kw)
+
+    def test_the_cheapest_type_is_not_recommended_without_a_regional_price(self, new_model):
+        # g6.xlarge is the cheapest fit at its us-east-1 price
+        code, out, _err = self._run(new_model, ["org/m"], "g6", model=_model(3.0))
+        assert code == 0
+        assert "RECOMMENDED: g5.xlarge" in out
+        assert self.FLAG not in out.split("Alternatives")[0]   # nothing to flag about the pick
+
+    def test_it_is_flagged_in_the_table(self, new_model):
+        _code, out, _err = self._run(new_model, ["org/m", "--verbose", "--limit", "40"], "g6", model=_model(3.0))
+        g6 = [ln for ln in out.splitlines() if re.match(r"\s+g6\.", ln)]
+        assert g6 and all(self.FLAG in ln for ln in g6), g6
+        assert not [ln for ln in out.splitlines() if re.match(r"\s+g5\.", ln) and self.FLAG in ln]
+
+    def test_it_is_not_the_fleet_pick_and_is_flagged_in_the_fleet_table(self, new_model):
+        # g7e.2xlarge is the cheapest fleet for 200 users at its us-east-1 price
+        _code, out, _err = self._run(new_model, ["org/m", "--users", "200", "--limit", "40"], "g7e")
+        assert _fleet_headline(out) == (2, "g6e.xlarge")
+        g7e = [ln for ln in out.splitlines() if re.match(r"\s+g7e\.", ln)]
+        assert g7e and all(self.FLAG in ln for ln in g7e), g7e
+
+    def test_it_is_recommended_with_a_warning_when_nothing_priced_fits(self, new_model):
+        families = {name.split(".")[0] for name in STATIC_PRICES}
+        code, out, _err = self._run(new_model, ["org/m"], *families, model=_model(3.0))
+        assert code == 0 and "RECOMMENDED: g6.xlarge" in out
+        assert self.FLAG in out.split("Why:")[0]
+
+    def test_pinning_it_warns_in_the_banner(self, new_model):
+        code, out, _err = self._run(new_model, ["org/m", "--instance-type", "g6.xlarge"], "g6", model=_model(3.0))
+        assert code == 0 and "RECOMMENDED: g6.xlarge" in out
+        assert self.FLAG in out.split("Why:")[0]
+
+    def test_json_notes_carry_the_flag(self, new_model):
+        import json
+        _code, out, _err = self._run(new_model, ["org/m", "--json", "--limit", "40"], "g6", model=_model(3.0))
+        doc = json.loads(out)
+        assert doc["recommended"]["instance"] == "g5.xlarge"
+        notes = {o["instance"]: o["notes"] for o in doc["options"]}
+        assert any("no price in the requested region" in n for n in notes["g6.xlarge"])
+        assert not any("no price" in n for n in notes["g5.xlarge"])
+
+    def test_with_static_prices_nothing_is_flagged(self, new_model):
+        _code, out, _err = new_model(["org/m", "--verbose", "--limit", "40"], model=_model(3.0))
+        assert "no price in" not in out
