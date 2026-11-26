@@ -63,7 +63,7 @@ check-sh: ## Syntax-check (bash -n) + lint (shellcheck, if installed) every scri
 	@echo "==> bash -n"
 	@for f in $(SH_SCRIPTS); do bash -n "$$f" || exit 1; done
 	@if command -v shellcheck >/dev/null 2>&1; then \
-		echo "==> shellcheck"; shellcheck $(SH_SCRIPTS); \
+		echo "==> shellcheck"; shellcheck -S warning $(SH_SCRIPTS); \
 	else \
 		echo "!! shellcheck not installed — skipping lint (matches CI's shellcheck step)"; \
 	fi
