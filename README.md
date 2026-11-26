@@ -237,17 +237,29 @@ itself is out of scope).
 workloads, commit an `LLMDEndpoint` (see `workloads/scale-models/`) and the
 optional llm-d tier schedules requests across vLLM replicas using live KV-cache,
 prefix, and queue-depth signals, and supports prefill/decode disaggregation.
+KEDA adds replicas as requests pile up and removes them when load drops.
 [docs/demos/prefix-cache-routing.md](docs/demos/prefix-cache-routing.md) shows the
 effect: the same GPUs and traffic through the llm-d router and through plain round
 robin, measured with inference-perf and compared in llm-d's Prism.
 
-**Fast cold starts (opt-in).** New GPU deployments can shave the multi-minute cold
-start via three layers, wired through Terraform's image optimization and switched on
-by setting `docker_hub_username` (which enables the ECR pull-through cache): EBS
-image snapshots (near-instant image pull) and SOCI lazy-loading, plus an S3
-model-weight cache - pre-seed a model's HuggingFace weights there and the serving
-initContainer loads them from local disk instead of pulling from HuggingFace. Actual
-savings vary by model and instance.
+**Scale to zero (llm-d).** Deploy with `./platformctl new-model <model> --min-replicas 0`
+and the model stops after 10 minutes without requests; Karpenter then removes its
+GPU node, so an idle model costs nothing. The next request waits in the llm-d router
+while a GPU node and the model start (a few minutes; up to 10 by default), then is
+answered as usual. Tune it per model with `scaleToZeroAfterSeconds` and
+`coldStartTimeoutSeconds`. Models default to `minReplicas: 1` (always warm). Demo:
+[docs/demos/scale-to-zero.md](docs/demos/scale-to-zero.md).
+
+**Fast cold starts.** The vLLM serving image (about 10 GB) is baked into an EBS
+snapshot that every new GPU node boots from, so a node does not download it. The
+first `apply` in an account and region builds the snapshot (about 15 minutes, once
+per vLLM version, no Docker Hub account needed); later clusters reuse it. The
+snapshot is kept when a cluster is destroyed, for the next one; its storage (the
+image data, roughly 20-30 GB) costs about $1-2 a month per vLLM version. Two optional layers add to it: setting `docker_hub_username`
+turns on the ECR pull-through cache (images pulled through your ECR, plus SOCI
+lazy-loading), and the S3 model-weight cache - pre-seed a model's HuggingFace
+weights there and the serving initContainer loads them from local disk instead of
+pulling from HuggingFace. Actual savings vary by model and instance.
 
 **Platform Health Agent.** The cluster dashboard can watch for failures, investigate
 them with an LLM, and propose a one-click fix - idle until you provide a Kiro key.

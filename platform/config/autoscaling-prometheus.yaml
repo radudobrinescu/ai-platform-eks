@@ -3,11 +3,12 @@
 # 40.observability stack: the default serving tier's elasticity must not depend
 # on observability being enabled.
 #
-# Scope: scrapes only the `inference` namespace, discovering llm-d model-server
-# pods by the `llm-d.ai/pool` label on their `modelserver` port (8000) — so it
-# picks up vLLM saturation metrics (vllm:num_requests_waiting, kv_cache_usage)
-# with no per-pod annotations. Ephemeral storage, 2h retention (KEDA only needs
-# recent values). KEDA's built-in Prometheus scaler queries the Service below.
+# Scope: scrapes only the `inference` namespace: llm-d model-server pods (by the
+# `llm-d.ai/pool` label, `modelserver` port 8000; vLLM metrics) and llm-d router
+# (EPP) pods (by the `llm-d-router-gateway: <pool>-epp` label, `metrics` port
+# 9090; requests in flight and held, which drive KEDA), plus LiteLLM. Ephemeral
+# storage, 2h retention (KEDA only needs recent values). KEDA's built-in
+# Prometheus scaler queries the Service below.
 ---
 apiVersion: v1
 kind: ServiceAccount
@@ -40,6 +41,36 @@ subjects:
 roleRef:
   kind: Role
   name: autoscaling-prometheus
+  apiGroup: rbac.authorization.k8s.io
+---
+# The router (EPP) keeps its /metrics authenticated (--metrics-endpoint-auth,
+# on by default): it checks the caller's token with a TokenReview and asks
+# whether that identity may `get` the /metrics URL. This grants exactly that to
+# this Prometheus's service account, as llm-d documents (docs/metrics.md in
+# llm-d-router). A non-resource URL grant is cluster-wide by nature: it also
+# lets this account read other components' /metrics (for example the API
+# server's), and nothing else.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: autoscaling-prometheus-metrics-reader
+  labels: { app.kubernetes.io/part-of: ai-platform, ai-platform/component: autoscaling }
+rules:
+  - nonResourceURLs: ["/metrics"]
+    verbs: ["get"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: autoscaling-prometheus-metrics-reader
+  labels: { app.kubernetes.io/part-of: ai-platform, ai-platform/component: autoscaling }
+subjects:
+  - kind: ServiceAccount
+    name: autoscaling-prometheus
+    namespace: inference
+roleRef:
+  kind: ClusterRole
+  name: autoscaling-prometheus-metrics-reader
   apiGroup: rbac.authorization.k8s.io
 ---
 apiVersion: v1
@@ -79,6 +110,39 @@ data:
             target_label: pool
           - source_labels: [__meta_kubernetes_pod_label_llm_d_ai_role]
             target_label: role
+          - source_labels: [__meta_kubernetes_pod_name]
+            target_label: pod
+      # llm-d router (EPP) pods — requests in flight (llm_d_epp_request_running)
+      # and requests held while no replica runs (llm_d_epp_flow_control_queue_size).
+      # KEDA sizes each pool on these and wakes a pool at zero. The EPP's
+      # /metrics needs a bearer token: this Prometheus sends its own service
+      # account token (granted `get /metrics` above). Plain HTTP inside the
+      # cluster, as for vLLM: the EPP serves metrics without TLS by default.
+      - job_name: llmd-epp
+        authorization:
+          type: Bearer
+          credentials_file: /var/run/secrets/kubernetes.io/serviceaccount/token
+        kubernetes_sd_configs:
+          - role: pod
+            namespaces:
+              names: [inference]
+        relabel_configs:
+          # keep only llm-d router pods (the chart labels them <release>-epp,
+          # and the release is the pool's name)
+          - source_labels: [__meta_kubernetes_pod_label_llm_d_router_gateway]
+            action: keep
+            regex: .+-epp
+          # the EPP container's metrics port (the Envoy sidecar's is metrics-19001)
+          - source_labels: [__meta_kubernetes_pod_container_port_name]
+            action: keep
+            regex: metrics
+          - source_labels: [__meta_kubernetes_pod_phase]
+            action: keep
+            regex: Running
+          # pool = the release name, so KEDA filters the same way as for vLLM
+          - source_labels: [__meta_kubernetes_pod_label_llm_d_router_gateway]
+            regex: (.+)-epp
+            target_label: pool
           - source_labels: [__meta_kubernetes_pod_name]
             target_label: pod
       # LiteLLM (the always-on gateway) — per-model request counters. This is

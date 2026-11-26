@@ -191,4 +191,25 @@ STUCK_CASES = [
                                                "status": {"ready": "True", "routerHealth": "Progressing"}}, True),
     ("llmd-not-ready", "LLMDEndpoint", {"metadata": {"name": "e", "creationTimestamp": ago(minutes=30)},
                                         "status": {"ready": "False", "routerHealth": "Healthy"}}, True),
+    # minReplicas 0, idle at zero replicas: kro reports it Ready.
+    ("llmd-scaled-to-zero", "LLMDEndpoint", {"metadata": {"name": "e", "creationTimestamp": ago(minutes=30)},
+                                             "spec": {"minReplicas": 0},
+                                             "status": {"ready": "True", "routerHealth": "Healthy",
+                                                        "scaledToZero": True}}, False),
+]
+
+
+def deployment_available(status: str, since_minutes: int) -> dict:
+    return {"status": {"conditions": [{"type": "Available", "status": status,
+                                        "lastTransitionTime": ago(minutes=since_minutes)}]}}
+
+
+# (id, LLMDEndpoint spec, its Deployment, waking from zero?)
+WAKE_CASES = [
+    ("starting-2-min-ago", {"minReplicas": 0}, deployment_available("False", 2), True),
+    ("starting-past-the-hold", {"minReplicas": 0}, deployment_available("False", 13), False),
+    ("short-hold", {"minReplicas": 0, "coldStartTimeoutSeconds": 120}, deployment_available("False", 5), False),
+    ("available", {"minReplicas": 0}, deployment_available("True", 2), False),
+    ("always-warm-model", {"minReplicas": 1}, deployment_available("False", 2), False),
+    ("no-deployment", {"minReplicas": 0}, None, False),
 ]
