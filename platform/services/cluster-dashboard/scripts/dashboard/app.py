@@ -317,7 +317,7 @@ class App:
     # -- derive -----------------------------------------------------------------------
     def derive_once(self) -> None:
         self._derive_tick = self._clock()
-        sections, notes = derive.compute(self.view(), self.inputs(), self.s, self._yaml_load)
+        sections, notes = derive.compute(self.view(), self.inputs(), self.s, self._yaml_load, now=self._derive_tick)
         if notes != self._logged_notes:      # once per change, not on every recompute
             if notes:
                 log.warning("derive.notes", extra={"notes": notes})

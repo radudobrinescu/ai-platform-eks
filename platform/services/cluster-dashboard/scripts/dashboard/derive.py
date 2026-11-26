@@ -1,6 +1,6 @@
 """Compute every dashboard section from the Kubernetes view and the latest
-source inputs. Pure: the same view and inputs always give the same sections,
-which is what the /data.json golden test checks.
+source inputs. Pure: the same view, inputs and time always give the same
+sections, which is what the /data.json golden test checks.
 
 `view` maps a cache name to its projected objects (see app.cache_specs);
 `inputs` holds the polled sources' latest results (missing keys mean "no data
@@ -17,11 +17,12 @@ def _first(view: dict, name: str) -> dict:
     return items[0] if items else {}
 
 
-def compute(view: dict, inputs: dict, settings, yaml_load=None) -> tuple[dict, list[str]]:
+def compute(view: dict, inputs: dict, settings, yaml_load=None, now: float | None = None) -> tuple[dict, list[str]]:
     """(sections, notes). `notes` are data problems worth surfacing (for
     example an invalid price ConfigMap, replaced by the shipped table); they
     never stop the computation. The app publishes them in the status section
-    and logs them when they change."""
+    and logs them when they change. `now` (seconds since the epoch) is used
+    for the one state that depends on time: a model waking from zero."""
     notes = []
     nodes, alerts = m.node_records(view.get("nodes", []))
     m.apply_usage(nodes, inputs.get("usage"))
@@ -48,7 +49,7 @@ def compute(view: dict, inputs: dict, settings, yaml_load=None) -> tuple[dict, l
     bedrock = m.merge_bedrock(static, m.bedrock_from_crs(view.get("bedrockmodels", [])))
 
     met = dict(m.EMPTY_LITELLM, **(inputs.get("litellm_api") or {}), perModel=inputs.get("litellm_traffic") or {})
-    models = m.build_models(endpoints, bedrock, met, pods, nodes)
+    models = m.build_models(endpoints, bedrock, met, pods, nodes, now)
     dcgm = inputs.get("dcgm")
     gpu = m.gpu_records(nodes, pods, endpoints, dcgm) if dcgm is not None else []
 
