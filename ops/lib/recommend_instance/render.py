@@ -895,7 +895,7 @@ TIER_KIND = {"vllm": "VLLMEndpoint", "llm-d": "LLMDEndpoint",
 # Shared-prefix / multi-turn workloads win most from prefix+KV-aware routing;
 # high-volume independent workloads want queue (load) balancing.
 ROUTING_PROFILE_BY_WORKLOAD = {
-    "chat": "prefix", "rag": "prefix", "code": "prefix", "agentic": "prefix",
+    "chat": "prefix", "rag": "prefix", "code": "prefix",
     "summarization": "throughput", "batch": "throughput",
 }
 

@@ -6,11 +6,13 @@ so these tests see what a user sees: the printed report and the manifest that
 """
 
 import re
+import shlex
 
 import pytest
 import yaml
 
-from recommend_instance import catalog, cli
+import recommend_instance
+from recommend_instance import catalog, cli, render, scaling
 from recommend_instance.model import ModelSpec
 
 STATIC_PRICES = {i.name: i.price_usd_h for i in catalog.INSTANCES}
@@ -220,3 +222,31 @@ class TestTypesWithoutARegionalPrice:
     def test_with_static_prices_nothing_is_flagged(self, new_model):
         _code, out, _err = new_model(["org/m", "--verbose", "--limit", "40"], model=_model(3.0))
         assert "no price in" not in out
+
+
+def _help_examples() -> list[str]:
+    """Every `./platformctl new-model ...` command line in the --help epilog."""
+    epilog = recommend_instance.__doc__.split("Examples:", 1)[1]
+    return [ln.strip() for ln in epilog.splitlines()
+            if "./platformctl new-model" in ln and not ln.lstrip().startswith("#")]
+
+
+class TestHelpExamples:
+    """The examples in --help are commands users copy: each one must parse."""
+
+    def test_the_epilog_has_examples(self):
+        assert len(_help_examples()) >= 10
+        assert "Examples:" not in cli.build_parser().epilog and "./platformctl new-model" in cli.build_parser().epilog
+
+    @pytest.mark.parametrize("line", _help_examples())
+    def test_every_example_parses(self, line, capsys):
+        argv = shlex.split(line)
+        argv = argv[argv.index("new-model") + 1:]
+        try:
+            args = cli.build_parser().parse_args(argv)   # parses only; runs nothing
+        except SystemExit:
+            pytest.fail(f"--help example does not parse: {line}\n{capsys.readouterr().err}")
+        assert args.model or args.undeploy
+
+    def test_every_workload_preset_has_a_routing_profile_and_no_other(self):
+        assert set(render.ROUTING_PROFILE_BY_WORKLOAD) == set(scaling.WORKLOAD_PRESETS)

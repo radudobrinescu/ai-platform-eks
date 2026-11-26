@@ -24,7 +24,7 @@ from .scaling import (
 )
 from .vram import estimate_vram
 
-# main() reads module-level __doc__ to build the --help epilog; rebind it to the
+# build_parser() reads module-level __doc__ to build the --help epilog; rebind it to the
 # package docstring (which carries the Examples section) so --help is unchanged.
 __doc__ = _PKG_DOC
 
@@ -33,7 +33,8 @@ __doc__ = _PKG_DOC
 # CLI                                                                         #
 # --------------------------------------------------------------------------- #
 
-def main(argv: list[str] | None = None) -> int:
+def build_parser() -> argparse.ArgumentParser:
+    """The `new-model` argument parser (no side effects: parsing only)."""
     p = argparse.ArgumentParser(
         description="Recommend EC2 GPU instances for serving an LLM on EKS.",
         formatter_class=argparse.RawDescriptionHelpFormatter,
@@ -173,6 +174,11 @@ def main(argv: list[str] | None = None) -> int:
                         "partitions the AWS Price List API doesn't cover, like ESC).")
     p.add_argument("--output-cost", type=float, default=None, metavar="USD_PER_TOKEN",
                    help="With --source bedrock: override output $/token. See --input-cost.")
+    return p
+
+
+def main(argv: list[str] | None = None) -> int:
+    p = build_parser()
     args = p.parse_args(argv)
     if args.min_replicas is not None:
         if args.min_replicas < 0:
