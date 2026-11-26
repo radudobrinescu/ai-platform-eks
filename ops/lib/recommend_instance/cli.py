@@ -298,10 +298,13 @@ def main(argv: list[str] | None = None) -> int:
             effective_cap = min(effective_cap, slo_cap)
 
         if args.users > effective_cap:
-            # Best single instance can't handle all users → fleet mode
+            # Best single instance can't handle all users → fleet mode.
+            # With --instance-type the fleet is sized on the pinned type only:
+            # the manifest pins that type, so its replica count must be the
+            # pinned type's, not the cheapest fleet's on some other hardware.
             args.target_users = args.users
             scaling = compute_scaling(
-                opts=opts,
+                opts=[best] if args.instance_type else opts,
                 vram=vram,
                 target_users=args.target_users,
                 utilization_factor=args.utilization,
