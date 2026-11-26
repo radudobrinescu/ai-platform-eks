@@ -39,13 +39,19 @@ cluster_config = {
     gitops = true # ArgoCD
     kro    = true # Kube Resource Orchestrator, required by ArgoCD pipeline
 
-    # ack              = true # optional, unused by this solution
-    # ack_service_controllers = {
-    #   s3  = ["arn:aws:iam::aws:policy/AmazonS3FullAccess"]
-    #   ec2 = ["arn:aws:iam::aws:policy/AmazonEC2FullAccess"]
-    # }
+    # ack = true # optional, unused by this solution. Installs only the controllers
+    #            # listed in the top-level ack_service_controllers (after this block).
   }
 }
+
+# ACK controllers to install when capabilities.ack = true above (optional).
+# This is a TOP-LEVEL variable: inside cluster_config it is silently ignored.
+# Map of AWS service name to the IAM policy ARNs its controller needs. The
+# partition in the ARNs is aws-eusc here, not aws.
+# ack_service_controllers = {
+#   s3  = ["arn:aws-eusc:iam::aws:policy/AmazonS3FullAccess"]
+#   ec2 = ["arn:aws-eusc:iam::aws:policy/AmazonEC2FullAccess"]
+# }
 
 observability_configuration = {
   aws_oss_tooling    = false #Amazon Managed Grafana not available in ESC
@@ -56,6 +62,9 @@ observability_configuration = {
 # Set via environment variables, not in this file:
 #   export TF_VAR_docker_hub_username="your-dockerhub-username"
 #   export TF_VAR_docker_hub_access_token="dckr_pat_XXXXXXXXXX"
+# Limit: the cache has fixed names (secret ecr-pullthroughcache/docker-hub, ECR
+# prefix docker-hub), so it exists once per account and region. Export these for
+# ONE environment per account and region only; a second one fails on "already exists".
 
 # GitOps repository — ArgoCD syncs the platform from this repo.
 # Required when cluster_config.capabilities.gitops = true.
@@ -108,7 +117,7 @@ gitops_revision = "main"
 # enable_bedrock = true
 
 # SSO + per-user cost attribution (default: enabled). Ships a Cognito user pool
-# with a hosted login page, role groups (admins/developers/users), and three
+# with a hosted login page, role groups (ai-platform-admins / ai-platform-developers / ai-platform-users), and three
 # seed users whose generated passwords are surfaced as the `sso_seed_user_passwords`
 # Terraform output. SSO works out of the box via `./platformctl tunnel` (Cognito
 # permits localhost callbacks). Open WebUI / LiteLLM UI / Langfuse federate to it;
