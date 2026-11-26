@@ -11,6 +11,7 @@ import re
 import time
 
 import pytest
+import yaml
 
 from recommend_instance import catalog, pricing, recommend
 from recommend_instance.model import ModelSpec
@@ -35,15 +36,143 @@ def test_sizes_match_ec2(name, gpus, vram, vcpu, mem):
     assert i.price_usd_h > 0 and i.hbm_bandwidth_tb_s > 0
 
 
+KARPENTER = os.path.join(ROOT, "terraform/30.eks/30.cluster/karpenter")
+# Requirements that do not depend on the instance type.
+NOT_ABOUT_THE_TYPE = {"kubernetes.io/arch", "kubernetes.io/os", "karpenter.sh/capacity-type"}
+
+
+def _nodepool_requirements(pool):
+    """{key: (operator, values)} of the NodePool in karpenter/<pool>.yaml. The
+    file is a Terraform template: its ${...} placeholders are filled in first."""
+    with open(os.path.join(KARPENTER, f"{pool}.yaml"), encoding="utf-8") as fh:
+        docs = re.split(r"^---$", fh.read(), flags=re.M)
+    doc = next(d for d in docs if re.search(r"^kind: NodePool$", d, flags=re.M))
+    reqs = yaml.safe_load(re.sub(r"\$\{\w+\}", "x", doc))["spec"]["template"]["spec"]["requirements"]
+    by_key = {r["key"]: (r["operator"], [str(v) for v in r["values"]]) for r in reqs}
+    assert len(by_key) == len(reqs), f"{pool}: a requirement key is repeated"
+    return by_key
+
+
+def _nodepool_admits(reqs, inst):
+    """Would Karpenter launch `inst` from a NodePool with these requirements?"""
+    labels = {
+        "karpenter.k8s.aws/instance-category": inst.category,
+        "karpenter.k8s.aws/instance-gpu-manufacturer": inst.gpu_manufacturer,
+        "karpenter.k8s.aws/instance-family": inst.family,
+        # Karpenter reads the generation off the type name: g6e -> 6, p4de -> 4, p6-b300 -> 6.
+        "karpenter.k8s.aws/instance-generation": re.match(r"[a-z]+(\d+)", inst.name).group(1),
+        "karpenter.k8s.aws/instance-gpu-count": str(inst.num_gpus),
+    }
+    for key, (operator, values) in reqs.items():
+        if key in NOT_ABOUT_THE_TYPE:
+            continue
+        assert key in labels, f"new NodePool requirement {key}: the recommender does not know it"
+        value = labels[key]
+        if operator == "In":
+            ok = value in values
+        elif operator == "NotIn":
+            ok = value not in values
+        elif operator == "Gte":
+            ok = int(value) >= int(values[0])
+        else:
+            raise AssertionError(f"new NodePool operator {operator} on {key}: the recommender does not know it")
+        if not ok:
+            return False
+    return True
+
+
 def test_the_gpu_nodepools_allow_every_catalog_family_except_the_excluded_ones():
-    """The catalog and the NodePools agree: a family the NodePools refuse is not
-    offered as in-cluster for g7/g7e, and g7/g7e are no longer refused."""
-    with open(os.path.join(ROOT, "terraform/30.eks/30.cluster/karpenter/gpu-inference.yaml"), encoding="utf-8") as fh:
-        notin = re.search(r'instance-family\n\s+operator: NotIn\n\s+values: \[([^\]]*)\]', fh.read()).group(1)
-    assert '"g7"' not in notin and '"g7e"' not in notin
-    for name in ("g7.2xlarge", "g7e.2xlarge"):
-        pool, _ = recommend._classify_nodepool(BY_NAME[name], 1, 10.0, 0.10)
-        assert pool == "gpu-inference"
+    """The catalog and the NodePools agree, for every catalog type: what
+    gpu-inference.yaml / gpu-shared.yaml refuse (family list, generation floor,
+    GPU count) is not offered as in-cluster, and what they admit is."""
+    inference, shared = _nodepool_requirements("gpu-inference"), _nodepool_requirements("gpu-shared")
+    refused = set()
+    for inst in catalog.INSTANCES:
+        # 1 GiB per GPU: small enough that four copies fit, so only the NodePool rules decide.
+        pool, shared_eligible = recommend._classify_nodepool(inst, 1, 1.0, 0.10)
+        assert (pool == "gpu-inference") == _nodepool_admits(inference, inst), inst.name
+        assert shared_eligible == _nodepool_admits(shared, inst), inst.name
+        if pool == "out-of-cluster":
+            refused.add(inst.family)
+    # g4dn (T4) is refused by family name, g7/g7e are no longer refused.
+    assert "g4dn" in refused and not refused & {"g5", "g6", "g6e", "g7", "g7e"}
+
+
+@pytest.mark.parametrize("pool", ["gpu-inference", "gpu-shared"])
+def test_the_recommender_rules_are_the_nodepool_rules(pool):
+    """The constants the recommender uses are the values in the YAML, also for
+    families the catalog does not list (p2, p3, p3dn, g4ad)."""
+    reqs = _nodepool_requirements(pool)
+    assert reqs["karpenter.k8s.aws/instance-family"][0] == "NotIn"
+    assert set(reqs["karpenter.k8s.aws/instance-family"][1]) == catalog.CLUSTER_EXCLUDED_FAMILIES[pool]
+    assert reqs["karpenter.k8s.aws/instance-generation"] == ("Gte", [str(catalog.CLUSTER_MIN_INSTANCE_GENERATION[pool])])
+    assert reqs["karpenter.k8s.aws/instance-gpu-manufacturer"] == ("In", [catalog.CLUSTER_GPU_MANUFACTURER])
+    categories = catalog.CLUSTER_SHARED_CATEGORIES if pool == "gpu-shared" else catalog.CLUSTER_INFERENCE_CATEGORIES
+    assert set(reqs["karpenter.k8s.aws/instance-category"][1]) == set(categories)
+
+
+@pytest.mark.parametrize("name,rule", [
+    ("g4dn.xlarge", "instance-family NotIn"),          # T4: refused by family name
+    ("p4d.24xlarge", "instance-generation Gte 5"),     # A100: generation 4, below the floor
+    ("p4de.24xlarge", "instance-generation Gte 5"),
+])
+def test_a_refused_type_names_the_nodepool_rule(name, rule):
+    assert rule in catalog.nodepool_refusal(BY_NAME[name], "gpu-inference")
+
+
+def test_an_allowed_type_is_not_refused():
+    assert catalog.nodepool_refusal(BY_NAME["g6.2xlarge"], "gpu-inference") is None
+    assert catalog.nodepool_refusal(BY_NAME["g6.2xlarge"], "gpu-shared") is None
+    assert "instance-gpu-count" in catalog.nodepool_refusal(BY_NAME["g6.12xlarge"], "gpu-shared")
+    assert "instance-category" in catalog.nodepool_refusal(BY_NAME["p5.48xlarge"], "gpu-shared")
+
+
+def _options(need_gb, params_b, **kw):
+    args = dict(total_need_gb=need_gb, num_heads=40, tp_pin=None, require_in_cluster=False, safety_margin=0.10,
+                prices={}, max_price=100.0, model=_model(params_b), weight_q="fp16", users=1)
+    args.update(kw)
+    return recommend.find_options(**args)
+
+
+def test_a_type_the_nodepools_refuse_is_listed_as_out_of_cluster():
+    opts = {o.instance.name: o for o in _options(8.0, 1.5)}
+    for name in ("g4dn.xlarge", "g4dn.12xlarge", "p4d.24xlarge", "p4de.24xlarge"):
+        assert opts[name].nodepool == "out-of-cluster" and not opts[name].shared_eligible, name
+        assert any("NodePool" in n for n in opts[name].notes), name
+    assert opts["g5.xlarge"].nodepool == "gpu-inference"
+
+
+def test_in_cluster_only_drops_the_refused_types():
+    names = {o.instance.name for o in _options(8.0, 1.5, require_in_cluster=True)}
+    assert names and not {n for n in names if n.split(".")[0] in ("g4dn", "p4d", "p4de")}
+
+
+def test_a_refused_type_is_never_recommended_ahead_of_an_in_cluster_one():
+    # fp16 runs natively on a T4 and g4dn.xlarge is the cheapest fit, but
+    # Karpenter cannot launch it: the cheapest in-cluster type is the pick.
+    opts = _options(8.0, 1.5)
+    assert opts[0].instance.name == "g6.xlarge"
+    seen_out = False
+    for o in opts:
+        seen_out = seen_out or not o.in_cluster
+        assert not (seen_out and o.in_cluster), f"{o.instance.name} is listed after an out-of-cluster type"
+    # ... also when every in-cluster fit is over the price ceiling
+    opts = _options(8.0, 1.5, max_price=0.60)
+    assert opts[0].in_cluster and opts[0].over_price_ceiling
+
+
+def test_a_refused_type_is_never_the_fleet_pick_ahead_of_an_in_cluster_one():
+    from recommend_instance.scaling import ScalingRecommendation
+    opts = {o.instance.name: o for o in _options(8.0, 1.5)}
+
+    def fleet(name, **kw):
+        return ScalingRecommendation(option=opts[name], max_concurrency_per_inst=10, effective_capacity=7,
+                                     replicas=1, fleet_cost_usd_h=opts[name].price_usd_h,
+                                     utilization_factor=0.7, target_users=7, **kw)
+
+    # cheaper and meets the SLO, but cannot launch: the in-cluster fleet comes first
+    ranked = sorted([fleet("g4dn.xlarge"), fleet("g6.xlarge", slo_unmet=True)], key=lambda r: r.sort_key)
+    assert [r.option.instance.name for r in ranked] == ["g6.xlarge", "g4dn.xlarge"]
 
 
 def test_no_quant_warning_on_blackwell():
