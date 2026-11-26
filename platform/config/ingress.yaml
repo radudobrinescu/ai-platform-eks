@@ -28,6 +28,19 @@
 # backend SG, so ALB->pod traffic is unaffected. To change the allowed sources
 # (e.g. an internet-facing operator allowlist), edit that SG in Terraform. The SG
 # is referenced by fixed name, so it is fork-generic.
+#
+# IDLE TIMEOUT: 1020 s = 900 + 120. The ALB closes a connection on which no byte
+# moves for this long and answers 504; the AWS default is 60 s. A request for an
+# llm-d model at zero replicas is held by the model's router while the model
+# starts, for up to coldStartTimeoutSeconds (maximum 900, see
+# platform/config/kro/llmd-endpoint.yaml), and LiteLLM waits for that hold plus
+# 120 s for the answer (COLD_START_ANSWER_SEC in litellm-sync). With the default
+# the client got a 504 after one minute while the model was still starting.
+# The value is an attribute of the one shared ALB, so it also applies to the UI
+# listeners. Repeat it unchanged on every ingress of the group: the controller
+# merges the group's attributes and stops on two different values
+# (tests/test_llmd_scale_to_zero.py checks both the value and that it is the
+# same everywhere).
 apiVersion: networking.k8s.io/v1
 kind: Ingress
 metadata:
@@ -41,6 +54,7 @@ metadata:
     alb.ingress.kubernetes.io/healthcheck-path: /health/liveliness
     alb.ingress.kubernetes.io/security-groups: ai-platform-alb-inbound
     alb.ingress.kubernetes.io/manage-backend-security-group-rules: "true"
+    alb.ingress.kubernetes.io/load-balancer-attributes: idle_timeout.timeout_seconds=1020
     # LiteLLM serves /metrics without a key so the in-cluster Prometheus can
     # scrape it (see litellm-config). The load balancer answers that path itself:
     # usage figures by model, team and user are not for whoever reaches the gateway.
@@ -86,6 +100,7 @@ metadata:
     alb.ingress.kubernetes.io/healthcheck-path: /health
     alb.ingress.kubernetes.io/security-groups: ai-platform-alb-inbound
     alb.ingress.kubernetes.io/manage-backend-security-group-rules: "true"
+    alb.ingress.kubernetes.io/load-balancer-attributes: idle_timeout.timeout_seconds=1020
 spec:
   ingressClassName: alb
   rules:
@@ -112,6 +127,7 @@ metadata:
     alb.ingress.kubernetes.io/healthcheck-path: /api/public/health
     alb.ingress.kubernetes.io/security-groups: ai-platform-alb-inbound
     alb.ingress.kubernetes.io/manage-backend-security-group-rules: "true"
+    alb.ingress.kubernetes.io/load-balancer-attributes: idle_timeout.timeout_seconds=1020
 spec:
   ingressClassName: alb
   rules:

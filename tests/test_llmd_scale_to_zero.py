@@ -11,7 +11,8 @@ What has to hold, without a cluster:
     it after scaleToZeroAfterSeconds;
   * the autoscaling Prometheus scrapes the router with a bearer token and
     has only `get /metrics` cluster-wide for that;
-  * litellm-sync gives a scale-to-zero model a timeout that covers the hold.
+  * litellm-sync gives a scale-to-zero model a timeout that covers the hold;
+  * the load balancer in front of LiteLLM does not close a held request first.
 """
 
 import os
@@ -26,6 +27,11 @@ from test_litellm_sync_delete import sync  # noqa: F401 - module fixture (stubs 
 REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 RGD = os.path.join(REPO_ROOT, "platform/config/kro/llmd-endpoint.yaml")
 PROM = os.path.join(REPO_ROOT, "platform/config/autoscaling-prometheus.yaml")
+INGRESS = os.path.join(REPO_ROOT, "platform/config/ingress.yaml")
+DASHBOARD = os.path.join(REPO_ROOT, "platform/services/cluster-dashboard/manifests.yaml")
+ALB_GROUP = "alb.ingress.kubernetes.io/group.name"
+ALB_ATTRIBUTES = "alb.ingress.kubernetes.io/load-balancer-attributes"
+ALB_IDLE_TIMEOUT_MAX_SEC = 4000   # the most an Application Load Balancer accepts
 
 # The router config text of v2026.12.0 (weights left as kro expressions). A
 # minReplicas >= 1 model must render exactly this, or every router restarts.
@@ -258,6 +264,48 @@ class TestLiteLLMSync:
     def test_timeout_changes_count_as_drift(self, sync, current, desired, drift):  # noqa: F811
         base = {"model": "openai/org/m", "api_base": "http://m-epp.inference.svc.cluster.local:80/v1"}
         assert sync._params_drifted({**base, **current}, {**base, **desired}) is drift
+
+
+def _group_ingresses(path: str, group: str = "ai-platform") -> list:
+    with open(path, encoding="utf-8") as fh:
+        return [d for d in yaml.safe_load_all(fh) if d and d.get("kind") == "Ingress"
+                and d["metadata"].get("annotations", {}).get(ALB_GROUP) == group]
+
+
+def _alb_attributes(value: str) -> dict:
+    return dict(kv.strip().split("=", 1) for kv in value.split(",") if kv.strip())
+
+
+class TestLoadBalancerIdleTimeout:
+    """The ingresses of the group share one ALB. Its idle timeout (AWS default
+    60 s) closes a connection on which no byte moves, which is what a request
+    held by the router during a cold start looks like: the client got a 504
+    after a minute although the model was starting."""
+
+    @pytest.fixture(scope="class")
+    def attributes(self):
+        ings = _group_ingresses(INGRESS)
+        assert len(ings) == 3
+        values = {i["metadata"]["name"]: i["metadata"]["annotations"].get(ALB_ATTRIBUTES) for i in ings}
+        # an attribute with two values across the group stops the controller
+        assert None not in values.values() and len(set(values.values())) == 1, values
+        return next(iter(values.values()))
+
+    def test_idle_timeout_covers_the_longest_hold(self, attributes, rgd, sync):  # noqa: F811
+        longest_hold = int(re.search(r"maximum=(\d+)", rgd["spec"]["schema"]["spec"]["coldStartTimeoutSeconds"]).group(1))
+        idle = int(_alb_attributes(attributes)["idle_timeout.timeout_seconds"])
+        # LiteLLM waits for the hold plus the answer (litellm-sync sets that timeout)
+        assert idle >= longest_hold + sync.COLD_START_ANSWER_SEC
+        assert idle <= ALB_IDLE_TIMEOUT_MAX_SEC
+
+    def test_dashboard_ingress_does_not_set_another_value(self, attributes):
+        """It joins the same ALB from another file; no value is fine (the
+        controller merges the attributes of the group), a different one is not."""
+        dashboard = _group_ingresses(DASHBOARD)
+        assert len(dashboard) == 1
+        theirs = _alb_attributes(dashboard[0]["metadata"]["annotations"].get(ALB_ATTRIBUTES) or "")
+        ours = _alb_attributes(attributes)
+        assert {k: v for k, v in theirs.items() if k in ours and ours[k] != v} == {}
 
 
 # --------------------------------------------------------------------------- #
