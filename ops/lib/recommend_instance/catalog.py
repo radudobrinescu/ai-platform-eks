@@ -118,6 +118,8 @@ class Instance:
 #   H100  3350 GB/s (Hopper,  cc 9.0,  fp8 + bf16 + int4 OK)
 #   H200  4800 GB/s (Hopper,  cc 9.0,  fp8 + bf16 + int4 OK)
 #   B300  8000 GB/s (Blackwell Ultra, cc 10.0, native fp4/mxfp4 + fp8 + bf16)
+#   RTX PRO 4500 Server  800 GB/s GDDR7 (Blackwell, cc 12.0, fp4 + fp8 + bf16)
+#   RTX PRO 6000 Server 1597 GB/s GDDR7 (Blackwell, cc 12.0, fp4 + fp8 + bf16)
 INSTANCES: list[Instance] = [
     # g4dn — T4 (no NVLink, Turing — limited dtype support)
     Instance("g4dn.xlarge",   "T4",         1, 16,   4,  16,  0.526,
@@ -162,6 +164,37 @@ INSTANCES: list[Instance] = [
              hbm_bandwidth_tb_s=0.86, compute_capability="8.9", arch_family="Ada"),
     Instance("g6e.48xlarge",  "L40S",       8, 48, 192, 1536, 30.131,
              hbm_bandwidth_tb_s=0.86, compute_capability="8.9", arch_family="Ada"),
+
+    # g7 — RTX PRO 4500 Blackwell Server Edition, 32 GB GDDR7 (no NVLink;
+    # PCIe). Sizes and memory from EC2 DescribeInstanceTypes (32768 MiB/GPU),
+    # prices from the AWS Price List (us-east-1, 2026-11-26).
+    Instance("g7.2xlarge",    "RTX PRO 4500", 1, 32,   8,  32,  2.520,
+             hbm_bandwidth_tb_s=0.80, compute_capability="12.0", arch_family="Blackwell"),
+    Instance("g7.4xlarge",    "RTX PRO 4500", 1, 32,  16,  64,  3.042,
+             hbm_bandwidth_tb_s=0.80, compute_capability="12.0", arch_family="Blackwell"),
+    Instance("g7.8xlarge",    "RTX PRO 4500", 1, 32,  32, 128,  4.086,
+             hbm_bandwidth_tb_s=0.80, compute_capability="12.0", arch_family="Blackwell"),
+    Instance("g7.12xlarge",   "RTX PRO 4500", 2, 32,  48, 192,  7.128,
+             hbm_bandwidth_tb_s=0.80, compute_capability="12.0", arch_family="Blackwell"),
+    Instance("g7.24xlarge",   "RTX PRO 4500", 4, 32,  96, 384, 14.257,
+             hbm_bandwidth_tb_s=0.80, compute_capability="12.0", arch_family="Blackwell"),
+    Instance("g7.48xlarge",   "RTX PRO 4500", 8, 32, 192, 768, 28.513,
+             hbm_bandwidth_tb_s=0.80, compute_capability="12.0", arch_family="Blackwell"),
+
+    # g7e — RTX PRO 6000 Blackwell Server Edition, 96 GB GDDR7 (no NVLink;
+    # GPUDirect P2P over PCIe). EC2: 98304 MiB/GPU.
+    Instance("g7e.2xlarge",   "RTX PRO 6000", 1, 96,   8,   64,  3.363,
+             hbm_bandwidth_tb_s=1.60, compute_capability="12.0", arch_family="Blackwell"),
+    Instance("g7e.4xlarge",   "RTX PRO 6000", 1, 96,  16,  128,  3.998,
+             hbm_bandwidth_tb_s=1.60, compute_capability="12.0", arch_family="Blackwell"),
+    Instance("g7e.8xlarge",   "RTX PRO 6000", 1, 96,  32,  256,  5.268,
+             hbm_bandwidth_tb_s=1.60, compute_capability="12.0", arch_family="Blackwell"),
+    Instance("g7e.12xlarge",  "RTX PRO 6000", 2, 96,  48,  512,  8.286,
+             hbm_bandwidth_tb_s=1.60, compute_capability="12.0", arch_family="Blackwell"),
+    Instance("g7e.24xlarge",  "RTX PRO 6000", 4, 96,  96, 1024, 16.572,
+             hbm_bandwidth_tb_s=1.60, compute_capability="12.0", arch_family="Blackwell"),
+    Instance("g7e.48xlarge",  "RTX PRO 6000", 8, 96, 192, 2048, 33.144,
+             hbm_bandwidth_tb_s=1.60, compute_capability="12.0", arch_family="Blackwell"),
 
     # p4d / p4de — A100 (NVLink, Ampere)
     Instance("p4d.24xlarge",  "A100 40GB",  8, 40,  96, 1152, 32.773, has_nvlink=True,

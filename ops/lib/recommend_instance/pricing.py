@@ -39,7 +39,12 @@ def _pricing_cache_path(region: str) -> Path:
     return base / "ai-platform" / f"pricing-{region}.json"
 
 
-def _load_cached_prices(region: str) -> dict[str, float] | None:
+def _load_cached_prices(region: str, wanted: list[str] | None = None) -> dict[str, float] | None:
+    """Cached prices for `region`, or None when the cache is missing, older than
+    PRICING_CACHE_TTL_SEC, or did not look up every type in `wanted` (a type
+    added to the catalog after the cache was written would otherwise get the
+    static us-east-1 price in every region for up to 30 days). A type the
+    region does not offer was looked up and has no price; that is fine."""
     path = _pricing_cache_path(region)
     if not path.exists():
         return None
@@ -47,16 +52,19 @@ def _load_cached_prices(region: str) -> dict[str, float] | None:
         payload = json.loads(path.read_text())
         if time.time() - payload.get("timestamp", 0) > PRICING_CACHE_TTL_SEC:
             return None
+        if wanted is not None and not set(wanted) <= set(payload.get("queried") or []):
+            return None
         return {k: float(v) for k, v in payload.get("prices", {}).items()}
-    except (OSError, ValueError, KeyError):
+    except (OSError, ValueError, KeyError, TypeError):
         return None
 
 
-def _save_cached_prices(region: str, prices: dict[str, float]) -> None:
+def _save_cached_prices(region: str, prices: dict[str, float], queried: list[str] | None = None) -> None:
     path = _pricing_cache_path(region)
     try:
         path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_text(json.dumps({"timestamp": time.time(), "region": region, "prices": prices}))
+        path.write_text(json.dumps({"timestamp": time.time(), "region": region, "prices": prices,
+                                    "queried": sorted(queried if queried is not None else prices)}))
     except OSError:
         pass  # Non-fatal; we'll just refetch next time.
 
@@ -133,15 +141,15 @@ def fetch_prices_from_aws(region: str, instance_types: list[str],
 
 def resolve_prices(region: str, refresh: bool, verbose: bool) -> tuple[dict[str, float], str]:
     """Return (prices_by_instance_type, source_label)."""
+    instance_types = [i.name for i in INSTANCES]
     if not refresh:
-        cached = _load_cached_prices(region)
+        cached = _load_cached_prices(region, instance_types)
         if cached:
             return cached, f"cache ({region})"
 
-    instance_types = [i.name for i in INSTANCES]
     fetched = fetch_prices_from_aws(region, instance_types, verbose=verbose)
     if fetched:
-        _save_cached_prices(region, fetched)
+        _save_cached_prices(region, fetched, instance_types)
         return fetched, f"AWS Pricing API ({region})"
 
     # Fall back to the static catalog, flagging if the user asked for a
