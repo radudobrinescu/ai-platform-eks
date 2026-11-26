@@ -312,9 +312,10 @@ Scaffold that YAML with `./platformctl onboard-team <name> [--gpu N --budget USD
 --models a,b ...]` - it mirrors `new-model`: prints the manifest for review by
 default, and with `--deploy` writes it, commits, and pushes so ArgoCD applies it.
 The team then
-deploys models by committing a `VLLMEndpoint` under **`workloads/models/team-<name>/`**
-- the directory name is the target namespace, so models land in that team's quota
-and key (no `kubectl`, no console; removal is `git rm`). By default workloads live
+calls the models served from the shared `inference` namespace with its own key;
+`--models` limits which ones it may use. Serving a model inside a team's own
+namespace is **not supported in this release**: the serving pods need a service
+account and a ConfigMap that exist only in `inference`. By default workloads live
 in this repo; for real multi-team self-service point `gitops_workloads_repo_url` at
 a separate, tenant-owned repo so teams get write access to the workloads repo only,
 never the platform repo. See [`workloads/models/README.md`](workloads/models/README.md).

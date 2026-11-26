@@ -1,8 +1,8 @@
 # VLLMEndpoint Template — the simple default: one model, one vLLM pod.
-# Copy this file into a TARGET-NAMESPACE subdirectory and rename it to your model
-# name, e.g. workloads/models/inference/gemma-4b.yaml (platform-shared) or
-# workloads/models/team-search/gemma-4b.yaml (a team's namespace). The DIRECTORY
-# name is the namespace — do NOT set metadata.namespace here. Only 'model' is
+# Copy this file into workloads/models/inference/ and rename it to your model
+# name, e.g. workloads/models/inference/gemma-4b.yaml. The DIRECTORY name is the
+# namespace — do NOT set metadata.namespace here. (`inference` is the only
+# namespace that can serve models in this release; see README.md here.) Only 'model' is
 # required; everything else has sensible defaults. See workloads/models/README.md.
 #
 # After committing, ArgoCD syncs automatically. Track progress with:
