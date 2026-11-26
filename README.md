@@ -412,12 +412,15 @@ aws ec2 delete-snapshot --snapshot-id <id>
 When in doubt, the final state should match this:
 
 ```bash
-# Should return empty for the env you destroyed:
-aws eks list-clusters --query 'clusters[?contains(@, `<env>`)]'
-aws ec2 describe-vpcs --filters "Name=tag:Environment,Values=<env>" --query 'Vpcs[].VpcId'
-aws s3 ls | grep "<env>"
+# <cluster-name> is <resources_prefix>-<env>, for example ai-platform-dev.
+# Each should return nothing for the environment you destroyed:
+aws eks describe-cluster --name <cluster-name> --query cluster.status     # expect: ResourceNotFoundException
+aws ec2 describe-vpcs --filters "Name=tag:Name,Values=<cluster-name>" --query 'Vpcs[].VpcId'
+aws s3 ls | grep "<cluster-name>-"
 aws iam list-roles --query "Roles[?contains(RoleName, '<cluster-name>')].RoleName"
 ```
+The last two match by name, so they also list a sibling environment whose name
+starts the same way (`<cluster-name>2`); those are not leftovers.
 
 ---
 
