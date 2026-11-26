@@ -8,6 +8,12 @@ which marks the node as drifted, but Karpenter replaces a drifted node only
 after it initialized, and it keeps counting the node's capacity for the waiting
 pod. So the model stayed pending after the upgrade until the NodeClaim was
 deleted by hand.
+
+Seen again in the release test of 2026-11-26, after g7 was allowed again: the
+node of the old release (g7.4xlarge, never ready) was no longer drifted by its
+instance type, nothing removed it, and the upgrade waited 30 minutes for a model
+that could not start. A node that has not become ready long after it was
+created is stuck whether or not it is drifted.
 """
 import importlib.util
 import json
@@ -35,17 +41,31 @@ def claim(name, created, drifted="True", initialized="Unknown", deleting=False, 
     return {"metadata": meta, "status": {"conditions": conds}}
 
 
-def test_only_drifted_claims_that_never_initialized_and_are_old_enough():
+def test_only_claims_that_never_initialized_and_are_old_enough():
     items = [
         claim("stuck", "2026-11-19T04:31:54Z"),
         claim("booting", "2026-11-19T04:57:00Z"),                           # younger than the minimum age: may still come up
         claim("healthy-drifted", "2026-11-19T03:00:00Z", initialized="True"),  # Karpenter replaces it itself
-        claim("not-drifted", "2026-11-19T03:00:00Z", drifted=None),         # still allowed: not ours to judge
         claim("going", "2026-11-19T03:00:00Z", deleting=True),
     ]
     found = stuck_nodes.stuck({"items": items}, NOW)
     assert found == [("stuck", "g7.2xlarge", "gpu-shared")]
     assert stuck_nodes.stuck({"items": []}, NOW, 600) == [] and stuck_nodes.stuck({}, NOW, 600) == []
+
+
+def test_a_claim_that_is_not_drifted_is_given_longer_but_not_for_ever():
+    """Without drift there is no sign that the node belongs to the old release,
+    so it gets three times as long. After that it is stuck all the same: the
+    type may be allowed again while this node still cannot run anything."""
+    items = [
+        claim("old-release-node", "2026-11-19T03:00:00Z", drifted=None, family="g7.4xlarge"),   # two hours
+        claim("no-condition-yet", "2026-11-19T04:40:00Z", drifted="False"),                     # 20 minutes
+        claim("slow-boot", "2026-11-19T04:50:00Z", drifted=None),                               # 10 minutes: wait
+        claim("ready", "2026-11-19T03:00:00Z", drifted=None, initialized="True"),
+    ]
+    found = stuck_nodes.stuck({"items": items}, NOW)
+    assert found == [("old-release-node", "g7.4xlarge", "gpu-shared"), ("no-condition-yet", "g7.2xlarge", "gpu-shared")]
+    assert stuck_nodes.MIN_AGE_NOT_DRIFTED_SECONDS >= 3 * stuck_nodes.MIN_AGE_SECONDS
 
 
 def test_cli_reads_kubectl_json_and_prints_one_claim_per_line():

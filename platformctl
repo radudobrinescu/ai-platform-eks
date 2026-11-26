@@ -1280,19 +1280,20 @@ _upgrade_plan_and_guard() {
   return "$rc"
 }
 
-# A node that its pool no longer allows (drifted) and that never became ready is
-# not replaced by Karpenter: it disrupts a node only after it initialized, and
-# it counts the node's capacity for the pods that wait. Seen with a GPU instance
-# family the node image cannot drive: the release excludes the family, the node
-# stays, and the model waits for ever. Deleting the NodeClaim makes Karpenter
-# start a node the pool allows now. Nothing runs on such a node but daemons.
+# A node that never became ready is not replaced by Karpenter, drifted or not:
+# it disrupts a node only after it initialized, and it counts the node's
+# capacity for the pods that wait. Seen with a GPU node of the previous release
+# that never reported its GPU: the node stays, and the model waits for ever.
+# Deleting the NodeClaim makes Karpenter start a new node, which the new
+# release's GPU stack brings up. Nothing runs on such a node but daemons.
+# (5 minutes old when drifted, 15 when not; see ops/lib/stuck_nodes.py.)
 _upgrade_retire_stuck_nodes() {
   local env="$1" name kind pool
   kubectl --context "$env" get nodeclaims.karpenter.sh -o json 2>/dev/null \
     | python3 "${LIB_DIR}/stuck_nodes.py" 2>/dev/null \
     | while read -r name kind pool; do
         [ -n "$name" ] || continue
-        warn "node ${name} (${kind}, pool ${pool}) is no longer allowed by its pool and never became ready; removing it so Karpenter starts a replacement"
+        warn "node ${name} (${kind}, pool ${pool}) never became ready; removing it so Karpenter starts a replacement"
         kubectl --context "$env" delete nodeclaims.karpenter.sh "$name" --wait=false >/dev/null 2>&1 || true
       done || true
 }
