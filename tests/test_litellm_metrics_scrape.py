@@ -8,6 +8,9 @@ target was down, scale-up under load still worked, waking from zero could not).
 
 Turning the key off makes the endpoint open to whoever reaches the gateway, so
 the gateway's ingress answers /metrics itself instead of forwarding it.
+
+LiteLLM runs two replicas and a counter lives in one process, so Prometheus
+scrapes each pod (through a headless Service), not the ClusterIP Service.
 """
 import hashlib
 import pathlib
@@ -90,13 +93,55 @@ def test_a_config_change_without_a_new_revision_is_caught():
         raise AssertionError("a changed setting passed with the old revision")
 
 
-def test_prometheus_scrapes_the_litellm_service():
+def _litellm_scrape_job():
     cm = next(d for d in _docs("platform/config/autoscaling-prometheus.yaml") if d["kind"] == "ConfigMap")
     prom = yaml.safe_load(next(iter(cm["data"].values())))
-    job = next(j for j in prom["scrape_configs"] if j["job_name"] == "litellm")
+    return next(j for j in prom["scrape_configs"] if j["job_name"] == "litellm")
+
+
+def _litellm_services():
+    docs = _docs("platform/services/litellm/litellm.yaml")
+    deploy = next(d for d in docs if d["kind"] == "Deployment" and d["metadata"]["name"] == "litellm")
+    pod_labels = deploy["spec"]["template"]["metadata"]["labels"]
+    services = [d for d in docs if d["kind"] == "Service" and d["spec"].get("selector") == pod_labels]
+    return deploy, services
+
+
+def test_prometheus_scrapes_every_litellm_pod():
+    """A counter lives in one LiteLLM process and the gateway runs more than one
+    replica. Scraped through the ClusterIP Service, one series took its samples
+    from whichever replica answered: rate() read each drop as a counter reset
+    and reported requests that never came (an idle scale-to-zero pool stayed
+    awake), and counted only part of the real ones. Each pod is its own target,
+    found through a headless Service (one DNS A record per ready pod)."""
+    deploy, services = _litellm_services()
+    assert deploy["spec"]["replicas"] > 1, "with one replica the Service would do"
+    headless = [s for s in services if s["spec"].get("clusterIP") == "None"]
+    assert len(headless) == 1, "one headless Service over the LiteLLM pods"
+    svc = headless[0]
+    assert svc["metadata"]["name"] != "litellm"
+    assert svc["metadata"]["namespace"] == deploy["metadata"]["namespace"]
+    assert [p["port"] for p in svc["spec"]["ports"]] == [4000]
+    # only ready pods get a record (the default)
+    assert "publishNotReadyAddresses" not in svc["spec"]
+    # nothing selects Services by label; keep it that way for this one
+    assert not svc["metadata"].get("labels")
+
+    job = _litellm_scrape_job()
     assert job["metrics_path"] == "/metrics"
-    assert job["static_configs"][0]["targets"] == ["litellm.ai-platform.svc.cluster.local:4000"]
+    assert "static_configs" not in job and "kubernetes_sd_configs" not in job
+    name = f'{svc["metadata"]["name"]}.{svc["metadata"]["namespace"]}.svc.cluster.local'
+    assert job["dns_sd_configs"] == [{"names": [name], "type": "A", "port": 4000}]
+    assert "litellm.ai-platform.svc.cluster.local" not in json.dumps(job), "the ClusterIP Service is not a target"
     assert "authorization" not in job and "bearer_token" not in job
+
+
+def test_the_gateway_service_is_unchanged():
+    """The ingress, the tunnel and every client use the ClusterIP Service."""
+    _deploy, services = _litellm_services()
+    gateway = next(s for s in services if s["metadata"]["name"] == "litellm")
+    assert gateway["spec"]["type"] == "ClusterIP" and "clusterIP" not in gateway["spec"]
+    assert gateway["spec"]["ports"] == [{"port": 4000, "targetPort": 4000, "name": "http"}]
 
 
 def test_the_gateway_ingress_does_not_forward_metrics():

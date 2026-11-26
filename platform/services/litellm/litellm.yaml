@@ -354,6 +354,26 @@ spec:
       targetPort: 4000
       name: http
 ---
+# Headless twin of the Service above, for metrics only. Its DNS name answers
+# one A record per ready LiteLLM pod, so the autoscaling Prometheus
+# (platform/config/autoscaling-prometheus.yaml) scrapes each replica as its own
+# target: a counter lives in one process, and through the ClusterIP Service one
+# series took its samples from whichever replica answered. Clients, the ingress
+# and the tunnel keep using `litellm`.
+apiVersion: v1
+kind: Service
+metadata:
+  name: litellm-metrics
+  namespace: ai-platform
+spec:
+  clusterIP: None
+  selector:
+    app: litellm
+  ports:
+    - port: 4000
+      targetPort: 4000
+      name: http
+---
 # Init script: creates additional databases on first PostgreSQL boot.
 # Runs via docker-entrypoint-initdb.d (only on empty data directory).
 apiVersion: v1

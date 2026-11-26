@@ -54,6 +54,7 @@ schedulingProfiles:
 # the scrape config needs a new revision: add a line here, never edit one.
 PROMETHEUS_CONFIG_REVISIONS = {
     "1": "9c95428e157b94c7e306fd4dcdc2bc6aeee078d7e745e08976973d3802b7256a",   # router (llmd-epp) job added
+    "2": "731b245631d7ebe1bff5017a9548f9a7be6bc5457a32b12390bf5b9f79604915",   # every LiteLLM pod is a target
 }
 
 FLOW_CONTROL_RX = re.compile(
