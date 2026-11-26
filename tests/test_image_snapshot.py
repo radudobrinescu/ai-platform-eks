@@ -148,7 +148,11 @@ echo "aws $*" >> "$CALLS"
 case "$*" in
   *"sts get-caller-identity"*) echo 111122223333 ;;
   *"describe-snapshots"*"--snapshot-ids"*) echo "${SNAPSHOT_STATE:-pending}" ;;
-  *"describe-snapshots"*) echo None ;;
+  # OTHER_BUILD_DONE_AFTER=N: from lookup N+1 on, another cluster's build of the
+  # same image has completed.
+  *"describe-snapshots"*)
+    n=$(grep -c "describe-snapshots.*tag:Images" "$CALLS")
+    if [ -n "${OTHER_BUILD_DONE_AFTER:-}" ] && [ "$n" -gt "$OTHER_BUILD_DONE_AFTER" ]; then echo snap-0c0de; else echo None; fi ;;
   *"describe-subnets"*) echo subnet-1 ;;
   *"describe-cluster"*"clusterSecurityGroupId"*) echo sg-1 ;;
   *"describe-cluster"*"cluster.version"*) echo 1.37 ;;
@@ -207,6 +211,7 @@ case "$*" in
   *"apply -f -"*)
     cat >> "$CALLS"
     if [ -n "${APPLY_FAILS:-}" ]; then echo "Error from server (Forbidden): pods is forbidden" >&2; exit 1; fi ;;
+  *"get ec2nodeclass"*"deviceName"*) printf '/dev/xvda\n/dev/xvdb\n' ;;
   *"wait --for=jsonpath"*)
     if [ -n "${PULL_HANGS:-}" ]; then sleep "$PULL_HANGS"; fi
     if [ -n "${PULL_FAILS:-}" ]; then echo "error: timed out waiting for the condition on pods/snapshot-puller-0" >&2; exit 1; fi ;;
@@ -575,3 +580,26 @@ def test_a_snapshot_that_failed_is_deleted(tmp_path):
     assert "snap-0bead" in r.stderr and "failed" in r.stderr
     assert "delete-snapshot --snapshot-id snap-0bead" in calls
     assert TERMINATE in calls
+
+
+# --- Two clusters building the same image at once -----------------------------
+
+def test_a_snapshot_completed_by_another_build_is_used_instead_of_a_second_one(tmp_path):
+    # Both found nothing, both built: two snapshots with the same lookup tags.
+    r, calls = _build(tmp_path, args=("--reuse", "--patch-nodeclasses", "gpu-inference", IMAGE),
+                      OTHER_BUILD_DONE_AFTER="1")
+    assert r.returncode == 0, r.stdout + r.stderr
+    assert "create-snapshot" not in calls
+    assert TERMINATE in calls
+    assert r.stdout.strip().splitlines()[-1] == "snap-0c0de"
+    patches = [line for line in calls.splitlines() if "patch ec2nodeclass" in line]
+    assert len(patches) == 1 and '"value":"snap-0c0de"' in patches[0]
+    # The second lookup is the last thing before the snapshot would be created.
+    assert calls.rindex("describe-snapshots") > calls.index("wait instance-stopped")
+
+
+def test_without_reuse_a_new_snapshot_is_always_made(tmp_path):
+    r, calls = _build(tmp_path, args=(IMAGE,), OTHER_BUILD_DONE_AFTER="0")
+    assert r.returncode == 0, r.stdout + r.stderr
+    assert "create-snapshot" in calls and "tag:Images" not in calls.replace("Key=Images", "")
+    assert "Snapshot ID:  snap-0bead" in r.stdout

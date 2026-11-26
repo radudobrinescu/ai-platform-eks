@@ -332,13 +332,18 @@ if [[ -n "$PATCH_NODECLASSES" ]]; then
   use_cluster_kubeconfig
 fi
 
-if [[ "$REUSE" == "true" ]]; then
-  EXISTING=$(aws ec2 describe-snapshots --region "$REGION" --owner-ids self \
+# The newest completed snapshot of these images at this volume size, if any.
+find_snapshot() {
+  aws ec2 describe-snapshots --region "$REGION" --owner-ids self \
     --filters "Name=tag:Purpose,Values=bottlerocket-data-volume" \
               "Name=tag:Images,Values=${IMAGE_LIST_TAG}" \
               "Name=volume-size,Values=${VOLUME_SIZE}" \
               "Name=status,Values=completed" \
-    --query "reverse(sort_by(Snapshots, &StartTime))[0].SnapshotId" --output text 2>/dev/null || true)
+    --query "reverse(sort_by(Snapshots, &StartTime))[0].SnapshotId" --output text 2>/dev/null || true
+}
+
+if [[ "$REUSE" == "true" ]]; then
+  EXISTING=$(find_snapshot)
   if [[ "$EXISTING" =~ ^snap-[0-9a-f]+$ ]]; then
     echo "→ Reusing snapshot $EXISTING (already holds: ${IMAGE_LIST_TAG})"
     patch_nodeclasses "$EXISTING"
@@ -627,6 +632,21 @@ VOLUME_ID=$(aws ec2 describe-instances --instance-ids "$INSTANCE_ID" --region "$
 if [[ -z "$VOLUME_ID" || "$VOLUME_ID" == "None" ]]; then
   echo "Error: could not find /dev/xvdb volume on instance $INSTANCE_ID" >&2
   exit 1
+fi
+
+# Two clusters applying at the same time both find no snapshot and both build.
+# Look once more now: if the other build has completed, use its snapshot rather
+# than leave two with the same lookup tags.
+if [[ "$REUSE" == "true" ]]; then
+  EXISTING=$(find_snapshot)
+  if [[ "$EXISTING" =~ ^snap-[0-9a-f]+$ ]]; then
+    echo "  Another build of ${IMAGE_LIST_TAG} completed meanwhile:"
+    echo "  using its snapshot $EXISTING, not creating a second one."
+    release_builder || exit 1
+    patch_nodeclasses "$EXISTING"
+    echo "$EXISTING"
+    exit 0
+  fi
 fi
 
 TIMESTAMP=$(date -u +%Y%m%d-%H%M%S)
