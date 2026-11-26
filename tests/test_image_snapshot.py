@@ -147,6 +147,7 @@ echo "aws $*" >> "$CALLS"
 """ + AWS_UPDATE_KUBECONFIG + r"""
 case "$*" in
   *"sts get-caller-identity"*) echo 111122223333 ;;
+  *"describe-snapshots"*"--snapshot-ids"*) echo "${SNAPSHOT_STATE:-pending}" ;;
   *"describe-snapshots"*) echo None ;;
   *"describe-subnets"*) echo subnet-1 ;;
   *"describe-cluster"*"clusterSecurityGroupId"*) echo sg-1 ;;
@@ -175,7 +176,16 @@ case "$*" in
       echo "An error occurred (UnauthorizedOperation) when calling the TerminateInstances operation" >&2
       exit 254
     fi ;;
-  *"create-snapshot"*) echo snap-0new ;;
+  *"stop-instances"*)
+    if [ -n "${STOP_FAILS:-}" ]; then echo "An error occurred (IncorrectInstanceState)" >&2; exit 254; fi ;;
+  *"create-snapshot"*) echo snap-0bead ;;
+  # The real waiter gives up after 40 checks, 15 s apart (10 minutes).
+  *"wait snapshot-completed"*)
+    n=$(grep -c "wait snapshot-completed" "$CALLS")
+    if [ "$n" -le "${SNAPSHOT_WAIT_FAILS:-0}" ]; then
+      echo "Waiter SnapshotCompleted failed: Max attempts exceeded" >&2
+      exit 255
+    fi ;;
 esac
 """
 
@@ -192,7 +202,11 @@ fi
 case "$*" in
   # name <tab> providerID, one builder node per line (NODES overrides).
   *"get nodes"*) printf '%b' "${NODES:-node-1\\taws:///eu-central-1a/i-0abc\\n}" ;;
-  *"apply -f -"*) cat >> "$CALLS" ;;
+  *"wait --for=condition=Ready"*)
+    if [ -n "${NODE_NOT_READY:-}" ]; then echo "error: timed out waiting for the condition on nodes/node-1" >&2; exit 1; fi ;;
+  *"apply -f -"*)
+    cat >> "$CALLS"
+    if [ -n "${APPLY_FAILS:-}" ]; then echo "Error from server (Forbidden): pods is forbidden" >&2; exit 1; fi ;;
   *"wait --for=jsonpath"*)
     if [ -n "${PULL_HANGS:-}" ]; then sleep "$PULL_HANGS"; fi
     if [ -n "${PULL_FAILS:-}" ]; then echo "error: timed out waiting for the condition on pods/snapshot-puller-0" >&2; exit 1; fi ;;
@@ -231,7 +245,7 @@ def test_builder_launch_waits_for_a_new_instance_profile(tmp_path):
     r, calls = _build(tmp_path, PROFILE_ERRORS="2")
     assert r.returncode == 0, r.stdout + r.stderr
     assert calls.count("run-instances") == 3
-    assert "Snapshot ID:  snap-0new" in r.stdout
+    assert "Snapshot ID:  snap-0bead" in r.stdout
     assert "terminate-instances --instance-ids i-0abc" in calls   # the builder never outlives the script
     assert "Key=Images,Value=docker.io/vllm/vllm-openai:v0.33.0" in calls
 
@@ -248,7 +262,7 @@ def test_builder_waits_for_karpenter_to_create_the_instance_profile(tmp_path):
     r, calls = _build(tmp_path, PROFILE_MISSING="2")
     assert r.returncode == 0, r.stdout + r.stderr
     assert calls.count("list-instance-profiles-for-role") == 3
-    assert "Snapshot ID:  snap-0new" in r.stdout
+    assert "Snapshot ID:  snap-0bead" in r.stdout
 
 
 # --- The builder never outlives the script -----------------------------------
@@ -287,7 +301,7 @@ def test_a_warning_on_a_successful_launch_does_not_lose_the_instance(tmp_path):
     r, calls = _build(tmp_path, LAUNCH_WARNING="Warning: the CLI will drop this option soon")
     assert TERMINATE in calls, r.stdout + r.stderr
     assert r.returncode == 0, r.stdout + r.stderr
-    assert "Snapshot ID:  snap-0new" in r.stdout
+    assert "Snapshot ID:  snap-0bead" in r.stdout
     assert "the CLI will drop this option soon" in r.stderr   # still shown
 
 
@@ -496,3 +510,68 @@ def test_nothing_left_to_bake_fails_without_building(tmp_path):
     assert r.returncode == 1
     assert "nothing to bake" in r.stderr
     assert "run-instances" not in calls and "describe-snapshots" not in calls
+
+
+# --- No silent exits; the snapshot wait matches what the script says ----------
+
+def test_a_node_that_never_becomes_ready_is_reported(tmp_path):
+    # `kubectl wait ... 2>/dev/null` under `set -e`: the script just stopped.
+    r, calls = _build(tmp_path, NODE_NOT_READY="1")
+    assert r.returncode == 1
+    assert "node-1" in r.stderr and "did not become Ready within 120 seconds" in r.stderr
+    assert "create-snapshot" not in calls and TERMINATE in calls
+
+
+def test_a_puller_pod_that_cannot_be_created_is_reported(tmp_path):
+    r, calls = _build(tmp_path, APPLY_FAILS="1")
+    assert r.returncode == 1
+    assert "could not create the puller pod" in r.stderr and IMAGE in r.stderr
+    assert "create-snapshot" not in calls and TERMINATE in calls
+
+
+def test_an_instance_that_does_not_stop_is_reported(tmp_path):
+    r, calls = _build(tmp_path, STOP_FAILS="1")
+    assert r.returncode == 1
+    assert "could not stop builder instance i-0abc" in r.stderr
+    assert "create-snapshot" not in calls and TERMINATE in calls
+
+
+def test_no_cluster_name_is_reported(tmp_path):
+    # Without -n the name comes from the kubectl context; with no usable
+    # kubectl the script ended without a word.
+    e, calls = _build_env(tmp_path, UNREACHABLE="1")
+    r = subprocess.run(["bash", SCRIPT, "-r", "eu-central-1", IMAGE], capture_output=True, text=True, env=e, timeout=30)
+    assert r.returncode == 1 and "Pass -n" in r.stderr
+    assert "aws" not in calls.read_text()
+
+
+def test_snapshot_wait_outlasts_one_waiter_timeout(tmp_path):
+    # `aws ec2 wait snapshot-completed` gives up after 10 minutes; the script
+    # said "2-5 min" and died there, leaving a snapshot that completed later.
+    r, calls = _build(tmp_path, SNAPSHOT_WAIT_FAILS="2")
+    assert r.returncode == 0, r.stdout + r.stderr
+    assert calls.count("wait snapshot-completed") == 3
+    assert "Snapshot ID:  snap-0bead" in r.stdout
+    assert "2-5 min" not in r.stdout
+    assert "waiting up to 40 min" in r.stdout
+
+
+def test_a_snapshot_still_pending_after_the_bounded_wait_is_left_to_complete(tmp_path):
+    r, calls = _build(tmp_path, args=("--reuse", "--patch-nodeclasses", "gpu-inference", IMAGE),
+                      SNAPSHOT_WAIT_FAILS="99", SNAPSHOT_WAIT_ROUNDS="3")
+    assert r.returncode == 1
+    assert calls.count("wait snapshot-completed") == 3   # bounded
+    assert "snap-0bead" in r.stderr and "30 minutes" in r.stderr
+    assert "next apply" in r.stderr
+    assert "delete-snapshot" not in calls                # it will complete
+    assert "patch ec2nodeclass" not in calls             # not usable yet
+    assert TERMINATE in calls
+
+
+def test_a_snapshot_that_failed_is_deleted(tmp_path):
+    r, calls = _build(tmp_path, SNAPSHOT_WAIT_FAILS="99", SNAPSHOT_WAIT_ROUNDS="2", SNAPSHOT_STATE="error")
+    assert r.returncode == 1
+    assert calls.count("wait snapshot-completed") == 1   # no point waiting on a failed one
+    assert "snap-0bead" in r.stderr and "failed" in r.stderr
+    assert "delete-snapshot --snapshot-id snap-0bead" in calls
+    assert TERMINATE in calls

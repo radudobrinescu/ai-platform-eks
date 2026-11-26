@@ -517,7 +517,10 @@ if [[ -z "$NODE_NAME" ]]; then
 fi
 echo "  Node: $NODE_NAME"
 
-kubectl wait --for=condition=Ready "node/$NODE_NAME" --timeout=120s 2>/dev/null
+if ! kubectl wait --for=condition=Ready "node/$NODE_NAME" --timeout=120s; then
+  echo "Error: builder node $NODE_NAME (instance $INSTANCE_ID) did not become Ready within 120 seconds." >&2
+  exit 1
+fi
 echo "  ✓ Node ready"
 
 # --- Pull images by scheduling pods on the builder node -----------------------
@@ -530,7 +533,7 @@ for i in "${!FULL_IMAGES[@]}"; do
   pod_name="snapshot-puller-${i}"
   echo "  [$((i+1))/${#FULL_IMAGES[@]}] $img"
 
-  kubectl apply -f - <<EOF
+  if ! kubectl apply -f - <<EOF
 apiVersion: v1
 kind: Pod
 metadata:
@@ -556,6 +559,10 @@ spec:
           memory: "128Mi"
   restartPolicy: Never
 EOF
+  then
+    echo "Error: could not create the puller pod for $img on node $NODE_NAME." >&2
+    exit 1
+  fi
 done
 
 # Wait for all puller pods to complete (indicates images are pulled)
@@ -590,15 +597,26 @@ if [[ "$ALL_PULLED" != "true" ]]; then
 fi
 
 # --- Clean up pods and stop instance ------------------------------------------
+# The images are on the volume by now: a failure to tidy the cluster here is
+# reported and does not stop the build (the cleanup at exit tries again).
 echo "→ Cleaning up puller pods..."
-kubectl delete pods -n kube-system -l app=snapshot-puller --ignore-not-found 2>/dev/null
+kubectl delete pods -n kube-system -l app=snapshot-puller --ignore-not-found --timeout=60s \
+  || echo "  ⚠ could not delete the puller pods yet" >&2
 
 echo "→ Removing builder node from cluster..."
-kubectl delete node "$NODE_NAME" --ignore-not-found 2>/dev/null
+kubectl delete node "$NODE_NAME" --ignore-not-found --timeout=60s \
+  || echo "  ⚠ could not delete node $NODE_NAME yet" >&2
 
 echo "→ Stopping instance (flushing writes to EBS)..."
-aws ec2 stop-instances --instance-ids "$INSTANCE_ID" --region "$REGION" > /dev/null
-aws ec2 wait instance-stopped --instance-ids "$INSTANCE_ID" --region "$REGION"
+if ! aws ec2 stop-instances --instance-ids "$INSTANCE_ID" --region "$REGION" > /dev/null; then
+  echo "Error: could not stop builder instance $INSTANCE_ID." >&2
+  exit 1
+fi
+# This waiter checks every 15 s, 40 times.
+if ! aws ec2 wait instance-stopped --instance-ids "$INSTANCE_ID" --region "$REGION"; then
+  echo "Error: builder instance $INSTANCE_ID did not reach the stopped state within 10 minutes." >&2
+  exit 1
+fi
 echo "  ✓ Instance stopped"
 
 # --- Create snapshot ----------------------------------------------------------
@@ -633,9 +651,40 @@ SNAPSHOT_ID=$(aws ec2 create-snapshot --region "$REGION" \
   ]" \
   --query "SnapshotId" --output text)
 
+if [[ ! "$SNAPSHOT_ID" =~ ^snap-[0-9a-f]+$ ]]; then
+  echo "Error: create-snapshot returned no snapshot id ('${SNAPSHOT_ID}')." >&2
+  exit 1
+fi
 echo "  Snapshot: $SNAPSHOT_ID"
-echo "→ Waiting for snapshot to complete (2-5 min for 200 GiB volume)..."
-aws ec2 wait snapshot-completed --snapshot-ids "$SNAPSHOT_ID" --region "$REGION"
+
+# `aws ec2 wait snapshot-completed` gives up after 40 checks, 15 s apart: 10
+# minutes. A first snapshot of a volume can take longer, so wait a few rounds.
+SNAPSHOT_WAIT_ROUNDS="${SNAPSHOT_WAIT_ROUNDS:-4}"
+echo "→ Waiting for snapshot to complete (typically a few minutes; waiting up to $(( SNAPSHOT_WAIT_ROUNDS * 10 )) min)..."
+SNAP_STATE=""
+for round in $(seq 1 "$SNAPSHOT_WAIT_ROUNDS"); do
+  if aws ec2 wait snapshot-completed --snapshot-ids "$SNAPSHOT_ID" --region "$REGION" 2>"$WORK_DIR/wait.err"; then
+    SNAP_STATE="completed"
+    break
+  fi
+  SNAP_STATE=$(aws ec2 describe-snapshots --snapshot-ids "$SNAPSHOT_ID" --region "$REGION" \
+    --query "Snapshots[0].State" --output text 2>/dev/null || true)
+  if [[ "$SNAP_STATE" == "completed" || "$SNAP_STATE" == "error" ]]; then break; fi
+  echo "  not complete yet (state: ${SNAP_STATE:-unknown}; wait ${round} of ${SNAPSHOT_WAIT_ROUNDS})"
+done
+if [[ "$SNAP_STATE" == "error" ]]; then
+  echo "Error: snapshot $SNAPSHOT_ID failed (state: error). Deleting it; the next run builds a new one." >&2
+  aws ec2 delete-snapshot --snapshot-id "$SNAPSHOT_ID" --region "$REGION" >/dev/null \
+    || echo "  ⚠ not deleted. By hand: aws ec2 delete-snapshot --snapshot-id $SNAPSHOT_ID --region $REGION" >&2
+  exit 1
+fi
+if [[ "$SNAP_STATE" != "completed" ]]; then
+  echo "Error: snapshot $SNAPSHOT_ID is not complete after $(( SNAPSHOT_WAIT_ROUNDS * 10 )) minutes (state: ${SNAP_STATE:-unknown})." >&2
+  sed 's/^/  /' "$WORK_DIR/wait.err" >&2
+  echo "  It is left to complete. Once it has, the next apply finds it by its tags" >&2
+  echo "  (as does this script with --reuse); nothing else is needed." >&2
+  exit 1
+fi
 echo "  ✓ Snapshot ready"
 
 # The builder is no longer needed: terminate it now rather than at exit. (The
