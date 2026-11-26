@@ -23,7 +23,12 @@ locals {
   # account using the same prefix/env (BucketAlreadyExists, 409). The account ID
   # makes the name unique per account. Used for a new bucket only: an existing
   # bucket keeps the name it was created with (see aws_s3_bucket.model_cache).
-  model_cache_bucket            = "${local.cluster_name}-${data.aws_caller_identity.current.account_id}-model-cache"
+  model_cache_bucket = "${local.cluster_name}-${data.aws_caller_identity.current.account_id}-model-cache"
+  # This account's private ECR registry. The DNS suffix differs by partition
+  # (amazonaws.com, amazonaws.com.cn, amazonaws.eu in the European Sovereign
+  # Cloud), so it is never written out.
+  ecr_registry = "${data.aws_caller_identity.current.account_id}.dkr.ecr.${local.region}.${data.aws_partition.current.dns_suffix}"
+
   inference_worker_sa_namespace = "inference"
   inference_worker_sa_name      = "inference-worker"
 

@@ -222,6 +222,16 @@ cleanup() {
 trap cleanup EXIT
 
 ACCOUNT=$(aws sts get-caller-identity --query Account --output text)
+
+# DNS suffix of an ECR registry host in the region's partition: China and the
+# AWS European Sovereign Cloud do not use amazonaws.com.
+ecr_dns_suffix() {
+  case "$1" in
+    cn-*)   echo "amazonaws.com.cn" ;;
+    eusc-*) echo "amazonaws.eu" ;;
+    *)      echo "amazonaws.com" ;;
+  esac
+}
 if [[ -z "$ACCOUNT" || "$ACCOUNT" == "None" ]]; then
   echo "Error: failed to get AWS account ID. Check credentials and IAM permissions." >&2
   exit 1
@@ -244,7 +254,7 @@ for img in "${IMAGES[@]}"; do
   # A first path component with a dot, a colon or "localhost" is a registry host.
   first="${img%%/*}"
   if [[ "$img" != */* || ( "$first" != *.* && "$first" != *:* && "$first" != "localhost" ) ]]; then
-    img="${ACCOUNT}.dkr.ecr.${REGION}.amazonaws.com/docker-hub/${img}"
+    img="${ACCOUNT}.dkr.ecr.${REGION}.$(ecr_dns_suffix "$REGION")/docker-hub/${img}"
   fi
   # For private-ECR images (not the pull-through cache), verify the tag exists.
   if [[ "$img" == *".dkr.ecr."* && "$img" != *"/docker-hub/"* ]]; then

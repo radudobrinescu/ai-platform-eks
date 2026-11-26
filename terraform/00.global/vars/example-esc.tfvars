@@ -90,8 +90,11 @@ gitops_revision = "main"
 # pinning turns the automatic build off, also for later vLLM versions.
 # gpu_data_volume_snapshot_id = "snap-0123456789abcdef0"
 # The build needs kubectl on this host and is retried at each apply until it
-# succeeds. To turn it off (GPU nodes then pull the image at start):
-# gpu_image_snapshot = false
+# succeeds. It has not been run in the European Sovereign Cloud (it depends on
+# the Bottlerocket image parameter and on c5.xlarge being offered there), so it
+# is off in this example: GPU nodes pull the image at start, as before. Set it
+# to true to try it; a failed build does not fail the install.
+gpu_image_snapshot = false
 
 # EC2 Capacity Blocks / Capacity Reservations (optional) — frontier GPU capacity.
 # Instances like p6-b300.48xlarge (8x B300 — what trillion-param-class models such
