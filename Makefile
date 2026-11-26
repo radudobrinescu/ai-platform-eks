@@ -15,6 +15,7 @@ SHELL := bash
 
 # Python packages/modules that ship in the repo (not an installed package).
 PY_DIRS := ops/lib \
+           ops/demos \
            platform/services/cluster-dashboard/scripts \
            platform/services/litellm-sync/scripts
 
