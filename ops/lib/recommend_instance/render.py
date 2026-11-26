@@ -587,10 +587,10 @@ def print_human(
 
         print(f"\n{C.BOLD}Alternatives{C.RESET} "
               f"{C.DIM}(--verbose for full table){C.RESET}\n")
-        header = (f"  {'INSTANCE':<15} {'GPU':<9} {'STRATEGY':<10} "
+        header = (f"  {'INSTANCE':<15} {'GPU':<12} {'STRATEGY':<10} "
                   f"{'VRAM':<12} {'TOK/S':>6}  {'$/HR':>7}  {'MONTHLY':>9}  NOTE")
         print(f"{C.DIM}{header}{C.RESET}")
-        print(f"{C.DIM}  {'-'*15} {'-'*9} {'-'*10} "
+        print(f"{C.DIM}  {'-'*15} {'-'*12} {'-'*10} "
               f"{'-'*12} {'-'*6}  {'-'*7}  {'-'*9}  {'-'*10}{C.RESET}")
 
         for o in within_budget[:display_limit]:
@@ -644,7 +644,7 @@ def _print_table_row(o: Option, C: type, over: bool, users: int = 1) -> None:
         note_parts.append(f"{C.DIM}out-of-cluster{C.RESET}")
     note = " · ".join(note_parts) if note_parts else ""
 
-    print(f"  {o.instance.name:<15} {o.instance.gpu:<9} {strategy:<10} "
+    print(f"  {o.instance.name:<15} {o.instance.gpu:<12} {strategy:<10} "
           f"{usage:<12} {tok_s:>6}  {price:>7}  {month:>9}  {note}")
 
 
@@ -831,11 +831,11 @@ def _print_scaling_section(
         print(f"\n  {C.BOLD}Fleet alternatives{C.RESET} "
               f"(sorted by total fleet cost; ⚠ = SLO unmet; "
               f"{C.DIM}duplicates by GPU+strategy hidden{C.RESET})\n")
-        header = (f"    {'INSTANCE':<15} {'GPU':<9} {'STRATEGY':<10} "
+        header = (f"    {'INSTANCE':<15} {'GPU':<12} {'STRATEGY':<10} "
                   f"{'CONC/INST':>9}  {'REPLICAS':>8}  {'TOK/S':>6}  "
                   f"{'FLEET $/HR':>10}  {'FLEET/MO':>9}  {'NODEPOOL':<14}")
         print(f"{C.DIM}{header}{C.RESET}")
-        print(f"{C.DIM}    {'-'*15} {'-'*9} {'-'*10} "
+        print(f"{C.DIM}    {'-'*15} {'-'*12} {'-'*10} "
               f"{'-'*9}  {'-'*8}  {'-'*6}  {'-'*10}  {'-'*9}  {'-'*14}{C.RESET}")
 
         for s in deduped_scaling[: args.limit]:
@@ -848,7 +848,7 @@ def _print_scaling_section(
             if s.option.quant_warning:
                 suffix = f" {C.YELLOW}⚠ quant{C.RESET}"
             print(f"  {tone}{marker}{s.option.instance.name:<15} "
-                  f"{s.option.instance.gpu:<9} {s_strat:<10} "
+                  f"{s.option.instance.gpu:<12} {s_strat:<10} "
                   f"{s.effective_capacity:>9}  {s.replicas:>8}  "
                   f"{tok_s_str:>6}  "
                   f"${s.fleet_cost_usd_h:>9.2f}  "
