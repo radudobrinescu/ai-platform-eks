@@ -9,7 +9,7 @@ output "cluster_name" {
 }
 
 output "argocd_url" {
-  description = "ArgoCD UI URL (login with Identity Center)"
+  description = "ArgoCD UI URL of the EKS managed ArgoCD capability (login with Identity Center). Null when ArgoCD is self-managed (cluster_config.capabilities.eks_capabilities = false)."
   value       = try(aws_eks_capability.argocd[0].configuration[0].argo_cd[0].server_url, null)
 }
 
@@ -51,7 +51,7 @@ output "langfuse_admin_email" {
 }
 
 output "langfuse_admin_password" {
-  description = "Password for the Langfuse admin user (generated). Sign in at the langfuse_nextauth_url."
+  description = "Password for the Langfuse admin user (generated). Sign in to the Langfuse UI with the langfuse_admin_email output: through `./platformctl tunnel` (http://localhost:3000) or, with the CloudFront edge enabled, at the langfuse URL in the edge_cloudfront_urls output."
   value       = local.capabilities.gitops ? random_password.langfuse_init_user[0].result : null
   sensitive   = true
 }

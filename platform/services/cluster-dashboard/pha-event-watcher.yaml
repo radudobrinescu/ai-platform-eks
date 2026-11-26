@@ -4,9 +4,10 @@
 # Investigator Jobs. Single replica (informers + DB writes; no need
 # for HA yet — recovery is automatic via reconnect logic).
 #
-# Image strategy: python:3.12-slim base + initContainer that installs
-# python-kubernetes + psycopg into an emptyDir shared with the main
-# container. No custom image, matches cluster-dashboard pattern.
+# Image strategy: the python -slim base (the `image:` lines below) +
+# initContainer that installs python-kubernetes + psycopg into an emptyDir
+# shared with the main container. No custom image, matches cluster-dashboard
+# pattern.
 ---
 apiVersion: apps/v1
 kind: Deployment

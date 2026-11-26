@@ -1,7 +1,8 @@
 """What this repository ships is the product, and only the product.
 
 The tree is published as it is. It must not name the tooling or the private
-repository that maintain it, and must not carry an AWS account id. Checked on
+repository that maintain it, and must not carry an AWS account id or an
+internal hostname. Checked on
 every tracked text file, so a stray comment fails here and not in public.
 """
 
@@ -16,6 +17,7 @@ FORBIDDEN = {
     "update tooling": re.compile(r"renovate", re.I),
     "private repository": re.compile(r"radudobrinescu|ai-platform-eks\b", re.I),
     "AWS account id": re.compile(r"(?<![0-9A-Za-z_.-])[0-9]{12}(?![0-9A-Za-z_-])"),
+    "internal hostname": re.compile(r"[A-Za-z0-9.-]+\.(?:corp\.amazon\.com|a2z\.com|aws\.dev|amazon\.dev)\b", re.I),
 }
 # Provider lock files and recorded Terraform plans hold hashes and sample ids; this file names the words.
 SKIP = re.compile(r"(\.terraform\.lock\.hcl$|^tests/fixtures/|^tests/test_public_tree\.py$|^THIRD-PARTY-LICENSES$)")

@@ -71,19 +71,19 @@ variable "gitops_revision" {
 }
 
 variable "gitops_workloads_repo_url" {
-  description = "Git repository URL for the SELF-SERVICE WORKLOADS (models/, teams/, scale-models/). Leave empty (default) to keep workloads in the same repo as the platform (gitops_repo_url) — simplest, single-repo. Set this to a separate, tenant-owned repo for multi-team self-service, so teams get write access to the workloads repo ONLY (never the platform repo). See workloads/README.md."
+  description = "Git repository URL for the SELF-SERVICE WORKLOADS (models/, teams/, scale-models/). Leave empty (default) to keep workloads in the same repo as the platform (gitops_repo_url) — simplest, single-repo. Set this to a separate, tenant-owned repo for multi-team self-service, so teams get write access to the workloads repo ONLY (never the platform repo). See workloads/models/README.md."
   type        = string
   default     = ""
 }
 
 variable "enable_cloudfront_edge" {
-  description = "Activate the opt-in CloudFront edge: public HTTPS for the platform UIs via CloudFront VPC origins to the INTERNAL ALB (built in Terraform — the managed ACK controller can't create VPC origins). Requires the ALB to already exist, so enable it as a post-up step (`./platformctl edge cloudfront`). Each distribution is billable. The CloudFront domains auto-wire into the Cognito callback URLs. See docs / platformctl edge."
+  description = "Activate the opt-in CloudFront edge: public HTTPS for the platform UIs via CloudFront VPC origins to the INTERNAL ALB (built in Terraform — the managed ACK controller can't create VPC origins). Requires the ALB to already exist, so enable it as a post-up step (`./platformctl edge cloudfront`). Each distribution is billable. The CloudFront domains auto-wire into the Cognito callback URLs. See docs/cloudfront-edge.md and `./platformctl edge`."
   type        = bool
   default     = false
 }
 
 variable "langfuse_nextauth_url" {
-  description = "Browser-facing URL of the Langfuse web UI (the Host that NextAuth validates sign-in against). For the default turnkey ALB access you can leave this as-is: the langfuse-nextauth-url CronJob (platform/config/langfuse-nextauth-url.yaml) discovers the ALB hostname at runtime and sets NEXTAUTH_URL on the langfuse-web Deployment automatically. Override only matters if you pin a custom domain — and that is done in platform/services/langfuse/helm-values.yaml (nextauth.url), which the reconciler then respects. This var is retained for reference/back-compat (it feeds the langfuse-init secret's NEXTAUTH_URL key, which the chart does not consume)."
+  description = "Retained for back-compat; setting it does not change the Langfuse sign-in URL. Its value only feeds the NEXTAUTH_URL key of the langfuse-init secret, which the chart does not consume. The live NEXTAUTH_URL of the langfuse-web Deployment is set by the langfuse-nextauth-url CronJob (platform/config/langfuse-nextauth-url.yaml): the platform's public URL for Langfuse (the CloudFront edge URL, or the localhost tunnel URL when the edge is off), falling back to the ALB hostname. To pin a custom domain, set nextauth.url in platform/services/langfuse/helm-values.yaml, which the CronJob then leaves alone."
   type        = string
   default     = "http://localhost:3000"
 }
@@ -95,15 +95,21 @@ variable "langfuse_init_user_email" {
 }
 
 variable "enable_bedrock" {
-  description = "Expose Amazon Bedrock models (e.g. Claude Sonnet 4.6) through LiteLLM. When true, an IRSA role granting bedrock:InvokeModel is created and attached to the `litellm` ServiceAccount. Requires Bedrock model access to be enabled in-account for the target model (a one-time console toggle). The model itself is declared in platform/services/litellm/litellm.yaml."
+  description = "Expose Amazon Bedrock models (e.g. Claude Sonnet 4.6) through LiteLLM. When true, an IRSA role granting bedrock:InvokeModel is created and attached to the `litellm` ServiceAccount. Requires Bedrock model access to be enabled in-account for the target model (a one-time console toggle). No model is enrolled by default: add each one as a BedrockModel custom resource with `./platformctl new-model --source bedrock` (platform/config/bedrockmodel-crd.yaml)."
   type        = bool
   default     = true
 }
 
 variable "gpu_data_volume_snapshot_id" {
-  description = "EBS snapshot ID containing the pre-pulled GPU container image (vLLM serving image). Created by ops/image/create-data-volume-snapshot.sh. When set, Karpenter GPU nodes boot with the image already on disk, eliminating the multi-minute image pull."
+  description = "EBS snapshot ID containing the pre-pulled GPU container image (vLLM serving image), built with ops/image/create-data-volume-snapshot.sh. Leave empty (default): the snapshot is built and found automatically. Setting it pins that snapshot and turns the automatic build and lookup off, so a later vLLM version does not get a new one."
   type        = string
   default     = ""
+}
+
+variable "gpu_image_snapshot" {
+  description = "Bake the vLLM serving image into an EBS snapshot that GPU nodes boot from (default true). The first apply in an account and region builds it on a temporary instance, which needs kubectl on the apply host and a route from the cluster's private subnets to the image registry; a failed build is retried at each apply. Set false to turn the build and the lookup off: GPU nodes then pull the image at start."
+  type        = bool
+  default     = true
 }
 
 variable "gpu_capacity_reservation_ids" {
@@ -129,7 +135,7 @@ variable "gpu_node_volume_size_gib" {
 }
 
 variable "enable_sso" {
-  description = "Ship a Cognito-backed SSO identity plane for the platform UIs (Open WebUI, LiteLLM UI, Langfuse) and per-user cost attribution. When true (and gitops is enabled), Terraform creates a Cognito user pool, hosted-UI domain, groups (admins/developers/users), three seed users (passwords surfaced as outputs), and app clients. SSO works out of the box via `platformctl tunnel` (localhost callbacks); set sso_public_urls once a public HTTPS front (CloudFront) is deployed. Optionally federate an enterprise IdP into the pool. Identity Center remains required only for ArgoCD SSO."
+  description = "Ship a Cognito-backed SSO identity plane for the platform UIs (Open WebUI, LiteLLM UI, Langfuse) and per-user cost attribution. When true (and gitops is enabled), Terraform creates a Cognito user pool, hosted-UI domain, groups (ai-platform-admins/ai-platform-developers/ai-platform-users), three seed users (passwords surfaced as outputs), and app clients. SSO works out of the box via `platformctl tunnel` (localhost callbacks); set sso_public_urls once a public HTTPS front (CloudFront) is deployed. Optionally federate an enterprise IdP into the pool. Identity Center remains required only for ArgoCD SSO."
   type        = bool
   default     = true
 }

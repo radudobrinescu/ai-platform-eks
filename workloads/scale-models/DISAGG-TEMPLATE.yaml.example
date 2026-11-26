@@ -26,7 +26,7 @@ spec:
   # maxModelLen: 16384        # Max sequence length. Lower = less GPU memory.
   #
   # --- Prefill pool (compute-bound) — autoscaled on queue depth ---
-  # prefillMinReplicas: 1          # floor (>=1; scale-to-zero parked)
+  # prefillMinReplicas: 1          # floor (>=1; scale to zero is LLMDEndpoint only)
   # prefillMaxReplicas: 2          # ceiling; > min enables autoscaling
   # prefillTargetQueueDepth: 20    # per-pod vllm:num_requests_waiting target
   #

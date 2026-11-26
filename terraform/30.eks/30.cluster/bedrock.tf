@@ -1,11 +1,14 @@
 ################################################################################
 # Bedrock as a model — LiteLLM ServiceAccount + IRSA
 #
-# LiteLLM serves Bedrock models (e.g. Claude Opus 4.8) natively. Because
-# Bedrock models are static (nothing to deploy/scale), they go straight into the
-# LiteLLM config (platform/services/litellm/litellm.yaml) — no serving CR,
-# no registration Job. The only infra needed is AWS credentials for the LiteLLM
-# pod, granted via IRSA on a dedicated `litellm` ServiceAccount.
+# LiteLLM serves Bedrock models natively. A Bedrock model has nothing to deploy
+# or scale, so none is declared here or in the committed LiteLLM config: each
+# one is enrolled as a `BedrockModel` custom resource
+# (platform/config/bedrockmodel-crd.yaml) with
+# `./platformctl new-model --source bedrock`, and the litellm-sync controller
+# registers it in LiteLLM. None is enrolled by default. The only infra needed
+# is AWS credentials for the LiteLLM pod, granted via IRSA on a dedicated
+# `litellm` ServiceAccount.
 #
 # The SA is always created (the LiteLLM Deployment references it by name); the
 # IRSA role + annotation are only attached when var.enable_bedrock = true.
@@ -91,8 +94,9 @@ resource "kubernetes_service_account" "litellm" {
   depends_on = [kubernetes_namespace.ai_platform]
 }
 
-# Region for the Bedrock provider, read by LiteLLM via configMapKeyRef
-# (AWS_REGION → os.environ/AWS_REGION in config.yaml). Kept out of git so the
+# Region for the Bedrock provider. The LiteLLM Deployment
+# (platform/services/litellm/litellm.yaml) exposes each key of this ConfigMap to
+# the pod as an environment variable via configMapKeyRef. Kept out of git so the
 # region isn't hardcoded in a committed manifest.
 resource "kubernetes_config_map" "litellm_env" {
   count = local.capabilities.gitops ? 1 : 0
@@ -105,14 +109,13 @@ resource "kubernetes_config_map" "litellm_env" {
   data = merge(
     {
       AWS_REGION = local.region
-      # Bedrock runtime endpoint, read by LiteLLM via os.environ/ in config.yaml
-      # (LiteLLM's Bedrock path signs its own requests — it does NOT read boto3's
-      # native endpoint env vars — so we must feed it a concrete URL). Built from
-      # the partition's DNS suffix so the committed litellm.yaml stays
-      # partition-agnostic: aws -> amazonaws.com (the SDK default), aws-eusc ->
-      # amazonaws.eu (the sovereign host; the .com default doesn't resolve there).
-      # Set unconditionally (like AWS_REGION): LiteLLM reads it through os.environ,
-      # so it must never be absent on a Terraform install.
+      # Bedrock runtime endpoint, exposed to the LiteLLM pod as an environment
+      # variable (see above). Built from the partition's DNS suffix so the
+      # committed litellm.yaml stays partition-agnostic: aws -> amazonaws.com
+      # (the SDK default), aws-eusc -> amazonaws.eu (the sovereign host; the
+      # .com default doesn't resolve there). Set unconditionally, like
+      # AWS_REGION. A BedrockModel can also carry its own endpoint
+      # (spec.bedrockEndpoint, written by `platformctl new-model`).
       AWS_ENDPOINT_URL_BEDROCK_RUNTIME = "https://bedrock-runtime.${local.region}.${data.aws_partition.current.dns_suffix}"
     },
     # ESC (aws-eusc) only: force the sovereign-partition STS endpoint so IRSA

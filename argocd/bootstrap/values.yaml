@@ -15,5 +15,5 @@ revision: main
 # Where the self-service workloads live (models/, teams/, scale-models/). Empty
 # = same repo as the platform (repoURL). Point this at a separate, tenant-owned
 # workloads repo for multi-team self-service (teams get write to that repo only,
-# never to the platform repo). See workloads/README.md.
+# never to the platform repo). See workloads/models/README.md.
 workloadsRepoURL: ""

@@ -69,6 +69,20 @@
      "component": "default-scheduler"
     },
     "type": "Normal"
+   },
+   {
+    "count": 4,
+    "involvedObject": {
+     "kind": "Pod",
+     "name": "mistral-7b-llmd-5b7c9d6f4-k8x2p"
+    },
+    "lastTimestamp": "2026-11-20T09:58:30Z",
+    "message": "0/6 nodes are available: 6 Insufficient nvidia.com/gpu",
+    "reason": "FailedScheduling",
+    "source": {
+     "component": "default-scheduler"
+    },
+    "type": "Warning"
    }
   ]
  },
@@ -305,6 +319,31 @@
    },
    {
     "metadata": {
+     "creationTimestamp": "2026-11-20T09:57:00Z",
+     "name": "mistral-7b-llmd-5b7c9d6f4-k8x2p",
+     "namespace": "inference"
+    },
+    "spec": {
+     "containers": [
+      {
+       "name": "c",
+       "resources": {
+        "requests": {
+         "cpu": "4",
+         "memory": "24Gi",
+         "nvidia.com/gpu": "1"
+        }
+       }
+      }
+     ],
+     "nodeName": ""
+    },
+    "status": {
+     "phase": "Pending"
+    }
+   },
+   {
+    "metadata": {
      "creationTimestamp": "2026-11-20T10:00:00Z",
      "name": "litellm-5d65d7c775-9ht95",
      "namespace": "ai-platform"
@@ -443,6 +482,67 @@
      "desiredReplicas": 2,
      "lastScaleTime": "2026-11-20T09:50:00Z"
     }
+   },
+   {
+    "metadata": {
+     "name": "keda-hpa-phi-4-mini-llmd"
+    },
+    "spec": {
+     "maxReplicas": 2,
+     "metrics": [
+      {
+       "external": {
+        "target": {
+         "averageValue": "16"
+        }
+       }
+      }
+     ],
+     "minReplicas": 1,
+     "scaleTargetRef": {
+      "name": "phi-4-mini-llmd"
+     }
+    },
+    "status": {
+     "currentReplicas": 0,
+     "desiredReplicas": 0,
+     "lastScaleTime": "2026-11-20T08:30:00Z"
+    }
+   },
+   {
+    "metadata": {
+     "name": "keda-hpa-mistral-7b-llmd"
+    },
+    "spec": {
+     "maxReplicas": 2,
+     "metrics": [
+      {
+       "external": {
+        "target": {
+         "averageValue": "16"
+        }
+       }
+      }
+     ],
+     "minReplicas": 1,
+     "scaleTargetRef": {
+      "name": "mistral-7b-llmd"
+     }
+    },
+    "status": {
+     "currentMetrics": [
+      {
+       "external": {
+        "current": {
+         "averageValue": "1"
+        }
+       }
+      }
+     ],
+     "currentReplicas": 1,
+     "desiredReplicas": 1,
+     "lastScaleTime": "2026-11-20T08:10:00Z"
+    }
    }
   ]
  },
@@ -500,6 +600,52 @@
      ],
      "ready": "False",
      "state": "ERROR"
+    }
+   },
+   {
+    "metadata": {
+     "creationTimestamp": "2026-11-19T08:00:00Z",
+     "name": "phi-4-mini"
+    },
+    "spec": {
+     "coldStartTimeoutSeconds": 600,
+     "gpuCount": 1,
+     "maxReplicas": 2,
+     "minReplicas": 0,
+     "model": "microsoft/Phi-4-mini-instruct",
+     "replicas": 1,
+     "scaleToZeroAfterSeconds": 600
+    },
+    "status": {
+     "availableReplicas": 0,
+     "ready": "True",
+     "replicas": 0,
+     "routerHealth": "Healthy",
+     "scaledToZero": true,
+     "state": "ACTIVE"
+    }
+   },
+   {
+    "metadata": {
+     "creationTimestamp": "2026-11-19T08:00:00Z",
+     "name": "mistral-7b"
+    },
+    "spec": {
+     "coldStartTimeoutSeconds": 600,
+     "gpuCount": 1,
+     "maxReplicas": 2,
+     "minReplicas": 0,
+     "model": "mistralai/Mistral-7B-Instruct-v0.3",
+     "replicas": 1,
+     "scaleToZeroAfterSeconds": 600
+    },
+    "status": {
+     "availableReplicas": 0,
+     "ready": "False",
+     "replicas": 1,
+     "routerHealth": "Healthy",
+     "scaledToZero": false,
+     "state": "IN_PROGRESS"
     }
    }
   ]

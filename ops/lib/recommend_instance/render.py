@@ -6,9 +6,10 @@ import argparse
 import json
 import math
 import re
+import shlex
 import sys
 
-from .catalog import TIME_SLICE_REPLICAS
+from .catalog import CATALOG_PRICING_REGION, TIME_SLICE_REPLICAS, nodepool_refusal
 from .model import ModelSpec
 from .paths import KIND_DIR, is_valid_hf_model_id, is_valid_model_name
 from .recommend import Option, find_options
@@ -27,6 +28,11 @@ def _fmt_params(p: int) -> str:
     if p >= 1e9:  return f"{p/1e9:.2f}B"
     if p >= 1e6:  return f"{p/1e6:.1f}M"
     return str(p)
+
+
+def _no_price_flag(region: str) -> str:
+    """Flag for a type the Pricing API has no price for in `region`."""
+    return f"no price in {region} — may not be offered there"
 
 
 def _mode_line(args: argparse.Namespace) -> str:
@@ -238,7 +244,7 @@ def _explain_recommendation(
 def _diagnose_no_fit(
     model: ModelSpec,
     args:  argparse.Namespace,
-    prices: dict[str, float] | None,
+    prices: dict[str, float | None] | None,
     C:     type,
 ) -> None:
     """Explain WHY nothing fits and, crucially, what config WOULD — so the user
@@ -323,7 +329,7 @@ def _int4_savings_hint(
     model: ModelSpec,
     best:  "Option",
     args:  argparse.Namespace,
-    prices: dict[str, float] | None,
+    prices: dict[str, float | None] | None,
     C:     type,
 ) -> str | None:
     """If switching to int4 would let a *cheaper* instance host the model, return
@@ -355,24 +361,28 @@ def _int4_savings_hint(
             f"(~{saved_mo}/mo saved){C.DIM}; ~1-2% quality loss on benchmarks{C.RESET}")
 
 
-def _deploy_flags(args: argparse.Namespace) -> str:
-    """Reconstruct the non-default flags for a faithful `--deploy` re-run line."""
-    parts: list[str] = []
-    if args.quant != "bf16":
-        parts.append(f"--quant {args.quant}")
-    if args.kv_quant != "fp16":
-        parts.append(f"--kv-quant {args.kv_quant}")
-    if args.seq != 8192:
-        parts.append(f"--seq {args.seq}")
-    if args.workload:
-        parts.append(f"--workload {args.workload}")
-    elif args.users > 1:
-        parts.append(f"--users {args.users}")
-    if getattr(args, "tier", "auto") not in (None, "auto"):
-        parts.append(f"--tier {args.tier}")
-    if getattr(args, "instance_type", None):
-        parts.append(f"--instance-type {args.instance_type}")
-    return (" " + " ".join(parts)) if parts else ""
+HF_TOKEN_PLACEHOLDER = "<your-hf-token>"
+
+
+def _deploy_command(args: argparse.Namespace, model_id: str) -> str:
+    """The arguments of the command that deploys what this preview shows: the
+    ones the preview was run with, so no option can be lost on the way. A
+    Hugging Face token is replaced by a placeholder; it must not be printed."""
+    given = list(getattr(args, "argv", None) or [model_id])
+    shown: list[str] = []
+    skip_value = False
+    for word in given:
+        if skip_value:
+            shown.append(HF_TOKEN_PLACEHOLDER)
+            skip_value = False
+        elif word == "--hf-token":
+            shown.append(word)
+            skip_value = True
+        elif word.startswith("--hf-token="):
+            shown.append(f"--hf-token={HF_TOKEN_PLACEHOLDER}")
+        else:
+            shown.append(word)
+    return shlex.join(shown)
 
 
 def print_human(
@@ -383,7 +393,7 @@ def print_human(
     args:        argparse.Namespace,
     price_src:   str,
     scaling:     list[ScalingRecommendation] | None = None,
-    prices:      dict[str, float] | None = None,
+    prices:      dict[str, float | None] | None = None,
 ) -> None:
     C      = _palette(_should_use_colour(args))
     ruler  = _ruler(71, C)
@@ -486,6 +496,15 @@ def print_human(
         if best.over_price_ceiling:
             print(f"    {C.YELLOW}Note: exceeds --max-price ${args.max_price:.2f}/hr. "
                   f"No cheaper option fits.{C.RESET}")
+    if banner_opt.no_regional_price:
+        print(f"    {C.YELLOW}⚠ {banner_opt.instance.name}: {_no_price_flag(args.region)} "
+              f"(${banner_opt.price_usd_h:.2f}/hr is the {CATALOG_PRICING_REGION} price). "
+              f"Check that {args.region} offers it before you deploy.{C.RESET}")
+    if not banner_opt.in_cluster:
+        print(f"    {C.YELLOW}⚠ {banner_opt.instance.name} cannot be launched by this cluster "
+              f"(the gpu-inference NodePool requires "
+              f"{nodepool_refusal(banner_opt.instance, 'gpu-inference')}) and no type it "
+              f"allows fits: the pod would stay Pending.{C.RESET}")
     print(ruler)
 
     # -------- 1b. Why this recommendation? ------------------------------- #
@@ -594,12 +613,12 @@ def print_human(
               f"{'-'*12} {'-'*6}  {'-'*7}  {'-'*9}  {'-'*10}{C.RESET}")
 
         for o in within_budget[:display_limit]:
-            _print_table_row(o, C, over=False, users=args.users)
+            _print_table_row(o, C, over=False, users=args.users, region=args.region)
         if args.verbose and over_budget:
             remaining = display_limit - len(within_budget[:display_limit])
             if remaining > 0:
                 for o in over_budget[:remaining]:
-                    _print_table_row(o, C, over=True, users=args.users)
+                    _print_table_row(o, C, over=True, users=args.users, region=args.region)
 
     # -------- 6. Fleet scaling (when auto-fleet is triggered) ------------ #
     if scaling:
@@ -622,7 +641,7 @@ def print_human(
           f"Monthly = hourly × 730h. Prices: {price_src}{C.RESET}")
 
 
-def _print_table_row(o: Option, C: type, over: bool, users: int = 1) -> None:
+def _print_table_row(o: Option, C: type, over: bool, users: int = 1, region: str = "") -> None:
     strategy = o.parallelism_label or "1 GPU"
     usage  = f"{o.per_gpu_need_gb:.0f}/{o.instance.vram_gb} GB"
     tok_s  = (f"{per_user_tok_s(o.single_stream_tok_s, users):.0f}"
@@ -642,6 +661,8 @@ def _print_table_row(o: Option, C: type, over: bool, users: int = 1) -> None:
         note_parts.append(f"{C.YELLOW}⚠ quant{C.RESET}")
     if not o.in_cluster:
         note_parts.append(f"{C.DIM}out-of-cluster{C.RESET}")
+    if o.no_regional_price:
+        note_parts.append(f"{C.YELLOW}⚠ {_no_price_flag(region)}{C.RESET}")
     note = " · ".join(note_parts) if note_parts else ""
 
     print(f"  {o.instance.name:<15} {o.instance.gpu:<12} {strategy:<10} "
@@ -658,7 +679,7 @@ def _compute_alt_fleet_cost(
     target_tok_s:   float,
     utilization:    float,
     safety_margin:  float,
-    prices:         dict[str, float],
+    prices:         dict[str, float | None],
     max_price:      float,
     num_heads:      int,
 ) -> "ScalingRecommendation | None":
@@ -707,7 +728,7 @@ def _print_cost_levers(
     args:        argparse.Namespace,
     model:       ModelSpec,
     fleet_best:  "ScalingRecommendation",
-    prices:      dict[str, float],
+    prices:      dict[str, float | None],
     C:           type,
 ) -> None:
     """Print 'what if?' alternatives showing how cost changes with knob tweaks.
@@ -847,6 +868,8 @@ def _print_scaling_section(
             suffix = ""
             if s.option.quant_warning:
                 suffix = f" {C.YELLOW}⚠ quant{C.RESET}"
+            if s.option.no_regional_price:
+                suffix += f" {C.YELLOW}⚠ {_no_price_flag(args.region)}{C.RESET}"
             print(f"  {tone}{marker}{s.option.instance.name:<15} "
                   f"{s.option.instance.gpu:<12} {s_strat:<10} "
                   f"{s.effective_capacity:>9}  {s.replicas:>8}  "
@@ -877,7 +900,7 @@ TIER_KIND = {"vllm": "VLLMEndpoint", "llm-d": "LLMDEndpoint",
 # Shared-prefix / multi-turn workloads win most from prefix+KV-aware routing;
 # high-volume independent workloads want queue (load) balancing.
 ROUTING_PROFILE_BY_WORKLOAD = {
-    "chat": "prefix", "rag": "prefix", "code": "prefix", "agentic": "prefix",
+    "chat": "prefix", "rag": "prefix", "code": "prefix",
     "summarization": "throughput", "batch": "throughput",
 }
 
@@ -892,7 +915,9 @@ def pick_tier(args, best, scaling) -> str:
         return t
     if getattr(args, "min_replicas", None) is not None:
         return "llm-d"   # --min-replicas (scale to zero) exists on the llm-d tier only
-    pp = getattr(best, "pp_degree", 1) or 1
+    # The layout that goes into the manifest: the fleet's when there is one.
+    chosen = scaling[0].option if scaling else best
+    pp = getattr(chosen, "pp_degree", 1) or 1
     if scaling and scaling[0].replicas >= 2 and pp <= 1:
         return "llm-d"
     return "vllm"
@@ -949,8 +974,9 @@ def resolve_kind(tier: str, args, scaling) -> str:
 
 
 # HuggingFace architecture (config.json `architectures[0]`) -> vLLM
-# `--tool-call-parser` id (vLLM v0.24.0 registered names). Ordered most-specific
-# first (llama4 before llama, gemma4 before gemma). Only high-confidence,
+# `--tool-call-parser` id. The names are the ones vLLM registers and are
+# version-specific: re-check them when the platform's vllmImage changes. Ordered
+# most-specific first (llama4 before llama, gemma4 before gemma). Only high-confidence,
 # tool-capable families are listed; anything else returns "" so the model
 # deploys chat-only — the operator can still set toolCallParser by hand. This is
 # the ONE place that knows the mapping, and the choice is written into the
@@ -1103,11 +1129,9 @@ def build_endpoint_yaml(
     if scaling:
         best_scaling = scaling[0]
         min_replicas = best_scaling.replicas
-        max_replicas = max(min_replicas, math.ceil(min_replicas * 1.5))
         max_num_seqs = max(64, math.ceil(best_scaling.effective_capacity * 1.5))
     else:
         min_replicas = 1
-        max_replicas = 2
         max_num_seqs = max(64, args.users * 2)
 
     lines: list[str] = [
@@ -1234,6 +1258,17 @@ def build_endpoint_yaml(
     return name, yaml_path, yaml_body, commit_msg
 
 
+def _tier_reason(kind: str, args: argparse.Namespace) -> str:
+    """Why this serving tier, for the "Serving tier:" line."""
+    if kind == "LLMDEndpoint" and getattr(args, "min_replicas", None) == 0:
+        # May well be a single replica: the tier is chosen for scale to zero.
+        return ("scale to zero (--min-replicas 0) -> needs the llm-d scale tier "
+                "(the vLLM tier has a fixed replica count)")
+    return {"LLMDDisaggEndpoint": "long-context fleet -> disaggregated llm-d (prefill/decode split + KV/prefix routing)",
+            "LLMDEndpoint": "fleet of 2+ replicas -> llm-d scale tier (KV/prefix/load-aware routing)",
+            "VLLMEndpoint": "single replica -> plain vLLM (simplest, no router)"}.get(kind, kind)
+
+
 def _print_yaml_snippet(model: ModelSpec, vram: VramEstimate, best: Option,
                         args: argparse.Namespace, C: type,
                         scaling: list[ScalingRecommendation] | None = None) -> None:
@@ -1242,9 +1277,7 @@ def _print_yaml_snippet(model: ModelSpec, vram: VramEstimate, best: Option,
     name, yaml_path, yaml_body, commit_msg = build_endpoint_yaml(
         kind, model, vram, best, args, scaling)
 
-    why = {"LLMDDisaggEndpoint": "long-context fleet -> disaggregated llm-d (prefill/decode split + KV/prefix routing)",
-           "LLMDEndpoint": "fleet of 2+ replicas -> llm-d scale tier (KV/prefix/load-aware routing)",
-           "VLLMEndpoint": "single replica -> plain vLLM (simplest, no router)"}.get(kind, kind)
+    why = _tier_reason(kind, args)
     print(f"\n{C.BOLD}Serving tier:{C.RESET} {C.BOLD}{kind}{C.RESET} {C.DIM}- {why}{C.RESET}")
     override = getattr(args, "tool_call_parser", None)
     if override is not None:
@@ -1287,9 +1320,8 @@ def _print_yaml_snippet(model: ModelSpec, vram: VramEstimate, best: Option,
         print(f"  {C.DIM}│{C.RESET} {ln}")
 
     # Primary path: the native one-liner (previews + confirms before it commits).
-    flags = _deploy_flags(args)
     print(f"\n{C.BOLD}Deploy it:{C.RESET}  "
-          f"{C.CYAN}./platformctl new-model {model.model_id}{flags} --deploy{C.RESET}")
+          f"{C.CYAN}./platformctl new-model {_deploy_command(args, model.model_id)} --deploy{C.RESET}")
     print(f"  {C.DIM}writes the manifest, commits, pushes, and triggers an ArgoCD "
           f"sync — you preview + confirm first.{C.RESET}")
     print(f"  {C.DIM}Remove it later:  ./platformctl new-model --undeploy {name}{C.RESET}")
@@ -1385,6 +1417,16 @@ def print_json(
             "quant_warning":        best.quant_warning,
         },
     }
+    if best:
+        # The CRD the manifest would use, and the replica floor on the llm-d
+        # scale tier (the only one with minReplicas; null elsewhere).
+        kind = resolve_kind(pick_tier(args, best, scaling), args, scaling)
+        floor = 1 if args.min_replicas is None else args.min_replicas
+        payload["serving"] = {
+            "tier":         next(t for t, k in TIER_KIND.items() if k == kind),
+            "kind":         kind,
+            "min_replicas": floor if kind == "LLMDEndpoint" else None,
+        }
     if scaling:
         best_s = scaling[0]
         payload["scaling"] = {

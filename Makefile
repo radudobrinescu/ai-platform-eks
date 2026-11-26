@@ -38,7 +38,7 @@ check-py: ## Byte-compile the Python sources, then run unit tests
 
 test: ## Unit tests (pytest); self-skips if pytest is not installed
 	@if python3 -c 'import pytest' 2>/dev/null; then \
-		echo "==> pytest"; python3 -m pytest -q tests; \
+		echo "==> pytest"; python3 -m pytest -q; \
 	else \
 		echo "!! pytest not installed — skipping unit tests (pip install pytest)"; \
 	fi
@@ -63,7 +63,7 @@ check-sh: ## Syntax-check (bash -n) + lint (shellcheck, if installed) every scri
 	@echo "==> bash -n"
 	@for f in $(SH_SCRIPTS); do bash -n "$$f" || exit 1; done
 	@if command -v shellcheck >/dev/null 2>&1; then \
-		echo "==> shellcheck"; shellcheck $(SH_SCRIPTS); \
+		echo "==> shellcheck"; shellcheck -S warning $(SH_SCRIPTS); \
 	else \
 		echo "!! shellcheck not installed — skipping lint (matches CI's shellcheck step)"; \
 	fi

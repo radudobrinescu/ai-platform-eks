@@ -43,13 +43,6 @@ variable "go_config" {
   }
 }
 
-variable "prometheus_name" {
-  description = "Amazon Managed Service for Prometheus Name"
-  type        = string
-  default     = "prom"
-}
-
-
 variable "tags" {
   description = "Additional tags"
   type        = map(string)

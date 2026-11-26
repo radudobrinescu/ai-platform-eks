@@ -105,9 +105,7 @@ def hostile_sections():
     return bad
 
 
-def test_hostile_values_are_always_escaped():
-    out = render(hostile_sections(), [hostile(INVESTIGATION)], search="x-pwn")
-    written = out["written"]
+def assert_escaped(written):
     views = {w["id"] for w in written}
     assert {"kpis", "models-body", "teams-grid", "cost-by-user", "infra-attn", "infra-gpu", "infra-platform",
             "infra-nodepools", "health-alerts", "drawer", "q-res", "src-pop", "degraded-banner"} <= views
@@ -119,14 +117,177 @@ def test_hostile_values_are_always_escaped():
         for handler in re.findall(r'\bon[a-z]+="([^"]*)"', html):
             assert "x-pwn" not in handler, f"value inside an inline handler in #{w['id']}"
         assert "javascript:" not in html
+
+
+def test_hostile_values_are_always_escaped():
+    out = render(hostile_sections(), [hostile(INVESTIGATION)], search="x-pwn")
+    written = out["written"]
+    assert_escaped(written)
     last = {w["id"]: w["html"] for w in written}
     assert "unavailable since" in last["teams-grid"] and "as of" in last["gpu-bars"]
+
+
+def test_hostile_values_are_escaped_in_the_scale_to_zero_states():
+    """Every string hostile except the model states and tiers, which pick the
+    code that draws a model scaled to zero and one waking from zero (with a
+    hostile state the page draws every model as "deploying")."""
+    _, plain = store_sections()
+    bad = hostile_sections()
+    for m, was in zip(bad["models"], plain["models"]):
+        m.update(status=was["status"], tier=was["tier"])
+    for p, was in zip(bad["pods"], plain["pods"]):
+        # A pod that waits for a node is drawn by its phase, its age and its empty node name.
+        p.update(phase=was["phase"], created=was["created"], node=p["node"] if was["node"] else "")
+    out = render(bad, [hostile(INVESTIGATION)], search="x-pwn")
+    assert_escaped(out["written"])
+    last = {w["id"]: w["html"] for w in out["written"]}
+    assert '<span class="st zero">scaled to zero</span>' in last["models-body"]
+    assert '<span class="st info">waking</span>' in last["models-body"]
+    assert "1 scaled to zero · 1 waking" in last["kpis"]
+    assert "Scaled to zero, holding no GPU" in last["infra-gpu"] and "is waking from zero" in last["infra-attn"]
+    assert any(w["id"] == "drawer" and '<span class="stag zero">scaled to zero</span>' in w["html"]
+               for w in out["written"])
+
+    # The waking model's pod on a GPU node: its slot is drawn.
+    node = next(n for n in bad["nodes"] if n["gpu"])
+    node.update(gpu=4)
+    for p, was in zip(bad["pods"], plain["pods"]):
+        if was["name"].startswith("mistral-7b-llmd-"):
+            p.update(node=node["name"], phase="Running")
+    out = render(bad)
+    assert_escaped(out["written"])
+    assert "<small>waking from zero · " in {w["id"]: w["html"] for w in out["written"]}["infra-gpu"]
 
 
 def test_plain_values_render_unchanged():
     out = render(store_sections()[1])
     models = next(w["html"] for w in out["written"] if w["id"] == "models-body")
     assert 'data-model="qwen2-5-3b-instruct"' in models and ">qwen2-5-3b-instruct<" in models
+
+
+# ---------------------------------------------------------------------------
+# Scale to zero: an llm-d model idle at zero replicas, and one waking from zero
+# (fixture models phi-4-mini and mistral-7b)
+# ---------------------------------------------------------------------------
+
+def panels(sections):
+    out = render(sections)
+    last = {w["id"]: w["html"] for w in out["written"]}
+    return last, [w["html"] for w in out["written"] if w["id"] == "drawer"]
+
+
+def row(table, name):
+    part = table[table.index(f'data-model="{name}"'):]
+    return part[:part.index("</tr>")]
+
+
+def drawer_of(drawers, name):
+    return next(d for d in drawers if f'font-weight:800">{name}<' in d)
+
+
+def with_model(sections, name, **changes):
+    return dict(sections, models=[dict(m, **changes) if m["name"] == name else m for m in sections["models"]])
+
+
+def test_models_view_words_scaled_to_zero_and_waking():
+    """Before: a model at zero replicas read "running" with a green dot, and a
+    model waking from zero read "deploying" in amber."""
+    _, sections = store_sections()
+    last, _ = panels(sections)
+    zero, waking = row(last["models-body"], "phi-4-mini"), row(last["models-body"], "mistral-7b")
+    assert '<span class="st zero">scaled to zero</span>' in zero and "running" not in zero
+    assert 'title="autoscaling 0/2 replicas"' in zero
+    assert '<span class="st info">waking</span>' in waking and "deploying" not in waking
+    assert '<span class="st ok">running</span>' in row(last["models-body"], "qwen2-5-3b-instruct")
+    assert '<span class="st warn">deploying</span>' in row(last["models-body"], "gemma-12b")
+    assert '<span class="st bad">error</span>' in row(last["models-body"], "broken")
+    # The Overview lists the six busiest models; the fixture has seven.
+    self_hosted = dict(sections, models=[m for m in sections["models"] if m["tier"] != "bedrock"])
+    overview = panels(self_hosted)[0]["ov-models"]
+    assert '<span class="dot zero"></span><span class="m-name">phi-4-mini<' in overview
+    assert '<span class="dot info"></span><span class="m-name">mistral-7b<' in overview
+    assert '<span class="dot ok"></span><span class="m-name">qwen2-5-3b-instruct<' in overview
+
+
+def test_overview_counts_only_serving_models_as_live():
+    _, sections = store_sections()
+    last, _ = panels(sections)
+    assert ('<div class="kpi-val">7</div><div class="kpi-sub">3 live · 1 scaled to zero · 1 waking · 2 deploying</div>'
+            in last["kpis"])
+    assert "appeared → scaled to zero" in last["ov-feed"] and "appeared → waking" in last["ov-feed"]
+    calm = dict(sections, models=[m for m in sections["models"] if m["status"] == "running"])
+    assert '<div class="kpi-sub">3 live</div>' in panels(calm)[0]["kpis"]
+
+
+def test_scaled_to_zero_and_waking_are_not_alerts():
+    _, sections = store_sections()
+    last, _ = panels(sections)
+    for panel in ("health-alerts", "ov-health"):
+        assert "phi-4-mini" not in last[panel] and "mistral-7b" not in last[panel]
+    assert "gemma-12b · deploying" in last["health-alerts"] and "broken · error" in last["health-alerts"]
+    count = int(re.search(r"⚠ (\d+)</span> alerts", last["top-health"]).group(1))
+
+    # The backend turns "waking" into "deploying" once the router's hold has passed.
+    late, _ = panels(with_model(sections, "mistral-7b", status="deploying"))
+    assert "mistral-7b · deploying" in late["health-alerts"] and f"⚠ {count + 1}</span> alerts" in late["top-health"]
+    assert '<span class="st warn">deploying</span>' in row(late["models-body"], "mistral-7b")
+
+    # A stored LiteLLM health check of a model with no replica says nothing.
+    unhealthy, _ = panels(with_model(with_model(sections, "phi-4-mini", health="unhealthy"),
+                                     "mistral-7b", health="unhealthy"))
+    assert "phi-4-mini" not in unhealthy["health-alerts"] and "mistral-7b" not in unhealthy["health-alerts"]
+    # Its router must be up to hold the request that wakes it.
+    router, _ = panels(with_model(sections, "phi-4-mini", router="Degraded"))
+    assert "phi-4-mini · router Degraded" in router["health-alerts"]
+
+
+def test_model_drawer_shows_the_state_the_real_minimum_and_the_signal():
+    _, sections = store_sections()
+    _, drawers = panels(sections)
+    zero = drawer_of(drawers, "phi-4-mini")
+    assert '<span class="dot zero"></span>' in zero and '<span class="st zero">scaled to zero</span>' in zero
+    assert '<span class="stag zero">scaled to zero</span><span class="cnt">0 / 2 · min 0</span>' in zero
+    assert "requests in flight" in zero and "queue depth" not in zero
+    assert "Deployment</div>" not in zero, "nothing is deploying"
+    waking = drawer_of(drawers, "mistral-7b")
+    assert '<span class="dot info"></span>' in waking and '<span class="st info">waking</span>' in waking
+    assert '<span class="stag info">waking</span><span class="cnt">1 / 2 · min 0</span>' in waking
+    assert "Deployment</div>" in waking and "FailedScheduling" in waking, "what it waits for stays visible"
+    running = drawer_of(drawers, "qwen2-5-3b-instruct")
+    assert '<span class="dot ok"></span>' in running and '<span class="st ok">running</span>' in running
+    steady = drawer_of(drawers, "gemma-12b")
+    assert '<span class="st warn">deploying</span>' in steady and "· min 1</span>" in steady
+
+
+def test_infra_draws_a_waking_model_as_in_progress_and_names_the_models_at_zero():
+    _, sections = store_sections()
+    last, _ = panels(sections)
+    attn = last["infra-attn"]
+    waking = attn[attn.index("mistral-7b-llmd-5b7c9d6f4-k8x2p") - 200:]
+    waking = waking[waking.index('<div class="alert">'):]
+    waking = waking[:waking.index("</div></div>")]
+    assert '<span class="stag info">In progress</span>' in waking and "mistral-7b is waking from zero" in waking
+    stuck = attn[attn.index('<div class="alert"><span class="stag warn">Warning</span><div style="min-width:0">'
+                            '<div class="at"><span class="m-id">gemma-12b-llmd-7c9d-abcde</span> has waited'):]
+    assert "needs a GPU" in stuck[:stuck.index("</div></div>")]
+    assert ('Scaled to zero, holding no GPU: <b>phi-4-mini</b>. It starts again on its next request, '
+            'which takes a few minutes.</div>') in last["infra-gpu"]
+
+    # Its pod has a node and loads the model: the slot says so.
+    node = next(n for n in sections["nodes"] if n["gpu"])
+    placed = dict(sections, nodes=[dict(n, pool="gpu-shared", gpu=4) if n is node else n for n in sections["nodes"]],
+                  pods=[dict(p, node=node["name"], phase="Running") if p["name"].startswith("mistral-7b-llmd-") else p
+                        for p in sections["pods"]])
+    gpu = panels(placed)[0]["infra-gpu"]
+    assert '<b>mistral-7b</b><small>waking from zero · ' in gpu and gpu.count('class="gs used"') == 2
+
+    late = with_model(sections, "mistral-7b", status="deploying")
+    assert '<span class="m-id">mistral-7b-llmd-5b7c9d6f4-k8x2p</span> has waited' in panels(late)[0]["infra-attn"]
+    none = dict(sections, models=[m for m in sections["models"] if m["status"] != "scaled-to-zero"])
+    assert "Scaled to zero" not in panels(none)[0]["infra-gpu"]
+    idle = dict(sections, nodes=[n for n in sections["nodes"] if not n["gpu"]], nodeClaims=[])
+    gpu = panels(idle)[0]["infra-gpu"]
+    assert "No GPU nodes are running, which costs nothing" in gpu and "Scaled to zero, holding no GPU" in gpu
 
 
 # ---------------------------------------------------------------------------

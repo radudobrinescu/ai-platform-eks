@@ -19,7 +19,7 @@ following for your environment:
   dashboard) sit behind an **internal** Application Load Balancer with no public IP —
   unreachable from the internet. Reach them with `./platformctl tunnel` (an **AWS
   SSM port-forwarding session** through an EKS node to the service ClusterIPs — note
-  this deliberately bypasses the ALB and its inbound-CIDR allowlist, so treat local
+  this deliberately bypasses the ALB and its inbound security group, so treat local
   tunnel access as privileged) or expose them publicly via the opt-in **CloudFront
   VPC-origin edge** (`./platformctl edge cloudfront`, built in Terraform), which
   fronts the private ALB with HTTPS + SSO. If you instead switch the ALB to
@@ -31,9 +31,9 @@ following for your environment:
   dismissing/deleting) a Platform Health Agent remediation spawns a cluster-mutating
   Job, so the dashboard backend cryptographically verifies the Cognito OIDC token
   (signature, issuer, audience, and `ai-platform-admins` group membership) on those
-  endpoints, plus a CSRF header — independent of network path. Because the raw
-  `tunnel` path carries no verified identity, **approvals are only available through
-  the SSO-authenticated ALB/CloudFront UI**, not the tunnel. Disabling this
+  endpoints, plus a CSRF header — independent of network path. `./platformctl
+  tunnel` forwards the dashboard through oauth2-proxy, so approvals over the tunnel
+  need the same Cognito sign-in by a member of `ai-platform-admins`. Disabling this
   (`DASHBOARD_AUTH_REQUIRED=false`) is only safe on a trusted network with SSO off.
 - **Per-user budgets & rate limits.** LiteLLM enforces a default per-user spend
   budget and rpm/tpm throttle on the Open WebUI chat path (via the forwarded identity)

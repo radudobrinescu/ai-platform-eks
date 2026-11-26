@@ -45,6 +45,8 @@ PART_OF = "platform-health-agent"
 _OWN_NAME_RE = re.compile(r"^(investigator-[0-9a-f]{8}|remediator-[0-9a-f]{8}|event-watcher-)")
 # ReplicaSet name: <deployment-name>-<6 to 10 hex characters>.
 _RS_HASH_RE = re.compile(r"-[a-f0-9]{6,10}$")
+# vLLM pod of an LLMDEndpoint: <endpoint>-llmd-<replicaset hash>-<pod suffix>.
+_LLMD_POD_RE = re.compile(r"^(.+)-llmd-[a-z0-9]+-[a-z0-9]+$")
 
 
 @dataclass(frozen=True)
@@ -215,8 +217,14 @@ def _persistently_unready(status: dict, rules: Rules, now: datetime) -> bool:
 # Events and nodes
 # ---------------------------------------------------------------------------
 
-def detect_event(event: dict, rules: Rules) -> tuple[str, dict] | None:
-    """Warning events: FailedScheduling, FailedMount, pod sandbox failures."""
+def detect_event(event: dict, rules: Rules, now: datetime | None = None, endpoint: dict | None = None,
+                 deployment: dict | None = None) -> tuple[str, dict] | None:
+    """Warning events: FailedScheduling, FailedMount, pod sandbox failures.
+
+    `endpoint` and `deployment` are the LLMDEndpoint the event's pod belongs
+    to (see llmd_pod_endpoint) and its vLLM Deployment, when the caller found
+    them: a FailedScheduling that is part of a scale-to-zero model's cold
+    start (cold_start_scheduling) is not a trigger."""
     if event.get("type") != "Warning":
         return None
     obj = event.get("involvedObject") or {}
@@ -229,6 +237,8 @@ def detect_event(event: dict, rules: Rules) -> tuple[str, dict] | None:
     payload = {"kind": obj.get("kind"), "namespace": ns or "", "name": obj.get("name"),
                "reason": reason, "message": event.get("message"), "count": event.get("count")}
     if reason == "FailedScheduling" and rules.on("FailedScheduling"):
+        if now is not None and cold_start_scheduling(event, endpoint, deployment, now):
+            return None
         return "FailedScheduling", payload
     if reason == "FailedMount" and rules.on("FailedMount"):
         return "FailedMount", payload
@@ -299,15 +309,24 @@ def stuck_llmd(ep: dict, rules: Rules, now: datetime) -> bool:
 WAKE_MARGIN_SEC = 120
 
 
+def _scale_to_zero(ep: dict) -> bool:
+    return str((ep.get("spec") or {}).get("minReplicas", 1)) == "0"
+
+
+def _available(deployment: dict | None) -> dict | None:
+    """The Deployment's Available condition, if it has one."""
+    return next((c for c in ((deployment or {}).get("status") or {}).get("conditions") or []
+                 if c.get("type") == "Available"), None)
+
+
 def waking_from_zero(ep: dict, deployment: dict | None, now: datetime) -> bool:
     """True while a minReplicas-0 LLMDEndpoint starts a replica from zero: its
     Deployment's Available condition turned False (0 -> 1 replicas) less than
     coldStartTimeoutSeconds + WAKE_MARGIN_SEC ago."""
     spec = ep.get("spec") or {}
-    if str(spec.get("minReplicas", 1)) != "0" or not deployment:
+    if not _scale_to_zero(ep) or not deployment:
         return False
-    cond = next((c for c in (deployment.get("status") or {}).get("conditions") or []
-                 if c.get("type") == "Available"), None)
+    cond = _available(deployment)
     if not cond or cond.get("status") != "False":
         return False
     since = _parse_time(cond.get("lastTransitionTime"))
@@ -318,6 +337,49 @@ def waking_from_zero(ep: dict, deployment: dict | None, now: datetime) -> bool:
     except (TypeError, ValueError):
         budget = 600 + WAKE_MARGIN_SEC
     return (now - since).total_seconds() < budget
+
+
+def llmd_pod_endpoint(event: dict) -> tuple[str, str] | None:
+    """(namespace, name) of the LLMDEndpoint the event's pod belongs to, going
+    by the pod's name (<endpoint>-llmd-<replicaset>-<pod>); None for any other
+    object. The caller reads that endpoint and its Deployment and passes them
+    to detect_event."""
+    obj = event.get("involvedObject") or {}
+    match = _LLMD_POD_RE.match(obj.get("name") or "") if obj.get("kind") == "Pod" else None
+    return (obj.get("namespace") or "", match.group(1)) if match else None
+
+
+def _event_time(event: dict) -> datetime | None:
+    """When the event last happened. The scheduler reports a repeated event
+    as a series (eventTime = first, series.lastObservedTime = last); other
+    components set lastTimestamp."""
+    times = [t for t in (_parse_time(event.get("lastTimestamp")),
+                         _parse_time((event.get("series") or {}).get("lastObservedTime")),
+                         _parse_time(event.get("eventTime"))) if t]
+    return max(times) if times else _parse_time((event.get("metadata") or {}).get("creationTimestamp"))
+
+
+def cold_start_scheduling(event: dict, ep: dict | None, deployment: dict | None, now: datetime) -> bool:
+    """True when a FailedScheduling event is part of a cold start of the
+    scale-to-zero LLMDEndpoint `ep` (`deployment` is its vLLM Deployment).
+
+    Every wake from zero creates a pod that cannot be scheduled until
+    Karpenter has added its GPU node. That is the case while the model is
+    waking (waking_from_zero), and for an event from before the model last
+    became available: a wake that succeeded, whose stored event the watch
+    reads again each time it restarts. Once the hold has run out without a
+    replica, or when a pod is unschedulable while the model is available, the
+    event is judged as for any other pod."""
+    meta = (ep or {}).get("metadata") or {}
+    if not ep or not _scale_to_zero(ep) or llmd_pod_endpoint(event) != (meta.get("namespace", ""), meta.get("name")):
+        return False
+    if waking_from_zero(ep, deployment, now):
+        return True
+    cond, seen = _available(deployment), _event_time(event)
+    if not cond or cond.get("status") != "True" or seen is None:
+        return False
+    since = _parse_time(cond.get("lastTransitionTime"))
+    return since is not None and seen <= since
 
 
 def utcnow() -> datetime:

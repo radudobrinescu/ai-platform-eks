@@ -7,7 +7,7 @@ from types import SimpleNamespace as NS
 import pytest
 
 from dash_testlib import FakeConn
-from pha_cases import ago, cs, event, node, pod
+from pha_cases import LLMD_POD, ago, cs, deployment_available, event, llmd_endpoint, node, pod
 from pha import triggers
 
 
@@ -91,6 +91,44 @@ def test_detectors_apply_the_rules(pha_watch):
         pod(containers=[cs(restarts=4, waiting=("CrashLoopBackOff", "b"))])) is None
 
 
+def test_event_detector_reads_the_model_of_an_unschedulable_llmd_pod(pha_watch, monkeypatch):
+    """A scale-to-zero model's new pod waits for its GPU node on every wake:
+    no investigation while the model wakes, one when the hold has run out."""
+    watch, _ = pha_watch
+    custom = Custom(endpoints={"sleepy": llmd_endpoint(0), "warm": llmd_endpoint(1, name="warm"),
+                               "late": llmd_endpoint(0, name="late")},
+                    deployments={"sleepy-llmd": deployment_available("False", 2),
+                                 "warm-llmd": deployment_available("False", 2),
+                                 "late-llmd": deployment_available("False", 13)})
+    monkeypatch.setattr(watch.client, "CustomObjectsApi", lambda: custom, raising=False)
+    detect = watch.detectors(triggers.Rules())["event"][1]
+
+    def unschedulable(pod_name):
+        return detect(event("FailedScheduling", name=pod_name, last=ago(minutes=1)))
+
+    assert unschedulable(LLMD_POD) is None
+    assert custom.gets == [("llmdendpoints", "inference", "sleepy"), ("deployments", "inference", "sleepy-llmd")]
+    assert unschedulable("late-llmd-6c8f9d7b5-x2k4q")[0] == "FailedScheduling"
+    custom.gets.clear()
+    assert unschedulable("warm-llmd-6c8f9d7b5-x2k4q")[0] == "FailedScheduling"
+    assert custom.gets == [("llmdendpoints", "inference", "warm")], "an always-warm model: no Deployment read"
+    assert unschedulable("gone-llmd-6c8f9d7b5-x2k4q")[0] == "FailedScheduling", "no such endpoint"
+    custom.gets.clear()
+    assert unschedulable("qwen-7d9f8c6b5d-abcde")[0] == "FailedScheduling"
+    assert detect(event("FailedMount", name=LLMD_POD))[0] == "FailedMount"
+    assert detect(event("BackOff", name=LLMD_POD)) is None
+    assert custom.gets == [], "only an unschedulable llm-d pod costs API calls"
+
+
+def test_event_detector_respects_a_disabled_failed_scheduling_rule(pha_watch, monkeypatch):
+    watch, _ = pha_watch
+    custom = Custom(endpoints={"sleepy": llmd_endpoint(0)})
+    monkeypatch.setattr(watch.client, "CustomObjectsApi", lambda: custom, raising=False)
+    rules = triggers.Rules(enabled=frozenset(triggers.TRIGGER_ENV) - {"FailedScheduling"})
+    assert watch.detectors(rules)["event"][1](event("FailedScheduling", name=LLMD_POD)) is None
+    assert custom.gets == []
+
+
 def _watch_with(watch, monkeypatch, streams, agent):
     """kubernetes.watch.Watch stand-in yielding `streams` one per call."""
     calls = {"n": 0}
@@ -171,9 +209,10 @@ def test_watch_loop_replaces_a_broken_connection(pha_watch, monkeypatch):
 # ---------------------------------------------------------------------------
 
 class Custom:
-    def __init__(self, items=None, errors=None, deployments=None):
+    def __init__(self, items=None, errors=None, deployments=None, endpoints=None):
         self.items, self.errors, self.calls = items or {}, errors or {}, 0
         self.deployments = deployments or {}
+        self.endpoints, self.gets = endpoints or {}, []
 
     def list_namespaced_custom_object(self, group, version, namespace, plural):
         self.calls += 1
@@ -182,10 +221,15 @@ class Custom:
         return {"items": self.items.get(plural, [])}
 
     def get_namespaced_custom_object(self, group, version, namespace, plural, name):
-        assert (group, version, plural) == ("apps", "v1", "deployments")
-        if name not in self.deployments:
+        self.gets.append((plural, namespace, name))
+        if (group, version, plural) == ("kro.run", "v1alpha1", "llmdendpoints"):
+            found = self.endpoints
+        else:
+            assert (group, version, plural) == ("apps", "v1", "deployments")
+            found = self.deployments
+        if name not in found:
             raise LookupError(name)
-        return self.deployments[name]
+        return found[name]
 
 
 def _scan(watch, monkeypatch, custom, cycles=1, between=None, **agent_kw):

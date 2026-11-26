@@ -6,20 +6,33 @@
 # eliminating the multi-minute pull for the large vLLM serving image.
 #
 # Approach: launches a temporary Bottlerocket instance that joins the EKS cluster
-# with a NoSchedule taint. A short-lived pod scheduled ON that node (via nodeName)
+# with a NoExecute taint. A short-lived pod scheduled ON that node (via nodeName)
 # forces kubelet to pull the target image into containerd's content store on
 # /dev/xvdb. Once pulled, the instance is stopped and /dev/xvdb is snapshotted.
+#
+# kubectl runs with a temporary kubeconfig that the script writes for the named
+# cluster (-n, -r), never with your current context; your kubeconfig is not
+# modified.
 #
 # Usage:
 #   ./ops/image/create-data-volume-snapshot.sh [options] <image1> [image2] ...
 #
 # Options:
-#   -r REGION           AWS region (default: from AWS_REGION or cluster context)
+#   -r REGION           AWS region (default: AWS_REGION, else the AWS CLI's region)
 #   -n CLUSTER_NAME     EKS cluster name (default: from current kubectl context)
 #   -i INSTANCE_TYPE    Builder instance type (default: c5.xlarge for fast network)
 #   -s VOLUME_SIZE      Data volume size in GiB (default: 200)
-#   --fsr AZ1[,AZ2]    Enable Fast Snapshot Restore in specified AZs
-#   --write-tfvars      Write snapshot ID to terraform/30.eks/30.cluster/snapshot.auto.tfvars
+#   --fsr AZ1[,AZ2]     Enable Fast Snapshot Restore (FSR) in these Availability
+#                       Zones. FSR is billed per snapshot, per Availability Zone,
+#                       per hour, for as long as it stays enabled - also after
+#                       the cluster is destroyed, because the snapshot is kept.
+#                       Turn it off with:
+#                         aws ec2 disable-fast-snapshot-restores \
+#                           --source-snapshot-ids <snap-id> --availability-zones <AZ> ...
+#   --write-tfvars      Pin the snapshot: write its ID (gpu_data_volume_snapshot_id)
+#                       to terraform/30.eks/30.cluster/snapshot.auto.tfvars. A pin
+#                       turns Terraform's automatic snapshot off: a later vLLM
+#                       version is not baked until the file is removed
 #   --reuse             If this account already has a completed snapshot of the
 #                       same images and volume size (tags Purpose + Images), use
 #                       it instead of building a new one
@@ -43,7 +56,7 @@
 #   ./ops/image/create-data-volume-snapshot.sh vllm/vllm-openai:v0.33.0
 #
 #   # With FSR and auto-tfvars:
-#   ./ops/image/create-data-volume-snapshot.sh --fsr eu-central-1a,eu-central-1b --write-tfvars vllm/vllm-openai:v0.24.0
+#   ./ops/image/create-data-volume-snapshot.sh --fsr eu-central-1a,eu-central-1b --write-tfvars vllm/vllm-openai:<tag>
 #
 # Output: prints snapshot ID (snap-xxx) as the last line on success.
 set -euo pipefail
@@ -68,7 +81,7 @@ while [[ $# -gt 0 ]]; do
     --write-tfvars) WRITE_TFVARS=true; shift ;;
     --reuse) REUSE=true; shift ;;
     --patch-nodeclasses) PATCH_NODECLASSES="$2"; shift 2 ;;
-    -h|--help) sed -n '2,/^set -euo/p' "$0" | sed 's/^# \?//'; exit 0 ;;
+    -h|--help) sed -n '2,/^set -euo/p' "$0" | sed -e '$d' -e 's/^# \{0,1\}//'; exit 0 ;;
     -*) echo "Unknown option: $1" >&2; exit 1 ;;
     *) IMAGES+=("$1"); shift ;;
   esac
@@ -103,7 +116,14 @@ done
 
 # --- Resolve cluster context --------------------------------------------------
 if [[ -z "$CLUSTER_NAME" ]]; then
-  CLUSTER_NAME=$(kubectl config view --minify -o jsonpath='{.clusters[0].name}' 2>/dev/null | awk -F/ '{print $NF}')
+  CLUSTER_NAME=$(kubectl config view --minify -o jsonpath='{.clusters[0].name}' 2>/dev/null | awk -F/ '{print $NF}') || true
+fi
+# EKS cluster names are letters, digits, "-" and "_". Checked because the name
+# goes into EC2 tag filters, where "*" and "?" are wildcards: the leftover
+# builder lookup below must match this cluster only.
+if [[ ! "$CLUSTER_NAME" =~ ^[A-Za-z0-9][A-Za-z0-9_-]*$ ]]; then
+  echo "Error: no valid EKS cluster name ('${CLUSTER_NAME}'). Pass -n <cluster-name>." >&2
+  exit 1
 fi
 if [[ -z "$REGION" ]]; then
   REGION="${AWS_REGION:-$(aws configure get region 2>/dev/null || true)}"
@@ -113,18 +133,114 @@ if [[ -z "$REGION" ]]; then
   exit 1
 fi
 
+# --- Builder lifecycle --------------------------------------------------------
+# The only billable thing this script creates is the builder EC2 instance (its
+# volumes are deleted with it). The EXIT trap is installed here, before the
+# launch, and terminating the instance is the first thing it does: that step
+# needs only the AWS CLI, never kubectl.
+INSTANCE_ID=""
+NODE_NAME=""
+LAUNCH_STARTED=false
+BUILDER_NAME_TAG="${CLUSTER_NAME}-snapshot-builder"
+BUILDER_PURPOSE_TAG="data-volume-snapshot"
+RETRY_SECONDS="${LAUNCH_RETRY_SECONDS:-10}"
+WORK_DIR=$(mktemp -d)
+
+# terminate_instances ID... — 0 once EC2 has accepted the termination (3 tries).
+terminate_instances() {
+  local attempt
+  for attempt in 1 2 3; do
+    if aws ec2 terminate-instances --instance-ids "$@" --region "$REGION" \
+        >/dev/null 2>"$WORK_DIR/terminate.err"; then
+      return 0
+    fi
+    if [[ "$attempt" -lt 3 ]]; then sleep "$RETRY_SECONDS"; fi
+  done
+  echo "ERROR: could not terminate builder instance(s) $* - still running, and billed." >&2
+  sed 's/^/  /' "$WORK_DIR/terminate.err" >&2
+  echo "  Terminate by hand:" >&2
+  echo "    aws ec2 terminate-instances --instance-ids $* --region $REGION" >&2
+  return 1
+}
+
+# Terminate the builders of THIS cluster that are still alive: the ones an
+# interrupted earlier run left behind. Found by the tags launch_builder sets,
+# as exact values, so another cluster's builder is never matched.
+terminate_leftover_builders() {
+  local out id ids=()
+  if ! out=$(aws ec2 describe-instances --region "$REGION" \
+      --filters "Name=tag:Name,Values=${BUILDER_NAME_TAG}" \
+                "Name=tag:Purpose,Values=${BUILDER_PURPOSE_TAG}" \
+                "Name=instance-state-name,Values=pending,running,stopping,stopped" \
+      --query "Reservations[].Instances[].InstanceId" --output text 2>"$WORK_DIR/describe.err"); then
+    echo "  ⚠ could not look for leftover builder instances of $CLUSTER_NAME:" >&2
+    sed 's/^/    /' "$WORK_DIR/describe.err" >&2
+    return 1
+  fi
+  while read -r id; do
+    if [[ "$id" =~ ^i-[0-9a-f]+$ ]]; then ids+=("$id"); fi
+  done < <(tr -s '[:space:]' '\n' <<< "$out")
+  if [[ ${#ids[@]} -eq 0 ]]; then return 0; fi
+  echo "→ Terminating builder instance(s) of $CLUSTER_NAME left running: ${ids[*]}"
+  terminate_instances "${ids[@]}"
+}
+
+# Terminate the builder, then remove its pods and node. Safe to call twice.
+# Returns 1 if an instance may still be running.
+release_builder() {
+  local rc=0
+  if [[ -n "$INSTANCE_ID" ]]; then
+    echo ""
+    echo "→ Cleaning up..."
+    if terminate_instances "$INSTANCE_ID"; then
+      echo "  Builder instance $INSTANCE_ID terminated."
+    else
+      rc=1
+    fi
+    INSTANCE_ID=""
+    kubectl delete pods -n kube-system -l app=snapshot-puller --ignore-not-found \
+      --wait=false --request-timeout=30s >/dev/null 2>&1 || true
+    if [[ -n "$NODE_NAME" ]]; then
+      kubectl delete node "$NODE_NAME" --ignore-not-found \
+        --wait=false --request-timeout=30s >/dev/null 2>&1 || true
+    fi
+  elif [[ "$LAUNCH_STARTED" == "true" ]]; then
+    # A launch was attempted but no instance id was recorded: look by tags.
+    terminate_leftover_builders || rc=1
+  fi
+  LAUNCH_STARTED=false
+  return "$rc"
+}
+
+cleanup() {
+  local rc=$?
+  set +e +o pipefail
+  if ! release_builder && [[ "$rc" -eq 0 ]]; then rc=1; fi
+  rm -rf "$WORK_DIR"
+  exit "$rc"
+}
+trap cleanup EXIT
+
 ACCOUNT=$(aws sts get-caller-identity --query Account --output text)
 if [[ -z "$ACCOUNT" || "$ACCOUNT" == "None" ]]; then
   echo "Error: failed to get AWS account ID. Check credentials and IAM permissions." >&2
   exit 1
 fi
 
+# An earlier run that was killed (closed terminal, CI timeout) may have left its
+# builder running. A failure here is reported and does not stop this run.
+terminate_leftover_builders || true
+
 # Expand short image references to full ECR pull-through cache URIs, and drop
 # any private-ECR image that isn't pushed yet — baking such an image would hang
 # the puller pod in ImagePullBackOff, so the script skips images absent from ECR.
 # Skipping it keeps the no-Docker path working (the vLLM image still bakes).
+# FULL_IMAGES: what is pulled. BAKED_IMAGES: the same images as they were given
+# on the command line — the spelling the Images tag and the lookup by it use.
 FULL_IMAGES=()
+BAKED_IMAGES=()
 for img in "${IMAGES[@]}"; do
+  requested="$img"
   # A first path component with a dot, a colon or "localhost" is a registry host.
   first="${img%%/*}"
   if [[ "$img" != */* || ( "$first" != *.* && "$first" != *:* && "$first" != "localhost" ) ]]; then
@@ -141,6 +257,7 @@ for img in "${IMAGES[@]}"; do
     fi
   fi
   FULL_IMAGES+=("$img")
+  BAKED_IMAGES+=("$requested")
 done
 
 if [[ ${#FULL_IMAGES[@]} -eq 0 ]]; then
@@ -149,9 +266,41 @@ if [[ ${#FULL_IMAGES[@]} -eq 0 ]]; then
 fi
 
 # Tag-safe form of the image list for the Images tag (see the snapshot step):
-# space-joined, at most 255 characters. Reuse looks snapshots up by it.
-IMAGE_LIST_TAG="${IMAGES[*]}"
+# space-joined, at most 255 characters. Reuse looks snapshots up by it, so it
+# lists only the images that are baked — never one skipped above.
+IMAGE_LIST_TAG="${BAKED_IMAGES[*]}"
 IMAGE_LIST_TAG="${IMAGE_LIST_TAG:0:255}"
+
+# --- kubectl talks to the named cluster only ----------------------------------
+# kubectl never runs with the operator's kubeconfig: its current context can
+# point at another cluster (a second environment, a switch in another terminal
+# during the build), and the GPU EC2NodeClasses have the same names in every
+# environment. The script writes its own kubeconfig for $CLUSTER_NAME, uses only
+# that one, and removes it on exit; the operator's file and context are not
+# touched. Stops the script when kubectl or the cluster is not usable.
+KUBECONFIG_READY=false
+use_cluster_kubeconfig() {
+  if [[ "$KUBECONFIG_READY" == "true" ]]; then return 0; fi
+  if ! command -v kubectl >/dev/null 2>&1; then
+    echo "Error: kubectl not found on PATH. It is needed to bake the image and to" >&2
+    echo "  update the EC2NodeClasses. Install kubectl and run this again." >&2
+    exit 1
+  fi
+  if ! aws eks update-kubeconfig --name "$CLUSTER_NAME" --region "$REGION" \
+      --kubeconfig "$WORK_DIR/kubeconfig" >/dev/null 2>"$WORK_DIR/kubeconfig.err"; then
+    echo "Error: cannot write a kubeconfig for cluster $CLUSTER_NAME in $REGION:" >&2
+    sed 's/^/  /' "$WORK_DIR/kubeconfig.err" >&2
+    exit 1
+  fi
+  export KUBECONFIG="$WORK_DIR/kubeconfig"
+  if ! kubectl get --raw /version --request-timeout=20s \
+      >/dev/null 2>"$WORK_DIR/kubeconfig.err"; then
+    echo "Error: cannot reach cluster $CLUSTER_NAME in $REGION with kubectl:" >&2
+    sed 's/^/  /' "$WORK_DIR/kubeconfig.err" >&2
+    exit 1
+  fi
+  KUBECONFIG_READY=true
+}
 
 # Point the given Karpenter EC2NodeClasses' /dev/xvdb volume at the snapshot.
 # Terraform's next apply renders the same value, so this only makes it take
@@ -186,13 +335,24 @@ patch_nodeclasses() {
   done
 }
 
-if [[ "$REUSE" == "true" ]]; then
-  EXISTING=$(aws ec2 describe-snapshots --region "$REGION" --owner-ids self \
+# Checked before anything else is done with the cluster, and before a builder
+# is launched. (A reuse without --patch-nodeclasses needs no kubectl.)
+if [[ -n "$PATCH_NODECLASSES" ]]; then
+  use_cluster_kubeconfig
+fi
+
+# The newest completed snapshot of these images at this volume size, if any.
+find_snapshot() {
+  aws ec2 describe-snapshots --region "$REGION" --owner-ids self \
     --filters "Name=tag:Purpose,Values=bottlerocket-data-volume" \
               "Name=tag:Images,Values=${IMAGE_LIST_TAG}" \
               "Name=volume-size,Values=${VOLUME_SIZE}" \
               "Name=status,Values=completed" \
-    --query "reverse(sort_by(Snapshots, &StartTime))[0].SnapshotId" --output text 2>/dev/null || true)
+    --query "reverse(sort_by(Snapshots, &StartTime))[0].SnapshotId" --output text 2>/dev/null || true
+}
+
+if [[ "$REUSE" == "true" ]]; then
+  EXISTING=$(find_snapshot)
   if [[ "$EXISTING" =~ ^snap-[0-9a-f]+$ ]]; then
     echo "→ Reusing snapshot $EXISTING (already holds: ${IMAGE_LIST_TAG})"
     patch_nodeclasses "$EXISTING"
@@ -201,6 +361,8 @@ if [[ "$REUSE" == "true" ]]; then
   fi
   echo "→ No snapshot of ${IMAGE_LIST_TAG} yet: building one (about 15 minutes)."
 fi
+
+use_cluster_kubeconfig
 
 echo "╭──────────────────────────────────────────────────────────────────╮"
 echo "│  Bottlerocket Data Volume Snapshot Builder                       │"
@@ -245,8 +407,8 @@ for _ in $(seq 1 "${LAUNCH_ATTEMPTS:-18}"); do
     --role-name "$ROLE_NAME" --region "$REGION" \
     --query "InstanceProfiles[0].InstanceProfileName" --output text 2>/dev/null || true)
   [[ -n "$INSTANCE_PROFILE" && "$INSTANCE_PROFILE" != "None" ]] && break
-  echo "  no instance profile for $ROLE_NAME yet; retrying in 10s"
-  sleep "${LAUNCH_RETRY_SECONDS:-10}"
+  echo "  no instance profile for $ROLE_NAME yet; retrying in ${RETRY_SECONDS}s"
+  sleep "$RETRY_SECONDS"
 done
 
 if [[ -z "$INSTANCE_PROFILE" || "$INSTANCE_PROFILE" == "None" ]]; then
@@ -279,7 +441,7 @@ CA_DATA=$(aws eks describe-cluster --name "$CLUSTER_NAME" --region "$REGION" \
 # Write userdata to a temp file — AWS CLI v2 auto-base64-encodes --user-data,
 # so we pass raw TOML. Using a file avoids shell quoting issues with the
 # multi-line certificate data. Cleaned up by the EXIT trap.
-USERDATA_FILE=$(mktemp)
+USERDATA_FILE="$WORK_DIR/userdata.toml"
 cat > "$USERDATA_FILE" <<TOML
 [settings.kubernetes]
 cluster-name = "${CLUSTER_NAME}"
@@ -311,70 +473,68 @@ launch_builder() {
   --iam-instance-profile Name="$INSTANCE_PROFILE" \
   --user-data "file://${USERDATA_FILE}" \
   --block-device-mappings "[
-    {\"DeviceName\":\"/dev/xvda\",\"Ebs\":{\"VolumeSize\":4,\"VolumeType\":\"gp3\",\"Encrypted\":true}},
-    {\"DeviceName\":\"/dev/xvdb\",\"Ebs\":{\"VolumeSize\":${VOLUME_SIZE},\"VolumeType\":\"gp3\",\"Iops\":6000,\"Throughput\":500,\"Encrypted\":true}}
+    {\"DeviceName\":\"/dev/xvda\",\"Ebs\":{\"VolumeSize\":4,\"VolumeType\":\"gp3\",\"Encrypted\":true,\"DeleteOnTermination\":true}},
+    {\"DeviceName\":\"/dev/xvdb\",\"Ebs\":{\"VolumeSize\":${VOLUME_SIZE},\"VolumeType\":\"gp3\",\"Iops\":6000,\"Throughput\":500,\"Encrypted\":true,\"DeleteOnTermination\":true}}
   ]" \
   --tag-specifications "ResourceType=instance,Tags=[
-    {Key=Name,Value=${CLUSTER_NAME}-snapshot-builder},
-    {Key=Purpose,Value=data-volume-snapshot}
+    {Key=Name,Value=${BUILDER_NAME_TAG}},
+    {Key=Purpose,Value=${BUILDER_PURPOSE_TAG}}
   ]" \
   --query "Instances[0].InstanceId" --output text
 }
-INSTANCE_ID=""
+# stderr goes to a file, not into the captured id: a warning printed on a
+# successful launch must not hide the instance id (the instance would be lost).
+LAUNCH_STARTED=true
 for attempt in $(seq 1 "${LAUNCH_ATTEMPTS:-18}"); do
-  if out=$(launch_builder 2>&1); then
-    INSTANCE_ID="$out"
+  if out=$(launch_builder 2>"$WORK_DIR/launch.err"); then
+    cat "$WORK_DIR/launch.err" >&2
+    if [[ "$out" =~ ^i-[0-9a-f]+$ ]]; then INSTANCE_ID="$out"; fi
     break
   fi
+  out=$(cat "$WORK_DIR/launch.err")
   if [[ "$out" != *"iamInstanceProfile"* ]]; then
     echo "Error: run-instances failed: $out" >&2
     exit 1
   fi
-  echo "  instance profile not visible to EC2 yet (attempt ${attempt}); retrying in 10s"
-  sleep "${LAUNCH_RETRY_SECONDS:-10}"
+  echo "  instance profile not visible to EC2 yet (attempt ${attempt}); retrying in ${RETRY_SECONDS}s"
+  sleep "$RETRY_SECONDS"
 done
-if [[ ! "$INSTANCE_ID" =~ ^i-[0-9a-f]+$ ]]; then
+if [[ -z "$INSTANCE_ID" ]]; then
   echo "Error: builder instance not launched: ${out:-no output}" >&2
   exit 1
 fi
 
 echo "  Instance: $INSTANCE_ID"
 
-cleanup() {
-  echo ""
-  echo "→ Cleaning up..."
-  rm -f "$USERDATA_FILE" 2>/dev/null || true
-  kubectl delete pods -n kube-system -l app=snapshot-puller --ignore-not-found 2>/dev/null || true
-  NODE_TO_DELETE=$(kubectl get nodes -l node.kubernetes.io/purpose=snapshot-builder \
-    --no-headers -o custom-columns=':metadata.name' 2>/dev/null | head -1)
-  if [[ -n "$NODE_TO_DELETE" ]]; then
-    kubectl delete node "$NODE_TO_DELETE" --ignore-not-found 2>/dev/null || true
-  fi
-  aws ec2 terminate-instances --instance-ids "$INSTANCE_ID" --region "$REGION" > /dev/null 2>&1 || true
-  echo "  Builder instance terminated."
-}
-trap cleanup EXIT
-
 # --- Wait for node to join cluster --------------------------------------------
+# The node of the instance launched above, by its providerID
+# (aws:///<az>/<instance-id>). Not "the first node with the builder label": that
+# can be a node an earlier run left behind, and then the image is pulled there
+# while this run's empty volume is snapshotted.
 echo "→ Waiting for builder node to join the cluster..."
-NODE_NAME=""
-for _ in $(seq 1 72); do
+NODE_JOIN_ATTEMPTS="${NODE_JOIN_ATTEMPTS:-72}"
+NODE_JOIN_SECONDS="${NODE_JOIN_SECONDS:-5}"
+for _ in $(seq 1 "$NODE_JOIN_ATTEMPTS"); do
   NODE_NAME=$(kubectl get nodes -l node.kubernetes.io/purpose=snapshot-builder \
-    --no-headers -o custom-columns=':metadata.name' 2>/dev/null | head -1)
+    -o jsonpath='{range .items[*]}{.metadata.name}{"\t"}{.spec.providerID}{"\n"}{end}' 2>/dev/null \
+    | awk -F'\t' -v id="$INSTANCE_ID" '{ n = split($2, part, "/"); if (part[n] == id) { print $1; exit } }') || true
   if [[ -n "$NODE_NAME" ]]; then
     break
   fi
-  sleep 5
+  sleep "$NODE_JOIN_SECONDS"
 done
 
 if [[ -z "$NODE_NAME" ]]; then
-  echo "Error: builder node did not join within 6 minutes." >&2
+  echo "Error: the node of builder instance $INSTANCE_ID did not join cluster $CLUSTER_NAME within $(( NODE_JOIN_ATTEMPTS * NODE_JOIN_SECONDS / 60 )) minutes." >&2
   echo "  Debug: aws ec2 get-console-output --instance-id $INSTANCE_ID --region $REGION" >&2
   exit 1
 fi
 echo "  Node: $NODE_NAME"
 
-kubectl wait --for=condition=Ready "node/$NODE_NAME" --timeout=120s 2>/dev/null
+if ! kubectl wait --for=condition=Ready "node/$NODE_NAME" --timeout=120s; then
+  echo "Error: builder node $NODE_NAME (instance $INSTANCE_ID) did not become Ready within 120 seconds." >&2
+  exit 1
+fi
 echo "  ✓ Node ready"
 
 # --- Pull images by scheduling pods on the builder node -----------------------
@@ -387,7 +547,7 @@ for i in "${!FULL_IMAGES[@]}"; do
   pod_name="snapshot-puller-${i}"
   echo "  [$((i+1))/${#FULL_IMAGES[@]}] $img"
 
-  kubectl apply -f - <<EOF
+  if ! kubectl apply -f - <<EOF
 apiVersion: v1
 kind: Pod
 metadata:
@@ -413,6 +573,10 @@ spec:
           memory: "128Mi"
   restartPolicy: Never
 EOF
+  then
+    echo "Error: could not create the puller pod for $img on node $NODE_NAME." >&2
+    exit 1
+  fi
 done
 
 # Wait for all puller pods to complete (indicates images are pulled)
@@ -430,26 +594,43 @@ for i in "${!FULL_IMAGES[@]}"; do
     if [[ "$PHASE" == "Running" || "$PHASE" == "Succeeded" ]]; then
       echo "  ✓ $(basename "$img") (phase: $PHASE)"
     else
-      echo "  ✗ $(basename "$img") (phase: $PHASE — image may not be fully cached)"
+      REASON=$(kubectl get pod "$pod_name" -n kube-system \
+        -o jsonpath='{.status.containerStatuses[0].state.waiting.reason}' 2>/dev/null || true)
+      echo "  ✗ $img was not pulled (waited up to 15 min; pod phase: ${PHASE:-Unknown}${REASON:+, $REASON})" >&2
       ALL_PULLED=false
     fi
   fi
 done
 
+# A snapshot of a volume without the image would still carry the Images tag, and
+# every cluster in this account and region finds snapshots by that tag: stop
+# here. The EXIT trap terminates the builder; the next run builds again.
 if [[ "$ALL_PULLED" != "true" ]]; then
-  echo "Warning: not all images pulled successfully. Snapshot may be incomplete." >&2
+  echo "Error: not every image was pulled onto the builder. No snapshot was created." >&2
+  exit 1
 fi
 
 # --- Clean up pods and stop instance ------------------------------------------
+# The images are on the volume by now: a failure to tidy the cluster here is
+# reported and does not stop the build (the cleanup at exit tries again).
 echo "→ Cleaning up puller pods..."
-kubectl delete pods -n kube-system -l app=snapshot-puller --ignore-not-found 2>/dev/null
+kubectl delete pods -n kube-system -l app=snapshot-puller --ignore-not-found --timeout=60s \
+  || echo "  ⚠ could not delete the puller pods yet" >&2
 
 echo "→ Removing builder node from cluster..."
-kubectl delete node "$NODE_NAME" --ignore-not-found 2>/dev/null
+kubectl delete node "$NODE_NAME" --ignore-not-found --timeout=60s \
+  || echo "  ⚠ could not delete node $NODE_NAME yet" >&2
 
 echo "→ Stopping instance (flushing writes to EBS)..."
-aws ec2 stop-instances --instance-ids "$INSTANCE_ID" --region "$REGION" > /dev/null
-aws ec2 wait instance-stopped --instance-ids "$INSTANCE_ID" --region "$REGION"
+if ! aws ec2 stop-instances --instance-ids "$INSTANCE_ID" --region "$REGION" > /dev/null; then
+  echo "Error: could not stop builder instance $INSTANCE_ID." >&2
+  exit 1
+fi
+# This waiter checks every 15 s, 40 times.
+if ! aws ec2 wait instance-stopped --instance-ids "$INSTANCE_ID" --region "$REGION"; then
+  echo "Error: builder instance $INSTANCE_ID did not reach the stopped state within 10 minutes." >&2
+  exit 1
+fi
 echo "  ✓ Instance stopped"
 
 # --- Create snapshot ----------------------------------------------------------
@@ -462,9 +643,24 @@ if [[ -z "$VOLUME_ID" || "$VOLUME_ID" == "None" ]]; then
   exit 1
 fi
 
+# Two clusters applying at the same time both find no snapshot and both build.
+# Look once more now: if the other build has completed, use its snapshot rather
+# than leave two with the same lookup tags.
+if [[ "$REUSE" == "true" ]]; then
+  EXISTING=$(find_snapshot)
+  if [[ "$EXISTING" =~ ^snap-[0-9a-f]+$ ]]; then
+    echo "  Another build of ${IMAGE_LIST_TAG} completed meanwhile:"
+    echo "  using its snapshot $EXISTING, not creating a second one."
+    release_builder || exit 1
+    patch_nodeclasses "$EXISTING"
+    echo "$EXISTING"
+    exit 0
+  fi
+fi
+
 TIMESTAMP=$(date -u +%Y%m%d-%H%M%S)
 # Comma-joined form for the human-readable summary + tfvars comment below.
-IMAGE_LIST=$(IFS=,; echo "${IMAGES[*]}")
+IMAGE_LIST=$(IFS=,; echo "${BAKED_IMAGES[*]}")
 # IMAGE_LIST_TAG (set above) is the tag-safe form for the Images tag: the AWS
 # CLI shorthand --tag-specifications uses COMMA as its delimiter, so a
 # comma-joined multi-image value corrupts the parse (only single-image runs
@@ -484,10 +680,45 @@ SNAPSHOT_ID=$(aws ec2 create-snapshot --region "$REGION" \
   ]" \
   --query "SnapshotId" --output text)
 
+if [[ ! "$SNAPSHOT_ID" =~ ^snap-[0-9a-f]+$ ]]; then
+  echo "Error: create-snapshot returned no snapshot id ('${SNAPSHOT_ID}')." >&2
+  exit 1
+fi
 echo "  Snapshot: $SNAPSHOT_ID"
-echo "→ Waiting for snapshot to complete (2-5 min for 200 GiB volume)..."
-aws ec2 wait snapshot-completed --snapshot-ids "$SNAPSHOT_ID" --region "$REGION"
+
+# `aws ec2 wait snapshot-completed` gives up after 40 checks, 15 s apart: 10
+# minutes. A first snapshot of a volume can take longer, so wait a few rounds.
+SNAPSHOT_WAIT_ROUNDS="${SNAPSHOT_WAIT_ROUNDS:-4}"
+echo "→ Waiting for snapshot to complete (typically a few minutes; waiting up to $(( SNAPSHOT_WAIT_ROUNDS * 10 )) min)..."
+SNAP_STATE=""
+for round in $(seq 1 "$SNAPSHOT_WAIT_ROUNDS"); do
+  if aws ec2 wait snapshot-completed --snapshot-ids "$SNAPSHOT_ID" --region "$REGION" 2>"$WORK_DIR/wait.err"; then
+    SNAP_STATE="completed"
+    break
+  fi
+  SNAP_STATE=$(aws ec2 describe-snapshots --snapshot-ids "$SNAPSHOT_ID" --region "$REGION" \
+    --query "Snapshots[0].State" --output text 2>/dev/null || true)
+  if [[ "$SNAP_STATE" == "completed" || "$SNAP_STATE" == "error" ]]; then break; fi
+  echo "  not complete yet (state: ${SNAP_STATE:-unknown}; wait ${round} of ${SNAPSHOT_WAIT_ROUNDS})"
+done
+if [[ "$SNAP_STATE" == "error" ]]; then
+  echo "Error: snapshot $SNAPSHOT_ID failed (state: error). Deleting it; the next run builds a new one." >&2
+  aws ec2 delete-snapshot --snapshot-id "$SNAPSHOT_ID" --region "$REGION" >/dev/null \
+    || echo "  ⚠ not deleted. By hand: aws ec2 delete-snapshot --snapshot-id $SNAPSHOT_ID --region $REGION" >&2
+  exit 1
+fi
+if [[ "$SNAP_STATE" != "completed" ]]; then
+  echo "Error: snapshot $SNAPSHOT_ID is not complete after $(( SNAPSHOT_WAIT_ROUNDS * 10 )) minutes (state: ${SNAP_STATE:-unknown})." >&2
+  sed 's/^/  /' "$WORK_DIR/wait.err" >&2
+  echo "  It is left to complete. Once it has, the next apply finds it by its tags" >&2
+  echo "  (as does this script with --reuse); nothing else is needed." >&2
+  exit 1
+fi
 echo "  ✓ Snapshot ready"
+
+# The builder is no longer needed: terminate it now rather than at exit. (The
+# EXIT trap still covers every earlier way out.)
+release_builder || exit 1
 
 # --- Fast Snapshot Restore (optional) -----------------------------------------
 if [[ -n "$FSR_AZS" ]]; then
@@ -497,6 +728,10 @@ if [[ -n "$FSR_AZS" ]]; then
     --source-snapshot-ids "$SNAPSHOT_ID" \
     --availability-zones "${AZ_ARRAY[@]}" > /dev/null
   echo "  ✓ FSR enabled (optimization takes 15-60 min)"
+  echo "  FSR is billed per snapshot, per Availability Zone, per hour, until it is"
+  echo "  disabled - also after the cluster is destroyed (the snapshot is kept)."
+  echo "  To disable it:"
+  echo "    aws ec2 disable-fast-snapshot-restores --region $REGION --source-snapshot-ids $SNAPSHOT_ID --availability-zones ${AZ_ARRAY[*]}"
 fi
 
 # --- Write tfvars (optional) --------------------------------------------------
@@ -507,7 +742,9 @@ if [[ "$WRITE_TFVARS" == "true" ]]; then
   # die AFTER the snapshot was already created).
   TFVARS_FILE="${SCRIPT_DIR}/../../terraform/30.eks/30.cluster/snapshot.auto.tfvars"
   cat > "$TFVARS_FILE" <<EOF
-# Auto-generated by ops/create-data-volume-snapshot.sh
+# Auto-generated by ops/image/create-data-volume-snapshot.sh
+# This pin turns the automatic snapshot off (lookup by image, build on apply):
+# a later vLLM version is not baked until this file is removed.
 # Created: ${TIMESTAMP}
 # Images: ${IMAGE_LIST}
 # To regenerate: ./ops/image/create-data-volume-snapshot.sh --write-tfvars ${IMAGES[*]}
@@ -518,7 +755,7 @@ fi
 
 patch_nodeclasses "$SNAPSHOT_ID"
 
-# --- Done (trap still fires to terminate instance) ----------------------------
+# --- Done ---------------------------------------------------------------------
 echo ""
 echo "╭──────────────────────────────────────────────────────────────────╮"
 echo "│  Snapshot created successfully                                   │"
@@ -528,9 +765,24 @@ echo "  Snapshot ID:  $SNAPSHOT_ID"
 echo "  Volume size:  ${VOLUME_SIZE} GiB"
 echo "  Images:       ${IMAGE_LIST}"
 echo ""
-echo "  Next steps:"
-echo "    1. Add to tfvars:  gpu_data_volume_snapshot_id = \"$SNAPSHOT_ID\""
-echo "    2. Apply:          make ENVIRONMENT=<env> MODULE=./30.eks/30.cluster apply"
-echo "    3. New GPU nodes will boot with images pre-cached (0s image pull)"
-echo ""
+# Only for a manual run. From Terraform (--reuse / --patch-nodeclasses) there is
+# nothing to do, and pinning the id would switch the automation off.
+if [[ "$REUSE" != "true" && -z "$PATCH_NODECLASSES" ]]; then
+  PIN_EFFECT="turns the automatic snapshot off (lookup by image, build on apply):
+      GPU nodes keep booting from this snapshot and a later vLLM version is
+      not baked until the pin is removed."
+  echo "  Next steps:"
+  if [[ "$WRITE_TFVARS" == "true" ]]; then
+    echo "    Apply:  make ENVIRONMENT=<env> MODULE=./30.eks/30.cluster apply"
+    echo "    The pin written to snapshot.auto.tfvars $PIN_EFFECT"
+  else
+    echo "    Nothing is required when the image reference and volume size are the"
+    echo "    ones Terraform uses: the next apply finds this snapshot by its tags."
+    echo "    Optional - pin this exact snapshot instead:"
+    echo "      gpu_data_volume_snapshot_id = \"$SNAPSHOT_ID\"   (in tfvars), then"
+    echo "      make ENVIRONMENT=<env> MODULE=./30.eks/30.cluster apply"
+    echo "    A pin $PIN_EFFECT"
+  fi
+  echo ""
+fi
 echo "$SNAPSHOT_ID"

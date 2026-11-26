@@ -4,11 +4,13 @@
 # on observability being enabled.
 #
 # Scope: scrapes only the `inference` namespace: llm-d model-server pods (by the
-# `llm-d.ai/pool` label, `modelserver` port 8000; vLLM metrics) and llm-d router
-# (EPP) pods (by the `llm-d-router-gateway: <pool>-epp` label, `metrics` port
-# 9090; requests in flight and held, which drive KEDA), plus LiteLLM. Ephemeral
-# storage, 2h retention (KEDA only needs recent values). KEDA's built-in
-# Prometheus scaler queries the Service below.
+# `llm-d.ai/pool` label, the `modelserver` port; vLLM metrics, on which KEDA
+# sizes the two pools of an LLMDDisaggEndpoint) and llm-d router (EPP) pods (by
+# the `llm-d-router-gateway: <pool>-epp` label, `metrics` port 9090; requests in
+# flight and held, on which KEDA sizes an LLMDEndpoint and wakes it from zero),
+# plus every LiteLLM pod (namespace `ai-platform`, found through a headless
+# Service). Ephemeral storage, 2h retention (KEDA only needs recent values).
+# KEDA's built-in Prometheus scaler queries the Service below.
 ---
 apiVersion: v1
 kind: ServiceAccount
@@ -85,7 +87,10 @@ data:
       scrape_interval: 15s
       evaluation_interval: 15s
     scrape_configs:
-      # llm-d model-server (vLLM) pods — saturation signals for KEDA.
+      # llm-d model-server (vLLM) pods — saturation signals. KEDA sizes the
+      # two pools of an LLMDDisaggEndpoint on these (prefill on
+      # vllm:num_requests_waiting, decode on vllm:kv_cache_usage_perc). An
+      # LLMDEndpoint is sized on the router job below, not on these.
       - job_name: llmd-vllm
         kubernetes_sd_configs:
           - role: pod
@@ -114,7 +119,9 @@ data:
             target_label: pod
       # llm-d router (EPP) pods — requests in flight (llm_d_epp_request_running)
       # and requests held while no replica runs (llm_d_epp_flow_control_queue_size).
-      # KEDA sizes each pool on these and wakes a pool at zero. The EPP's
+      # KEDA sizes the pool of an LLMDEndpoint on these and wakes it from zero.
+      # The router of an LLMDDisaggEndpoint is scraped too, but KEDA does not
+      # use its series: that tier is sized on the vLLM job above. The EPP's
       # /metrics needs a bearer token: this Prometheus sends its own service
       # account token (granted `get /metrics` above). Plain HTTP inside the
       # cluster, as for vLLM: the EPP serves metrics without TLS by default.
@@ -146,16 +153,28 @@ data:
           - source_labels: [__meta_kubernetes_pod_name]
             target_label: pod
       # LiteLLM (the always-on gateway) — per-model request counters. This is
-      # the wake-from-zero signal: LiteLLM counts a request for a model before
-      # it reaches the EPP, so the counter moves even when the pool is at zero.
-      # Static target (no cross-namespace pod discovery / RBAC needed). LiteLLM
-      # serves /metrics without a key (require_auth_for_metrics_endpoint: false
-      # in litellm-config) and the gateway's ingress does not forward that path,
-      # so it is reachable from inside the cluster only.
+      # the second wake signal for a pool at zero (the first is the request the
+      # router holds, above): LiteLLM counts a request for a model before it
+      # reaches the router, so the counter moves even if the router could not
+      # hold the request.
+      # Every LiteLLM pod is its own target. A counter lives in one process, so
+      # through the ClusterIP Service one series took its samples from whichever
+      # replica answered: rate() read each drop as a counter reset and reported
+      # requests that never came (an idle pool stayed awake), and missed real
+      # ones. The headless Service litellm-metrics
+      # (platform/services/litellm/litellm.yaml) answers one A record per ready
+      # pod, so this needs no pod discovery / RBAC in another namespace. Sum
+      # over the targets in queries (the KEDA trigger does).
+      # LiteLLM serves /metrics without a key (require_auth_for_metrics_endpoint:
+      # false in litellm-config). The load balancer does not forward that path,
+      # but any workload in the cluster can read it (see the note in
+      # litellm-config).
       - job_name: litellm
         metrics_path: /metrics
-        static_configs:
-          - targets: ["litellm.ai-platform.svc.cluster.local:4000"]
+        dns_sd_configs:
+          - names: ["litellm-metrics.ai-platform.svc.cluster.local"]
+            type: A
+            port: 4000
 ---
 apiVersion: apps/v1
 kind: Deployment
@@ -170,6 +189,13 @@ spec:
   template:
     metadata:
       labels: { app.kubernetes.io/name: autoscaling-prometheus, ai-platform/component: autoscaling }
+      annotations:
+        # Prometheus reads prometheus.yml at start only and nothing reloads it.
+        # These are plain manifests, so nothing restarts the pod when the
+        # ConfigMap above changes: raise this number in the same commit as any
+        # change to the scrape config (tests/test_llmd_scale_to_zero.py records
+        # the config each revision stands for and fails otherwise).
+        ai-platform/config-revision: "2"
     spec:
       serviceAccountName: autoscaling-prometheus
       containers:
@@ -179,7 +205,6 @@ spec:
             - --config.file=/etc/prometheus/prometheus.yml
             - --storage.tsdb.path=/prometheus
             - --storage.tsdb.retention.time=2h
-            - --web.enable-lifecycle
           ports:
             - { name: web, containerPort: 9090 }
           volumeMounts:

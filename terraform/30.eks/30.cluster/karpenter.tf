@@ -96,7 +96,7 @@ module "karpenter" {
   # (CreatePolicy: "LimitExceeded: Cannot exceed quota for PolicySize: 6144",
   # found in testing). An inline role policy allows 10,240; this is the
   # module's documented remedy. On a LIVE cluster the apply swaps the managed
-  # policy for an inline one in the same run (see COMPATIBILITY.md).
+  # policy for an inline one in the same run.
   enable_inline_policy = true
 
   # The four extra read-only actions earlier module versions lacked
