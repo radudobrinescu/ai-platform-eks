@@ -270,6 +270,68 @@ def test_a_service_selects_only_the_pods_of_its_deployment():
 
 
 # ---------------------------------------------------------------------------
+# One Python image and one kubectl for the Jobs the agent and the dashboard create
+# ---------------------------------------------------------------------------
+
+AGENT_CONFIG = "platform-health-agent-config"
+
+
+def _agent_config():
+    return next(d for d in _load("pha-config.yaml")
+                if d["kind"] == "ConfigMap" and d["metadata"]["name"] == AGENT_CONFIG)["data"]
+
+
+def _deployment_env(manifest, name):
+    dep = next(d for d in _load(manifest) if d.get("kind") == "Deployment" and d["metadata"]["name"] == name)
+    return {e["name"]: e for c in dep["spec"]["template"]["spec"]["containers"] for e in c.get("env", [])}
+
+
+@pytest.mark.parametrize("manifest,deployment", [("manifests.yaml", "cluster-dashboard"),
+                                                 ("pha-event-watcher.yaml", "event-watcher")])
+def test_job_image_and_kubectl_come_from_the_agent_config(manifest, deployment):
+    """The dashboard creates the Remediator Job, the event watcher the
+    Investigator; both install the same pip pins. The dashboard had its own
+    copy of the two values, which stayed at python:3.12-slim when the agent's
+    moved to 3.15: automated updates only read pha-config.yaml."""
+    env = _deployment_env(manifest, deployment)
+    for key in ("PYTHON_IMAGE", "KUBECTL_VERSION"):
+        assert env[key] == {"name": key, "valueFrom": {"configMapKeyRef": {"name": AGENT_CONFIG, "key": key}}}
+        assert _agent_config().get(key), key
+
+
+def test_one_python_image_in_every_pod_and_job():
+    """The wheels pinned for the init containers and for the Jobs must exist
+    for one Python version, not two."""
+    images = {"PYTHON_IMAGE": _agent_config()["PYTHON_IMAGE"]}
+    for name in _load("kustomization.yaml")[0]["resources"]:
+        for doc in _load(name):
+            spec = doc.get("spec") or {}
+            pod = ((spec.get("jobTemplate") or {}).get("spec", {}).get("template") or spec.get("template") or {})
+            for c in (pod.get("spec") or {}).get("initContainers", []) + (pod.get("spec") or {}).get("containers", []):
+                if c["image"].startswith("python:"):
+                    images[f'{doc["kind"]}/{doc["metadata"]["name"]}/{c["name"]}'] = c["image"]
+    assert len(images) >= 6 and len(set(images.values())) == 1, images
+
+
+def test_kubectl_is_within_one_minor_of_the_default_cluster_version():
+    """kubectl supports one minor version of skew against the API server. The
+    Jobs fetch https://dl.k8s.io/release/<KUBECTL_VERSION>/bin/linux/amd64/kubectl
+    (pha/jobs.py), so the value is vMAJOR.MINOR.PATCH."""
+    tfvars = os.path.join(DASH, "..", "..", "..", "terraform", "00.global", "vars", "example.tfvars")
+    if not os.path.isfile(tfvars):
+        pytest.skip("no terraform/00.global/vars/example.tfvars next to this tree")
+    with open(tfvars, encoding="utf-8") as f:
+        cluster = int(re.search(r'kubernetes_version\s*=\s*"1\.(\d+)"', f.read()).group(1))
+    version = re.fullmatch(r"v1\.(\d+)\.\d+", _agent_config()["KUBECTL_VERSION"])
+    assert version, _agent_config()["KUBECTL_VERSION"]
+    assert abs(int(version.group(1)) - cluster) <= 1, f"kubectl 1.{version.group(1)} against Kubernetes 1.{cluster}"
+    from pha import jobs
+    fetch = jobs.investigator_job("i", {}, namespace="n", python_image="p", kubectl_version="v1.2.3",
+                                  pip_packages="x")["spec"]["template"]["spec"]["initContainers"][0]["args"][0]
+    assert "https://dl.k8s.io/release/v1.2.3/bin/linux/amd64/kubectl" in fetch
+
+
+# ---------------------------------------------------------------------------
 # Comments in the shipped code point only at things that exist
 # ---------------------------------------------------------------------------
 

@@ -14,8 +14,8 @@
 # (no investigations in the DB) and the topology view works unchanged.
 #
 # backend.py is generated from cluster-dashboard/scripts/backend.py by
-# kustomize (see kustomization.yaml). Image switched from python:3.12-alpine
-# to python:3.12-slim because psycopg[binary] requires glibc, not musl.
+# kustomize (see kustomization.yaml). The image is the python -slim variant,
+# not -alpine: psycopg[binary] requires glibc, not musl.
 ---
 apiVersion: v1
 kind: ServiceAccount
@@ -233,10 +233,13 @@ spec:
               value: "15"
             - name: KIRO_MODEL_REMEDIATE
               value: "auto"
+            # Image and kubectl of the Remediator Job this backend creates: the
+            # same values as the agent's Investigator Job (pha-config.yaml), which
+            # installs the same pip pins. One copy, so the two cannot drift apart.
             - name: PYTHON_IMAGE
-              value: "python:3.12-slim"
+              valueFrom: { configMapKeyRef: { name: platform-health-agent-config, key: PYTHON_IMAGE } }
             - name: KUBECTL_VERSION
-              value: "v1.32.5"
+              valueFrom: { configMapKeyRef: { name: platform-health-agent-config, key: KUBECTL_VERSION } }
             # Quick Links panel. The ALB-fronted UIs (Open WebUI / LiteLLM /
             # Langfuse) are discovered at runtime from the ingress hostname; only
             # ArgoCD's URL must be injected, from the Terraform-managed
