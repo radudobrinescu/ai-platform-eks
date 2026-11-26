@@ -89,10 +89,11 @@ class ScalingRecommendation:
         # expensive instance (over per-instance ceiling) may still be the
         # cheapest fleet option because it serves more concurrent users.
         # SLO-unmet options sink to the bottom — they can't actually meet
-        # the throughput requirement at any concurrency.
+        # the throughput requirement at any concurrency. Out-of-cluster types
+        # sink below those: the NodePools can never launch them.
         return (
-            self.slo_unmet,
             not self.option.in_cluster,
+            self.slo_unmet,
             self.fleet_cost_usd_h,
             self.replicas,
         )

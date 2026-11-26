@@ -101,3 +101,60 @@ class TestPinnedInstanceTypeFleet:
         assert (replicas, instance) == (1, "g7e.2xlarge")
         spec = _manifest(out)["spec"]
         assert spec["replicas"] == 1 and "instanceType" not in spec
+
+
+class TestTypesTheNodePoolsRefuse:
+    """g4dn (family list) and p4d/p4de (generation floor) are in the catalog
+    but the GPU NodePools never launch them: a pod pinned there stays Pending."""
+
+    SMALL_FP16 = ["org/m", "--quant", "fp16"]   # fp16 runs natively on a T4, the cheapest fit
+
+    def test_the_cheapest_fit_is_not_recommended_when_karpenter_cannot_launch_it(self, new_model):
+        code, out, _err = new_model(self.SMALL_FP16, model=_model(3.0))
+        assert code == 0
+        assert "RECOMMENDED: g6.xlarge" in out
+        assert "instanceType" not in _manifest(out)["spec"]
+
+    def test_the_table_marks_it_out_of_cluster(self, new_model):
+        _code, out, _err = new_model(self.SMALL_FP16 + ["--verbose", "--limit", "40"], model=_model(3.0))
+        rows = [ln for ln in out.splitlines() if re.match(r"\s+(g4dn|p4de?)\.", ln)]
+        assert rows and all("out-of-cluster" in ln for ln in rows), rows
+        assert not [ln for ln in out.splitlines() if re.match(r"\s+g6\.xlarge ", ln) and "out-of-cluster" in ln]
+
+    def test_in_cluster_only_hides_it(self, new_model):
+        _code, out, _err = new_model(self.SMALL_FP16 + ["--in-cluster-only", "--verbose", "--limit", "40"],
+                                     model=_model(3.0))
+        assert "RECOMMENDED: g6.xlarge" in out
+        assert not re.search(r"\b(g4dn|p4de?)\.", out)
+
+    def test_the_fleet_table_marks_it_out_of_cluster(self, new_model):
+        _code, out, _err = new_model(["org/m", "--users", "200", "--limit", "40"])
+        rows = [ln for ln in out.splitlines() if re.match(r"\s+(g4dn|p4de?)\.", ln)]
+        assert rows and all("out-of-cluster" in ln for ln in rows), rows
+
+    @pytest.mark.parametrize("pinned,rule", [
+        ("g4dn.xlarge", "instance-family NotIn"),
+        ("g4dn.12xlarge", "instance-family NotIn"),
+        ("p4d.24xlarge", "instance-generation Gte 5"),
+        ("p4de.24xlarge", "instance-generation Gte 5"),
+    ])
+    def test_pinning_it_is_refused_with_the_nodepool_rule(self, new_model, pinned, rule):
+        code, out, err = new_model(self.SMALL_FP16 + ["--instance-type", pinned], model=_model(3.0))
+        assert code == 1
+        assert f"--instance-type {pinned}" in err and "gpu-inference" in err and rule in err
+        assert "You'll deploy this" not in out and "RECOMMENDED" not in out
+
+    def test_pinning_an_allowed_type_still_works(self, new_model):
+        code, out, _err = new_model(self.SMALL_FP16 + ["--instance-type", "g5.xlarge"], model=_model(3.0))
+        assert code == 0 and "RECOMMENDED: g5.xlarge" in out
+        assert _manifest(out)["spec"]["instanceType"] == "g5.xlarge"
+
+    def test_the_banner_warns_when_only_a_refused_type_fits(self, new_model, monkeypatch):
+        # Not reachable with today's catalog (every refused type has an allowed
+        # twin of the same shape), so narrow the catalog to the refused type.
+        from recommend_instance import recommend
+        t4 = [i for i in catalog.INSTANCES if i.name == "g4dn.xlarge"]
+        monkeypatch.setattr(recommend, "INSTANCES", t4)
+        code, out, _err = new_model(self.SMALL_FP16, model=_model(3.0))
+        assert code == 0 and "g4dn.xlarge" in out
+        assert "cannot be launched by this cluster" in out and "instance-family NotIn" in out

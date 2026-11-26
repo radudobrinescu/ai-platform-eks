@@ -7,7 +7,7 @@ import os
 import sys
 
 from . import __doc__ as _PKG_DOC
-from .catalog import KV_BYTES, TP_DEGREES, WEIGHT_BYTES
+from .catalog import INSTANCES, KV_BYTES, TP_DEGREES, WEIGHT_BYTES, nodepool_refusal
 from .model import fetch_model
 from .paths import is_valid_instance_type
 from .pricing import detect_region, resolve_prices
@@ -263,15 +263,24 @@ def main(argv: list[str] | None = None) -> int:
     # it fits, size the manifest to the PINNED type (its gpuCount/TP), not the
     # auto-picked best — so gpuCount can't drift from the pinned hardware.
     if args.instance_type:
+        inst = next((i for i in INSTANCES if i.name == args.instance_type), None)
+        if inst is None:
+            sys.exit(
+                f"error: --instance-type {args.instance_type} is not a GPU instance in the "
+                f"catalog, so the model cannot be sized against it. Pick a supported GPU "
+                f"type, or drop --instance-type to let the recommender choose.")
+        # A type the gpu-inference NodePool refuses can never be launched by
+        # Karpenter: the pinned pod would stay Pending forever.
+        refusal = nodepool_refusal(inst, "gpu-inference")
+        if refusal is not None:
+            sys.exit(
+                f"error: --instance-type {args.instance_type} cannot be launched by this "
+                f"cluster: the gpu-inference NodePool requires {refusal} "
+                f"(terraform/30.eks/30.cluster/karpenter/gpu-inference.yaml), so the pod "
+                f"would stay Pending. Pick a type the NodePool allows, or drop "
+                f"--instance-type to let the recommender choose.")
         pinned = next((o for o in opts if o.instance.name == args.instance_type), None)
         if pinned is None:
-            from .catalog import INSTANCES
-            inst = next((i for i in INSTANCES if i.name == args.instance_type), None)
-            if inst is None:
-                sys.exit(
-                    f"error: --instance-type {args.instance_type} is not a GPU instance in the "
-                    f"catalog, so the model cannot be sized against it. Pick a supported GPU "
-                    f"type, or drop --instance-type to let the recommender choose.")
             sys.exit(
                 f"error: {args.model} does not fit on {args.instance_type} "
                 f"({inst.num_gpus}\u00d7{inst.gpu}, {inst.total_vram_gb} GiB total VRAM) at "

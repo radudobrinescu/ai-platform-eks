@@ -8,7 +8,7 @@ import math
 import re
 import sys
 
-from .catalog import TIME_SLICE_REPLICAS
+from .catalog import TIME_SLICE_REPLICAS, nodepool_refusal
 from .model import ModelSpec
 from .paths import KIND_DIR, is_valid_hf_model_id, is_valid_model_name
 from .recommend import Option, find_options
@@ -486,6 +486,11 @@ def print_human(
         if best.over_price_ceiling:
             print(f"    {C.YELLOW}Note: exceeds --max-price ${args.max_price:.2f}/hr. "
                   f"No cheaper option fits.{C.RESET}")
+    if not banner_opt.in_cluster:
+        print(f"    {C.YELLOW}⚠ {banner_opt.instance.name} cannot be launched by this cluster "
+              f"(the gpu-inference NodePool requires "
+              f"{nodepool_refusal(banner_opt.instance, 'gpu-inference')}) and no type it "
+              f"allows fits: the pod would stay Pending.{C.RESET}")
     print(ruler)
 
     # -------- 1b. Why this recommendation? ------------------------------- #
