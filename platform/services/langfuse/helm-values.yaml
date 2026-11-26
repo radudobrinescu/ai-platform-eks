@@ -123,6 +123,15 @@ langfuse:
       limits:
         cpu: "2"
         memory: 2Gi
+    # The container migrates Postgres and ClickHouse before it serves its health
+    # endpoint, and the chart has no startup probe. With the chart's default (first
+    # check after 20 s) the kubelet kills a container that is still migrating about
+    # 50 s after it started. A migration cut off half way stays marked as failed,
+    # and every later start exits on it: a crash loop that only a manual database
+    # repair ends. On a fresh install the migrations take longest, so liveness
+    # waits 5 minutes. Readiness keeps the chart's default and holds traffic back.
+    livenessProbe:
+      initialDelaySeconds: 300
 
   ingress:
     enabled: false
