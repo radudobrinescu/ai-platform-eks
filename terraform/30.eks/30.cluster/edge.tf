@@ -5,15 +5,19 @@
 # WHY TERRAFORM (not ACK): the EKS-managed ACK CloudFront controller lacks
 # cloudfront:CreateVpcOrigin and can't be extended (AWS caps it with a managed
 # session policy), so VPC origins can't be created via ACK on a managed cluster.
-# Terraform has full IAM and is the right owner of AWS resources (tenet 11).
+# Terraform has full IAM and is the right owner of AWS resources.
 #
 # TWO-PHASE: the ALB is created by the in-cluster load-balancer controller only
 # AFTER `up` (ArgoCD syncs the ingresses), so this is a POST-UP step — enable it
 # with `./platformctl edge cloudfront`, which flips enable_cloudfront_edge and
 # runs a targeted apply once the ALB exists. The ALB is discovered by tag; no
 # ARN plumbing. The ALB stays `internal`; CloudFront reaches it privately over
-# the VPC origin (the shared ALB SG already allows the VPC CIDR — see
-# platform/config/ingress.yaml inbound-cidrs).
+# the VPC origin. That traffic is authorized by a security-group REFERENCE, not
+# by the VPC CIDR: the ingresses attach the Terraform-owned frontend security
+# group `ai-platform-alb-inbound` (alb-security-group.tf) through the
+# `alb.ingress.kubernetes.io/security-groups` annotation, and the rule that
+# admits the CloudFront VPC-origin security group is added to it at the end of
+# this file (aws_vpc_security_group_ingress_rule.edge_from_cloudfront).
 #
 # Cache is disabled (managed CachingDisabled) with all viewer headers/cookies
 # forwarded (managed AllViewer) — required for dynamic, authenticated apps.

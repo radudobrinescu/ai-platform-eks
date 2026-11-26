@@ -4,8 +4,9 @@
 # The dashboard shows a "Quick Links" panel to the platform's web UIs. The
 # ALB-fronted services (Open WebUI / LiteLLM / Langfuse) share one ingress
 # hostname and are discovered by the dashboard backend at runtime, so they need
-# no Terraform input. ArgoCD is an EKS-managed capability with its own endpoint
-# (server_url) that can't be derived from the ALB — so we surface it here.
+# no Terraform input. When ArgoCD runs as an EKS managed capability it has its
+# own endpoint (server_url) that can't be derived from the ALB — so we surface it
+# here. With a self-managed ArgoCD (eks_capabilities = false) the value is empty.
 #
 # Consumed by platform/services/cluster-dashboard/manifests.yaml via optional
 # configMapKeyRefs: ARGOCD_URL (the dashboard hides the ArgoCD link if unset)
