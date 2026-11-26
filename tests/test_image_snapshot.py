@@ -719,3 +719,31 @@ def test_enabling_fast_snapshot_restore_prints_how_to_disable_it(tmp_path):
 def test_without_fsr_nothing_is_enabled(tmp_path):
     r, calls = _build(tmp_path)
     assert "fast-snapshot-restores" not in calls and "fast-snapshot-restores" not in r.stdout
+
+
+class TestSnapshotCanBeTurnedOff:
+    """A cluster whose build can never succeed (no route to the registry, say)
+    would launch a builder at every apply. One variable turns the automation off;
+    GPU nodes then pull the image as before."""
+
+    VARS = os.path.join(os.path.dirname(TF), "variables.tf")
+
+    def test_the_variable_exists_and_is_on_by_default(self):
+        with open(self.VARS, encoding="utf-8") as fh:
+            text = fh.read()
+        block = text[text.index('variable "gpu_image_snapshot"'):]
+        block = block[:block.index("\n}\n")]
+        assert re.search(r"type\s*=\s*bool", block) and re.search(r"default\s*=\s*true", block)
+
+    def test_it_gates_the_build_and_the_lookup(self):
+        with open(TF, encoding="utf-8") as fh:
+            tf = fh.read()
+        m = re.search(r"run_image_snapshot\s*=\s*(.+)", tf)
+        assert m and "var.gpu_image_snapshot" in m.group(1) and "local.capabilities.autoscaling" in m.group(1)
+        assert "docker_hub_username" not in m.group(1)
+
+    def test_the_example_tfvars_mention_it(self):
+        vars_dir = os.path.join(os.path.dirname(TF), "..", "..", "00.global", "vars")
+        for name in ("example.tfvars", "example-esc.tfvars"):
+            with open(os.path.join(vars_dir, name), encoding="utf-8") as fh:
+                assert "gpu_image_snapshot" in fh.read(), name

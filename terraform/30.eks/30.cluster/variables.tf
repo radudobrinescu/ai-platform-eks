@@ -101,9 +101,15 @@ variable "enable_bedrock" {
 }
 
 variable "gpu_data_volume_snapshot_id" {
-  description = "EBS snapshot ID containing the pre-pulled GPU container image (vLLM serving image). Created by ops/image/create-data-volume-snapshot.sh. When set, Karpenter GPU nodes boot with the image already on disk, eliminating the multi-minute image pull."
+  description = "EBS snapshot ID containing the pre-pulled GPU container image (vLLM serving image), built with ops/image/create-data-volume-snapshot.sh. Leave empty (default): the snapshot is built and found automatically. Setting it pins that snapshot and turns the automatic build and lookup off, so a later vLLM version does not get a new one."
   type        = string
   default     = ""
+}
+
+variable "gpu_image_snapshot" {
+  description = "Bake the vLLM serving image into an EBS snapshot that GPU nodes boot from (default true). The first apply in an account and region builds it on a temporary instance, which needs kubectl on the apply host and a route from the cluster's private subnets to the image registry; a failed build is retried at each apply. Set false to turn the build and the lookup off: GPU nodes then pull the image at start."
+  type        = bool
+  default     = true
 }
 
 variable "gpu_capacity_reservation_ids" {

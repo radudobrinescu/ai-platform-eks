@@ -86,8 +86,12 @@ gitops_revision = "main"
 # (about 15 minutes, once per vLLM image; no Docker Hub account needed) and GPU
 # nodes boot with the image already on disk. Later clusters reuse it. Set this
 # only to pin a snapshot you built yourself with
-# ./ops/image/create-data-volume-snapshot.sh docker.io/vllm/vllm-openai:<tag>.
+# ./ops/image/create-data-volume-snapshot.sh docker.io/vllm/vllm-openai:<tag>;
+# pinning turns the automatic build off, also for later vLLM versions.
 # gpu_data_volume_snapshot_id = "snap-0123456789abcdef0"
+# The build needs kubectl on this host and is retried at each apply until it
+# succeeds. To turn it off (GPU nodes then pull the image at start):
+# gpu_image_snapshot = false
 
 # EC2 Capacity Blocks / Capacity Reservations (optional) — frontier GPU capacity.
 # Instances like p6-b300.48xlarge (8x B300 — what trillion-param-class models such

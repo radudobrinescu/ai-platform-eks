@@ -73,6 +73,14 @@ a missing number is never mistaken for a zero.
 - [AWS Session Manager plugin for the AWS CLI](https://docs.aws.amazon.com/systems-manager/latest/userguide/session-manager-working-with-install-plugin.html) (for `./platformctl tunnel`)
 - **Terraform**, **kubectl**, **make**, **jq**, **git**, **curl**, and **python3** with **boto3**
 
+**AWS permissions**: the identity that runs `./platformctl` creates the VPC, the
+EKS cluster, IAM roles, security groups, a Cognito user pool, S3 buckets and KMS
+keys, so use an administrator role for the account or one with equivalent rights.
+It also needs cluster-admin access to the new cluster, which `up` grants to the
+identity that created it. The GPU image snapshot (see
+[Fast cold starts](#beyond-the-basics)) additionally launches and terminates one
+temporary EC2 instance, creates an EBS snapshot and reads one SSM parameter.
+
 **AWS account setup**:
 - (Optional) If using **Amazon Bedrock models**: enable the desired model(s) in the AWS console (one-time model-access toggle). You enroll them after the cluster is up with `./platformctl new-model --source bedrock` (nothing is pinned in git) - see the Quick start.
 - (Optional) For any **self deployed model**, sufficient **service quota** for the GPU instance types you plan to self-host on (not needed for the Bedrock-only path)
@@ -278,7 +286,10 @@ first `apply` in an account and region builds the snapshot (about 15 minutes on 
 temporary c5.xlarge, once per vLLM version, no Docker Hub account needed); later
 clusters reuse it. The
 snapshot is kept when a cluster is destroyed, for the next one; its storage (the
-image data, roughly 20-30 GB) costs about $1-2 a month per vLLM version. Two optional layers add to it: setting `docker_hub_username`
+image data, roughly 20-30 GB) costs about $1-2 a month per vLLM version. A build
+that fails does not fail the install: GPU nodes pull the image as usual, and the
+build is tried again at the next `apply`. To turn it off, set
+`gpu_image_snapshot = false` in the tfvars. Two optional layers add to it: setting `docker_hub_username`
 turns on the ECR pull-through cache (images pulled through your ECR, plus SOCI
 lazy-loading), and the S3 model-weight cache - a model's HuggingFace weights
 under `s3://<cluster>-<account-id>-model-cache/hf/<org>/<model>/` are synced to the

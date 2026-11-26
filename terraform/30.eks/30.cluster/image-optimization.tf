@@ -35,7 +35,8 @@ locals {
   snapshot_image = var.docker_hub_username != "" ? local.vllm_ecr_image : "docker.io/${local.vllm_image}"
 
   # The snapshot needs only Karpenter (its node role joins the builder).
-  run_image_snapshot = local.capabilities.autoscaling
+  # var.gpu_image_snapshot turns the build and the lookup off.
+  run_image_snapshot = local.capabilities.autoscaling && var.gpu_image_snapshot
 
   # The SOCI index needs the ECR pull-through cache (it is pushed to ECR).
   run_image_optimization = local.capabilities.autoscaling && var.docker_hub_username != ""
