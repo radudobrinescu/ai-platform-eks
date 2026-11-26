@@ -124,7 +124,9 @@ case "$*" in
   *"describe-cluster"*"cluster.version"*) echo 1.37 ;;
   *"describe-cluster"*"endpoint"*) echo https://api.example ;;
   *"describe-cluster"*"certificateAuthority"*) echo Q0E= ;;
-  *"list-instance-profiles-for-role"*) echo c1_123 ;;
+  *"list-instance-profiles-for-role"*)
+    n=$(grep -c "list-instance-profiles-for-role" "$CALLS")
+    if [ "$n" -le "${PROFILE_MISSING:-0}" ]; then echo None; else echo c1_123; fi ;;
   *"ssm get-parameter"*) echo ami-1 ;;
   *"run-instances"*)
     n=$(grep -c "run-instances" "$CALLS")
@@ -176,3 +178,12 @@ def test_builder_launch_does_not_retry_other_errors(tmp_path):
     r, calls = _build(tmp_path, OTHER_ERROR="An error occurred (UnauthorizedOperation)")
     assert r.returncode == 1 and calls.count("run-instances") == 1
     assert "UnauthorizedOperation" in r.stderr
+
+
+def test_builder_waits_for_karpenter_to_create_the_instance_profile(tmp_path):
+    # E2E: the step ran before Karpenter had created the node role's instance
+    # profile ("cannot find instance profile") and the snapshot was skipped.
+    r, calls = _build(tmp_path, PROFILE_MISSING="2")
+    assert r.returncode == 0, r.stdout + r.stderr
+    assert calls.count("list-instance-profiles-for-role") == 3
+    assert "Snapshot ID:  snap-0new" in r.stdout

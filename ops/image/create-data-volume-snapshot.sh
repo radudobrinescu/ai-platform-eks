@@ -235,11 +235,19 @@ fi
 K8S_VERSION=$(aws eks describe-cluster --name "$CLUSTER_NAME" --region "$REGION" \
   --query "cluster.version" --output text)
 
-# Resolve the Karpenter node role's instance profile
+# Resolve the Karpenter node role's instance profile. Karpenter creates it when
+# it first reconciles the EC2NodeClasses, which in a fresh apply can be just
+# after this starts (E2E: "cannot find instance profile"), so wait for it.
 ROLE_NAME="KarpenterNode-${CLUSTER_NAME}"
-INSTANCE_PROFILE=$(aws iam list-instance-profiles-for-role \
-  --role-name "$ROLE_NAME" --region "$REGION" \
-  --query "InstanceProfiles[0].InstanceProfileName" --output text 2>/dev/null || true)
+INSTANCE_PROFILE=""
+for _ in $(seq 1 "${LAUNCH_ATTEMPTS:-18}"); do
+  INSTANCE_PROFILE=$(aws iam list-instance-profiles-for-role \
+    --role-name "$ROLE_NAME" --region "$REGION" \
+    --query "InstanceProfiles[0].InstanceProfileName" --output text 2>/dev/null || true)
+  [[ -n "$INSTANCE_PROFILE" && "$INSTANCE_PROFILE" != "None" ]] && break
+  echo "  no instance profile for $ROLE_NAME yet; retrying in 10s"
+  sleep "${LAUNCH_RETRY_SECONDS:-10}"
+done
 
 if [[ -z "$INSTANCE_PROFILE" || "$INSTANCE_PROFILE" == "None" ]]; then
   echo "Error: cannot find instance profile for role $ROLE_NAME" >&2
