@@ -178,6 +178,7 @@ case "$*" in
 esac
 """
 
+# The builder instance is i-0abc (BUILD_AWS), its node node-1.
 # KUBECTL_BREAKS: every call fails from the node readiness wait on (the cluster
 # became unreachable, or the context changed, in the middle of a build).
 BUILD_KUBECTL = r"""#!/bin/bash
@@ -188,7 +189,9 @@ if [ -n "${KUBECTL_BREAKS:-}" ]; then
   if [ -e "$CALLS.kubectl-broken" ]; then echo "Unable to connect to the server" >&2; exit 1; fi
 fi
 case "$*" in
-  *"get nodes"*) echo node-1 ;;
+  # name <tab> providerID, one builder node per line (NODES overrides).
+  *"get nodes"*) printf '%b' "${NODES:-node-1\\taws:///eu-central-1a/i-0abc\\n}" ;;
+  *"apply -f -"*) cat >> "$CALLS" ;;
   *"wait --for=jsonpath"*) if [ -n "${PULL_HANGS:-}" ]; then sleep "$PULL_HANGS"; fi ;;
 esac
 """
@@ -416,3 +419,27 @@ def test_reuse_without_patching_needs_no_kubectl(tmp_path):
     assert r.returncode == 0, r.stderr
     assert r.stdout.strip().splitlines()[-1] == "snap-0abc123"
     assert "kubectl" not in calls and "update-kubeconfig" not in calls
+
+
+# --- The node that is baked is the one this run launched ----------------------
+
+STALE_NODE = r"stale-node\taws:///eu-central-1a/i-0abcdef\n"   # an earlier run's builder
+
+
+def test_builder_node_is_the_one_of_the_launched_instance(tmp_path):
+    # "First node with the builder label" could be a node left by an earlier
+    # run: the image was pulled there, and the new instance's empty volume was
+    # snapshotted.
+    r, calls = _build(tmp_path, NODES=STALE_NODE + r"node-1\taws:///eu-central-1b/i-0abc\n")
+    assert r.returncode == 0, r.stdout + r.stderr
+    assert "nodeName: node-1\n" in calls
+    assert "wait --for=condition=Ready node/node-1 " in calls
+    assert "stale-node" not in calls
+
+
+def test_build_fails_when_only_another_runs_builder_node_is_there(tmp_path):
+    r, calls = _build(tmp_path, NODES=STALE_NODE, NODE_JOIN_ATTEMPTS="2", NODE_JOIN_SECONDS="0")
+    assert r.returncode == 1
+    assert "i-0abc" in r.stderr and "did not join" in r.stderr
+    assert "apply -f -" not in calls and "create-snapshot" not in calls
+    assert TERMINATE in calls

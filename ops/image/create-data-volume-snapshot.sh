@@ -487,19 +487,25 @@ fi
 echo "  Instance: $INSTANCE_ID"
 
 # --- Wait for node to join cluster --------------------------------------------
+# The node of the instance launched above, by its providerID
+# (aws:///<az>/<instance-id>). Not "the first node with the builder label": that
+# can be a node an earlier run left behind, and then the image is pulled there
+# while this run's empty volume is snapshotted.
 echo "→ Waiting for builder node to join the cluster..."
-NODE_NAME=""
-for _ in $(seq 1 72); do
+NODE_JOIN_ATTEMPTS="${NODE_JOIN_ATTEMPTS:-72}"
+NODE_JOIN_SECONDS="${NODE_JOIN_SECONDS:-5}"
+for _ in $(seq 1 "$NODE_JOIN_ATTEMPTS"); do
   NODE_NAME=$(kubectl get nodes -l node.kubernetes.io/purpose=snapshot-builder \
-    --no-headers -o custom-columns=':metadata.name' 2>/dev/null | head -1)
+    -o jsonpath='{range .items[*]}{.metadata.name}{"\t"}{.spec.providerID}{"\n"}{end}' 2>/dev/null \
+    | awk -F'\t' -v id="$INSTANCE_ID" '{ n = split($2, part, "/"); if (part[n] == id) { print $1; exit } }') || true
   if [[ -n "$NODE_NAME" ]]; then
     break
   fi
-  sleep 5
+  sleep "$NODE_JOIN_SECONDS"
 done
 
 if [[ -z "$NODE_NAME" ]]; then
-  echo "Error: builder node did not join within 6 minutes." >&2
+  echo "Error: the node of builder instance $INSTANCE_ID did not join cluster $CLUSTER_NAME within $(( NODE_JOIN_ATTEMPTS * NODE_JOIN_SECONDS / 60 )) minutes." >&2
   echo "  Debug: aws ec2 get-console-output --instance-id $INSTANCE_ID --region $REGION" >&2
   exit 1
 fi
