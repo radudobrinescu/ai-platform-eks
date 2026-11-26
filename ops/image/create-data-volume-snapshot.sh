@@ -10,6 +10,10 @@
 # forces kubelet to pull the target image into containerd's content store on
 # /dev/xvdb. Once pulled, the instance is stopped and /dev/xvdb is snapshotted.
 #
+# kubectl runs with a temporary kubeconfig that the script writes for the named
+# cluster (-n, -r), never with your current context; your kubeconfig is not
+# modified.
+#
 # Usage:
 #   ./ops/image/create-data-volume-snapshot.sh [options] <image1> [image2] ...
 #
@@ -252,6 +256,37 @@ fi
 IMAGE_LIST_TAG="${IMAGES[*]}"
 IMAGE_LIST_TAG="${IMAGE_LIST_TAG:0:255}"
 
+# --- kubectl talks to the named cluster only ----------------------------------
+# kubectl never runs with the operator's kubeconfig: its current context can
+# point at another cluster (a second environment, a switch in another terminal
+# during the build), and the GPU EC2NodeClasses have the same names in every
+# environment. The script writes its own kubeconfig for $CLUSTER_NAME, uses only
+# that one, and removes it on exit; the operator's file and context are not
+# touched. Stops the script when kubectl or the cluster is not usable.
+KUBECONFIG_READY=false
+use_cluster_kubeconfig() {
+  if [[ "$KUBECONFIG_READY" == "true" ]]; then return 0; fi
+  if ! command -v kubectl >/dev/null 2>&1; then
+    echo "Error: kubectl not found on PATH. It is needed to bake the image and to" >&2
+    echo "  update the EC2NodeClasses. Install kubectl and run this again." >&2
+    exit 1
+  fi
+  if ! aws eks update-kubeconfig --name "$CLUSTER_NAME" --region "$REGION" \
+      --kubeconfig "$WORK_DIR/kubeconfig" >/dev/null 2>"$WORK_DIR/kubeconfig.err"; then
+    echo "Error: cannot write a kubeconfig for cluster $CLUSTER_NAME in $REGION:" >&2
+    sed 's/^/  /' "$WORK_DIR/kubeconfig.err" >&2
+    exit 1
+  fi
+  export KUBECONFIG="$WORK_DIR/kubeconfig"
+  if ! kubectl get --raw /version --request-timeout=20s \
+      >/dev/null 2>"$WORK_DIR/kubeconfig.err"; then
+    echo "Error: cannot reach cluster $CLUSTER_NAME in $REGION with kubectl:" >&2
+    sed 's/^/  /' "$WORK_DIR/kubeconfig.err" >&2
+    exit 1
+  fi
+  KUBECONFIG_READY=true
+}
+
 # Point the given Karpenter EC2NodeClasses' /dev/xvdb volume at the snapshot.
 # Terraform's next apply renders the same value, so this only makes it take
 # effect in the apply that built the snapshot.
@@ -285,6 +320,12 @@ patch_nodeclasses() {
   done
 }
 
+# Checked before anything else is done with the cluster, and before a builder
+# is launched. (A reuse without --patch-nodeclasses needs no kubectl.)
+if [[ -n "$PATCH_NODECLASSES" ]]; then
+  use_cluster_kubeconfig
+fi
+
 if [[ "$REUSE" == "true" ]]; then
   EXISTING=$(aws ec2 describe-snapshots --region "$REGION" --owner-ids self \
     --filters "Name=tag:Purpose,Values=bottlerocket-data-volume" \
@@ -300,6 +341,8 @@ if [[ "$REUSE" == "true" ]]; then
   fi
   echo "→ No snapshot of ${IMAGE_LIST_TAG} yet: building one (about 15 minutes)."
 fi
+
+use_cluster_kubeconfig
 
 echo "╭──────────────────────────────────────────────────────────────────╮"
 echo "│  Bottlerocket Data Volume Snapshot Builder                       │"

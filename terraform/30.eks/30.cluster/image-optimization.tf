@@ -116,9 +116,9 @@ resource "null_resource" "gpu_data_volume_snapshot" {
     # The NodeClasses it patches must exist (and its builder node is not a
     # Karpenter node, so nothing here waits on it).
     kubectl_manifest.karpenter_manifests,
-    # create-data-volume-snapshot.sh drives kubectl (schedules a puller pod);
-    # the kubeconfig must already point at this cluster.
-    null_resource.update_kubeconfig,
+    # No dependency on null_resource.update_kubeconfig: the script writes its
+    # own temporary kubeconfig for this cluster (-n, -r) and never uses the
+    # host's current context.
   ]
 }
 

@@ -13,6 +13,7 @@ name, and only took effect from the second apply. Now:
 
 import os
 import re
+import shutil
 import signal
 import subprocess
 import time
@@ -21,8 +22,31 @@ ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 SCRIPT = os.path.join(ROOT, "ops/image/create-data-volume-snapshot.sh")
 TF = os.path.join(ROOT, "terraform/30.eks/30.cluster/image-optimization.tf")
 
+# `aws eks update-kubeconfig --kubeconfig FILE` writes FILE, as the real one does.
+AWS_UPDATE_KUBECONFIG = r"""
+case "$*" in *"eks update-kubeconfig"*)
+  if [ -n "${KUBECONFIG_FAILS:-}" ]; then
+    echo "An error occurred (ResourceNotFoundException) when calling the DescribeCluster operation: No cluster found for name: c1." >&2
+    exit 254
+  fi
+  while [ $# -gt 0 ]; do
+    if [ "$1" = "--kubeconfig" ]; then echo "kubeconfig written by the script" > "$2"; fi
+    shift
+  done
+  exit 0 ;;
+esac
+"""
+
+# Every kubectl call records the kubeconfig it ran with; UNREACHABLE makes the
+# API server unreachable.
+KUBECTL_PRELUDE = r"""
+echo "${KUBECONFIG:-<ambient>}" >> "$CALLS.kubeconfig"
+if [ -n "${UNREACHABLE:-}" ]; then echo "Unable to connect to the server: dial tcp: i/o timeout" >&2; exit 1; fi
+"""
+
 FAKE_AWS = r"""#!/bin/bash
 echo "aws $*" >> "$CALLS"
+""" + AWS_UPDATE_KUBECONFIG + r"""
 case "$*" in
   *"sts get-caller-identity"*) echo 111122223333 ;;
   *"describe-snapshots"*) echo "${EXISTING_SNAPSHOT:-None}" ;;
@@ -35,6 +59,7 @@ esac
 # gpu-decode: missing.
 FAKE_KUBECTL = r"""#!/bin/bash
 echo "kubectl $*" >> "$CALLS"
+""" + KUBECTL_PRELUDE + r"""
 case "$*" in
   *"get ec2nodeclass gpu-decode"*) exit 1 ;;
   *"get ec2nodeclass gpu-inference"*"deviceName"*) printf '/dev/xvda\n/dev/xvdb\n' ;;
@@ -119,6 +144,7 @@ class TestTerraform:
 
 BUILD_AWS = r"""#!/bin/bash
 echo "aws $*" >> "$CALLS"
+""" + AWS_UPDATE_KUBECONFIG + r"""
 case "$*" in
   *"sts get-caller-identity"*) echo 111122223333 ;;
   *"describe-snapshots"*) echo None ;;
@@ -156,6 +182,7 @@ esac
 # became unreachable, or the context changed, in the middle of a build).
 BUILD_KUBECTL = r"""#!/bin/bash
 echo "kubectl $*" >> "$CALLS"
+""" + KUBECTL_PRELUDE + r"""
 if [ -n "${KUBECTL_BREAKS:-}" ]; then
   case "$*" in *"wait --for=condition=Ready"*) touch "$CALLS.kubectl-broken" ;; esac
   if [ -e "$CALLS.kubectl-broken" ]; then echo "Unable to connect to the server" >&2; exit 1; fi
@@ -306,3 +333,86 @@ def test_a_cluster_name_that_could_match_other_clusters_is_rejected(tmp_path):
         r, calls = _run(tmp_path, "docker.io/vllm/vllm-openai:v0.33.0", cluster=name)
         assert r.returncode == 1 and "cluster name" in r.stderr, (name, r.stderr)
         assert calls == ""   # nothing was called
+
+
+# --- kubectl only ever talks to the cluster named on the command line ---------
+
+IMAGE = "docker.io/vllm/vllm-openai:v0.33.0"
+PATCH = ("--reuse", "--patch-nodeclasses", "gpu-inference", IMAGE)
+
+
+def _operator_kubeconfig(tmp_path):
+    """A kubeconfig whose current context is some other cluster."""
+    f = tmp_path / "operator-kubeconfig"
+    f.write_text("current-context: another-cluster\n")
+    return f
+
+
+def _assert_own_kubeconfig(tmp_path, calls, operator):
+    used = set((tmp_path / "calls.kubeconfig").read_text().split())
+    assert len(used) == 1, used                      # one kubeconfig for every call
+    own = used.pop()
+    assert own not in ("<ambient>", str(operator))
+    assert f"eks update-kubeconfig --name c1 --region eu-central-1 --kubeconfig {own}" in calls
+    assert operator.read_text() == "current-context: another-cluster\n"   # untouched
+    assert not os.path.exists(own)                   # removed on exit
+
+
+def test_reuse_patches_the_named_cluster_not_the_current_context(tmp_path):
+    # The GPU EC2NodeClasses have the same names in every environment: with the
+    # operator's context on another cluster, that cluster's were patched.
+    operator = _operator_kubeconfig(tmp_path)
+    r, calls = _run(tmp_path, *PATCH, EXISTING_SNAPSHOT="snap-0abc123", KUBECONFIG=str(operator))
+    assert r.returncode == 0, r.stderr
+    assert "patch ec2nodeclass gpu-inference" in calls
+    _assert_own_kubeconfig(tmp_path, calls, operator)
+
+
+def test_build_drives_the_named_cluster_not_the_current_context(tmp_path):
+    operator = _operator_kubeconfig(tmp_path)
+    r, calls = _build(tmp_path, KUBECONFIG=str(operator))
+    assert r.returncode == 0, r.stdout + r.stderr
+    _assert_own_kubeconfig(tmp_path, calls, operator)
+
+
+def test_build_stops_before_launching_when_the_cluster_is_unreachable(tmp_path):
+    r, calls = _build(tmp_path, UNREACHABLE="1")
+    assert r.returncode == 1
+    assert "cannot reach cluster c1" in r.stderr and "i/o timeout" in r.stderr
+    assert "run-instances" not in calls
+
+
+def test_build_stops_before_launching_when_no_kubeconfig_can_be_written(tmp_path):
+    r, calls = _build(tmp_path, KUBECONFIG_FAILS="1")
+    assert r.returncode == 1
+    assert "kubeconfig for cluster c1" in r.stderr and "No cluster found" in r.stderr
+    assert "run-instances" not in calls and "kubectl" not in calls
+
+
+def _path_without_kubectl(tmp_path):
+    """A PATH with the fake aws and the system tools the script uses, no kubectl."""
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir()
+    for tool in ("bash", "mktemp", "sed", "awk", "cat", "rm", "tr", "grep", "seq", "sleep", "date"):
+        found = shutil.which(tool)
+        if found:
+            (bin_dir / tool).symlink_to(found)
+    (tmp_path / "kubectl").unlink()
+    return f"{tmp_path}:{bin_dir}"
+
+
+def test_build_stops_before_launching_when_kubectl_is_missing(tmp_path):
+    e, calls = _build_env(tmp_path)
+    e["PATH"] = _path_without_kubectl(tmp_path)
+    r = subprocess.run(["bash", SCRIPT, "-r", "eu-central-1", "-n", "c1", *BUILD_ARGS],
+                       capture_output=True, text=True, env=e, timeout=60)
+    assert r.returncode == 1, r.stdout + r.stderr
+    assert "kubectl not found" in r.stderr
+    assert "run-instances" not in calls.read_text()
+
+
+def test_reuse_without_patching_needs_no_kubectl(tmp_path):
+    r, calls = _run(tmp_path, "--reuse", IMAGE, EXISTING_SNAPSHOT="snap-0abc123")
+    assert r.returncode == 0, r.stderr
+    assert r.stdout.strip().splitlines()[-1] == "snap-0abc123"
+    assert "kubectl" not in calls and "update-kubeconfig" not in calls
