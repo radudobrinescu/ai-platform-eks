@@ -1143,3 +1143,48 @@ def test_load_summary_separates_in_flight_from_failed():
     load.failed = {"HTTP 503": 2, "TimeoutError": 1}
     assert load.summary() == ("44 requests answered 200, 3 failed (HTTP 503 x2, TimeoutError x1), "
                               "9 in flight at the end")
+
+
+
+def _pod(ns, name, reason=None, container="app"):
+    st = {"containerStatuses": [{"name": container, "state": {"waiting": {"reason": reason}} if reason else {}}]}
+    return {"metadata": {"namespace": ns, "name": name}, "status": st}
+
+
+def test_crash_looping_picks_crash_loops_in_watched_namespaces():
+    import checks
+    pods = [_pod("ai-platform", "langfuse-web-1", "CrashLoopBackOff", "langfuse-web"),
+            _pod("ai-platform", "litellm-1", "ContainerCreating"),
+            _pod("team-a", "x", "CrashLoopBackOff"),               # not a platform namespace
+            _pod("inference", "m-1", "CrashLoopBackOff", "modelserver")]
+    assert checks.crash_looping(pods) == [("ai-platform", "langfuse-web-1", "langfuse-web"),
+                                          ("inference", "m-1", "modelserver")]
+    many = [_pod("ai-platform", f"p{i}", "CrashLoopBackOff") for i in range(6)]
+    assert len(checks.crash_looping(many)) == checks.CRASH_LOG_PODS
+
+
+def test_previous_log_is_one_redacted_line(monkeypatch):
+    import subprocess
+    import checks
+    calls = []
+
+    def fake_sh(args, **kw):
+        calls.append(args)
+        return subprocess.CompletedProcess(args, 0, "line one\n\nError: migration failed\n", "")
+    monkeypatch.setattr(checks, "sh", fake_sh)
+    assert checks.previous_log("ai-platform", "p", "c") == "line one / Error: migration failed"
+    assert "--previous" in calls[0] and f"--tail={checks.CRASH_LOG_LINES}" in calls[0]
+
+
+
+@pytest.mark.parametrize("raw,hidden", [
+    ("DATABASE_URL=postgresql://langfuse:Sup3rS3cret@platform-db:5432/langfuse", "Sup3rS3cret"),
+    ("using key sk-1234567890abcdef", "sk-1234567890abcdef"),
+    ("Authorization: Bearer eyJhbGciOi.abc.def", "eyJhbGciOi.abc.def"),
+    ("CLICKHOUSE_PASSWORD=hunter22 started", "hunter22"),
+    ("encryption_key: 0123456789abcdef0123", "0123456789abcdef0123"),
+])
+def test_crash_logs_never_carry_credentials(raw, hidden):
+    import checks
+    out = checks.scrub_log(raw)
+    assert hidden not in out and "***" in out
