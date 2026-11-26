@@ -270,6 +270,33 @@ def test_a_service_selects_only_the_pods_of_its_deployment():
 
 
 # ---------------------------------------------------------------------------
+# Shared ALB (ingress group "ai-platform")
+# ---------------------------------------------------------------------------
+
+LB_ATTRIBUTES = "alb.ingress.kubernetes.io/load-balancer-attributes"
+
+
+def test_dashboard_ingress_sets_the_shared_albs_idle_timeout():
+    """The dashboard shares one ALB with the ingresses in
+    platform/config/ingress.yaml. Load balancer attributes belong to the ALB,
+    not to one ingress: every ingress of the group that sets them must set
+    the same value."""
+    group = "alb.ingress.kubernetes.io/group.name"
+    ingress = next(d for d in _load("manifests.yaml") if d.get("kind") == "Ingress")
+    annotations = ingress["metadata"]["annotations"]
+    assert annotations[LB_ATTRIBUTES] == "idle_timeout.timeout_seconds=1020"
+    shared = os.path.join(DASH, "..", "..", "config", "ingress.yaml")
+    if not os.path.isfile(shared):
+        return
+    with open(shared, encoding="utf-8") as f:
+        for doc in yaml.safe_load_all(f):
+            theirs = ((doc or {}).get("metadata") or {}).get("annotations") or {}
+            if (doc or {}).get("kind") == "Ingress" and LB_ATTRIBUTES in theirs:
+                assert theirs[group] == annotations[group]
+                assert theirs[LB_ATTRIBUTES] == annotations[LB_ATTRIBUTES], doc["metadata"]["name"]
+
+
+# ---------------------------------------------------------------------------
 # One Python image and one kubectl for the Jobs the agent and the dashboard create
 # ---------------------------------------------------------------------------
 

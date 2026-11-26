@@ -408,6 +408,8 @@ metadata:
     # group "ai-platform") — see that file's header for the why.
     alb.ingress.kubernetes.io/security-groups: ai-platform-alb-inbound
     alb.ingress.kubernetes.io/manage-backend-security-group-rules: "true"
+    # Must stay IDENTICAL to platform/config/ingress.yaml (an attribute of the shared ALB).
+    alb.ingress.kubernetes.io/load-balancer-attributes: idle_timeout.timeout_seconds=1020
 spec:
   ingressClassName: alb
   rules:
