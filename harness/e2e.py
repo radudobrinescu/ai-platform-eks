@@ -468,6 +468,8 @@ class Runner:
             ok, detail = self._platformctl_ok("up", self.env)
             return ok, f"kubernetes_version {cur} -> {new}; {detail}"
         if self.step("kubernetes-bump", bump):
+            # up returns before Karpenter has replaced its drifted nodes.
+            self.step("node-rollout-settled", checks.wait_rollout_settled)
             self.smoke("k8s-bump/")
 
     # -- entry --------------------------------------------------------------- #
