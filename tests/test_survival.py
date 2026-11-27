@@ -129,3 +129,46 @@ def test_a_planned_reset_needs_new_traces_instead_of_the_old_ones():
     assert not ok and "NOT traced" in detail
     after["langfuse_traces"] = None
     assert not _rule(survival.compare(before, after, resets), "langfuse-traces-kept")[1]
+
+
+# --------------------------------------------------------------------------- #
+# After a planned trace reset the snapshot waits for the new traces, not for  #
+# as many as before (release test of 2026-11-26: Langfuse 4 had just started,  #
+# the snapshot waited 300 s for 4 traces, read 0, and the rule failed although #
+# the next check found the new chats traced).                                  #
+# --------------------------------------------------------------------------- #
+def test_after_a_planned_reset_the_snapshot_waits_longer_for_one_trace(monkeypatch):
+    waits = []
+    monkeypatch.setattr(survival, "settled_trace_count", lambda expected, timeout=300: waits.append((expected, timeout)) or 1)
+    monkeypatch.setattr(survival, "secret_value", lambda *a, **k: "team-1")
+    for name in ("openwebui_ids", "cognito_state"):
+        monkeypatch.setattr(survival, name, lambda *a, **k: None)
+
+    class _PF:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *a):
+            return False
+    monkeypatch.setattr(survival, "PortForward", lambda *a, **k: _PF())
+    monkeypatch.setattr(survival, "_get", lambda *a, **k: (200, {}))
+    monkeypatch.setattr(survival.checks, "models", lambda *a, **k: [])
+    monkeypatch.setattr(survival.checks, "chat", lambda *a, **k: (200, ""))
+
+    class _Ctx:
+        def litellm_key(self):
+            return "sk"
+    seed = survival.Seed()
+    seed.models, seed.team_key = ["nova-lite"], "sk-team"
+    survival.snapshot(_Ctx(), seed)
+    survival.snapshot(_Ctx(), seed, traces_reset=True)
+    assert waits[0] == (survival.SEED_BEDROCK_CHATS + 1, 300)
+    assert waits[1][0] == 1 and waits[1][1] >= survival.TRACES_AFTER_RESET_TIMEOUT >= 900
+
+
+def test_the_upgrade_tells_the_snapshot_about_a_planned_reset():
+    import pathlib
+    text = (pathlib.Path(survival.__file__).parent / "e2e.py").read_text(encoding="utf-8")
+    block = text[text.index("def do_compare():"):text.index('self.step("survival-snapshot", do_compare)')]
+    assert block.index("survival.planned_resets(") < block.index("survival.snapshot(")
+    assert 'traces_reset="langfuse-traces-kept" in resets' in block
