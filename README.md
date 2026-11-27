@@ -209,6 +209,12 @@ Example with advanced flags
 > `terraform/30.eks/30.cluster/karpenter.tf` and from the capacity types in
 > `terraform/30.eks/30.cluster/karpenter/gpu-*.yaml`, then apply.
 
+> ℹ️ **g7 GPU nodes need Kubernetes 1.37.** g7 instances (NVIDIA RTX PRO 4500
+> Blackwell) need NVIDIA driver 595, which the Bottlerocket NVIDIA AMIs include
+> for Kubernetes 1.37 and later. On a 1.36 cluster the GPU node pools leave g7 out
+> and `new-model` does not offer it; it becomes available after the cluster moves
+> to 1.37. g7e is available on both versions.
+
 7. Removing a model
 
 ```bash
@@ -316,6 +322,9 @@ platform namespaces can reach in), and a scoped LiteLLM key (budget + rpm/tpm).
 Scaffold that YAML with `./platformctl onboard-team <name> [--gpu N --budget USD
 --models a,b ...]` - it mirrors `new-model`: prints the manifest for review by
 default, and with `--deploy` writes it, commits, and pushes so ArgoCD applies it.
+To offboard a team, delete its YAML and push: its namespace goes at once, and its
+LiteLLM team and API keys are revoked 15 to 30 minutes later (the team must be
+missing on two checks in a row, so a brief gap during an upgrade cannot revoke keys).
 The team then
 calls the models served from the shared `inference` namespace with its own key;
 `--models` limits which ones it may use. Serving a model inside a team's own

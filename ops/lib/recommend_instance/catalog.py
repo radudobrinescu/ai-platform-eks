@@ -3,6 +3,7 @@ compatibility checks."""
 
 from __future__ import annotations
 
+import os
 import re
 from dataclasses import dataclass
 
@@ -56,6 +57,19 @@ CLUSTER_EXCLUDED_FAMILIES = {
     "gpu-inference": frozenset({"g4dn", "g4ad", "p3", "p3dn", "p2"}),
     "gpu-shared":    frozenset({"g4dn", "g4ad"}),
 }
+# Families the NodePools add to that list on older Kubernetes versions: g7 needs
+# NVIDIA driver 595, which the Bottlerocket NVIDIA AMIs ship for Kubernetes 1.37
+# and later only (karpenter.tf, gpu_needs_driver_595). The cluster's version comes
+# from KUBERNETES_VERSION_ENV, which platformctl sets from the environment's
+# tfvars; when it is not known, these families are offered.
+MIN_KUBERNETES_FOR_FAMILY = {"g7": (1, 37)}
+KUBERNETES_VERSION_ENV = "PLATFORM_KUBERNETES_VERSION"
+
+
+def cluster_kubernetes_version() -> tuple[int, int] | None:
+    """(major, minor) of the target cluster's Kubernetes, or None when unknown."""
+    m = re.fullmatch(r"\s*(\d+)\.(\d+)\s*", os.environ.get(KUBERNETES_VERSION_ENV, ""))
+    return (int(m.group(1)), int(m.group(2))) if m else None
 CLUSTER_MIN_INSTANCE_GENERATION = {"gpu-inference": 5, "gpu-shared": 5}
 # Matches the `replicas: 4` in terraform/30.eks/30.cluster/karpenter/gpu-shared.yaml
 # under kubelet-device-plugins.nvidia.time-slicing. When gpu-shared is used,
@@ -257,6 +271,12 @@ def nodepool_refusal(inst: Instance, nodepool: str) -> str | None:
     excluded = CLUSTER_EXCLUDED_FAMILIES[nodepool]
     if inst.family in excluded:
         return f"instance-family NotIn [{', '.join(sorted(excluded))}]"
+    needs = MIN_KUBERNETES_FOR_FAMILY.get(inst.family)
+    running = cluster_kubernetes_version()
+    if needs and running and running < needs:
+        return (f"instance-family NotIn [{', '.join(sorted(excluded | {inst.family}))}] on Kubernetes "
+                f"{running[0]}.{running[1]}: {inst.family} needs NVIDIA driver 595, which the Bottlerocket "
+                f"AMIs ship for Kubernetes {needs[0]}.{needs[1]} and later")
     floor = CLUSTER_MIN_INSTANCE_GENERATION[nodepool]
     if inst.generation < floor:
         return f"instance-generation Gte {floor} ({inst.family} is generation {inst.generation})"

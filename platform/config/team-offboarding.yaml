@@ -14,6 +14,12 @@
 # Safety: it only ever touches teams with metadata.managed_by=kro, and it aborts
 # (set -euo pipefail) before any deletion if it cannot list AITeams or reach
 # LiteLLM — so it never revokes based on incomplete data.
+#
+# Two runs in a row: a team whose AITeam is missing is first only noted (ConfigMap
+# team-offboarding-state); it is revoked when its AITeam is still missing on the
+# next run, 15 minutes later. An AITeam can be absent for a moment without being
+# deleted (seen during an upgrade of kro), and revoking a team also revokes every
+# API key of it. A real offboarding therefore takes 15 to 30 minutes.
 ---
 apiVersion: v1
 kind: ServiceAccount
@@ -51,6 +57,42 @@ subjects:
 roleRef:
   kind: ClusterRole
   name: team-offboarding-reader
+  apiGroup: rbac.authorization.k8s.io
+---
+# The list of teams noted as orphaned on the previous run.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: team-offboarding-state
+  namespace: ai-platform
+  labels:
+    app.kubernetes.io/part-of: ai-platform
+    ai-platform/managed-by: platform-team
+rules:
+  - apiGroups: [""]
+    resources: ["configmaps"]
+    resourceNames: ["team-offboarding-state"]
+    verbs: ["get", "patch", "update"]
+  # create cannot be limited to one name; the job creates only this ConfigMap.
+  - apiGroups: [""]
+    resources: ["configmaps"]
+    verbs: ["create"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: team-offboarding-state
+  namespace: ai-platform
+  labels:
+    app.kubernetes.io/part-of: ai-platform
+    ai-platform/managed-by: platform-team
+subjects:
+  - kind: ServiceAccount
+    name: team-offboarding
+    namespace: ai-platform
+roleRef:
+  kind: Role
+  name: team-offboarding-state
   apiGroup: rbac.authorization.k8s.io
 ---
 apiVersion: batch/v1
@@ -96,24 +138,51 @@ spec:
                   LIVE="$(kubectl get aiteams.kro.run -A -o jsonpath='{range .items[*]}{.spec.teamName}{"\n"}{end}')"
                   echo "Live AITeam aliases:"; printf '%s\n' "$LIVE" | sed 's/^/  - /'
 
-                  # Revoke kro-managed LiteLLM teams with no matching AITeam CR.
-                  # pipefail makes a failed /team/list abort the run (safe).
-                  curl -sf "$LITELLM/team/list" -H "Authorization: Bearer $LITELLM_MASTER_KEY" \
-                    | jq -r '.[] | select((.metadata.managed_by // "") == "kro") | [.team_alias, .team_id] | @tsv' \
-                    | while IFS="$(printf '\t')" read -r alias tid; do
+                  # kro-managed LiteLLM teams with no matching AITeam CR, as
+                  # "<team_id> <alias>" lines. pipefail makes a failed
+                  # /team/list abort the run (safe).
+                  ORPHANS="$(curl -sf "$LITELLM/team/list" -H "Authorization: Bearer $LITELLM_MASTER_KEY" \
+                    | jq -r '.[] | select((.metadata.managed_by // "") == "kro") | [.team_id, .team_alias] | @tsv' \
+                    | while IFS="$(printf '\t')" read -r tid alias; do
                         [ -n "$tid" ] || continue
                         if printf '%s\n' "$LIVE" | grep -qxF "$alias"; then
-                          echo "keep: $alias ($tid)"
+                          echo "keep: $alias ($tid)" >&2
                         else
-                          echo "OFFBOARD orphaned team: $alias ($tid) — no AITeam CR"
-                          curl -sf -X POST "$LITELLM/team/delete" \
-                            -H "Authorization: Bearer $LITELLM_MASTER_KEY" \
-                            -H "Content-Type: application/json" \
-                            -d "$(jq -n --arg id "$tid" '{team_ids:[$id]}')" > /dev/null \
-                            && echo "  ✓ revoked team + keys" \
-                            || echo "  ⚠ /team/delete failed for $tid"
+                          printf '%s %s\n' "$tid" "$alias"
                         fi
-                      done
+                      done)"
+
+                  # Teams noted as orphaned on the previous run (team ids).
+                  NOTED="$(kubectl get configmap team-offboarding-state -n ai-platform \
+                    -o jsonpath='{.data.pending}' 2>/dev/null || true)"
+
+                  # Revoke only what was orphaned on both runs; note the rest.
+                  # The new list is saved BEFORE anything is revoked: if saving
+                  # fails, set -e stops the run and nothing is revoked.
+                  REVOKE=""; PENDING=""
+                  while read -r tid alias; do
+                    [ -n "$tid" ] || continue
+                    if printf '%s\n' "$NOTED" | grep -qxF "$tid"; then
+                      REVOKE="$REVOKE$tid $alias"$'\n'
+                    else
+                      echo "noted: $alias ($tid) has no AITeam CR; revoked if still missing on the next run"
+                      PENDING="$PENDING$tid"$'\n'
+                    fi
+                  done <<< "$ORPHANS"
+                  kubectl create configmap team-offboarding-state -n ai-platform \
+                    --from-literal=pending="$PENDING" --dry-run=client -o yaml \
+                    | kubectl apply -f - > /dev/null
+
+                  while read -r tid alias; do
+                    [ -n "$tid" ] || continue
+                    echo "OFFBOARD orphaned team: $alias ($tid) — no AITeam CR on two runs in a row"
+                    curl -sf -X POST "$LITELLM/team/delete" \
+                      -H "Authorization: Bearer $LITELLM_MASTER_KEY" \
+                      -H "Content-Type: application/json" \
+                      -d "$(jq -n --arg id "$tid" '{team_ids:[$id]}')" > /dev/null \
+                      && echo "  ✓ revoked team + keys" \
+                      || echo "  ⚠ /team/delete failed for $tid"
+                  done <<< "$REVOKE"
                   echo "Offboarding reconcile complete."
               env:
                 - name: LITELLM_MASTER_KEY
