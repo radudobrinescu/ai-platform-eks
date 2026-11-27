@@ -488,13 +488,81 @@ def chk_dcgm_metrics(c: Ctx):
     return has, f"dcgm-exporter HTTP {code}, GPU util metric {'present' if has else 'absent'}"
 
 
+DASHBOARD_HEALTH_ATTEMPTS = 3
+DASHBOARD_HEALTH_PAUSE = 10
+
+
 def chk_dashboard_health(c: Ctx):
     # The dashboard's probes hit /data.json (there is no /healthz); a 200 with JSON
-    # proves the backend is up AND can read the cluster.
-    with PortForward(NS_PLATFORM, "svc/cluster-dashboard", 9090) as pf:
-        code, body = http("GET", f"{pf.base}/data.json")
-    ok = code == 200 and body.lstrip().startswith("{")
-    return ok, f"/data.json HTTP {code}" + ("" if ok else f": {body[:80]}")
+    # proves the backend is up AND can read the cluster. A fresh port-forward per
+    # attempt: right after an upgrade the pod behind the first one can be replaced
+    # (seen: "Remote end closed connection without response", then 200).
+    last = ""
+    for attempt in range(DASHBOARD_HEALTH_ATTEMPTS):
+        if attempt:
+            time.sleep(DASHBOARD_HEALTH_PAUSE)
+        try:
+            with PortForward(NS_PLATFORM, "svc/cluster-dashboard", 9090) as pf:
+                code, body = http("GET", f"{pf.base}/data.json")
+        except (ConnectionError, OSError, TimeoutError) as e:
+            last = f"{type(e).__name__}: {e}"
+            continue
+        if code == 200 and body.lstrip().startswith("{"):
+            return True, f"/data.json HTTP {code}" + (f" (attempt {attempt + 1})" if attempt else "")
+        last = f"/data.json HTTP {code}: {body[:80]}"
+    return False, last
+
+
+# After a Kubernetes bump Karpenter replaces its nodes (they drift to the new
+# AMI) and the platform pods move with them; checks that start before that is
+# over hit pods that are moving.
+ROLLOUT_SETTLE_TIMEOUT = 1800
+
+
+def _condition(obj: dict, kind: str) -> str | None:
+    for cond in (obj.get("status") or {}).get("conditions") or []:
+        if cond.get("type") == kind:
+            return cond.get("status")
+    return None
+
+
+def rollout_pending(claims: dict, nodes: dict, deployments: dict) -> list[str]:
+    """What still moves: NodeClaims that are drifted or being deleted, nodes
+    that are not Ready, Deployments without all replicas updated and ready."""
+    out = []
+    for cl in claims.get("items") or []:
+        name = (cl.get("metadata") or {}).get("name", "?")
+        if (cl.get("metadata") or {}).get("deletionTimestamp"):
+            out.append(f"nodeclaim {name} being deleted")
+        elif _condition(cl, "Drifted") == "True":
+            out.append(f"nodeclaim {name} drifted")
+    for n in nodes.get("items") or []:
+        if _condition(n, "Ready") != "True":
+            out.append(f"node {(n.get('metadata') or {}).get('name', '?')} not Ready")
+    for d in deployments.get("items") or []:
+        want = (d.get("spec") or {}).get("replicas", 1) or 0
+        st = d.get("status") or {}
+        if want and (st.get("readyReplicas", 0) < want or st.get("updatedReplicas", 0) < want):
+            meta = d.get("metadata") or {}
+            out.append(f"deployment {meta.get('namespace')}/{meta.get('name')} "
+                       f"{st.get('readyReplicas', 0)}/{want} ready, {st.get('updatedReplicas', 0)} updated")
+    return out
+
+
+def wait_rollout_settled(timeout: int = ROLLOUT_SETTLE_TIMEOUT) -> tuple[bool, str]:
+    seen: dict = {"pending": ["never read"]}
+    t0 = time.time()
+
+    def settled():
+        seen["pending"] = rollout_pending(kubectl_json("get", "nodeclaims.karpenter.sh"),
+                                          kubectl_json("get", "nodes"),
+                                          kubectl_json("get", "deployments", "-n", NS_PLATFORM))
+        return not seen["pending"]
+    try:
+        wait_for("the node rollout to settle", settled, timeout, 20)
+    except TimeoutError:
+        return False, f"still moving after {timeout}s: " + "; ".join(seen["pending"][:8])
+    return True, f"nodes and platform pods settled after {time.time() - t0:.0f}s"
 
 
 # The dashboard's LiteLLM key is made by a CronJob that runs every 15 minutes;
