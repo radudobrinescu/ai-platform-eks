@@ -1,0 +1,17 @@
+# Demo: llm-d prefix-cache routing against round robin (docs/demos/prefix-cache-routing.md).
+apiVersion: kro.run/v1alpha1
+kind: LLMDEndpoint
+metadata:
+  name: support-assistant
+  namespace: inference
+spec:
+  model: "Qwen/Qwen3-8B"
+  gpuCount: 1
+  maxModelLen: 16384
+  minVramPerGpuGiB: 22        # L4 class or larger; Karpenter picks the cheapest (g6)
+  workerCpu: "6"              # fits a g6.2xlarge (8 vCPU, 32 GiB)
+  workerMemory: "24Gi"
+  minReplicas: 4
+  maxReplicas: 4              # fixed size for the comparison
+  routingProfile: prefix      # weight the router's prefix-cache scorer highest
+  extraArgs: ["--enable-prompt-tokens-details"]   # cached tokens in every API response
