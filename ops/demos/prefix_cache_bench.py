@@ -41,6 +41,13 @@ PROM_URL = "http://autoscaling-prometheus.inference.svc.cluster.local:9090"
 INFERENCE_PERF_IMAGE = "quay.io/inference-perf/inference-perf:v0.7.0"
 PRISM_IMAGE = "ghcr.io/llm-d/llm-d-prism:v1.0.0"
 LABELS = {"app.kubernetes.io/part-of": "prefix-cache-demo"}
+# Runs live below the volume root: the root of a new EBS volume holds lost+found,
+# which only root can read, and Prism's directory listing fails on it.
+RUNS_DIR = "/results/runs"
+# Bottlerocket enforces SELinux and gives every pod its own MCS categories, so a
+# file one pod wrote is unreadable to another. The pods on the results volume
+# (benchmark Jobs and Prism) share this one level.
+SELINUX_LEVEL = "s0:c317,c829"
 HERE = os.path.dirname(os.path.abspath(__file__))
 NAME_RX = re.compile(r"^[a-z0-9]([-a-z0-9]{0,50}[a-z0-9])?$")
 
@@ -134,6 +141,7 @@ def bench_job(*, name: str, config_map: str, env: dict) -> dict:
                 "metadata": {"labels": {**LABELS, "app.kubernetes.io/name": "prefix-cache-bench"}},
                 "spec": {
                     "restartPolicy": "Never",
+                    "securityContext": {"seLinuxOptions": {"level": SELINUX_LEVEL}},
                     "containers": [{
                         "name": "bench", "image": INFERENCE_PERF_IMAGE, "command": ["sh", "-c", script],
                         "env": [{"name": k, "value": str(v)} for k, v in env.items()]
@@ -163,10 +171,11 @@ def prism_objects(replicas: int = 1) -> list[dict]:
                 "metadata": {"labels": {**LABELS, **sel}},
                 "spec": {
                     "automountServiceAccountToken": False,
-                    "securityContext": {"runAsNonRoot": True, "runAsUser": 1000, "runAsGroup": 1000},
+                    "securityContext": {"runAsNonRoot": True, "runAsUser": 1000, "runAsGroup": 1000,
+                                        "seLinuxOptions": {"level": SELINUX_LEVEL}},
                     "containers": [{
                         "name": "prism", "image": PRISM_IMAGE,
-                        "env": [{"name": "PORT", "value": "8080"}, {"name": "PRISM_LOCAL_DIR", "value": "/results"}],
+                        "env": [{"name": "PORT", "value": "8080"}, {"name": "PRISM_LOCAL_DIR", "value": RUNS_DIR}],
                         "ports": [{"name": "http", "containerPort": 8080}],
                         "readinessProbe": {"httpGet": {"path": "/", "port": "http"}, "periodSeconds": 10},
                         "resources": {"requests": {"cpu": "200m", "memory": "512Mi"}, "limits": {"memory": "1Gi"}},
@@ -269,7 +278,7 @@ def run(a: argparse.Namespace) -> int:
             kubectl("delete", "pods", "-n", MODEL_NS, "-l", f"llm-d.ai/pool={a.model}", "--wait=false")
             kubectl("wait", "pods", "-n", MODEL_NS, "-l", f"llm-d.ai/pool={a.model}", "--for=condition=Ready",
                     "--timeout=1500s", timeout=1560)
-        out_dir = f"/results/{run_id}/{target}"
+        out_dir = f"{RUNS_DIR}/{run_id}/{target}"
         cfg = bench_config(served_model=facts["served_model"], url=target_url(a.model, target), out_dir=out_dir,
                            rates=rates, stage_seconds=a.stage_seconds, groups=a.groups,
                            users_per_group=a.users_per_group, prefix_len=a.prefix_len, question_len=a.question_len,
