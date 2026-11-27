@@ -209,6 +209,12 @@ Example with advanced flags
 > `terraform/30.eks/30.cluster/karpenter.tf` and from the capacity types in
 > `terraform/30.eks/30.cluster/karpenter/gpu-*.yaml`, then apply.
 
+> ℹ️ **g7 GPU nodes need Kubernetes 1.37.** g7 instances (NVIDIA RTX PRO 4500
+> Blackwell) need NVIDIA driver 595, which the Bottlerocket NVIDIA AMIs include
+> for Kubernetes 1.37 and later. On a 1.36 cluster the GPU node pools leave g7 out
+> and `new-model` does not offer it; it becomes available after the cluster moves
+> to 1.37. g7e is available on both versions.
+
 7. Removing a model
 
 ```bash
