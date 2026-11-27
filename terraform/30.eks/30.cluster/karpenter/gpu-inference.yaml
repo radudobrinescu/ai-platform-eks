@@ -113,13 +113,14 @@ spec:
         # guard — it's numeric and immune to family-name spelling — kept both for
         # defense in depth and because the family list still narrows the search
         # space Karpenter considers.
-        # g7/g7e (Blackwell RTX PRO) are allowed: they were excluded while
-        # Bottlerocket's NVIDIA variants picked the proprietary driver, which
-        # rejects these GPUs (bottlerocket-os/bottlerocket#4889, now closed).
-        # See gpu-shared.yaml.
+        # Rendered by Terraform (karpenter.tf): g4dn, g4ad, p3, p3dn, p2, plus g7
+        # on Kubernetes 1.36. g7 (RTX PRO 4500 Blackwell) needs NVIDIA driver 595,
+        # which the Bottlerocket NVIDIA AMIs ship for Kubernetes 1.37 and later
+        # only; on 1.36 its node joins but the GPU never comes up. g7e uses
+        # driver 580 and is allowed on every version.
         - key: karpenter.k8s.aws/instance-family
           operator: NotIn
-          values: ["g4dn", "g4ad", "p3", "p3dn", "p2"]
+          values: ${gpu_inference_excluded_families}
         # Ampere is generation 5 in G-family numbering (g5/g6/g6e/g7e are all
         # >= 5); P3(dn) is generation 3, P2 is generation 2 — both correctly
         # excluded by this floor regardless of what AWS names the variant.

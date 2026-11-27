@@ -79,6 +79,7 @@ resolve_env() {
 # nested in shared_config (grep by exact key name; both are simple "..." values).
 tfvar_region() { grep -E '^[[:space:]]*region[[:space:]]*=' "${TF_DIR}/00.global/vars/${1}.tfvars" 2>/dev/null | head -1 | sed -E 's/^[^"]*"([^"]*)".*/\1/' || true; }
 tfvar_prefix() { grep -E '^[[:space:]]*resources_prefix[[:space:]]*=' "${TF_DIR}/00.global/vars/${1}.tfvars" 2>/dev/null | head -1 | sed -E 's/^[^"]*"([^"]*)".*/\1/' || true; }
+tfvar_kubernetes_version() { grep -E '^[[:space:]]*kubernetes_version[[:space:]]*=' "${TF_DIR}/00.global/vars/${1}.tfvars" 2>/dev/null | head -1 | sed -E 's/^[^"]*"([^"]*)".*/\1/'; }
 # Cluster name convention (locals.tf: "${resources_prefix}-${workspace}").
 cluster_of() { local p; p="$(tfvar_prefix "$1")"; echo "${p:+${p}-}$1"; }
 
@@ -1070,6 +1071,13 @@ cmd_new_model() {
   need python3
   [ "$#" -ge 1 ] || die "usage: platformctl new-model <hf-model-id> [flags]
   e.g. platformctl new-model Qwen/Qwen2.5-3B-Instruct --seq 8192 --users 4"
+  # The cluster's Kubernetes version decides which GPU families its NodePools
+  # admit (g7 needs 1.37), so the sizing offers only what Karpenter can launch.
+  local env version
+  if [ -z "${PLATFORM_KUBERNETES_VERSION:-}" ] && env="$(resolve_env "" 2>/dev/null)"; then
+    version="$(tfvar_kubernetes_version "$env")"
+    [ -z "$version" ] || export PLATFORM_KUBERNETES_VERSION="$version"
+  fi
   exec python3 "${LIB_DIR}/recommend-instance.py" "$@"
 }
 

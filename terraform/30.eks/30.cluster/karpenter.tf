@@ -238,6 +238,20 @@ locals {
   # the NodeClass actually selects reservations (Karpenter rejects it
   # otherwise); when present, Karpenter prioritizes reserved capacity before
   # falling back to on-demand/spot.
+  # Instance families the GPU NodePools refuse. g7 (RTX PRO 4500 Blackwell) needs
+  # NVIDIA driver 595, which the Bottlerocket NVIDIA AMIs ship for Kubernetes 1.37
+  # and later only; on 1.36 a g7 node joins but its GPU never comes up, so it is
+  # refused there (g7e uses driver 580 and runs on every version). See
+  # docs.aws.amazon.com/eks/latest/userguide/ml-eks-optimized-ami.html.
+  # ops/lib/recommend_instance/catalog.py mirrors these lists.
+  gpu_needs_driver_595                 = ["g7"]
+  gpu_driver_595_ok                    = tonumber(split(".", local.cluster_version)[1]) >= 37
+  gpu_inference_excluded_families_base = ["g4dn", "g4ad", "p3", "p3dn", "p2"]
+  gpu_shared_excluded_families_base    = ["g4dn", "g4ad"]
+  gpu_refused_for_driver               = local.gpu_driver_595_ok ? [] : local.gpu_needs_driver_595
+  gpu_inference_excluded_families      = jsonencode(concat(local.gpu_inference_excluded_families_base, local.gpu_refused_for_driver))
+  gpu_shared_excluded_families         = jsonencode(concat(local.gpu_shared_excluded_families_base, local.gpu_refused_for_driver))
+
   gpu_capacity_types = join(", ", [
     for t in concat(
       length(var.gpu_capacity_reservation_ids) > 0 ? ["reserved"] : [],
@@ -265,6 +279,8 @@ data "kubectl_path_documents" "karpenter_manifests" {
     # Capacity Blocks / ODCRs for GPU inference nodes (empty = disabled).
     gpu_capacity_reservation_selector = local.gpu_capacity_reservation_selector
     gpu_capacity_types                = local.gpu_capacity_types
+    gpu_inference_excluded_families   = local.gpu_inference_excluded_families
+    gpu_shared_excluded_families      = local.gpu_shared_excluded_families
   }
   depends_on = [
     module.eks
@@ -295,6 +311,8 @@ data "kubectl_path_documents" "karpenter_manifests_dummy" {
     # block, but they only need to keep the document COUNT stable.
     gpu_capacity_reservation_selector = local.gpu_capacity_reservation_selector
     gpu_capacity_types                = local.gpu_capacity_types
+    gpu_inference_excluded_families   = local.gpu_inference_excluded_families
+    gpu_shared_excluded_families      = local.gpu_shared_excluded_families
   }
 }
 

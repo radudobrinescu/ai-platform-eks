@@ -47,6 +47,13 @@ def _nodepool_requirements(pool):
     with open(os.path.join(KARPENTER, f"{pool}.yaml"), encoding="utf-8") as fh:
         docs = re.split(r"^---$", fh.read(), flags=re.M)
     doc = next(d for d in docs if re.search(r"^kind: NodePool$", d, flags=re.M))
+    # The excluded-family lists as Terraform renders them on Kubernetes 1.37
+    # (karpenter.tf; on 1.36 it adds g7, see tests/test_g7_needs_kubernetes_137.py).
+    with open(os.path.join(KARPENTER, "..", "karpenter.tf"), encoding="utf-8") as fh:
+        tf = fh.read()
+    for name in ("gpu_inference_excluded_families", "gpu_shared_excluded_families"):
+        base = re.search(rf"{name}_base\s*=\s*(\[[^\]]*\])", tf).group(1)
+        doc = doc.replace("${" + name + "}", base)
     reqs = yaml.safe_load(re.sub(r"\$\{\w+\}", "x", doc))["spec"]["template"]["spec"]["requirements"]
     by_key = {r["key"]: (r["operator"], [str(v) for v in r["values"]]) for r in reqs}
     assert len(by_key) == len(reqs), f"{pool}: a requirement key is repeated"
