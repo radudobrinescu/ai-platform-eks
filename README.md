@@ -322,6 +322,9 @@ platform namespaces can reach in), and a scoped LiteLLM key (budget + rpm/tpm).
 Scaffold that YAML with `./platformctl onboard-team <name> [--gpu N --budget USD
 --models a,b ...]` - it mirrors `new-model`: prints the manifest for review by
 default, and with `--deploy` writes it, commits, and pushes so ArgoCD applies it.
+To offboard a team, delete its YAML and push: its namespace goes at once, and its
+LiteLLM team and API keys are revoked 15 to 30 minutes later (the team must be
+missing on two checks in a row, so a brief gap during an upgrade cannot revoke keys).
 The team then
 calls the models served from the shared `inference` namespace with its own key;
 `--models` limits which ones it may use. Serving a model inside a team's own
