@@ -95,14 +95,15 @@ def test_runs_inside_the_predown_drain_before_terraform():
 
 
 def test_gpu_pools_exclude_families_the_node_image_cannot_drive():
-    # g4ad is AMD, g4dn's T4 is below compute capability 8.0. g7/g7e (Blackwell
-    # RTX PRO) are allowed again since Bottlerocket drives them (#4889).
-    for f in ("gpu-shared.yaml", "gpu-inference.yaml"):
-        with open(os.path.join(ROOT, "terraform/30.eks/30.cluster/karpenter", f), encoding="utf-8") as fh:
-            text = fh.read()
-        notin = re.search(r'instance-family\n\s+operator: NotIn\n\s+values: \[([^\]]*)\]', text).group(1)
-        assert '"g4dn"' in notin and '"g4ad"' in notin, f
-        assert '"g7"' not in notin and '"g7e"' not in notin, f
+    # g4ad is AMD, g4dn's T4 is below compute capability 8.0. The lists are
+    # rendered by Terraform (karpenter.tf): g7 is added below Kubernetes 1.37
+    # (tests/test_g7_needs_kubernetes_137.py); g7e is never excluded.
+    with open(os.path.join(ROOT, "terraform/30.eks/30.cluster/karpenter.tf"), encoding="utf-8") as fh:
+        tf = fh.read()
+    for name in ("gpu_shared_excluded_families_base", "gpu_inference_excluded_families_base"):
+        base = re.search(rf'{name}\s*=\s*\[([^\]]*)\]', tf).group(1)
+        assert '"g4dn"' in base and '"g4ad"' in base, name
+        assert '"g7"' not in base and '"g7e"' not in base, name
 
 
 def _run_fn(tmp_path, fn, call, kubectl_body, **env):
