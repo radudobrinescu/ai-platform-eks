@@ -149,8 +149,16 @@ def settled_trace_count(expected: int, timeout: int = 300) -> int | None:
         return last["n"]
 
 
-def snapshot(c: checks.Ctx, s: Seed) -> dict:
-    """Read the seeded state. Never contains the key itself."""
+# After a planned trace reset the store starts empty and Langfuse has just
+# started: the snapshot's own chats are the only traces, and the first ones take
+# minutes to show (seen: 0 after 300 s, then traced a few minutes later).
+TRACES_AFTER_RESET_TIMEOUT = 900
+
+
+def snapshot(c: checks.Ctx, s: Seed, traces_reset: bool = False) -> dict:
+    """Read the seeded state. Never contains the key itself. `traces_reset`: the
+    upgrade empties the trace store on purpose, so wait for one new trace
+    (longer) instead of for as many as were seeded."""
     snap: dict = {}
     master = c.litellm_key()
     team_id = secret_value(TEAM_NS, TEAM_SECRET, "team-id")
@@ -167,7 +175,8 @@ def snapshot(c: checks.Ctx, s: Seed) -> dict:
         snap["spend_log_count"] = len(logs) if isinstance(logs, list) else None
         listed = checks.models(pf, master)
         snap["models"] = {m: {"listed": m in listed, "chat": checks.chat(pf, master, m)[0]} for m in s.models}
-    snap["langfuse_traces"] = settled_trace_count(SEED_BEDROCK_CHATS + 1)
+    snap["langfuse_traces"] = (settled_trace_count(1, TRACES_AFTER_RESET_TIMEOUT) if traces_reset
+                               else settled_trace_count(SEED_BEDROCK_CHATS + 1))
     snap["openwebui_user_ids"] = openwebui_ids(c)
     snap["cognito"] = cognito_state(c)
     return snap

@@ -397,10 +397,11 @@ class Runner:
         upgraded = self.step("platformctl-upgrade", self.upgrade_platform)
         if upgraded and not self.dry:
             def do_compare():
-                after = survival.snapshot(self.make_ctx(), state["seed"])
-                self.report.survival["after"] = after
                 resets = survival.planned_resets(self.report.versions.get("base") or {},
                                                  self.report.versions.get("candidate") or {})
+                after = survival.snapshot(self.make_ctx(), state["seed"],
+                                          traces_reset="langfuse-traces-kept" in resets)
+                self.report.survival["after"] = after
                 for name, ok, detail in survival.compare(state["before"], after, resets):
                     self.report.results.append(checks.CheckResult("survival", name, ok, detail))
                 return True, "snapshot after upgrade taken"
