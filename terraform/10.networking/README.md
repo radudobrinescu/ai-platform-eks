@@ -1,52 +1,55 @@
-# Networking
+# 10.networking
 
-<!-- BEGINNING OF PRE-COMMIT-TERRAFORM DOCS HOOK -->
-## Requirements
+This stage creates the network the cluster runs in: one VPC named
+`<resources_prefix>-<env>`, spread over up to `num_azs` Availability Zones, with
+three subnets per zone (private for nodes and pods, public for NAT and
+internet-facing load balancers, and a small "control plane" subnet for the EKS
+network interfaces) and NAT gateways for outbound traffic. The private subnets
+are tagged for internal load balancers and for Karpenter discovery, the public
+ones for internet-facing load balancers. When
+`cluster_config.private_eks_cluster = true` it also creates VPC endpoints (an S3
+gateway endpoint and interface endpoints for EKS and EKS Auth, EC2, Auto
+Scaling, EBS, ECR, KMS, SSM, CloudWatch Logs, Amazon Managed Prometheus, Amazon
+Managed Grafana and Bedrock runtime), so a private-only cluster reaches those
+services without leaving the VPC. A CloudFormation stack with no real resources
+records that the AWS guidance was deployed.
 
-| Name | Version |
-|------|---------|
-| <a name="requirement_terraform"></a> [terraform](#requirement\_terraform) | >= 1.0.0 |
-| <a name="requirement_aws"></a> [aws](#requirement\_aws) | >= 5.40.0 |
+## Deploy
 
-## Providers
+`./platformctl up <env>` applies this stage first, then the others in order.
+This stage alone, from the repository root:
 
-| Name | Version |
-|------|---------|
-| <a name="provider_aws"></a> [aws](#provider\_aws) | >= 5.40.0 |
+```bash
+AWS_REGION=<region> make -C terraform plan  MODULE=10.networking ENVIRONMENT=<env>
+AWS_REGION=<region> make -C terraform apply MODULE=10.networking ENVIRONMENT=<env>
+```
 
-## Modules
-
-| Name | Source | Version |
-|------|--------|---------|
-| <a name="module_endpoints"></a> [endpoints](#module\_endpoints) | terraform-aws-modules/vpc/aws//modules/vpc-endpoints | 5.5.3 |
-| <a name="module_subnets"></a> [subnets](#module\_subnets) | hashicorp/subnets/cidr | 1.0.0 |
-| <a name="module_vpc"></a> [vpc](#module\_vpc) | terraform-aws-modules/vpc/aws | 5.5.2 |
-
-## Resources
-
-| Name | Type |
-|------|------|
-| [aws_availability_zones.available](https://registry.terraform.io/providers/hashicorp/aws/latest/docs/data-sources/availability_zones) | data source |
+`apply` does not ask for confirmation. `make` reads
+`terraform/00.global/vars/<env>.tfvars` and stops if it is missing; unlike
+`platformctl` it does not read `region` from that file, so pass `AWS_REGION`.
+The state bucket must exist (`platformctl up` creates it; by hand:
+`AWS_REGION=<region> make -C terraform bootstrap ENVIRONMENT=<env>`).
 
 ## Inputs
 
-| Name | Description | Type | Default | Required |
-|------|-------------|------|---------|:--------:|
-| <a name="input_cluster_config"></a> [cluster\_config](#input\_cluster\_config) | cluster configurations such as version, public/private API endpoint, and more | `map(string)` | `{}` | no |
-| <a name="input_control_plane_subnets_cidr_prefix"></a> [control\_plane\_subnets\_cidr\_prefix](#input\_control\_plane\_subnets\_cidr\_prefix) | CIDR prefix for the control plane subnets | `number` | `28` | no |
-| <a name="input_num_azs"></a> [num\_azs](#input\_num\_azs) | Number of Availability Zones | `number` | `3` | no |
-| <a name="input_private_subnets_cidr_prefix"></a> [private\_subnets\_cidr\_prefix](#input\_private\_subnets\_cidr\_prefix) | CIDR prefix for the private subnets | `number` | `20` | no |
-| <a name="input_public_subnets_cidr_prefix"></a> [public\_subnets\_cidr\_prefix](#input\_public\_subnets\_cidr\_prefix) | CIDR prefix for the public subnets | `number` | `24` | no |
-| <a name="input_shared_config"></a> [shared\_config](#input\_shared\_config) | Shared configuration across all modules/folders | `map(any)` | `{}` | no |
-| <a name="input_tags"></a> [tags](#input\_tags) | Additional tags | `map(string)` | `{}` | no |
-| <a name="input_vpc_cidr"></a> [vpc\_cidr](#input\_vpc\_cidr) | CIDR block for the VPC | `string` | `"10.0.0.0/16"` | no |
+Set in `terraform/00.global/vars/<env>.tfvars`; the documented template is
+[`example.tfvars`](../00.global/vars/example.tfvars).
+
+- `vpc_cidr` - CIDR block of the VPC (default `10.0.0.0/16`).
+- `shared_config.resources_prefix` - first part of every resource name.
+- `cluster_config.private_eks_cluster` - `true` adds the VPC endpoints. If the
+  key is omitted it counts as `true`, as it does in `30.eks/30.cluster`.
+- `tags` - extra tags for every resource.
+
+Not in the template, with defaults that rarely need changing: `num_azs` (3),
+`private_subnets_cidr_prefix` (20), `public_subnets_cidr_prefix` (24),
+`control_plane_subnets_cidr_prefix` (28).
 
 ## Outputs
 
-| Name | Description |
-|------|-------------|
-| <a name="output_intra_subnet_ids"></a> [intra\_subnet\_ids](#output\_intra\_subnet\_ids) | List of IDs of intra subnets |
-| <a name="output_private_subnet_ids"></a> [private\_subnet\_ids](#output\_private\_subnet\_ids) | List of IDs of private subnets |
-| <a name="output_public_subnet_ids"></a> [public\_subnet\_ids](#output\_public\_subnet\_ids) | List of IDs of public subnets |
-| <a name="output_vpc_id"></a> [vpc\_id](#output\_vpc\_id) | The ID of the VPC |
-<!-- END OF PRE-COMMIT-TERRAFORM DOCS HOOK -->
+Read by the later stages from this stage's state:
+
+- `vpc_id`
+- `private_subnet_ids`
+- `public_subnet_ids`
+- `intra_subnet_ids` - the control plane subnets

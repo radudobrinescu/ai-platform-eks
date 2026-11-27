@@ -258,7 +258,9 @@ spec:
   template:
     metadata:
       labels:
-        app: open-webui
+        # Not `app: open-webui`: that is the Service's selector, and this pod
+        # would be an endpoint of the UI for as long as it runs.
+        app: litellm-openwebui-key
         ai-platform/job: openwebui-key
     spec:
       restartPolicy: OnFailure

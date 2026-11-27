@@ -24,8 +24,8 @@ spec:
         Environment: ${environment}
   # Capacity Blocks / ODCRs for frontier accelerators (p6-b300 etc.). Rendered
   # by Terraform from gpu_capacity_reservation_ids — a complete
-  # capacityReservationSelectorTerms block when set, or a blank line when not
-  # (same pattern as the snapshotID line below). Karpenter prioritizes this
+  # capacityReservationSelectorTerms block when set, or a blank line when not.
+  # Karpenter prioritizes this
   # reserved capacity before falling back to on-demand/spot.
   ${gpu_capacity_reservation_selector}
   blockDeviceMappings:
@@ -36,7 +36,6 @@ spec:
         encrypted: true
         throughput: 500
         iops: 6000
-        ${gpu_snapshot_id_line}
   userData: |
     [settings.container-runtime]
     snapshotter = "soci"
@@ -45,10 +44,8 @@ spec:
     # layers concurrently and the Bottlerocket snapshotter PANICS mid-unpack on
     # large multi-GB-layer images (e.g. the vLLM serving image), surfacing to
     # the kubelet as
-    # "reading from server: EOF". The EBS data-volume snapshot is baked with
-    # bare `snapshotter = "soci"` too, so this matches the baked content store
-    # and keeps vLLM image cold-start at ~0s. Large GPU images should be pre-baked
-    # into the snapshot (image-optimization.tf); the SOCI index is the fallback.
+    # "reading from server: EOF". Without a SOCI index for the image (no ECR
+    # pull-through cache) this snapshotter pulls the image the ordinary way.
   tags:
     karpenter.sh/discovery: ${cluster_name}
     Environment: ${environment}
@@ -74,8 +71,12 @@ spec:
           effect: NoSchedule
       # All NVIDIA-backed AWS GPU instance categories (G and P families).
       # Karpenter's scheduler already bin-packs to cheapest-fit, so we don't
-      # enumerate families — new ones become eligible automatically, except
-      # those excluded below because the node image cannot drive them.
+      # enumerate families — new ones become eligible automatically. Excluded
+      # below are only GPUs older than Ampere, which current vLLM model defaults
+      # cannot run on: the families g4dn, g4ad, p3, p3dn and p2 by name, backed
+      # by a floor on the instance generation (>= 5). Non-NVIDIA GPUs are out
+      # through the manufacturer requirement. No family is excluded because of
+      # the node image any more (g7/g7e were; see the note further down).
       # Cost blast-radius is bounded by `limits.nvidia.com/gpu` below.
       requirements:
         - key: kubernetes.io/arch
@@ -112,13 +113,14 @@ spec:
         # guard — it's numeric and immune to family-name spelling — kept both for
         # defense in depth and because the family list still narrows the search
         # space Karpenter considers.
-        # g7/g7e (Blackwell RTX PRO) are allowed: they were excluded while
-        # Bottlerocket's NVIDIA variants picked the proprietary driver, which
-        # rejects these GPUs (bottlerocket-os/bottlerocket#4889, now closed).
-        # See gpu-shared.yaml.
+        # Rendered by Terraform (karpenter.tf): g4dn, g4ad, p3, p3dn, p2, plus g7
+        # on Kubernetes 1.36. g7 (RTX PRO 4500 Blackwell) needs NVIDIA driver 595,
+        # which the Bottlerocket NVIDIA AMIs ship for Kubernetes 1.37 and later
+        # only; on 1.36 its node joins but the GPU never comes up. g7e uses
+        # driver 580 and is allowed on every version.
         - key: karpenter.k8s.aws/instance-family
           operator: NotIn
-          values: ["g4dn", "g4ad", "p3", "p3dn", "p2"]
+          values: ${gpu_inference_excluded_families}
         # Ampere is generation 5 in G-family numbering (g5/g6/g6e/g7e are all
         # >= 5); P3(dn) is generation 3, P2 is generation 2 — both correctly
         # excluded by this floor regardless of what AWS names the variant.

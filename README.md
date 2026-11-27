@@ -10,7 +10,7 @@ Key Features:
   
 - One API for every model. A single OpenAI-compatible endpoint fronts both Amazon Bedrock and your own Hugging Face / fine-tuned
 models - switch models by changing one string, not your code. Use in your IDE/tooling of choice e.g. Cline etc.
-- Production-ready by design, with dashboards and tooling out-of the box (Langfuse, Grafana, ArgoCD, LitellmUI, Open WebUI)
+- Production-ready by design, with dashboards and tooling out of the box (cluster dashboard, Langfuse, Argo CD, LiteLLM UI, Open WebUI); Amazon Managed Grafana is optional
 - Governance at scale. Each team gets its own API key, budget, and rate limits, with per-user cost tracking and
 request tracing built in - so you can safely adjust it to your organizational needs.
 - Ship models like code. Adding, updating, or removing a model is a YAML commit that ArgoCD deploys - no consoles, no tickets, no
@@ -71,7 +71,13 @@ a missing number is never mistaken for a zero.
 **Tools** (on the machine you run `./platformctl` from):
 - **AWS CLI v2** with credentials configured (`aws sts get-caller-identity` must work), 
 - [AWS Session Manager plugin for the AWS CLI](https://docs.aws.amazon.com/systems-manager/latest/userguide/session-manager-working-with-install-plugin.html) (for `./platformctl tunnel`)
-- **Terraform**, **kubectl**, **make**, **jq**, **git**, and **python3** with **boto3**
+- **Terraform**, **kubectl**, **make**, **jq**, **git**, **curl**, and **python3** with **boto3**
+
+**AWS permissions**: the identity that runs `./platformctl` creates the VPC, the
+EKS cluster, IAM roles, security groups, a Cognito user pool, S3 buckets and KMS
+keys, so use an administrator role for the account or one with equivalent rights.
+It also needs cluster-admin access to the new cluster, which `up` grants to the
+identity that created it.
 
 **AWS account setup**:
 - (Optional) If using **Amazon Bedrock models**: enable the desired model(s) in the AWS console (one-time model-access toggle). You enroll them after the cluster is up with `./platformctl new-model --source bedrock` (nothing is pinned in git) - see the Quick start.
@@ -99,20 +105,21 @@ a missing number is never mistaken for a zero.
 > account.** It provisions an EKS cluster and (on demand) GPU nodes. The platform
 > UIs sit behind an **internal ALB** by default (no public IP) - reach them via
 > `./platformctl tunnel` or the opt-in CloudFront edge. If you switch the ALB to
-> **internet-facing**, restrict it to your own IP ranges via the **IP allowlist**
-> first - never leave it open to the public internet (`0.0.0.0/0`). GPU nodes and
-> the cluster incur significant cost; use [Cleanup](#cleanup) to remove
-> everything when finished. See [SECURITY.md](SECURITY.md).
+> **internet-facing**, first restrict its security group (`ai-platform-alb-inbound`)
+> to your own IP ranges - never leave it open to the public internet (`0.0.0.0/0`).
+> GPU nodes and the cluster incur significant cost; use [Cleanup](#cleanup) to
+> remove the environment when finished. See [SECURITY.md](SECURITY.md).
 
 0. Create a **GitHub fork of this repo** that ArgoCD can read later - its URL goes in `gitops_repo_url`. Next, clone the forked repo to your local machine
 ```bash
 git clone https://github.com/YOUR-ORG/REPLACE-WITH-YOUR-REPO.git
+cd REPLACE-WITH-YOUR-REPO      # every command below runs from the repository root
 ```
 
 1. Configure: Copy the template, then set your gitops repo URL, and region.
 ```bash
-cd terraform/00.global/vars && cp example.tfvars dev.tfvars   
-# edit dev.tfvars - fill every REPLACE marker e.g. `gitops_repo_url` (your fork), `region` and `cluster_endpoint_public_access_cidrs` (your operator IP/CIDR - **required**)
+cp terraform/00.global/vars/example.tfvars terraform/00.global/vars/dev.tfvars
+# edit terraform/00.global/vars/dev.tfvars - fill every REPLACE marker e.g. `gitops_repo_url` (your fork), `region` and `cluster_endpoint_public_access_cidrs` (your operator IP/CIDR - **required**)
 # In case of using EKS Managed Capabilities `eks_capabilities = true`: Your Identity Center ARN + **its region** (`argocd_idc_region`, may differ from `region`) + your **SSO user id** (`argocd_rbac_mappings`), 
 ```
 
@@ -133,7 +140,8 @@ cd terraform/00.global/vars && cp example.tfvars dev.tfvars
 
 4. Test - no GPUs yet (up already pointed kubectl at the new cluster)
 ```bash
-./platformctl tunnel        # forward the UIs (WebUI / LiteLLM / Langfuse / Dashboard / ArgoCD)
+./platformctl tunnel        # forward the UIs (WebUI / LiteLLM / Langfuse / Dashboard / ArgoCD); it stays in the foreground
+# in a second terminal:
 ./platformctl status --check  # verify the platform is healthy + Langfuse tracing works (no models answer yet - you enroll them next)
 ```
 
@@ -160,8 +168,9 @@ to record accurate per-token pricing. Remove it later with
 #      - picks a cost-ranked GPU instance type allowed by your Karpenter NodePools;
 #      - scaffolds the matching endpoint CRD - VLLMEndpoint, or an LLMDEndpoint /
 #        LLMDDisaggEndpoint for the llm-d scale tier (--tier, else auto-selected);
-#      - with --deploy: writes it to workloads/models/inference/<name>.yaml, then
-#        git commits + pushes and nudges ArgoCD to sync.
+#      - with --deploy: writes it to workloads/models/inference/<name>.yaml
+#        (llm-d tiers: workloads/scale-models/<name>.yaml), then git commits +
+#        pushes and nudges ArgoCD to sync.
 #    ArgoCD applies it -> Karpenter provisions a GPU node -> vLLM loads the model
 #    -> LiteLLM registers it on the /v1 API.
 ./platformctl new-model Qwen/Qwen2.5-3B-Instruct --deploy   # add -y to skip the confirm prompt
@@ -173,7 +182,7 @@ Drop `--deploy` to just print the recommendation and the ready-to-commit YAML fo
 Size for your traffic with `--seq`, `--users`, or `--workload`, force a serving tier with `--tier`, or point at a private/gated model
 with `--hf-token`. See `./platformctl new-model --help` for all flags. 
 
-Example with fine tuning
+Example with advanced flags
 ```bash
 ./platformctl new-model Qwen/Qwen3.8-27B-FP8 --tp 8 --seq 32768 --quant fp8 \
   --instance-type g6.48xlarge --worker-memory 120Gi \
@@ -193,23 +202,45 @@ Example with fine tuning
 > hourly cost) may differ from the recommendation. The model still fits and serves
 > correctly; only the specific instance may vary. To override the selection, you may specify  `--instance-type`.
 
-7. Removing a model 
+> ⚠️ **GPU nodes can be Spot.** The GPU NodePools allow Spot and On-Demand capacity,
+> and Karpenter takes Spot when it is available. Spot is cheaper, and AWS can reclaim
+> it at two minutes' notice; the model then restarts on a new node. For On-Demand
+> only, remove `"spot"` from `gpu_capacity_types` in
+> `terraform/30.eks/30.cluster/karpenter.tf` and from the capacity types in
+> `terraform/30.eks/30.cluster/karpenter/gpu-*.yaml`, then apply.
 
-Folder `workloads/models/inference`
+> ℹ️ **g7 GPU nodes need Kubernetes 1.37.** g7 instances (NVIDIA RTX PRO 4500
+> Blackwell) need NVIDIA driver 595, which the Bottlerocket NVIDIA AMIs include
+> for Kubernetes 1.37 and later. On a 1.36 cluster the GPU node pools leave g7 out
+> and `new-model` does not offer it; it becomes available after the cluster moves
+> to 1.37. g7e is available on both versions.
+
+7. Removing a model
+
 ```bash
-./platformctl new-model <yaml-name> --undeploy
+./platformctl new-model --undeploy <name>   # add -y to skip the confirm prompt
 ```
+`<name>` is the model's YAML file name without `.yaml`. The command finds the file
+under `workloads/models/` or `workloads/scale-models/`, removes it, commits and
+pushes; ArgoCD then removes the model and LiteLLM deregisters it.
 
 ## Credentials
 
-- Open Web UI, uses Cognito, see Terraform Output
-- Custom Dashboard, uses Cognito, see Terraform Output
-- Langfuse, see Terraform Output
-- LiteLLM UI user: admin, password see Terraform Output
+- Open WebUI, the cluster dashboard, the LiteLLM UI and Langfuse sign in through
+  Cognito. Three seed users exist (`admin@example.com`, `developer@example.com`,
+  `user@example.com`); the dashboard admits the first two. Their passwords:
+```bash
+TF_WORKSPACE=<env> terraform -chdir=terraform/30.eks/30.cluster output -json sso_seed_user_passwords
+```
+- Langfuse also has a local admin (outputs `langfuse_admin_email` and `langfuse_admin_password`):
+```bash
+TF_WORKSPACE=<env> terraform -chdir=terraform/30.eks/30.cluster output -raw langfuse_admin_password
+```
+- LiteLLM UI without SSO: user `admin`, password = the LiteLLM master key:
 ```bash
 kubectl -n ai-platform get secret litellm-secrets -o jsonpath='{.data.master-key}' | base64 -d
 ```
-- ArgoCD (without Identity Center) user:admin, password
+- ArgoCD (without Identity Center): user `admin`, password:
 ```bash
 kubectl -n argocd get secret argocd-initial-admin-secret -o jsonpath="{.data.password}" | base64 -d
 ```
@@ -242,24 +273,25 @@ KEDA adds replicas as requests pile up and removes them when load drops.
 effect: the same GPUs and traffic through the llm-d router and through plain round
 robin, measured with inference-perf and compared in llm-d's Prism.
 
-**Scale to zero (llm-d).** Deploy with `./platformctl new-model <model> --min-replicas 0`
+**Scale to zero (llm-d).** Deploy with `./platformctl new-model <model> --min-replicas 0 --deploy`
 and the model stops after 10 minutes without requests; Karpenter then removes its
 GPU node, so an idle model costs nothing. The next request waits in the llm-d router
 while a GPU node and the model start (a few minutes; up to 10 by default), then is
 answered as usual. Tune it per model with `scaleToZeroAfterSeconds` and
-`coldStartTimeoutSeconds`. Models default to `minReplicas: 1` (always warm). Demo:
+`coldStartTimeoutSeconds`. Models default to `minReplicas: 1` (always warm). Two
+limits: the idle time also runs while a new model is still loading, so send one
+request after deploying to see it answer; and through the CloudFront edge a waiting
+request is cut after 30 s (retry once the model is up). Demo and details:
 [docs/demos/scale-to-zero.md](docs/demos/scale-to-zero.md).
 
-**Fast cold starts.** The vLLM serving image (about 10 GB) is baked into an EBS
-snapshot that every new GPU node boots from, so a node does not download it. The
-first `apply` in an account and region builds the snapshot (about 15 minutes, once
-per vLLM version, no Docker Hub account needed); later clusters reuse it. The
-snapshot is kept when a cluster is destroyed, for the next one; its storage (the
-image data, roughly 20-30 GB) costs about $1-2 a month per vLLM version. Two optional layers add to it: setting `docker_hub_username`
-turns on the ECR pull-through cache (images pulled through your ECR, plus SOCI
-lazy-loading), and the S3 model-weight cache - pre-seed a model's HuggingFace
-weights there and the serving initContainer loads them from local disk instead of
-pulling from HuggingFace. Actual savings vary by model and instance.
+**Cold starts.** A new GPU node pulls the vLLM serving image (about 10 GB) when it
+starts, then loads the model's weights; from a new node to the first answer takes a
+few minutes, longer for large models. Two optional layers shorten it: setting
+`docker_hub_username` turns on the ECR pull-through cache (the image is pulled
+through your ECR, with SOCI lazy-loading), and the S3 model-weight cache - a model's
+HuggingFace weights under `s3://<cluster>-<account-id>-model-cache/hf/<org>/<model>/`
+are synced to the node's disk by the serving initContainer, so vLLM does not pull
+them from HuggingFace. Actual savings vary by model and instance.
 
 **Platform Health Agent.** The cluster dashboard can watch for failures, investigate
 them with an LLM, and propose a one-click fix - idle until you provide a Kiro key.
@@ -290,17 +322,22 @@ platform namespaces can reach in), and a scoped LiteLLM key (budget + rpm/tpm).
 Scaffold that YAML with `./platformctl onboard-team <name> [--gpu N --budget USD
 --models a,b ...]` - it mirrors `new-model`: prints the manifest for review by
 default, and with `--deploy` writes it, commits, and pushes so ArgoCD applies it.
+To offboard a team, delete its YAML and push: its namespace goes at once, and its
+LiteLLM team and API keys are revoked 15 to 30 minutes later (the team must be
+missing on two checks in a row, so a brief gap during an upgrade cannot revoke keys).
 The team then
-deploys models by committing a `VLLMEndpoint` under **`workloads/models/team-<name>/`**
-- the directory name is the target namespace, so models land in that team's quota
-and key (no `kubectl`, no console; removal is `git rm`). By default workloads live
+calls the models served from the shared `inference` namespace with its own key;
+`--models` limits which ones it may use. Serving a model inside a team's own
+namespace is **not supported in this release**: the serving pods need a service
+account and a ConfigMap that exist only in `inference`. By default workloads live
 in this repo; for real multi-team self-service point `gitops_workloads_repo_url` at
 a separate, tenant-owned repo so teams get write access to the workloads repo only,
 never the platform repo. See [`workloads/models/README.md`](workloads/models/README.md).
 
 **Single sign-on, per-user cost & budgets.** SSO ships enabled (`enable_sso`,
 default on): Terraform stands up an **Amazon Cognito** user pool with a hosted login
-page, role groups (`admins`/`developers`/`users`), and three seed users - log in
+page, role groups (`ai-platform-admins`/`ai-platform-developers`/`ai-platform-users`),
+and three seed users - log in
 by email (`admin@example.com` / `developer@example.com` / `user@example.com`),
 whose generated passwords are the `sso_seed_user_passwords` Terraform output -
 retrieve them any time (the `up` output scrolls away) with:
@@ -358,12 +395,11 @@ release would change. See [UPGRADING.md](UPGRADING.md).
 Walks the six terraform stages in reverse
 (`oss-obs → native-obs → addons → cluster → iam → networking`). On a healthy
 cluster that has been idle, it finishes in ~25 minutes. On a cluster that's
-been actively running models, expect **30–45 min** and a few hand-cleanup
-steps below. The script does **not** touch the bootstrap state (S3
-`tfstate-<account>` + DynamoDB `tfstate-lock`), so a subsequent
-`./platformctl up <env>` still works.
+been actively running models, expect **30–45 min**. The script does **not** touch
+the bootstrap state (S3 `tfstate-<account>` + DynamoDB `tfstate-lock`), so a
+subsequent `./platformctl up <env>` still works.
 
-### Required manual cleanup steps
+### If `down` stops
 
 * **`Error acquiring the state lock`** - a previous `terraform` run was
   killed mid-flight. Find the lock ID in the error and run
@@ -380,12 +416,15 @@ steps below. The script does **not** touch the bootstrap state (S3
 When in doubt, the final state should match this:
 
 ```bash
-# Should return empty for the env you destroyed:
-aws eks list-clusters --query 'clusters[?contains(@, `<env>`)]'
-aws ec2 describe-vpcs --filters "Name=tag:Environment,Values=<env>" --query 'Vpcs[].VpcId'
-aws s3 ls | grep "<env>"
+# <cluster-name> is <resources_prefix>-<env>, for example ai-platform-dev.
+# Each should return nothing for the environment you destroyed:
+aws eks describe-cluster --name <cluster-name> --query cluster.status     # expect: ResourceNotFoundException
+aws ec2 describe-vpcs --filters "Name=tag:Name,Values=<cluster-name>" --query 'Vpcs[].VpcId'
+aws s3 ls | grep "<cluster-name>-"
 aws iam list-roles --query "Roles[?contains(RoleName, '<cluster-name>')].RoleName"
 ```
+The last two match by name, so they also list a sibling environment whose name
+starts the same way (`<cluster-name>2`); those are not leftovers.
 
 ---
 
@@ -396,11 +435,12 @@ argocd/bootstrap/   ApplicationSets (platform services + self-service workloads)
 platform/
   config/           BedrockModel CRD (bedrockmodel-crd.yaml) - Bedrock enrollment
   config/kro/       VLLMEndpoint · LLMDEndpoint · LLMDDisaggEndpoint · AITeam (the API)
-  services/         litellm, litellm-sync, open-webui, langfuse, gpu-operator,
-                    cluster-dashboard (+ Platform Health Agent), inference-gateway
+  services/         litellm, litellm-sync, open-webui, langfuse, langfuse-clickhouse,
+                    gpu-operator, cluster-dashboard (+ Platform Health Agent),
+                    inference-gateway
 workloads/          Self-service YAMLs: models/ · scale-models/ · teams/
 platformctl         The unified CLI (use · up · status · tunnel · allow-ip · edge · new-model · onboard-team · upgrade · down · list-envs)
-ops/                platformctl implementation: ops/lib/ (helpers) · ops/image/ (cold-start build helpers)
+ops/                platformctl implementation: ops/lib/ (helpers) · ops/image/ (cold-start build helpers) · ops/demos/ (demo scripts)
 terraform/          Infrastructure modules (VPC → IAM → EKS → observability)
 releases/           One manifest per release, read by ./platformctl upgrade
 docs/               cloudfront-edge · validated-versions · releases/ (notes per release) · demos/
@@ -435,5 +475,11 @@ Nothing in this sample needs a paid license to run as shipped. A few points are
 worth knowing before production use: the LiteLLM image includes a proprietary
 package, LiteLLM's admin UI SSO is free for up to 5 users, per-team logging is
 documented by LiteLLM as an Enterprise feature, and Langfuse, vLLM and
-ClickHouse send telemetry by default. Details and opt-outs:
+ClickHouse send telemetry by default. Details, and the opt-out where there is one:
 [THIRD-PARTY-LICENSES](THIRD-PARTY-LICENSES), "Licensing notes".
+
+Each install also creates an empty AWS CloudFormation stack named
+`tracking-stack-<id>` (`terraform/10.networking/main.tf`). Its description carries
+the ID of the AWS guidance this sample builds on, which lets AWS count deployments
+of it. It holds no resources and costs nothing; remove that resource block to opt
+out.

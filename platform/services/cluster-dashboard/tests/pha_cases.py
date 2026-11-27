@@ -49,9 +49,15 @@ def cs(name="vllm", restarts=0, waiting=None, terminated=None, last_terminated=N
     return out
 
 
-def event(reason, type_="Warning", kind="Pod", name="qwen-7d9f8c6b5d-abcde", ns="inference", message="m", count=3):
-    return {"metadata": {"name": "ev-1", "namespace": ns}, "type": type_, "reason": reason, "message": message,
-            "count": count, "involvedObject": {"kind": kind, "name": name, "namespace": ns}}
+def event(reason, type_="Warning", kind="Pod", name="qwen-7d9f8c6b5d-abcde", ns="inference", message="m", count=3,
+          last=None, series_last=None):
+    out = {"metadata": {"name": "ev-1", "namespace": ns}, "type": type_, "reason": reason, "message": message,
+           "count": count, "involvedObject": {"kind": kind, "name": name, "namespace": ns}}
+    if last:
+        out["lastTimestamp"] = last
+    if series_last:                                   # as the scheduler reports a repeated event
+        out["series"] = {"count": count, "lastObservedTime": series_last}
+    return out
 
 
 def node(conditions=(), unschedulable=None, deleting=False, name="ip-10-0-1-1.ec2.internal"):
@@ -212,4 +218,57 @@ WAKE_CASES = [
     ("available", {"minReplicas": 0}, deployment_available("True", 2), False),
     ("always-warm-model", {"minReplicas": 1}, deployment_available("False", 2), False),
     ("no-deployment", {"minReplicas": 0}, None, False),
+]
+
+
+# ---------------------------------------------------------------------------
+# FailedScheduling for the vLLM pod of an LLMDEndpoint (<name>-llmd-<replicaset>-<pod>).
+# A scale-to-zero model (minReplicas 0) creates a new pod on every wake, and
+# that pod is unschedulable until Karpenter has added its GPU node.
+# ---------------------------------------------------------------------------
+
+LLMD_POD = "sleepy-llmd-6c8f9d7b5-x2k4q"
+
+
+def llmd_endpoint(min_replicas, name="sleepy", **spec) -> dict:
+    return {"metadata": {"name": name, "namespace": "inference", "creationTimestamp": ago(hours=5)},
+            "spec": {"minReplicas": min_replicas, **spec}}
+
+
+def _unschedulable(pod_name=LLMD_POD, **kw) -> dict:
+    return event("FailedScheduling", name=pod_name, message="0/3 nodes", **kw)
+
+
+def _failed_scheduling(pod_name=LLMD_POD):
+    return ("FailedScheduling", {"kind": "Pod", "namespace": "inference", "name": pod_name,
+                                 "reason": "FailedScheduling", "message": "0/3 nodes", "count": 3})
+
+
+# (id, event, the LLMDEndpoint the caller found for the pod, its Deployment, expected trigger or None)
+COLD_START_CASES = [
+    ("waking-within-the-hold", _unschedulable(last=ago(minutes=2)), llmd_endpoint(0),
+     deployment_available("False", 2), None),
+    ("waking-past-the-hold", _unschedulable(last=ago(minutes=1)), llmd_endpoint(0),
+     deployment_available("False", 13), _failed_scheduling()),
+    ("waking-past-a-short-hold", _unschedulable(last=ago(minutes=1)), llmd_endpoint(0, coldStartTimeoutSeconds=120),
+     deployment_available("False", 5), _failed_scheduling()),
+    ("always-warm-model", _unschedulable(last=ago(minutes=2)), llmd_endpoint(1),
+     deployment_available("False", 2), _failed_scheduling()),
+    ("unrelated-pod", event("FailedScheduling", message="0/3 nodes", last=ago(minutes=2)), None, None,
+     _failed_scheduling("qwen-7d9f8c6b5d-abcde")),
+    # The endpoint handed in is not the one the pod belongs to.
+    ("another-models-pod", _unschedulable("other-llmd-6c8f9d7b5-x2k4q", last=ago(minutes=2)), llmd_endpoint(0),
+     deployment_available("False", 2), _failed_scheduling("other-llmd-6c8f9d7b5-x2k4q")),
+    ("deployment-unreadable", _unschedulable(last=ago(minutes=2)), llmd_endpoint(0), None, _failed_scheduling()),
+    # The wake succeeded; the stored event is read again when the watch restarts.
+    ("woke-after-the-event", _unschedulable(last=ago(minutes=9)), llmd_endpoint(0),
+     deployment_available("True", 5), None),
+    ("woke-after-the-event-series", _unschedulable(series_last=ago(minutes=9)), llmd_endpoint(0),
+     deployment_available("True", 5), None),
+    # Available, and a pod is unschedulable now (scale-out): judged as for any model.
+    ("unschedulable-after-waking", _unschedulable(last=ago(minutes=1)), llmd_endpoint(0),
+     deployment_available("True", 5), _failed_scheduling()),
+    ("unschedulable-after-waking-series", _unschedulable(last=ago(minutes=9), series_last=ago(minutes=1)),
+     llmd_endpoint(0), deployment_available("True", 5), _failed_scheduling()),
+    ("no-event-time", _unschedulable(), llmd_endpoint(0), deployment_available("True", 5), _failed_scheduling()),
 ]

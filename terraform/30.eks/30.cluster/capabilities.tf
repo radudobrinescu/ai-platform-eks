@@ -126,8 +126,14 @@ resource "aws_eks_access_policy_association" "kro_edit" {
 
 ################################################################################
 # ECR Pull-Through Cache (optional) — mirror Docker Hub images to private ECR
-# Only created when docker_hub_credentials is provided in tfvars.
-# Without it, KRO falls back to pulling directly from Docker Hub.
+# Only created when the Docker Hub credentials are passed as environment
+# variables (TF_VAR_docker_hub_username / TF_VAR_docker_hub_access_token —
+# never in a tfvars file). Without them the serving image is pulled directly
+# from Docker Hub (vllmImage in the platform-config ConfigMap below).
+# The secret name and the `docker-hub` prefix are fixed per account and region,
+# so only ONE environment per account and region can set the credentials: a
+# second one fails on "already exists", and destroying the environment that
+# owns these resources removes the rule the others pull through.
 ################################################################################
 resource "aws_secretsmanager_secret" "docker_hub" {
   # CKV_AWS_149: this is an ECR pull-through cache credential secret (name must
@@ -177,7 +183,7 @@ resource "aws_ecr_repository_creation_template" "docker_hub" {
 # images: a fresh-account first pull needs ecr:BatchImportUpstreamImage (and,
 # absent the creation template above, ecr:CreateRepository). The standard
 # read-only node policies (AmazonEC2ContainerRegistryReadOnly/PullOnly) lack it,
-# so without this the very first vLLM image pull — at apply time on the SOCI/snapshot
+# so without this the very first vLLM image pull — at apply time on the SOCI
 # builder, and at runtime on GPU nodes — 403s and breaks model serving.
 resource "aws_iam_policy" "ecr_pull_through" {
   count       = var.docker_hub_username != "" ? 1 : 0
@@ -207,8 +213,9 @@ resource "aws_iam_policy" "ecr_pull_through" {
 # Platform Config — KRO externalRef reads this ConfigMap.
 # vllmImage always set: ECR mirror when the pull-through cache is enabled, Docker
 # Hub otherwise. Version is defined once in locals.tf (vllm_image_tag).
-# modelCacheBucket + region are consumed by the serving worker's initContainer
-# and auto-warm sidecar to sync HF weights to/from s3://{bucket}/hf/...
+# modelCacheBucket is consumed by the serving pods' hf-cache-download
+# initContainer, which reads cached HF weights from s3://{bucket}/hf/... (read
+# only — nothing writes to the bucket automatically).
 ################################################################################
 resource "kubernetes_config_map" "platform_config" {
   count = local.capabilities.gitops ? 1 : 0
@@ -225,7 +232,7 @@ resource "kubernetes_config_map" "platform_config" {
     # plain Docker Hub ref when no ECR cache is configured). The serving-tier RGDs
     # (VLLMEndpoint/LLMDEndpoint/LLMDDisaggEndpoint) read this via externalRef,
     # falling back to their schema default.
-    vllmImage        = var.docker_hub_username != "" ? "${data.aws_caller_identity.current.account_id}.dkr.ecr.${local.region}.amazonaws.com/docker-hub/${local.vllm_image}" : local.vllm_image
+    vllmImage        = var.docker_hub_username != "" ? "${local.ecr_registry}/docker-hub/${local.vllm_image}" : local.vllm_image
     modelCacheBucket = local.capabilities.gitops ? aws_s3_bucket.model_cache[0].bucket : ""
   }
 
@@ -235,10 +242,12 @@ resource "kubernetes_config_map" "platform_config" {
 ################################################################################
 # Model weights cache — S3 bucket + IRSA role for vLLM worker pods.
 #
-# The initContainer in the serving-tier RGDs s5cmd-syncs HF
-# weights from this bucket on pod startup (cache hit) or falls back to a live
-# HuggingFace download (cache miss). An auto-warm sidecar uploads new models
-# after vLLM finishes loading, so subsequent deploys hit the cache.
+# The hf-cache-download initContainer in the serving-tier RGDs s5cmd-syncs HF
+# weights from this bucket on pod startup (cache hit); on a cache miss vLLM
+# downloads from HuggingFace. The initContainer only reads. No container in
+# this repository writes to the bucket, so it is NOT filled automatically: a
+# model's weights are served from the cache only if someone put them under its
+# prefix.
 #
 # Bucket layout: s3://{bucket}/hf/{org}/{model}/...   (mirrors HF cache tree)
 ################################################################################
@@ -253,7 +262,7 @@ resource "aws_s3_bucket" "model_cache" {
   # The name is fixed when the bucket is created. A bucket cannot be renamed, so
   # a change to the naming rule (the account id was added after the first
   # environments were built) would otherwise replace the bucket of every
-  # existing environment, with its cached weights and fine-tuned models.
+  # existing environment, and delete everything stored in it.
   # Everything else reads the name from this resource, never from the local.
   lifecycle {
     ignore_changes = [bucket]
@@ -298,7 +307,7 @@ resource "aws_s3_bucket_lifecycle_configuration" "model_cache" {
 }
 
 # IAM role scoped to the inference-worker ServiceAccount via OIDC.
-# Only vLLM worker pods that use this SA can read/write the cache bucket.
+# Only pods that run as this SA get access to the cache bucket.
 resource "aws_iam_role" "inference_worker" {
   count = local.capabilities.gitops ? 1 : 0
   name  = "${local.cluster_name}-inference-worker"
@@ -330,17 +339,17 @@ resource "aws_iam_role_policy" "inference_worker_s3_cache" {
     Version = "2012-10-17"
     Statement = [
       {
-        # HF weight cache: full read/write (the auto-warm sidecar populates it).
+        # HF weight cache. The serving initContainers only read it; Put/Delete
+        # are granted too, but no container in this repository uses them.
         Sid      = "HfCacheReadWrite"
         Effect   = "Allow"
         Action   = ["s3:GetObject", "s3:PutObject", "s3:DeleteObject"]
         Resource = "${aws_s3_bucket.model_cache[0].arn}/hf/*"
       },
       {
-        # Model-weight cache: READ-only. Each serving tier's init container syncs
-        # pre-seeded HuggingFace model weights (s3://<bucket>/hf/<model-id>/) from
-        # this bucket on startup for a fast cold start, falling back to a HF
-        # download on a cache miss. Read-only — serving pods never write weights.
+        # READ-only on the fine-tuned/ prefix. Nothing in this repository reads
+        # or writes that prefix (the serving initContainers read hf/ only); the
+        # statement is kept as it is so the role policy does not change.
         Sid      = "ModelCacheReadOnly"
         Effect   = "Allow"
         Action   = ["s3:GetObject"]
@@ -551,7 +560,8 @@ resource "kubernetes_secret" "platform_db_credentials" {
   depends_on = [kubernetes_namespace.ai_platform]
 }
 
-# LiteLLM API key in inference namespace — used by KRO registration Jobs
+# LiteLLM API key in inference namespace — used by the litellm-sync controller
+# (platform/services/litellm-sync), which registers and deregisters models
 resource "kubernetes_secret" "litellm_api_key" {
   count = local.capabilities.gitops ? 1 : 0
 

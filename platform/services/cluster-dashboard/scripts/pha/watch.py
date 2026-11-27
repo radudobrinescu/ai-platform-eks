@@ -116,13 +116,36 @@ def as_dict(obj) -> dict:
 # Watch loops (pods, events, nodes)
 # ---------------------------------------------------------------------------
 
+def _llmd_endpoint(custom, namespace: str, name: str) -> dict | None:
+    """The LLMDEndpoint `name`, or None when there is none or it cannot be read."""
+    try:
+        return custom.get_namespaced_custom_object(group="kro.run", version="v1alpha1", namespace=namespace,
+                                                   plural="llmdendpoints", name=name)
+    except Exception as e:  # noqa: BLE001 - not a model's pod, or unreadable: the event is judged as any other
+        log.debug("read llmdendpoint %s/%s: %s", namespace, name, e)
+        return None
+
+
+def detect_event(custom, rules: triggers.Rules, event: dict, now) -> tuple[str, dict] | None:
+    """triggers.detect_event. For a FailedScheduling of an llm-d model's pod,
+    the model and (if it scales to zero) its Deployment are read first, so the
+    rule can tell a cold start from a pod that nothing will ever schedule."""
+    trigger = triggers.detect_event(event, rules)
+    owner = triggers.llmd_pod_endpoint(event) if trigger and trigger[0] == "FailedScheduling" else None
+    ep = _llmd_endpoint(custom, *owner) if owner else None
+    if ep is None or str((ep.get("spec") or {}).get("minReplicas", 1)) != "0":
+        return trigger
+    return triggers.detect_event(event, rules, now, ep, _model_deployment(custom, ep))
+
+
 def detectors(rules: triggers.Rules) -> dict[str, tuple[Callable, Callable]]:
     """label -> (CoreV1Api -> list method to watch, object -> trigger or None)."""
+    custom = client.CustomObjectsApi()
     return {
         "pod": (lambda v1: v1.list_pod_for_all_namespaces,
                 lambda o: triggers.detect_pod(as_dict(o), rules, triggers.utcnow())),
         "event": (lambda v1: v1.list_event_for_all_namespaces,
-                  lambda o: triggers.detect_event(as_dict(o), rules)),
+                  lambda o: detect_event(custom, rules, as_dict(o), triggers.utcnow())),
         "node": (lambda v1: v1.list_node,
                  lambda o: triggers.detect_node(as_dict(o), rules)),
     }

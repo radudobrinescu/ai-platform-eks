@@ -96,7 +96,7 @@ module "karpenter" {
   # (CreatePolicy: "LimitExceeded: Cannot exceed quota for PolicySize: 6144",
   # found in testing). An inline role policy allows 10,240; this is the
   # module's documented remedy. On a LIVE cluster the apply swaps the managed
-  # policy for an inline one in the same run (see COMPATIBILITY.md).
+  # policy for an inline one in the same run.
   enable_inline_policy = true
 
   # The four extra read-only actions earlier module versions lacked
@@ -227,8 +227,8 @@ resource "helm_release" "karpenter" {
 locals {
   # --- GPU capacity reservations (ODCRs / Capacity Blocks) -------------------
   # Rendered as a complete YAML block for the gpu-inference EC2NodeClass when
-  # reservations are configured, or an empty string (→ blank line) when not —
-  # same pattern as gpu_snapshot_id_line. The placeholder sits at the NodeClass
+  # reservations are configured, or an empty string (→ blank line) when not.
+  # The placeholder sits at the NodeClass
   # spec indent (2 spaces); continuation lines carry their own indent.
   gpu_capacity_reservation_selector = length(var.gpu_capacity_reservation_ids) == 0 ? "" : join("\n", concat(
     ["capacityReservationSelectorTerms:"],
@@ -238,6 +238,20 @@ locals {
   # the NodeClass actually selects reservations (Karpenter rejects it
   # otherwise); when present, Karpenter prioritizes reserved capacity before
   # falling back to on-demand/spot.
+  # Instance families the GPU NodePools refuse. g7 (RTX PRO 4500 Blackwell) needs
+  # NVIDIA driver 595, which the Bottlerocket NVIDIA AMIs ship for Kubernetes 1.37
+  # and later only; on 1.36 a g7 node joins but its GPU never comes up, so it is
+  # refused there (g7e uses driver 580 and runs on every version). See
+  # docs.aws.amazon.com/eks/latest/userguide/ml-eks-optimized-ami.html.
+  # ops/lib/recommend_instance/catalog.py mirrors these lists.
+  gpu_needs_driver_595                 = ["g7"]
+  gpu_driver_595_ok                    = tonumber(split(".", local.cluster_version)[1]) >= 37
+  gpu_inference_excluded_families_base = ["g4dn", "g4ad", "p3", "p3dn", "p2"]
+  gpu_shared_excluded_families_base    = ["g4dn", "g4ad"]
+  gpu_refused_for_driver               = local.gpu_driver_595_ok ? [] : local.gpu_needs_driver_595
+  gpu_inference_excluded_families      = jsonencode(concat(local.gpu_inference_excluded_families_base, local.gpu_refused_for_driver))
+  gpu_shared_excluded_families         = jsonencode(concat(local.gpu_shared_excluded_families_base, local.gpu_refused_for_driver))
+
   gpu_capacity_types = join(", ", [
     for t in concat(
       length(var.gpu_capacity_reservation_ids) > 0 ? ["reserved"] : [],
@@ -245,10 +259,11 @@ locals {
     ) : format("%q", t)
   ])
 
-  # GPU data volume size — the baked image snapshot's size by default, or the
-  # operator override for very large models (weights land on this volume via
-  # the hf-cache emptyDir; Kimi-K3-class checkpoints need ~2 TiB).
-  gpu_node_volume_gib = var.gpu_node_volume_size_gib > 0 ? var.gpu_node_volume_size_gib : local.snapshot_volume_gib
+  # GPU data volume size — 200 GiB by default (container images and the model
+  # weights), or the operator override for very large models (weights land on
+  # this volume via the hf-cache emptyDir; Kimi-K3-class checkpoints need ~2 TiB).
+  gpu_node_volume_default_gib = 200
+  gpu_node_volume_gib         = var.gpu_node_volume_size_gib > 0 ? var.gpu_node_volume_size_gib : local.gpu_node_volume_default_gib
 }
 
 data "kubectl_path_documents" "karpenter_manifests" {
@@ -258,17 +273,14 @@ data "kubectl_path_documents" "karpenter_manifests" {
     role         = local.capabilities.autoscaling ? aws_iam_role.karpenter_node[0].name : "KarpenterNodeInstanceProfile-${local.cluster_name}"
     cluster_name = local.cluster_name
     environment  = terraform.workspace
-    # Renders as a complete YAML line when set, or empty string when not.
-    # This avoids passing an invalid empty snapshotID to Karpenter.
-    # Source: explicit tfvar override > auto-discovered snapshot > disabled.
-    gpu_snapshot_id_line = local.resolved_snapshot_id != "" ? "snapshotID: ${local.resolved_snapshot_id}" : ""
-    # GPU data volume size — must be >= the baked snapshot's volume size.
-    # Kept in sync with local.snapshot_volume_gib (overridable via
-    # gpu_node_volume_size_gib for very large models).
+    # GPU data volume size (overridable via gpu_node_volume_size_gib for very
+    # large models).
     gpu_volume_size = local.gpu_node_volume_gib
     # Capacity Blocks / ODCRs for GPU inference nodes (empty = disabled).
     gpu_capacity_reservation_selector = local.gpu_capacity_reservation_selector
     gpu_capacity_types                = local.gpu_capacity_types
+    gpu_inference_excluded_families   = local.gpu_inference_excluded_families
+    gpu_shared_excluded_families      = local.gpu_shared_excluded_families
   }
   depends_on = [
     module.eks
@@ -277,7 +289,7 @@ data "kubectl_path_documents" "karpenter_manifests" {
 
 # Count-stabilization workaround (kubectl provider issue #58). The real
 # kubectl_path_documents above interpolates values only known at apply
-# (module.karpenter role, resolved snapshot ID, ...), so its `.documents`
+# (module.karpenter role, ...), so its `.documents`
 # length is unknown at plan and can't drive the kubectl_manifest `count`. This
 # "dummy" renders the SAME files with empty vars: the document COUNT is
 # identical and plan-time-known, while the real content comes from the resource
@@ -291,15 +303,16 @@ data "kubectl_path_documents" "karpenter_manifests_dummy" {
   count   = (local.capabilities.autoscaling || local.eks_auto_mode) ? 1 : 0
   pattern = "${path.module}/karpenter/*.yaml"
   vars = {
-    role                 = ""
-    cluster_name         = ""
-    environment          = terraform.workspace
-    gpu_snapshot_id_line = ""
-    gpu_volume_size      = local.gpu_node_volume_gib
+    role            = ""
+    cluster_name    = ""
+    environment     = terraform.workspace
+    gpu_volume_size = local.gpu_node_volume_gib
     # Plan-time-known (pure function of tfvars) — same values as the real
     # block, but they only need to keep the document COUNT stable.
     gpu_capacity_reservation_selector = local.gpu_capacity_reservation_selector
     gpu_capacity_types                = local.gpu_capacity_types
+    gpu_inference_excluded_families   = local.gpu_inference_excluded_families
+    gpu_shared_excluded_families      = local.gpu_shared_excluded_families
   }
 }
 

@@ -4,7 +4,7 @@ Terraform before 1.12 evaluates both sides of `&&`, so
 `var.x.aws_oss_tooling && var.x.aws_oss_tooling_config.enable_y` fails with
 "Missing map element" whenever the map is empty, including with the shipped
 example.tfvars (aws_oss_tooling = false, no config map). required_version is
-">= 1.1.0", so the code must work on those versions.
+">= 1.5.7", so the code must work on those versions.
 """
 
 import glob

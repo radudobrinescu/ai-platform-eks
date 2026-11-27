@@ -1,6 +1,8 @@
 .ONESHELL:
 SHELL = bash
-SHELLFLAGS = -o pipefail
+# pipefail is set inside each recipe that pipes Terraform into tee (see
+# execute_terraform), not make-wide: GNU make 3.81 (macOS) has neither
+# .SHELLFLAGS nor .ONESHELL, so a make-wide flag would not reach every user.
 
 ENVIRONMENT ?= dev
 AWS_REGION ?= $(shell aws configure get region)
@@ -56,9 +58,10 @@ endef
 print-modules:
 	@for m in $(MODULES); do echo $$m; done
 
+# Removes the local provider/module caches only. The .terraform.lock.hcl files
+# are committed on purpose (see .gitignore) and are left alone.
 clean:
 	@find . -type d -name ".terraform" -prune -exec rm -rf {} \;
-	@find . -type f -name ".terraform.lock.hcl" -prune -exec rm -f {} \;
 
 check-env:
 	@if [ -z $(AWS_REGION) ]; then \
@@ -71,6 +74,7 @@ check-env:
 	 fi
 	@if [ ! -f $(VAR_FILE) ]; then \
   		echo "VAR_FILE: $(VAR_FILE) does not exist."; \
+  		exit 1; \
   	fi
 
 	@mkdir -p tf-logs
@@ -136,7 +140,8 @@ init: check-env
 	fi
 	@rm -rf $(MODULE)/.terraform/*.tfstate
 	@echo ENVIRONMENT=$(ENVIRONMENT) MODULE=$(MODULE) terraform::init
-	@terraform -chdir=$(MODULE) init \
+	@set -o pipefail; \
+	terraform -chdir=$(MODULE) init \
 		-input=false \
 		-backend=true \
 		-backend-config="region=$(TFSTATE_REGION)" \
@@ -185,6 +190,7 @@ apply: init tf-select-ws
 	@# that declares module.ebs_csi_driver_irsa.)
 	@if grep -rqsE '^[[:space:]]*module[[:space:]]+"eks"' $(MODULE)/*.tf 2>/dev/null; then \
 		echo ">> Cluster stage: applying module.eks (+ EBS-CSI IRSA) first so the Kubernetes/Helm/kubectl providers configure against a live endpoint (idempotent: 0 changes once the cluster exists)"; \
+		set -o pipefail; \
 		terraform -chdir=$(MODULE) apply -target=module.eks -target=module.ebs_csi_driver_irsa -input=false -lock=true -auto-approve -var-file=$(VAR_FILE) 2>&1 | tee -a tf-logs/$(notdir $(MODULE))-apply.log || { echo "targeted module.eks apply failed for $(MODULE)"; exit 1; }; \
 	fi
 	@$(call execute_terraform,$(MODULE),apply,"-auto-approve")

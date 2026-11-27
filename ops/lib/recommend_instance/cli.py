@@ -7,7 +7,7 @@ import os
 import sys
 
 from . import __doc__ as _PKG_DOC
-from .catalog import KV_BYTES, TP_DEGREES, WEIGHT_BYTES
+from .catalog import INSTANCES, KV_BYTES, TP_DEGREES, WEIGHT_BYTES, nodepool_refusal
 from .model import fetch_model
 from .paths import is_valid_instance_type
 from .pricing import detect_region, resolve_prices
@@ -24,7 +24,7 @@ from .scaling import (
 )
 from .vram import estimate_vram
 
-# main() reads module-level __doc__ to build the --help epilog; rebind it to the
+# build_parser() reads module-level __doc__ to build the --help epilog; rebind it to the
 # package docstring (which carries the Examples section) so --help is unchanged.
 __doc__ = _PKG_DOC
 
@@ -33,7 +33,8 @@ __doc__ = _PKG_DOC
 # CLI                                                                         #
 # --------------------------------------------------------------------------- #
 
-def main(argv: list[str] | None = None) -> int:
+def build_parser() -> argparse.ArgumentParser:
+    """The `new-model` argument parser (no side effects: parsing only)."""
     p = argparse.ArgumentParser(
         description="Recommend EC2 GPU instances for serving an LLM on EKS.",
         formatter_class=argparse.RawDescriptionHelpFormatter,
@@ -173,12 +174,26 @@ def main(argv: list[str] | None = None) -> int:
                         "partitions the AWS Price List API doesn't cover, like ESC).")
     p.add_argument("--output-cost", type=float, default=None, metavar="USD_PER_TOKEN",
                    help="With --source bedrock: override output $/token. See --input-cost.")
+    return p
+
+
+def main(argv: list[str] | None = None) -> int:
+    p = build_parser()
     args = p.parse_args(argv)
+    # Kept for the preview's "Deploy it" line, which repeats the command as given.
+    args.argv = list(sys.argv[1:] if argv is None else argv)
     if args.min_replicas is not None:
         if args.min_replicas < 0:
             p.error("--min-replicas must be 0 or more")
         if args.tier in ("vllm", "llm-d-disagg"):
             p.error(f"--min-replicas applies to the llm-d tier only (got --tier {args.tier})")
+        # The two paths below never emit an llm-d manifest: refuse the flag
+        # instead of dropping it without a word.
+        if args.undeploy is not None:
+            p.error("--min-replicas applies to deploying an llm-d model (not with --undeploy)")
+        if args.source == "bedrock":
+            p.error("--min-replicas applies to self-hosted llm-d models only "
+                    "(not with --source bedrock)")
 
     # --undeploy is a pure file/git operation: short-circuit before any HF fetch
     # or pricing call (no model metadata needed to delete a manifest).
@@ -263,15 +278,24 @@ def main(argv: list[str] | None = None) -> int:
     # it fits, size the manifest to the PINNED type (its gpuCount/TP), not the
     # auto-picked best — so gpuCount can't drift from the pinned hardware.
     if args.instance_type:
+        inst = next((i for i in INSTANCES if i.name == args.instance_type), None)
+        if inst is None:
+            sys.exit(
+                f"error: --instance-type {args.instance_type} is not a GPU instance in the "
+                f"catalog, so the model cannot be sized against it. Pick a supported GPU "
+                f"type, or drop --instance-type to let the recommender choose.")
+        # A type the gpu-inference NodePool refuses can never be launched by
+        # Karpenter: the pinned pod would stay Pending forever.
+        refusal = nodepool_refusal(inst, "gpu-inference")
+        if refusal is not None:
+            sys.exit(
+                f"error: --instance-type {args.instance_type} cannot be launched by this "
+                f"cluster: the gpu-inference NodePool requires {refusal} "
+                f"(terraform/30.eks/30.cluster/karpenter/gpu-inference.yaml), so the pod "
+                f"would stay Pending. Pick a type the NodePool allows, or drop "
+                f"--instance-type to let the recommender choose.")
         pinned = next((o for o in opts if o.instance.name == args.instance_type), None)
         if pinned is None:
-            from .catalog import INSTANCES
-            inst = next((i for i in INSTANCES if i.name == args.instance_type), None)
-            if inst is None:
-                sys.exit(
-                    f"error: --instance-type {args.instance_type} is not a GPU instance in the "
-                    f"catalog, so the model cannot be sized against it. Pick a supported GPU "
-                    f"type, or drop --instance-type to let the recommender choose.")
             sys.exit(
                 f"error: {args.model} does not fit on {args.instance_type} "
                 f"({inst.num_gpus}\u00d7{inst.gpu}, {inst.total_vram_gb} GiB total VRAM) at "
@@ -298,16 +322,36 @@ def main(argv: list[str] | None = None) -> int:
             effective_cap = min(effective_cap, slo_cap)
 
         if args.users > effective_cap:
-            # Best single instance can't handle all users → fleet mode
+            # Best single instance can't handle all users → fleet mode.
+            # With --instance-type the fleet is sized on the pinned type only:
+            # the manifest pins that type, so its replica count must be the
+            # pinned type's, not the cheapest fleet's on some other hardware.
             args.target_users = args.users
             scaling = compute_scaling(
-                opts=opts,
+                opts=[best] if args.instance_type else opts,
                 vram=vram,
                 target_users=args.target_users,
                 utilization_factor=args.utilization,
                 safety_margin=args.safety_margin,
                 target_tok_s=args.target_tok_s,
             )
+
+    # The llm-d tiers run a model on one node with tensor parallelism only. If
+    # the layout that goes into the manifest needs pipeline parallelism, an llm-d
+    # manifest cannot work: stop here instead of emitting it. (--tier auto keeps
+    # such a layout on vLLM by itself, unless --min-replicas forces llm-d.)
+    if best is not None:
+        from .render import pick_tier
+        chosen = scaling[0].option if scaling else best
+        tier = pick_tier(args, best, scaling)
+        if tier != "vllm" and chosen.pp_degree > 1:
+            asked = "--min-replicas needs" if args.tier == "auto" else f"--tier {args.tier} is"
+            sys.exit(
+                f"error: {asked} the llm-d tier, which cannot run pipeline "
+                f"parallelism, but {args.model} on {chosen.instance.name} needs it "
+                f"({chosen.parallelism_label}). Deploy on the vllm tier (--tier vllm, "
+                f"without --min-replicas), or make the model fit a tensor-parallel "
+                f"layout (--tp N, or a smaller --quant such as int4).")
 
     if args.json:
         print_json(model, vram, opts, best, args, price_src, scaling)

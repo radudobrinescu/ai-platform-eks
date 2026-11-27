@@ -200,7 +200,8 @@ module "eks" {
 
   }
 
-  # Fargate profiles use the cluster primary security group so these are not utilized
+  # No additional cluster or node security group: nodes use the cluster primary
+  # security group that EKS creates (tagged for Karpenter discovery in karpenter.tf).
   create_security_group      = false
   create_node_security_group = false
 

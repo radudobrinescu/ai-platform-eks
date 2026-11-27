@@ -9,6 +9,7 @@ same on a live list and on a recorded fixture.
 from __future__ import annotations
 
 from collections.abc import Callable
+from datetime import datetime
 
 from dashboard.cost import model_cost, tok_per_dollar
 
@@ -20,6 +21,13 @@ SERVING_KINDS = (
 )
 # Karpenter warning reasons that explain a GPU deploy stuck on capacity.
 PROVISION_HINTS = ("capacity", "fulfill", "launch", "zonal", "quota")
+# A scale-to-zero LLMDEndpoint (minReplicas 0) may take as long to start a
+# replica from zero as its router holds the first request
+# (coldStartTimeoutSeconds) plus this margin. The same allowance as the
+# Platform Health Agent's (pha.triggers.WAKE_MARGIN_SEC; a test compares them).
+WAKE_MARGIN_SEC = 120
+# States in which nothing is being deployed: no deploy diagnostics, no log tail.
+SETTLED = ("running", "scaled-to-zero")
 
 
 # ---------------------------------------------------------------------------
@@ -160,7 +168,18 @@ def normalize_endpoint(ep: dict, mode: str) -> dict:
     `status` is Running / Pending / Error. A kro CR in ERROR (for example a name
     collision with another endpoint's resources) can still report the colliding
     resource's replicas, so its real state and the failing condition's message
-    are surfaced instead of a false "ready"."""
+    are surfaced instead of a false "ready".
+
+    Replica counts come from the fields each kind uses now: a VLLMEndpoint's
+    spec.replicas; an LLMDEndpoint's status.replicas (the Deployment's size,
+    which KEDA owns) with spec.minReplicas as the floor; an LLMDDisaggEndpoint's
+    prefill/decodeMinReplicas. An LLMDEndpoint's spec.replicas and the disagg
+    spec.prefillReplicas/decodeReplicas are deprecated and ignored by kro.
+
+    An LLMDEndpoint with minReplicas 0 idles at zero replicas: kro then reports
+    ready "True" (so `status` is Running) and status.scaledToZero, kept here as
+    `scaledToZero`. `coldStartSec` is how long its router holds a request while
+    a replica starts (None for a model that does not scale to zero)."""
     spec = ep.get("spec", {}) or {}
     status = ep.get("status", {}) or {}
     gpu_count = int(spec.get("gpuCount", 1) or 1)
@@ -168,15 +187,22 @@ def normalize_endpoint(ep: dict, mode: str) -> dict:
     pp = int(spec.get("pipelineParallelSize", 1) or 1)
     if tp == 0:
         tp = gpu_count if pp == 1 else 1
-    disagg = mode == "llm-d-disagg"
-    if disagg:
-        prefill_n = int(spec.get("prefillReplicas", 1) or 1)
-        decode_n = int(spec.get("decodeReplicas", 1) or 1)
+    prefill_n = decode_n = min_replicas = cold_start = None
+    scaled_to_zero = False
+    if mode == "llm-d-disagg":
+        prefill_n = _int_or(spec.get("prefillMinReplicas"), 1)
+        decode_n = _int_or(spec.get("decodeMinReplicas"), 1)
         replicas = prefill_n + decode_n
         avail = int(status.get("prefillReplicas", 0) or 0) + int(status.get("decodeReplicas", 0) or 0)
+    elif mode == "llm-d":
+        min_replicas = _int_or(spec.get("minReplicas"), 1)
+        replicas = _int_or(status.get("replicas"), min_replicas)
+        avail = int(status.get("availableReplicas", 0) or 0)
+        scaled_to_zero = str(status.get("scaledToZero", "")).lower() == "true" and avail == 0
+        if min_replicas == 0:
+            cold_start = _int_or(spec.get("coldStartTimeoutSeconds"), 600)
     else:
-        prefill_n = decode_n = None
-        replicas = int(spec.get("replicas", spec.get("minReplicas", 1)) or 1)
+        replicas = _int_or(spec.get("replicas"), 1)
         avail = int(status.get("availableReplicas", 0) or 0)
     ready = str(status.get("ready", "False"))
     norm = "Running" if ready == "True" else "Pending"
@@ -191,7 +217,8 @@ def normalize_endpoint(ep: dict, mode: str) -> dict:
     return {
         "name": ep["metadata"]["name"], "model": spec.get("model", ""), "mode": mode,
         "shared": bool(spec.get("shared", False)), "gpuCount": gpu_count, "tp": tp, "pp": pp,
-        "replicas": replicas, "availableReplicas": avail, "ready": ready,
+        "replicas": replicas, "availableReplicas": avail, "minReplicas": min_replicas, "ready": ready,
+        "scaledToZero": scaled_to_zero, "coldStartSec": cold_start,
         # `modelStatus` is kept for the current UI; `status` is the same value.
         "modelStatus": norm, "status": norm,
         "routerHealth": str(status.get("routerHealth", "")) if mode in ("llm-d", "llm-d-disagg") else "",
@@ -251,23 +278,56 @@ def merge_bedrock(static: list[dict], crs: list[dict]) -> list[dict]:
 EMPTY_LITELLM = {"perModel": {}, "teams": [], "trend": [], "health": {}, "byTeam": [], "byUser": []}
 
 
-def model_status(ep: dict) -> str:
-    """error / running / deploying, from a normalized endpoint."""
+def _epoch(iso) -> float | None:
+    """Kubernetes timestamp -> seconds since the epoch (None if unparseable)."""
+    try:
+        return datetime.fromisoformat(str(iso).replace("Z", "+00:00")).timestamp()
+    except ValueError:
+        return None
+
+
+def waking_from_zero(ep: dict, pods: list[dict], now: float | None) -> bool:
+    """True while a scale-to-zero LLMDEndpoint that is not ready starts a
+    replica from zero: its newest vLLM pod (<name>-llmd-...) is younger than
+    the router's hold plus WAKE_MARGIN_SEC. Karpenter adds a GPU node and vLLM
+    loads the model in that time, so it is not a problem yet.
+
+    The pod's age stands in for the Deployment's Available condition, which
+    the Platform Health Agent reads (pha.triggers.waking_from_zero): the
+    dashboard watches pods, not Deployments, and the pod is created in the
+    moment the Deployment goes from 0 to 1."""
+    hold = ep.get("coldStartSec")
+    if now is None or hold is None or ep.get("ready") == "True":
+        return False
+    pod = deploy_pod(f'{ep["name"]}-llmd', pods)
+    started = _epoch(pod.get("created")) if pod else None
+    return started is not None and now - started < hold + WAKE_MARGIN_SEC
+
+
+def model_status(ep: dict, pods: list[dict] | tuple = (), now: float | None = None) -> str:
+    """error / scaled-to-zero / running / waking / deploying, from a normalized
+    endpoint. "waking" needs the pods and the time (see waking_from_zero);
+    without them such a model reads "deploying"."""
     if ep.get("kroState") == "ERROR":
         return "error"
-    return "running" if ep["ready"] == "True" else "deploying"
+    if ep.get("scaledToZero"):
+        return "scaled-to-zero"
+    if ep["ready"] == "True":
+        return "running"
+    return "waking" if waking_from_zero(ep, list(pods), now) else "deploying"
 
 
 def build_models(endpoints: list[dict], bedrock: list[dict], litellm: dict,
-                 pods: list[dict], nodes: list[dict]) -> list[dict]:
+                 pods: list[dict], nodes: list[dict], now: float | None = None) -> list[dict]:
     """One record per served model (self-hosted and Bedrock) with traffic,
-    cost and tokens per dollar, busiest first."""
+    cost and tokens per dollar, busiest first. `now` (seconds since the epoch)
+    tells a model waking from zero from one that is stuck."""
     by_node = {n["name"]: n for n in nodes}
     models = []
     for ep in endpoints:
         models.append({
             "name": ep["name"], "model": ep["model"], "tier": ep["mode"],
-            "status": model_status(ep),
+            "status": model_status(ep, pods, now),
             "gpu": "shared" if ep.get("shared") else f'{ep["gpuCount"]}×GPU',
             "replicas": ep.get("replicas"), "availableReplicas": ep.get("availableReplicas"),
             "router": ep.get("routerHealth", ""), "costHr": model_cost(ep["name"], pods, by_node),
@@ -385,6 +445,7 @@ def autoscaling_status(endpoints: list[dict], hpas: list[dict], hpa_events: list
     scale events. Pool and role come from the scale target's suffix:
     <pool>-prefill, <pool>-decode, <pool>-llmd."""
     mode_by_pool = {ep["name"]: ep.get("mode", "") for ep in endpoints}
+    min_by_pool = {ep["name"]: ep.get("minReplicas") for ep in endpoints}
     rescales: dict = {}
     for e in hpa_events:
         if e.get("reason") == "SuccessfulRescale":
@@ -398,7 +459,8 @@ def autoscaling_status(endpoints: list[dict], hpas: list[dict], hpa_events: list
         elif dep.endswith("-decode"):
             pool, role, sig, unit = dep[:-len("-decode")], "decode", "KV-cache", "%"
         elif dep.endswith("-llmd"):
-            pool, role, sig, unit = dep[:-len("-llmd")], "", "queue depth", "req"
+            # An LLMDEndpoint is sized on the requests in flight per replica (targetInflight).
+            pool, role, sig, unit = dep[:-len("-llmd")], "", "requests in flight", "req"
         else:
             pool, role, sig, unit = dep, "", "queue depth", "req"
         # Driving signal: the external metric with the highest value/target.
@@ -414,7 +476,11 @@ def autoscaling_status(endpoints: list[dict], hpas: list[dict], hpa_events: list
                 best = (val, tgt, ratio)
         val, tgt, _ = best or (0.0, 0.0, 0.0)
         tt, it = _pick(ttft, pool, role), _pick(itl, pool, role)
-        mn = int(spec.get("minReplicas", 1) or 1)
+        mn = _int_or(spec.get("minReplicas"), 1)
+        if dep.endswith("-llmd") and min_by_pool.get(pool) == 0:
+            # KEDA gives the HPA of a scale-to-zero model minReplicas 1 and moves
+            # the Deployment between 0 and 1 itself: the model's minimum is the real one.
+            mn = 0
         mx = int(spec.get("maxReplicas", 1) or 1)
         des = int(st.get("desiredReplicas", 0) or 0)
         out.append({
@@ -559,7 +625,7 @@ def log_tail_targets(endpoints: list[dict], pods: list[dict],
     endpoint that is not running, its displayed pod while the model loads."""
     out = []
     for ep in endpoints:
-        pod = deploy_pod(ep["name"], pods) if model_status(ep) != "running" else None
+        pod = deploy_pod(ep["name"], pods) if model_status(ep) not in SETTLED else None
         container = log_container(pod_status(pod["name"])) if pod else ""
         if container:
             out.append((pod["name"], container))
@@ -569,16 +635,17 @@ def log_tail_targets(endpoints: list[dict], pods: list[dict],
 def deploy_diagnostics(models: list[dict], pods: list[dict], pod_events: list[dict],
                        provisioning: list[dict], pod_status: Callable[[str], dict | None],
                        log_tail: Callable[[str, str], str]) -> None:
-    """Attach a `deploy` block to every self-hosted model that is not running:
-    its pod's phase and waiting reason, the most useful recent events, GPU
-    capacity warnings when the pod is unschedulable, and a log tail while the
-    model loads. `pod_status(name)` returns the pod's `status` object;
-    `log_tail(pod, container)` returns recent log text."""
+    """Attach a `deploy` block to every self-hosted model that is starting or
+    failing (not running, not scaled to zero): its pod's phase and waiting
+    reason, the most useful recent events, GPU capacity warnings when the pod
+    is unschedulable, and a log tail while the model loads. `pod_status(name)`
+    returns the pod's `status` object; `log_tail(pod, container)` returns
+    recent log text."""
     ev_index: dict = {}
     for e in pod_events:
         ev_index.setdefault(e["obj"], []).append(e)
     for m in models:
-        if m.get("status") == "running" or m.get("tier") == "bedrock":
+        if m.get("status") in SETTLED or m.get("tier") == "bedrock":
             continue
         pod = deploy_pod(m["name"], pods)
         dep = {"phase": "NoPod", "pod": "", "waiting": None, "events": [], "provisioning": [], "log": []}

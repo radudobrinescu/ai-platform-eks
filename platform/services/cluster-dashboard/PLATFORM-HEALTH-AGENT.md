@@ -22,8 +22,9 @@ below) activates it — no Terraform, no GitOps change.
 
 ## Approvals UX
 
-Approvals happen entirely **inside the cluster-dashboard** (`http://<alb>:9090`,
-already restricted by IP allowlist). When the agent finishes an investigation,
+Approvals happen entirely **inside the cluster-dashboard** (`http://localhost:9090`
+over `./platformctl tunnel`, or its CloudFront URL when the edge is on; both sit
+behind the Cognito sign-in). When the agent finishes an investigation,
 the dashboard's topbar shows a `🔔 N pending` badge. Click it to open a panel
 listing each proposed fix with its severity, root cause, fix commands, and
 `[Approve]` / `[Dismiss]` buttons.
@@ -76,7 +77,14 @@ approvals UI hides the badge once no investigations are pending.
 1. <https://kiro.dev/> → log in → API keys → create a key with headless-mode scope.
 2. Copy the key value (one-time view).
 
-### 2. Create the Secret + activate the watcher
+### 2. Tell the agent which cluster it is on
+
+In `platform/services/cluster-dashboard/pha-config.yaml` set `CLUSTER_NAME` to your
+cluster (`<resources_prefix>-<environment>`, for example `ai-platform-dev`) and
+`AWS_REGION` to its region, then commit and push. The shipped values are
+placeholders; with them the agent's AWS calls fail.
+
+### 3. Create the Secret + activate the watcher
 
 ```bash
 kubectl create secret generic platform-health-agent-secrets \
@@ -97,11 +105,12 @@ the Kiro API key (the DB credentials already live in `ai-platform`).
 Expected:
 1. `event-watcher-…` Pod comes up Ready 1/1 within 60s and logs
    `event-watcher started: …` (instead of the `Platform Health Agent DISABLED` idle line).
-2. cluster-dashboard auto-detects investigations; refresh `http://<alb>:9090` and the topbar shows `🔔 0 pending`.
+2. cluster-dashboard auto-detects investigations; refresh the dashboard (`http://localhost:9090` over `./platformctl tunnel`) and the topbar shows `🔔 0 pending`.
 
 > **Tip:** to keep the key out of shell history / make it reproducible, you can
-> store it in AWS Secrets Manager and sync it with an `ExternalSecret` (the
-> External Secrets Operator is installed) instead of `kubectl create secret`.
+> store it in AWS Secrets Manager and sync it with an `ExternalSecret` instead of
+> `kubectl create secret`. The External Secrets Operator is installed only when
+> `observability_configuration.aws_oss_tooling = true`.
 
 ---
 
@@ -203,7 +212,7 @@ All knobs are in [`pha-config.yaml`](./pha-config.yaml). Most useful:
 | `APPROVAL_EXPIRY_HOURS` | Approve buttons disabled after this |
 | `DEBOUNCE_WINDOW_SEC` | Suppress repeat investigations for the same resource |
 
-Editing the ConfigMap and pushing triggers a kustomize rehash → automatic pod restart. In-flight Jobs keep their original env.
+The ConfigMap keeps its name (kustomize adds no hash suffix to it), so editing it and pushing restarts nothing: the event watcher and the dashboard read it when they start. Apply a change with `kubectl rollout restart deployment event-watcher cluster-dashboard -n ai-platform`. In-flight Jobs keep their original env.
 
 ---
 
@@ -235,7 +244,7 @@ kubectl scale deployment event-watcher -n ai-platform --replicas=0
 kubectl scale deployment event-watcher -n ai-platform --replicas=1
 ```
 
-ArgoCD will revert this within ~3 min because of `selfHeal: true`. For a longer pause, set all `TRIGGER_*=false` in the ConfigMap and push.
+ArgoCD will revert this within ~3 min because of `selfHeal: true`. For a longer pause, set all `TRIGGER_*=false` in the ConfigMap, push, and restart the event-watcher (`kubectl rollout restart deployment event-watcher -n ai-platform`).
 
 ### Inspect a running investigation
 

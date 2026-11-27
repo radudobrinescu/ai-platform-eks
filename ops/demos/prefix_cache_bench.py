@@ -42,8 +42,6 @@ INFERENCE_PERF_IMAGE = "quay.io/inference-perf/inference-perf:v0.7.0"
 PRISM_IMAGE = "ghcr.io/llm-d/llm-d-prism:v1.0.0"
 LABELS = {"app.kubernetes.io/part-of": "prefix-cache-demo"}
 HERE = os.path.dirname(os.path.abspath(__file__))
-sys.path.insert(0, HERE)
-from prefix_cache_report import stage_summary  # noqa: E402,F401 - shared with the in-cluster report step
 NAME_RX = re.compile(r"^[a-z0-9]([-a-z0-9]{0,50}[a-z0-9])?$")
 
 # Workload defaults: 8 products, each with a ~6k-token manual as system prompt,
@@ -307,9 +305,10 @@ def start_prism() -> None:
 
 def cleanup(a: argparse.Namespace) -> int:
     kubectl("delete", "namespace", NS, "--ignore-not-found", "--wait=false")
-    if a.model:
-        kubectl("delete", "service", "-n", MODEL_NS, f"{a.model}-direct", "--ignore-not-found")
-    log(f"removed namespace {NS} (results volume included)" + (f" and service {a.model}-direct" if a.model else ""))
+    # Every <model>-direct Service this script created, whichever model it was for.
+    selector = ",".join(f"{k}={v}" for k, v in LABELS.items())
+    kubectl("delete", "service", "-n", MODEL_NS, "-l", selector, "--ignore-not-found")
+    log(f"removed namespace {NS} (results volume included) and the direct Service(s) in {MODEL_NS}")
     return 0
 
 

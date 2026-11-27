@@ -36,7 +36,9 @@ spec:
   # minVramPerGpuGiB: 0       # Min per-GPU VRAM in GiB (Karpenter hint). 0 = no floor.
   # workerMemory: "16Gi"      # Memory per replica
   # workerCpu: "8"            # CPU per replica
-  # vllmImage: "vllm/vllm-openai:v0.33.0"      # Override only if needed
+  # vllmImage: the vLLM version is platform-wide (vllm_image_tag in
+  #   terraform/30.eks/30.cluster/locals.tf). This field is only a fallback for a
+  #   cluster without the platform-config ConfigMap; setting it has no effect otherwise.
   # routerChartVersion: "v1.0.0"               # llm-d-router-standalone chart version
 #
 # Unsure what size GPU / how many GPUs your model needs?

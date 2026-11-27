@@ -3,6 +3,8 @@ compatibility checks."""
 
 from __future__ import annotations
 
+import os
+import re
 from dataclasses import dataclass
 
 
@@ -46,6 +48,29 @@ KV_BYTES = {
 CLUSTER_INFERENCE_CATEGORIES = {"g", "p"}
 CLUSTER_SHARED_CATEGORIES    = {"g"}
 CLUSTER_GPU_MANUFACTURER     = "nvidia"
+# What the NodePools refuse on top of that: the `instance-family NotIn [...]`
+# list and the `instance-generation Gte N` floor of each file. The floor is on
+# the number in the family name, so it also refuses p4d/p4de (generation 4).
+# nodepool_refusal() below is the only reader; tests/test_catalog_g7.py compares
+# these values with the two YAML files, so they cannot drift apart unnoticed.
+CLUSTER_EXCLUDED_FAMILIES = {
+    "gpu-inference": frozenset({"g4dn", "g4ad", "p3", "p3dn", "p2"}),
+    "gpu-shared":    frozenset({"g4dn", "g4ad"}),
+}
+# Families the NodePools add to that list on older Kubernetes versions: g7 needs
+# NVIDIA driver 595, which the Bottlerocket NVIDIA AMIs ship for Kubernetes 1.37
+# and later only (karpenter.tf, gpu_needs_driver_595). The cluster's version comes
+# from KUBERNETES_VERSION_ENV, which platformctl sets from the environment's
+# tfvars; when it is not known, these families are offered.
+MIN_KUBERNETES_FOR_FAMILY = {"g7": (1, 37)}
+KUBERNETES_VERSION_ENV = "PLATFORM_KUBERNETES_VERSION"
+
+
+def cluster_kubernetes_version() -> tuple[int, int] | None:
+    """(major, minor) of the target cluster's Kubernetes, or None when unknown."""
+    m = re.fullmatch(r"\s*(\d+)\.(\d+)\s*", os.environ.get(KUBERNETES_VERSION_ENV, ""))
+    return (int(m.group(1)), int(m.group(2))) if m else None
+CLUSTER_MIN_INSTANCE_GENERATION = {"gpu-inference": 5, "gpu-shared": 5}
 # Matches the `replicas: 4` in terraform/30.eks/30.cluster/karpenter/gpu-shared.yaml
 # under kubelet-device-plugins.nvidia.time-slicing. When gpu-shared is used,
 # NVIDIA advertises 1 physical GPU as this many logical slots. Time-slicing
@@ -102,6 +127,13 @@ class Instance:
     def category(self) -> str:
         """G or P (first letter of the family)."""
         return self.family[0]
+
+    @property
+    def generation(self) -> int:
+        """The number in the family name (g6e -> 6, p4de -> 4, p6-b300 -> 6) —
+        what Karpenter puts in the instance-generation label."""
+        m = re.match(r"[a-z]+(\d+)", self.family)
+        return int(m.group(1)) if m else 0
 
     @property
     def total_vram_gb(self) -> int:
@@ -221,6 +253,36 @@ INSTANCES: list[Instance] = [
              has_nvlink=True, hbm_bandwidth_tb_s=8.00, compute_capability="10.0",
              arch_family="Blackwell", needs_capacity_block=True),
 ]
+
+
+def nodepool_refusal(inst: Instance, nodepool: str) -> str | None:
+    """Why the `nodepool` NodePool ("gpu-inference" or "gpu-shared") can never
+    launch `inst`: the requirement it fails, worded for a message. None when the
+    NodePool admits it.
+
+    The one place that mirrors the instance-type `requirements` of
+    terraform/30.eks/30.cluster/karpenter/gpu-{inference,shared}.yaml."""
+    shared = nodepool == "gpu-shared"
+    categories = CLUSTER_SHARED_CATEGORIES if shared else CLUSTER_INFERENCE_CATEGORIES
+    if inst.gpu_manufacturer != CLUSTER_GPU_MANUFACTURER:
+        return f"instance-gpu-manufacturer In [{CLUSTER_GPU_MANUFACTURER}]"
+    if inst.category not in categories:
+        return f"instance-category In [{', '.join(sorted(categories))}]"
+    excluded = CLUSTER_EXCLUDED_FAMILIES[nodepool]
+    if inst.family in excluded:
+        return f"instance-family NotIn [{', '.join(sorted(excluded))}]"
+    needs = MIN_KUBERNETES_FOR_FAMILY.get(inst.family)
+    running = cluster_kubernetes_version()
+    if needs and running and running < needs:
+        return (f"instance-family NotIn [{', '.join(sorted(excluded | {inst.family}))}] on Kubernetes "
+                f"{running[0]}.{running[1]}: {inst.family} needs NVIDIA driver 595, which the Bottlerocket "
+                f"AMIs ship for Kubernetes {needs[0]}.{needs[1]} and later")
+    floor = CLUSTER_MIN_INSTANCE_GENERATION[nodepool]
+    if inst.generation < floor:
+        return f"instance-generation Gte {floor} ({inst.family} is generation {inst.generation})"
+    if shared and inst.num_gpus != 1:
+        return "instance-gpu-count In [1]"
+    return None
 
 
 # --------------------------------------------------------------------------- #

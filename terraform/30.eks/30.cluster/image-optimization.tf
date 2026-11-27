@@ -1,39 +1,22 @@
 ################################################################################
-# GPU Image Optimization — EBS data volume snapshot (+ SOCI index)
+# GPU image optimization — SOCI index
 #
-# Automatically triggered when vllm_image_tag changes in locals.tf.
-#   1. EBS snapshot with the vLLM image pre-pulled (no image pull on new GPU
-#      nodes). On every cluster with Karpenter. Without a Docker Hub account the
-#      image comes from docker.io anonymously; with docker_hub_username set it
-#      comes through the ECR pull-through cache, as the nodes then pull it.
-#   2. SOCI index in ECR (lazy-loading fallback): only with the pull-through
-#      cache, since the index is pushed to ECR.
+# Only with the ECR pull-through cache (docker_hub_username set): the vLLM
+# serving image is then pulled through this account's ECR, and a SOCI index
+# pushed next to it lets GPU nodes start the container while the layers are
+# still loading. Built when vllm_image_tag changes in locals.tf.
 #
-# The snapshot is found by image (tags Purpose + Images), not by cluster: one
-# snapshot per vLLM image serves every cluster in the account and region, so
-# only the first cluster to need an image builds it (~15 min, a c5.xlarge).
-# The builder also points the GPU NodeClasses at it, so it is used in the same
-# apply; Terraform renders the same snapshotID from the next plan on. Snapshots
-# are kept when a cluster is destroyed (other clusters may use them); list
-# them with: aws ec2 describe-snapshots --owner-ids self \
-#   --filters Name=tag:Purpose,Values=bottlerocket-data-volume
-# Set gpu_data_volume_snapshot_id to override with a specific snapshot.
+# Without Docker Hub credentials nothing here is created: GPU nodes pull the
+# image from docker.io when they start.
 #
-# The image baked is the vLLM serving image (vllm/vllm-openai) used by all three
+# The image is the vLLM serving image (vllm/vllm-openai) used by all three
 # serving tiers (VLLMEndpoint / LLMDEndpoint / LLMDDisaggEndpoint).
 ################################################################################
 
 locals {
   # Full ECR (pull-through cache) image URI for the vLLM serving image. Empty
   # when no Docker Hub creds are configured.
-  vllm_ecr_image = var.docker_hub_username != "" ? "${data.aws_caller_identity.current.account_id}.dkr.ecr.${local.region}.amazonaws.com/docker-hub/${local.vllm_image}" : ""
-
-  # The reference GPU nodes pull (platform-config vllmImage, capabilities.tf),
-  # with the registry spelled out so the snapshot builder takes it as given.
-  snapshot_image = var.docker_hub_username != "" ? local.vllm_ecr_image : "docker.io/${local.vllm_image}"
-
-  # The snapshot needs only Karpenter (its node role joins the builder).
-  run_image_snapshot = local.capabilities.autoscaling
+  vllm_ecr_image = var.docker_hub_username != "" ? "${local.ecr_registry}/docker-hub/${local.vllm_image}" : ""
 
   # The SOCI index needs the ECR pull-through cache (it is pushed to ECR).
   run_image_optimization = local.capabilities.autoscaling && var.docker_hub_username != ""
@@ -71,95 +54,6 @@ resource "null_resource" "soci_index" {
     # Ensure the host kubeconfig points at THIS cluster before the script runs.
     null_resource.update_kubeconfig,
   ]
-}
-
-################################################################################
-# EBS Data Volume Snapshot — pre-pulled image for instant cold starts
-#
-# Bakes the vLLM serving image onto the Bottlerocket data volume so new GPU
-# nodes boot with it already on disk (0s pull). This is the primary mechanism
-# for the large serving image — SOCI lazy-pull is only the fallback (and the
-# Bottlerocket SOCI snapshotter is unreliable on multi-GB-layer images).
-################################################################################
-locals {
-  snapshot_images     = local.snapshot_image
-  snapshot_volume_gib = 200
-  # EC2NodeClasses whose /dev/xvdb boots from the snapshot (gpu_snapshot_id_line).
-  gpu_snapshot_nodeclasses = "gpu-inference,gpu-shared,gpu-prefill,gpu-decode"
-}
-
-resource "null_resource" "gpu_data_volume_snapshot" {
-  count = local.run_image_snapshot && var.gpu_data_volume_snapshot_id == "" ? 1 : 0
-
-  triggers = {
-    vllm_image   = local.snapshot_image
-    cluster_name = local.cluster_name
-  }
-
-  provisioner "local-exec" {
-    # --reuse: a snapshot of this image already in the account is used as is.
-    # --patch-nodeclasses: the GPU NodeClasses use it at once (this apply).
-    command     = "${path.module}/../../../ops/image/create-data-volume-snapshot.sh --reuse --patch-nodeclasses ${local.gpu_snapshot_nodeclasses} -r ${local.region} -n ${local.cluster_name} -s ${local.snapshot_volume_gib} ${local.snapshot_images}"
-    interpreter = ["bash", "-c"]
-    # Best-effort cold-start optimization — never abort the platform apply.
-    on_failure = continue
-    environment = {
-      AWS_REGION = local.region
-    }
-  }
-
-  depends_on = [
-    null_resource.soci_index,
-    module.eks,
-    module.karpenter,
-    helm_release.karpenter,
-    # The NodeClasses it patches must exist (and its builder node is not a
-    # Karpenter node, so nothing here waits on it).
-    kubectl_manifest.karpenter_manifests,
-    # create-data-volume-snapshot.sh drives kubectl (schedules a puller pod);
-    # the kubeconfig must already point at this cluster.
-    null_resource.update_kubeconfig,
-  ]
-}
-
-################################################################################
-# Discover the newest snapshot of this image (avoids manual tfvar management)
-#
-# Read at plan time, so it sees snapshots that existed before this apply: any
-# earlier cluster's (same account, region and image) or this cluster's from an
-# earlier apply. A snapshot built during this apply is put on the NodeClasses by
-# the builder itself (--patch-nodeclasses above) and rendered from the next plan.
-# The list-returning `aws_ebs_snapshot_ids` tolerates zero matches (the singular
-# `aws_ebs_snapshot` errors on an empty match and would abort a fresh account's
-# apply); its ids are sorted by creation time, newest first.
-################################################################################
-data "aws_ebs_snapshot_ids" "gpu_data_volume" {
-  count  = local.run_image_snapshot && var.gpu_data_volume_snapshot_id == "" ? 1 : 0
-  owners = ["self"]
-
-  filter {
-    name   = "tag:Purpose"
-    values = ["bottlerocket-data-volume"]
-  }
-  filter {
-    name   = "tag:Images"
-    values = [local.snapshot_image]
-  }
-  # GPU nodes' data volume is at least this size (gpu_node_volume_gib).
-  filter {
-    name   = "volume-size"
-    values = [tostring(local.snapshot_volume_gib)]
-  }
-  filter {
-    name   = "status"
-    values = ["completed"]
-  }
-}
-
-locals {
-  # Resolve snapshot ID: explicit override > auto-discovered > empty (disabled).
-  # Empty string means no snapshot — Karpenter NodeClasses omit the snapshotID field.
-  resolved_snapshot_id = var.gpu_data_volume_snapshot_id != "" ? var.gpu_data_volume_snapshot_id : try(data.aws_ebs_snapshot_ids.gpu_data_volume[0].ids[0], "")
 }
 
 ################################################################################

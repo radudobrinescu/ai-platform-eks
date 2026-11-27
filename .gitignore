@@ -23,8 +23,6 @@ __pycache__/
 *.pyc
 .pytest_cache/
 
-# Ops
-ops/.scale-state-*.json
 # platformctl active-env state (per checkout, per operator)
 .platformctl/
 
@@ -41,6 +39,4 @@ CLAUDE.md
 # Build artifacts
 .next/
 
-# Local output of ops/lib/recommend-instance runs
-output.md
 output*.md

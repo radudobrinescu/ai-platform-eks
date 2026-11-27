@@ -35,12 +35,10 @@ spec:
         encrypted: true
         throughput: 500
         iops: 6000
-        ${gpu_snapshot_id_line}
   userData: |
     [settings.container-runtime]
     snapshotter = "soci"
-    # Match gpu-inference: bare SOCI snapshotter (no parallel-pull-unpack) to
-    # match the baked EBS data-volume snapshot's content store.
+    # Match gpu-inference: bare SOCI snapshotter (no parallel-pull-unpack).
   tags:
     karpenter.sh/discovery: ${cluster_name}
     Environment: ${environment}
@@ -77,8 +75,9 @@ spec:
         - key: karpenter.k8s.aws/instance-gpu-manufacturer
           operator: In
           values: ["nvidia"]
-        # Compute-optimized, fp8-capable families only. Prefill wants FLOPS, not
-        # the cheap low-bandwidth GPUs (L4/A10G) that suit decode. Karpenter
+        # Compute-optimized, fp8-capable families only. Prefill wants FLOPS, so
+        # the cheaper L4 (g6) and A10G (g5) are left out. Of those two only A10G
+        # is in the decode pool (gpu-decode.yaml); L4 is in neither. Karpenter
         # cheapest-fits within this set to the pod's gpuCount/minVramPerGpuGiB,
         # so a 30B lands on g6e (L40S) while a 70B+ can reach p5 (H100).
         - key: karpenter.k8s.aws/instance-family

@@ -6,15 +6,14 @@ import math
 from dataclasses import dataclass, field
 
 from .catalog import (
-    CLUSTER_GPU_MANUFACTURER,
-    CLUSTER_INFERENCE_CATEGORIES,
-    CLUSTER_SHARED_CATEGORIES,
+    CATALOG_PRICING_REGION,
     INSTANCES,
     TIME_SLICE_REPLICAS,
     TP_DEGREES,
     WEIGHT_BYTES,
     Instance,
     _quant_compat_warning,
+    nodepool_refusal,
 )
 from .model import ModelSpec
 from .throughput import per_user_tok_s, single_stream_decode_tok_s
@@ -41,6 +40,10 @@ class Option:
     per_user_tok_s_at_users: float = 0.0
     # Quant compatibility (PR 4): None when fully supported, str warning otherwise.
     quant_warning:      str | None = None
+    # True when the Pricing API has no price for the type in the requested
+    # region (it is very likely not offered there); price_usd_h is then the
+    # static us-east-1 price.
+    no_regional_price:  bool = False
     notes:              list[str] = field(default_factory=list)
 
     @property
@@ -73,11 +76,17 @@ class Option:
 
     @property
     def sort_key(self) -> tuple:
-        # Prefer: quant-compatible, below ceiling, in-cluster, lowest price, fewest GPUs.
+        # Prefer: in-cluster, priced in the region, quant-compatible, below
+        # ceiling, lowest price, fewest GPUs.
+        # In-cluster comes first: a type the NodePools refuse can never launch,
+        # so it must not be recommended while any in-cluster type fits. Then a
+        # type without a regional price: it is likely not offered there, and its
+        # us-east-1 price must not win the ranking.
         return (
+            not self.in_cluster,
+            self.no_regional_price,
             self.quant_warning is not None,
             self.over_price_ceiling,
-            not self.in_cluster,
             self.effective_price_usd_h,
             self.total_gpus,
         )
@@ -96,31 +105,27 @@ def _classify_nodepool(
 ) -> tuple[str, bool]:
     """Which NodePool can schedule this instance, and is it shared-eligible?
 
-    Returns (nodepool, shared_eligible). Mirrors the requirements in
-    terraform/30.eks/30.cluster/karpenter/gpu-{inference,shared}.yaml.
+    Returns (nodepool, shared_eligible). The NodePool requirements in
+    terraform/30.eks/30.cluster/karpenter/gpu-{inference,shared}.yaml are
+    mirrored by catalog.nodepool_refusal().
 
     Shared eligibility requires that TIME_SLICE_REPLICAS copies of the model
     fit within the GPU's memory budget, because NVIDIA time-slicing shares
     compute but NOT memory — all co-tenants compete for the same VRAM.
     """
-    if inst.gpu_manufacturer != CLUSTER_GPU_MANUFACTURER:
+    # gpu-inference: any NVIDIA G or P instance, minus the excluded families
+    # and generations. It serves both single- and multi-GPU cases (when
+    # TP == num_gpus and > 1, we need the whole dedicated node).
+    if nodepool_refusal(inst, "gpu-inference") is not None:
         return "out-of-cluster", False
 
     # gpu-shared: single-GPU G-family NVIDIA where TIME_SLICE_REPLICAS copies fit.
     available_per_slice = inst.vram_gb * (1.0 - safety_margin) / TIME_SLICE_REPLICAS
     shared_eligible = (
-        inst.category in CLUSTER_SHARED_CATEGORIES
-        and inst.num_gpus == 1
+        nodepool_refusal(inst, "gpu-shared") is None
         and per_gpu_need_gb <= available_per_slice
     )
-
-    # gpu-inference: any NVIDIA G or P instance.
-    if inst.category in CLUSTER_INFERENCE_CATEGORIES:
-        # When TP == num_gpus and > 1, we need the whole dedicated node;
-        # gpu-inference serves both single- and multi-GPU cases.
-        return "gpu-inference", shared_eligible
-
-    return "out-of-cluster", False
+    return "gpu-inference", shared_eligible
 
 
 def _valid_parallelism_configs(
@@ -229,7 +234,7 @@ def find_options(
     tp_pin:             int | None,
     require_in_cluster: bool,
     safety_margin:      float,
-    prices:             dict[str, float],
+    prices:             dict[str, float | None],
     max_price:          float,
     # Extra context needed for throughput + quant-compat (added in PR 2 / PR 4):
     model:              ModelSpec | None = None,
@@ -286,7 +291,12 @@ def find_options(
         if require_in_cluster and nodepool == "out-of-cluster":
             continue
 
+        # A None price: the Pricing API has none for this type in the region
+        # (see pricing.resolve_prices). Rank it on the static price, flagged.
         price = prices.get(inst.name, inst.price_usd_h)
+        no_regional_price = price is None
+        if price is None:
+            price = inst.price_usd_h
         over_ceiling = price > max_price
 
         notes: list[str] = []
@@ -298,7 +308,11 @@ def find_options(
             notes.append(f"tensor-parallel across {tp} GPUs"
                          + (" (NVLink)" if inst.has_nvlink else " (PCIe)"))
         if nodepool == "out-of-cluster":
-            notes.append("not covered by Karpenter NodePools")
+            notes.append("not covered by Karpenter NodePools "
+                         f"(gpu-inference requires {nodepool_refusal(inst, 'gpu-inference')})")
+        if no_regional_price:
+            notes.append("no price in the requested region — may not be offered there "
+                         f"(${price:.2f}/hr is the {CATALOG_PRICING_REGION} price)")
         if inst.needs_capacity_block:
             notes.append("procure via EC2 Capacity Block — set "
                          "gpu_capacity_reservation_ids in tfvars")
@@ -338,6 +352,7 @@ def find_options(
             single_stream_tok_s=single_stream,
             per_user_tok_s_at_users=per_user_at_users,
             quant_warning=quant_warn,
+            no_regional_price=no_regional_price,
             notes=notes,
         ))
 
