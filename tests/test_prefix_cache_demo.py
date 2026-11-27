@@ -5,6 +5,7 @@ hands Prism. The live run is documented in docs/demos/prefix-cache-routing.md.
 """
 
 import importlib
+import re
 import os
 import sys
 
@@ -165,3 +166,48 @@ class TestCleanup:
         assert services, calls
         assert "-l" in services[0] and "app.kubernetes.io/part-of=prefix-cache-demo" in services[0]
         assert bench.MODEL_NS in services[0]
+
+
+class TestPrismSeesTheRuns:
+    """Prism lists its directory recursively without handling errors, and the
+    root of a new EBS volume holds lost+found, which only root can read. With
+    PRISM_LOCAL_DIR at the volume root the listing failed and Prism showed no
+    runs (seen on dev, 2026-11-27). Runs go to a subdirectory, and Prism lists
+    only that (a subPath mount would not do: the kubelet creates a missing
+    subPath as root, which Prism could not read either)."""
+
+    def test_runs_are_written_below_the_runs_directory(self):
+        import inspect
+        src = inspect.getsource(bench.run)
+        assert 'out_dir = f"{RUNS_DIR}/{run_id}/{target}"' in src
+        assert bench.RUNS_DIR == "/results/runs"
+
+    def test_prism_lists_only_the_runs_directory(self):
+        dep = next(o for o in bench.prism_objects() if o["kind"] == "Deployment")
+        c = dep["spec"]["template"]["spec"]["containers"][0]
+        mount = next(m for m in c["volumeMounts"] if m["name"] == "results")
+        assert mount["mountPath"] == "/results" and mount.get("readOnly") is True
+        env = {e["name"]: e["value"] for e in c["env"]}
+        assert env["PRISM_LOCAL_DIR"] == bench.RUNS_DIR
+
+
+class TestOneSELinuxLevel:
+    """Bottlerocket enforces SELinux and gives each pod its own MCS categories.
+    Files the benchmark pods wrote carried theirs, so Prism, another pod, got
+    "Permission denied" on /results although the file modes allowed reading
+    (seen on dev, 2026-11-27). Every pod of the demo that touches the results
+    volume uses the same level."""
+
+    def _pod_specs(self):
+        job = bench.bench_job(name="b", config_map="c", env={})
+        dep = next(o for o in bench.prism_objects() if o["kind"] == "Deployment")
+        return [job["spec"]["template"]["spec"], dep["spec"]["template"]["spec"]]
+
+    def test_every_pod_on_the_results_volume_shares_one_level(self):
+        levels = {spec["securityContext"]["seLinuxOptions"]["level"] for spec in self._pod_specs()}
+        assert levels == {bench.SELINUX_LEVEL}
+        assert re.fullmatch(r"s0:c\d+,c\d+", bench.SELINUX_LEVEL)
+
+    def test_prism_still_runs_as_a_non_root_user(self):
+        sc = self._pod_specs()[1]["securityContext"]
+        assert sc["runAsNonRoot"] is True and sc["runAsUser"] == 1000
