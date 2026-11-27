@@ -526,15 +526,29 @@ def _condition(obj: dict, kind: str) -> str | None:
     return None
 
 
-def rollout_pending(claims: dict, nodes: dict, deployments: dict) -> list[str]:
-    """What still moves: NodeClaims that are drifted or being deleted, nodes
-    that are not Ready, Deployments without all replicas updated and ready."""
+DO_NOT_DISRUPT = "karpenter.sh/do-not-disrupt"
+
+
+def do_not_disrupt_nodes(pods: dict) -> set[str]:
+    """Nodes that run a pod Karpenter must not disrupt (the model pods): it
+    keeps such a node, drifted or not, until the pod leaves."""
+    return {(p.get("spec") or {}).get("nodeName") for p in pods.get("items") or []
+            if ((p.get("metadata") or {}).get("annotations") or {}).get(DO_NOT_DISRUPT) == "true"
+            and (p.get("spec") or {}).get("nodeName")}
+
+
+def rollout_pending(claims: dict, nodes: dict, deployments: dict,
+                    protected_nodes: set[str] | None = None) -> list[str]:
+    """What still moves: NodeClaims that are being deleted or drifted (unless
+    their node is kept on purpose, see do_not_disrupt_nodes), nodes that are not
+    Ready, Deployments without all replicas updated and ready."""
+    protected = protected_nodes or set()
     out = []
     for cl in claims.get("items") or []:
         name = (cl.get("metadata") or {}).get("name", "?")
         if (cl.get("metadata") or {}).get("deletionTimestamp"):
             out.append(f"nodeclaim {name} being deleted")
-        elif _condition(cl, "Drifted") == "True":
+        elif _condition(cl, "Drifted") == "True" and (cl.get("status") or {}).get("nodeName") not in protected:
             out.append(f"nodeclaim {name} drifted")
     for n in nodes.get("items") or []:
         if _condition(n, "Ready") != "True":
@@ -556,7 +570,8 @@ def wait_rollout_settled(timeout: int = ROLLOUT_SETTLE_TIMEOUT) -> tuple[bool, s
     def settled():
         seen["pending"] = rollout_pending(kubectl_json("get", "nodeclaims.karpenter.sh"),
                                           kubectl_json("get", "nodes"),
-                                          kubectl_json("get", "deployments", "-n", NS_PLATFORM))
+                                          kubectl_json("get", "deployments", "-n", NS_PLATFORM),
+                                          do_not_disrupt_nodes(kubectl_json("get", "pods", "-A")))
         return not seen["pending"]
     try:
         wait_for("the node rollout to settle", settled, timeout, 20)

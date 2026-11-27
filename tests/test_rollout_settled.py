@@ -89,3 +89,24 @@ def test_the_dashboard_health_check_retries_a_dropped_connection(monkeypatch):
     monkeypatch.setattr(checks.time, "sleep", lambda s: None)
     ok, detail = checks.chk_dashboard_health(None)
     assert ok and calls["n"] == 2 and re.search(r"HTTP 200", detail)
+
+
+def test_a_drifted_node_that_karpenter_keeps_on_purpose_is_not_pending():
+    """Model pods carry karpenter.sh/do-not-disrupt: Karpenter keeps a drifted
+    node that runs one until the pod leaves. The rerun of 2026-11-27 waited 30
+    minutes for such a node (the smoke model's) and failed the step although
+    every check after it passed."""
+    claim = _claim("gpu-shared-xd56c", drifted="True")
+    claim["status"]["nodeName"] = "ip-10-10-1-1"
+    assert checks.rollout_pending({"items": [claim]}, {"items": []}, {"items": []},
+                                  protected_nodes={"ip-10-10-1-1"}) == []
+    assert checks.rollout_pending({"items": [claim]}, {"items": []}, {"items": []}, protected_nodes=set()) != []
+
+
+def test_protected_nodes_are_the_nodes_of_do_not_disrupt_pods():
+    pods = {"items": [
+        {"metadata": {"annotations": {"karpenter.sh/do-not-disrupt": "true"}}, "spec": {"nodeName": "a"}},
+        {"metadata": {"annotations": {}}, "spec": {"nodeName": "b"}},
+        {"metadata": {"annotations": {"karpenter.sh/do-not-disrupt": "true"}}, "spec": {}},
+    ]}
+    assert checks.do_not_disrupt_nodes(pods) == {"a"}
