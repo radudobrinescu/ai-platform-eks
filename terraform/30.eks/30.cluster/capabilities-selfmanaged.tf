@@ -20,7 +20,7 @@
 locals {
   # Docker Official Image redis, the same digest on Docker Hub and on the chart's
   # registry (ecr-public.aws.com/docker/library/redis). "<tag>@<digest>".
-  argocd_redis_image = "8.10.3-alpine@sha256:7958cfbb9d152f87dadfbc89f1b0b15938f0b81ff8982feb327476f4911935c3"
+  argocd_redis_image = "8.12.0-alpine@sha256:5af80107c1eeecb484a2269b80a26d12bfa6521787da4663bd9f19f60a163483"
 }
 
 resource "helm_release" "argocd_selfmanaged" {
@@ -31,7 +31,7 @@ resource "helm_release" "argocd_selfmanaged" {
   chart      = "argo-cd"
   # Pinned: without a version every new install takes whatever chart is newest
   # that day, so two installs of the same commit could run different Argo CD.
-  version          = "10.18.0" # Argo CD v3.6.1
+  version          = "10.20.0" # Argo CD v3.6.1
   namespace        = "argocd"
   create_namespace = true
 
