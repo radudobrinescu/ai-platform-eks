@@ -30,7 +30,7 @@ module "aws_cloudwatch_observability_irsa" {
 
 module "aws_cloudwatch_observability" {
   source  = "aws-ia/eks-blueprints-addons/aws"
-  version = "~> 1.24.0"
+  version = "~> 1.25.0"
   count   = var.observability_configuration.aws_native_tooling ? 1 : 0
 
   cluster_name      = data.terraform_remote_state.eks.outputs.cluster_name

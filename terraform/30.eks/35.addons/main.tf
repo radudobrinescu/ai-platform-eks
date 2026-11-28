@@ -19,7 +19,7 @@ data "aws_iam_policy_document" "lbc_v3_supplement" {
 locals {
   # One pin for the AWS Load Balancer Controller chart and its CRDs. Since LBC
   # v3.0.0 the chart version aligns with the app version.
-  lbc_chart_version = "3.6.3"
+  lbc_chart_version = "3.7.0"
 }
 
 # The controller's CRDs, rendered from the same chart version and applied BEFORE
@@ -60,7 +60,7 @@ resource "kubectl_manifest" "lbc_crds" {
 
 module "eks_blueprints_addons" {
   source  = "aws-ia/eks-blueprints-addons/aws"
-  version = "~> 1.24.0"
+  version = "~> 1.25.0"
 
   cluster_name      = data.terraform_remote_state.eks.outputs.cluster_name
   cluster_endpoint  = data.terraform_remote_state.eks.outputs.cluster_endpoint
