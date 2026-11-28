@@ -35,7 +35,7 @@ spec:
       serviceAccountName: litellm
       containers:
         - name: litellm
-          image: litellm/litellm:v1.108.10-lts
+          image: litellm/litellm:v1.108.20-lts
           args: ["--config", "/app/config.yaml"]
           ports:
             - containerPort: 4000
@@ -611,7 +611,7 @@ spec:
           # …then the aws-cli container uploads it to S3 and the emptyDir is discarded.
           containers:
             - name: upload
-              image: amazon/aws-cli:2.40.4
+              image: amazon/aws-cli:2.42.5
               command: ["sh", "-c"]
               args:
                 - |

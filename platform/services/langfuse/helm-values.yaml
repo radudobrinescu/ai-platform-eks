@@ -182,7 +182,7 @@ redis:
   image:
     registry: docker.io
     repository: valkey/valkey
-    tag: "8.1.11-alpine@sha256:2602ace2be6569bc2bbb06f873776516ab9089821525be34f4305c67eb9db02a"
+    tag: "8.1.12-alpine@sha256:9971099af41c36e887aabdfe22b80c0fe45df949163dfc9cb434febc57cfc3fc"
   # Binds the cluster default StorageClass: `gp3` on classic/self-managed
   # clusters, `auto-ebs-sc` on EKS Auto Mode (terraform/30.eks/30.cluster/main.tf).
   # Do not pin a class here: `gp3` does not exist in Auto Mode.
@@ -199,7 +199,7 @@ s3:
   # The sub-chart's tag (its appVersion), pinned by digest like Valkey.
   image:
     repository: chrislusf/seaweedfs
-    tag: "4.54@sha256:4b42c212543a0acd4c0e675215ecdcaf62a186ef98def76c7e12701871222d15"
+    tag: "4.55@sha256:7ca46aeae2f223b37e5d91593c17ab37738eec6df6ab69b48a0487f7643342b9"
   auth:
     rootUser: langfuse
     existingSecret: langfuse-s3-auth
