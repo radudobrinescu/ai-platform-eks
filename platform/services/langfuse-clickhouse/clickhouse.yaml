@@ -49,7 +49,7 @@ spec:
           type: RuntimeDefault
       containers:
         - name: clickhouse
-          image: clickhouse/clickhouse-server:26.8.39.19@sha256:a42be7a55bbbe15a062afb72759564be70c92bf020265bf8d8011af73c95b98c
+          image: clickhouse/clickhouse-server:26.8.49.6@sha256:0cf7c7f1d66943f0ca17062dd6e6a0f459eb58770e16d6957823837f3fe1bf66
           ports:
             - name: http
               containerPort: 8123
