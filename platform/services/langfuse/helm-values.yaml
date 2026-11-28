@@ -182,7 +182,7 @@ redis:
   image:
     registry: docker.io
     repository: valkey/valkey
-    tag: "8.1.11-alpine@sha256:2602ace2be6569bc2bbb06f873776516ab9089821525be34f4305c67eb9db02a"
+    tag: "9.2.1-alpine@sha256:3ad5a213cb1bc2fd4a113c89b6248a88655a6bf1dda69519d04e03cd3e3d2742"
   # Binds the cluster default StorageClass: `gp3` on classic/self-managed
   # clusters, `auto-ebs-sc` on EKS Auto Mode (terraform/30.eks/30.cluster/main.tf).
   # Do not pin a class here: `gp3` does not exist in Auto Mode.
