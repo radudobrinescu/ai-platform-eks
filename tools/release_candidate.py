@@ -287,7 +287,7 @@ def _blank() -> dict:
 
 
 def plan(repo: str, prs: list[dict], today: date, *, force: bool = False, publish: bool = False,
-         cycle_days: int = 7, publish_days: int = 90, wait_days: int = 5, mark_days: int = 14,
+         cycle_days: int = 7, publish_days: int = 60, wait_days: int = 5, mark_days: int = 14,
          remote: str = "origin", release_prs: list[dict] | None = None, statuses: list[dict] | None = None,
          marks: dict[str, dict] | None = None) -> dict:
     """release_prs: PRs from release/* branches, any state {headRefName, headRefOid, state, number, createdAt}.
@@ -647,7 +647,7 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--force", action="store_true", help="start a cycle even if the last one is recent")
     p.add_argument("--publish", action="store_true", help="make the cycle a release")
     p.add_argument("--cycle-days", type=int, default=7)
-    p.add_argument("--publish-days", type=int, default=90)
+    p.add_argument("--publish-days", type=int, default=60)
     p.add_argument("--wait-days", type=int, default=5)
     p.add_argument("--mark-days", type=int, default=14)
     for name in ("pr-body", "abandon-comment", "headline"):

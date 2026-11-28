@@ -29,7 +29,7 @@
 # main itself fails E2E; release-finish closes it when a cycle is merged.
 #
 # Settings (repository variables, all optional): CYCLE_DAYS (7: days between
-# cycles), PUBLISH_DAYS (90: a cycle becomes a release when the newest tag is
+# cycles), PUBLISH_DAYS (60: a cycle becomes a release when the newest tag is
 # this old), WAIT_DAYS (5: an undecided cycle is abandoned and cut again),
 # MARK_DAYS (14: a suspect that failed is tried again after this long).
 # Inputs: force (start a cycle now), publish (make it a release), dry_run.
@@ -82,7 +82,7 @@ jobs:
       PUBLISH: ${{ inputs.publish }}
       DRY_RUN: ${{ inputs.dry_run }}
       CYCLE_DAYS: ${{ vars.CYCLE_DAYS || '7' }}
-      PUBLISH_DAYS: ${{ vars.PUBLISH_DAYS || '90' }}
+      PUBLISH_DAYS: ${{ vars.PUBLISH_DAYS || '60' }}
       WAIT_DAYS: ${{ vars.WAIT_DAYS || '5' }}
       MARK_DAYS: ${{ vars.MARK_DAYS || '14' }}
       RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}

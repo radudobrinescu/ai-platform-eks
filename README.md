@@ -63,7 +63,7 @@ command output redact account ids, ARNs and AWS hostnames.
      Workflows write (release candidates change `.github/workflows/*`, which
      `GITHUB_TOKEN` cannot push), and Pull requests write so the scheduled
      release PR is opened as that user and main's CI runs on it
-   - variables `CYCLE_DAYS` (7), `PUBLISH_DAYS` (90), `WAIT_DAYS` (5), `MARK_DAYS` (14): all optional, see
+   - variables `CYCLE_DAYS` (7), `PUBLISH_DAYS` (60), `WAIT_DAYS` (5), `MARK_DAYS` (14): all optional, see
      "The factory: cycles and releases"
    - label `hold` (keeps a Renovate PR out of the next release)
    - variable `E2E_REGION` (optional, default `eu-central-1`)
@@ -156,7 +156,7 @@ upgrade **from the last published release** (the newest tag), both profiles. Whe
 green, the last job of the E2E run starts `release-finish.yaml`, which merges the candidate into `main`.
 
 **A release** is a cycle whose PR carries the label `publish`: after the merge it is also tagged and gets its
-GitHub Release. A cycle gets the label when the newest tag is `PUBLISH_DAYS` old (default 90), when it includes
+GitHub Release. A cycle gets the label when the newest tag is `PUBLISH_DAYS` old (default 60, about every two months), when it includes
 a PR labelled `security`, or when dispatched with `publish`. Add or remove the label on the PR to change that
 before E2E is green. All other cycles are integrations: `main` moves forward, proven, with no tag. So `main`
 always holds a state that was tested as one upgrade from the last published release, the version name

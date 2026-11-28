@@ -195,8 +195,8 @@ def test_a_cycle_is_a_release_when_asked_when_due_or_for_a_security_fix(repo):
     clone, _ = repo
     assert not rc.plan(str(clone), PRS, TODAY)["publish"]
     assert rc.plan(str(clone), PRS, TODAY, publish=True)["publish"]
-    assert rc.plan(str(clone), PRS, date(2027, 1, 29))["publish"] is False          # 89 days after the tag
-    assert rc.plan(str(clone), PRS, date(2027, 1, 30))["publish"] is True           # 90
+    assert rc.plan(str(clone), PRS, date(2026, 12, 30))["publish"] is False         # 59 days after the tag
+    assert rc.plan(str(clone), PRS, date(2026, 12, 31))["publish"] is True          # 60: about every two months
     prs = [dict(pr) for pr in PRS]
     prs[1] = {**prs[1], "labels": [{"name": "security"}]}
     assert rc.plan(str(clone), prs, TODAY)["publish"]
@@ -360,7 +360,7 @@ def test_a_release_that_is_resumed_stays_a_release(repo):
     prs = [dict(pr) for pr in PRS]
     assert not rc.plan(str(clone), prs, date(2026, 11, 10), release_prs=[])["publish"]
     assert rc.plan(str(clone), prs, date(2026, 11, 10), release_prs=[], publish=True)["publish"]
-    assert rc.plan(str(clone), prs, date(2027, 2, 1), release_prs=[])["publish"]             # the tag is 90 days old
+    assert rc.plan(str(clone), prs, date(2027, 1, 1), release_prs=[])["publish"]             # the tag is 61 days old
     prs[0] = {**prs[0], "labels": [{"name": "security"}]}                                     # renovate/gateway is in it
     assert rc.plan(str(clone), prs, date(2026, 11, 10), release_prs=[])["publish"]
 
@@ -647,7 +647,7 @@ class TestWorkflow:
         assert "headRefName,labels,headRefOid" in plan and "headRefName,headRefOid,state,number,createdAt" in plan
         env = wf["jobs"]["candidate"]["env"]
         assert env["CYCLE_DAYS"] == "${{ vars.CYCLE_DAYS || '7' }}"
-        assert env["PUBLISH_DAYS"] == "${{ vars.PUBLISH_DAYS || '90' }}" and env["WAIT_DAYS"] == "${{ vars.WAIT_DAYS || '5' }}"
+        assert env["PUBLISH_DAYS"] == "${{ vars.PUBLISH_DAYS || '60' }}" and env["WAIT_DAYS"] == "${{ vars.WAIT_DAYS || '5' }}"
         assert env["MARK_DAYS"] == "${{ vars.MARK_DAYS || '14' }}" and '--mark-days "$MARK_DAYS"' in plan
 
     def test_cut_skips_conflicts_resumes_and_labels_a_release(self):
