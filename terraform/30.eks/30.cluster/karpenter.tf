@@ -83,7 +83,7 @@ resource "aws_iam_role_policy_attachment" "karpenter_node" {
 ################################################################################
 module "karpenter" {
   source  = "terraform-aws-modules/eks/aws//modules/karpenter"
-  version = "21.29.0"
+  version = "21.30.2"
 
   create = local.capabilities.autoscaling
 
@@ -131,7 +131,7 @@ module "karpenter" {
 ################################################################################
 locals {
   # One pin for the controller and its CRDs.
-  karpenter_chart_version = "1.15.2"
+  karpenter_chart_version = "1.15.3"
 }
 
 # Karpenter's CRDs, rendered from the same chart version and applied BEFORE the

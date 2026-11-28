@@ -32,7 +32,7 @@ resource "terraform_data" "validate_public_endpoint" {
 
 module "eks" {
   source  = "terraform-aws-modules/eks/aws"
-  version = "21.29.0"
+  version = "21.30.2"
 
   name               = local.cluster_name
   kubernetes_version = local.cluster_version

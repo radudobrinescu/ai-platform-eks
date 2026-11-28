@@ -46,7 +46,7 @@ module "subnets" {
 
 module "vpc" {
   source  = "terraform-aws-modules/vpc/aws"
-  version = "6.8.0"
+  version = "6.9.0"
 
   name = local.name
   cidr = var.vpc_cidr
@@ -71,7 +71,7 @@ module "vpc" {
 
 module "endpoints" {
   source  = "terraform-aws-modules/vpc/aws//modules/vpc-endpoints"
-  version = "6.8.0"
+  version = "6.9.0"
   # Tolerates a cluster_config without private_eks_cluster, with the default
   # 30.eks/30.cluster applies to the same omission: there
   # endpoint_public_access = try(!var.cluster_config.private_eks_cluster, false),
